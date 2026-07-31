@@ -1,0 +1,34 @@
+{
+  "version": "1.0.0",
+  "rules": [
+    {
+      "rule_id": "OPENAI_API_KEY",
+      "domain": "credentials",
+      "severity": "high",
+      "kind": "secret",
+      "pattern": "\\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\\b"
+    },
+    {
+      "rule_id": "GENERIC_API_KEY",
+      "domain": "credentials",
+      "severity": "high",
+      "kind": "secret",
+      "pattern": "(?i)\\b(?:api[_-]?key|token)\\b\\s*[:=]\\s*[\\\"']?(?P<value>[A-Za-z0-9._-]{16,})",
+      "match_group": "value"
+    },
+    {
+      "rule_id": "EMAIL_ADDRESS",
+      "domain": "privacy",
+      "severity": "medium",
+      "kind": "email",
+      "pattern": "(?i)(?<![A-Z0-9._%+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}(?![A-Z0-9.-])"
+    },
+    {
+      "rule_id": "CN_MOBILE_PHONE",
+      "domain": "privacy",
+      "severity": "medium",
+      "kind": "phone",
+      "pattern": "(?<!\\d)1[3-9]\\d{9}(?!\\d)"
+    }
+  ]
+}
