@@ -42,7 +42,7 @@ tests/                                synthetic fixtures and focused unit/E2E te
 - Create: `scripts/check_brand_assets.py`
 - Modify: `README.md`
 
-- [ ] **Step 1: Write the failing brand validator**
+- [x] **Step 1: Write the failing brand validator**
 
 ```python
 from pathlib import Path
@@ -79,25 +79,25 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 2: Run the validator and confirm it fails because assets do not exist**
+- [x] **Step 2: Run the validator and confirm it fails because assets do not exist**
 
 Run: `rtk python scripts/check_brand_assets.py`
 Expected: FAIL with `FileNotFoundError` for `assets/brand/agentguardian-mark.svg`.
 
-- [ ] **Step 3: Create the minimum deterministic SVG set**
+- [x] **Step 3: Create the minimum deterministic SVG set**
 
 The mark uses a 512 square viewBox, open corner strokes, Obsidian `#0F1215`, Cloud `#F4F6F7`, Trust `#21C786`, and a centered `AG` monogram. The broader system uses Surface `#171C20`, Border `#394149`, Muted `#AAB4BB`, Warning `#F0BD5C`, and Critical `#EF7167`. The GitHub cover uses the approved opaque Obsidian layout shown in the design reference. Use SVG paths/shapes only; do not embed raster images. The wordmark and cover may use the fallback stack `Inter, 'Noto Sans SC', 'Segoe UI', sans-serif` with `letter-spacing="0"`.
 
-- [ ] **Step 4: Render the three required PNG exports**
+- [x] **Step 4: Render the three required PNG exports**
 
 Run `rtk proxy powershell -NoProfile -Command "& 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe' --headless --disable-gpu --hide-scrollbars --screenshot='assets/brand/agentguardian-mark-512.png' --window-size=512,512 (Resolve-Path 'assets/brand/agentguardian-mark.svg')"` and equivalent commands for `agentguardian-mark-dark.svg`/`agentguardian-mark-dark-512.png` and `agentguardian-cover.svg`/`agentguardian-cover-1280x640.png`. Use Pillow once to turn only the white background pixels in the light mark transparent, then save it as RGBA. Keep the dark mark and cover opaque.
 
-- [ ] **Step 5: Run validator and visual inspection**
+- [x] **Step 5: Run validator and visual inspection**
 
 Run: `rtk python scripts/check_brand_assets.py`
 Expected: exit 0. Inspect both PNG files at original detail; verify all four frame corners, the AG monogram, Chinese title, English name, and cover audit mockup are fully visible.
 
-- [ ] **Step 6: Update README and commit**
+- [x] **Step 6: Update README and commit**
 
 ```markdown
 ![AgentGuardian](assets/brand/agentguardian-cover.svg)
@@ -114,7 +114,7 @@ Run: `rtk git commit -m "Add AgentGuardian brand assets and Alpha plan"`
 - Create: `src/agentguardian/domain.py`
 - Create: `tests/test_domain.py`
 
-- [ ] **Step 1: Write contract tests**
+- [x] **Step 1: Write contract tests**
 
 ```python
 from agentguardian.domain import Evidence, Finding, RiskDomain, Severity
@@ -122,7 +122,7 @@ from agentguardian.domain import Evidence, Finding, RiskDomain, Severity
 
 def test_evidence_rejects_unmasked_secret() -> None:
     try:
-        Evidence(source="a.txt", fingerprint="abc", masked="sk-live-secret")
+        Evidence(source="a.txt", fingerprint="a" * 64, masked="sk-live-secret")
     except ValueError as error:
         assert "masked" in str(error)
     else:
@@ -130,17 +130,17 @@ def test_evidence_rejects_unmasked_secret() -> None:
 
 
 def test_finding_keeps_domain_and_severity() -> None:
-    finding = Finding("R-1", RiskDomain.CREDENTIALS, Severity.HIGH, "root-1", ())
+    finding = Finding("R-1", RiskDomain.CREDENTIALS, Severity.HIGH, "b" * 64, ())
     assert finding.domain is RiskDomain.CREDENTIALS
     assert finding.severity is Severity.HIGH
 ```
 
-- [ ] **Step 2: Verify tests fail before package exists**
+- [x] **Step 2: Verify tests fail before package exists**
 
 Run: `rtk pytest tests/test_domain.py -q`
 Expected: FAIL with `ModuleNotFoundError: agentguardian`.
 
-- [ ] **Step 3: Add immutable contracts and raw-value guard**
+- [x] **Step 3: Add all shared immutable contracts and raw-value guard**
 
 ```python
 from dataclasses import dataclass
@@ -183,11 +183,14 @@ class Finding:
     evidence: tuple[Evidence, ...]
 ```
 
-- [ ] **Step 4: Run tests and commit**
+Also freeze `Asset`, `Score`, `RemediationPlan`, and `VerificationResult` in this task so later workers do not invent incompatible shared types. Founder Alpha restricts remediation to `manual` and verification to `not_performed`. `Score` carries total, per-domain deductions, cap reason, coverage, confidence, limits, and incomplete state. `Evidence` rejects full paths and common raw credential forms; source fields are display names only. Configure pytest's `src` path in `pyproject.toml`.
+
+- [x] **Step 4: Run tests and commit**
 
 Run: `rtk pytest tests/test_domain.py -q`
-Expected: 2 passed.
-Commit: `rtk git commit -am "Add immutable audit contracts"`
+Expected: all contract tests pass.
+Run: `rtk git add pyproject.toml src/agentguardian/__init__.py src/agentguardian/domain.py tests/test_domain.py docs/superpowers/plans/2026-08-01-agentguardian-founder-alpha.md docs/superpowers/specs/2026-08-01-agentguardian-design.md`
+Commit: `rtk git commit -m "Add immutable audit contracts"`
 
 ## Task 3: Windows Asset Discovery
 
@@ -237,7 +240,8 @@ Known paths are returned only when they exist and remain under `%APPDATA%`, `%LO
 
 Run: `rtk pytest tests/test_discovery.py -q`
 Expected: pass.
-Commit: `rtk git commit -am "Add bounded Windows asset discovery"`
+Run: `rtk git add src/agentguardian/discovery.py tests/test_discovery.py`
+Commit: `rtk git commit -m "Add bounded Windows asset discovery"`
 
 ## Task 4: Local Detectors and Custom Rules
 
@@ -253,14 +257,23 @@ from agentguardian.detectors import detect_text
 
 
 def test_secret_is_masked_and_fingerprinted() -> None:
-    findings = detect_text("OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuv", "sample.env")
+    findings = detect_text(
+        "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuv",
+        "sample.env",
+        scan_key=b"k" * 32,
+    )
     assert len(findings) == 1
     assert findings[0].evidence[0].masked.startswith("sk-p")
     assert "abcdefghijkl" not in findings[0].evidence[0].masked
 
 
 def test_custom_chinese_keyword() -> None:
-    findings = detect_text("项目代号：北辰", "chat.txt", keywords=["北辰"])
+    findings = detect_text(
+        "项目代号：北辰",
+        "chat.txt",
+        keywords=["北辰"],
+        scan_key=b"k" * 32,
+    )
     assert findings[0].rule_id == "CUSTOM_KEYWORD"
 ```
 
@@ -269,9 +282,9 @@ def test_custom_chinese_keyword() -> None:
 Run: `rtk pytest tests/test_detectors.py -q`
 Expected: FAIL importing detector.
 
-- [ ] **Step 3: Implement regex matching with SHA-256 root fingerprints**
+- [ ] **Step 3: Implement regex matching with scan-scoped HMAC fingerprints**
 
-Use compiled patterns from `rules/default.json`, read files as UTF-8 with replacement, cap each file at 10 MiB, mask every match before constructing `Evidence`, and hash `rule_id + normalized_match` locally. Never log match text.
+Use compiled patterns from `rules/default.json`, cap each file at 10 MiB, mask every match before constructing `Evidence`, and HMAC `rule_id + normalized_match` with an ephemeral per-scan key that is never exported. Never log match text. Support UTF-8, UTF-8 BOM, and UTF-16LE synthetic fixtures; undecodable files become explicit coverage limitations rather than silently counting as scanned.
 
 - [ ] **Step 4: Add MCP combination rule**
 
@@ -281,7 +294,8 @@ Parse JSON structurally. Emit `MCP_DANGEROUS_COMBINATION` only when one server h
 
 Run: `rtk pytest tests/test_detectors.py -q`
 Expected: all pass.
-Commit: `rtk git commit -am "Add local sensitive-data detectors"`
+Run: `rtk git add rules/default.json src/agentguardian/detectors.py tests/test_detectors.py`
+Commit: `rtk git commit -m "Add local sensitive-data detectors"`
 
 ## Task 5: Explainable Scoring and Reports
 
@@ -299,7 +313,7 @@ from agentguardian.scoring import score
 
 
 def public_active_credential_finding() -> Finding:
-    return Finding("PUBLIC_ACTIVE_CREDENTIAL", RiskDomain.EXPOSURE, Severity.CRITICAL, "public-1", ())
+    return Finding("PUBLIC_ACTIVE_CREDENTIAL", RiskDomain.EXPOSURE, Severity.CRITICAL, "a" * 64, ())
 
 
 def high_credential_finding(root: str) -> Finding:
@@ -313,7 +327,7 @@ def test_public_active_credential_caps_total_at_39():
 
 
 def test_duplicate_root_only_deducts_once():
-    finding = high_credential_finding(root="same")
+    finding = high_credential_finding(root="b" * 64)
     assert score([finding, finding], coverage=1.0).total == 93
 ```
 
@@ -330,7 +344,8 @@ Assert report output contains rule IDs, masked evidence, coverage, confidence, l
 Use `json.dumps(..., ensure_ascii=False, indent=2)` and `html.escape` with a static HTML template. Do not add a template engine.
 Run: `rtk pytest tests/test_scoring.py tests/test_reporting.py -q`
 Expected: all pass.
-Commit: `rtk git commit -am "Add explainable scoring and local reports"`
+Run: `rtk git add src/agentguardian/scoring.py src/agentguardian/reporting.py tests/test_scoring.py tests/test_reporting.py`
+Commit: `rtk git commit -m "Add explainable scoring and local reports"`
 
 ## Task 6: Manual Remediation Guidance and Verification Limits
 
@@ -341,28 +356,25 @@ Commit: `rtk git commit -am "Add explainable scoring and local reports"`
 - [ ] **Step 1: Test provider-specific guidance and no-write behavior**
 
 ```python
-from pathlib import Path
 from agentguardian.guidance import guidance_for
 
 
-def test_public_credential_guidance_is_manual_and_does_not_write(tmp_path: Path):
-    target = tmp_path / "share.txt"
-    target.write_text("synthetic", encoding="utf-8")
-    plan = guidance_for("PUBLIC_ACTIVE_CREDENTIAL", target)
+def test_public_credential_guidance_is_manual_and_has_no_target_path():
+    plan = guidance_for("PUBLIC_ACTIVE_CREDENTIAL", "c" * 64, provider="openai")
     assert plan.mode == "manual"
     assert "revoke" in plan.steps[0].lower()
-    assert target.read_text(encoding="utf-8") == "synthetic"
 ```
 
 - [ ] **Step 2: Implement read-only guidance**
 
-Return an immutable guidance object containing risk, provider-neutral manual steps, verification steps, and a `manual` mode. Do not rename, delete, chmod, edit, open a URL, invoke a shell, elevate, or mutate the target. Keep the target path only as a redacted display name in reports.
+Return the frozen `RemediationPlan` containing rule ID, opaque asset reference, provider-specific manual steps, verification steps, and `manual` mode. The function does not accept a filesystem path. Do not rename, delete, chmod, edit, open a URL, invoke a shell, elevate, or mutate a target.
 
 - [ ] **Step 3: Verify and commit**
 
 Run: `rtk pytest tests/test_guidance.py -q`
 Expected: all pass.
-Commit: `rtk git commit -am "Add manual remediation guidance"`
+Run: `rtk git add src/agentguardian/guidance.py tests/test_guidance.py`
+Commit: `rtk git commit -m "Add manual remediation guidance"`
 
 ## Task 7: Minimal PySide6 Audit UI
 
@@ -403,7 +415,8 @@ Use Obsidian, Cloud, Surface, Border, Trust, Muted, Warning, and Critical from t
 
 Run: `rtk pytest tests/test_app_smoke.py -q`
 Expected: pass offscreen.
-Commit: `rtk git commit -am "Add minimal local audit interface"`
+Run: `rtk git add src/agentguardian/app.py src/agentguardian/__main__.py tests/test_app_smoke.py`
+Commit: `rtk git commit -m "Add minimal local audit interface"`
 
 ## Task 8: CI, Minimal Self-Audit, and Alpha Release Gate
 
@@ -435,7 +448,7 @@ Reviewer confirms no raw evidence in logs/reports, no network calls in the binar
 
 - [ ] **Step 5: Commit and push**
 
-Run: `rtk git add .github src tests docs README.md pyproject.toml rules`
+Run: `rtk git add .github/workflows/ci.yml src/agentguardian/self_audit.py tests/test_self_audit.py docs/reports/alpha-0.1.0-stage-report.md README.md`
 Run: `rtk git commit -m "Prepare AgentGuardian 0.1.0 Founder Alpha"`
 Run: `rtk git push -u origin agent/founder-alpha`
 
