@@ -2,11 +2,13 @@
   <title id="title">AgentGuardian AG mark dark</title>
   <desc id="desc">Open four-corner audit frame around the letters AG on an Obsidian background.</desc>
   <rect width="512" height="512" fill="#0F1215"/>
-  <g fill="none" stroke="#15A36D" stroke-width="28" stroke-linecap="square">
+  <g fill="none" stroke="#FFFFFF" stroke-width="28" stroke-linecap="square">
     <path d="M64 148V64h84"/>
     <path d="M364 64h84v84"/>
+  </g>
+  <g fill="none" stroke="#21C786" stroke-width="28" stroke-linecap="square">
     <path d="M64 364v84h84"/>
     <path d="M364 448h84v-84"/>
   </g>
-  <text x="256" y="318" text-anchor="middle" fill="#15A36D" font-family="Arial, 'Segoe UI', sans-serif" font-size="154" font-weight="700">AG</text>
+  <text x="256" y="318" text-anchor="middle" fill="#FFFFFF" font-family="Arial, 'Segoe UI', sans-serif" font-size="154" font-weight="700">AG</text>
 </svg>

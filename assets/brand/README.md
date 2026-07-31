@@ -8,10 +8,12 @@
 
 - Obsidian: `#0F1215`
 - Cloud: `#F4F6F7`
-- Trust: `#15A36D`
-- Signal: `#2A8CCB`
-- Warning: `#D49A32`
-- Critical: `#C64A43`
+- Surface: `#171C20`
+- Border: `#394149`
+- Trust: `#21C786`
+- Muted: `#AAB4BB`
+- Warning: `#F0BD5C`
+- Critical: `#EF7167`
 
 资产：
 
@@ -21,4 +23,4 @@
 - `agentguardian-cover.svg`：1280 × 640 GitHub 初代封面，数据明确为 `SYNTHETIC DEMO`。
 - PNG 文件是对应的发布预览，不替代 SVG 源文件。
 
-16px 以下只使用 mark，不使用 wordmark。浅色背景上的关键笔画和文字使用 Obsidian；深色背景上的 Trust 可承载文字和关键图形。Warning、Critical 和 Signal 只作状态或辅助信号，关键状态同时显示文字。
+16px 以下只使用 mark，不使用 wordmark。浅色版使用 Obsidian 与 Trust，深色版使用 Cloud 与 Trust；Warning 和 Critical 只作状态信号，关键状态同时显示文字。

@@ -199,7 +199,7 @@ Founder Alpha 后用 5 至 7 周硬化为可邀请试用的 Windows MVP：增加
 - 中文：让 AI Agent 的数据边界可见、可控、可验证。
 - 英文：Local-first · Open-core · User-approved remediation.
 
-基础色：Obsidian `#0F1215`、Cloud `#F4F6F7`、Trust `#15A36D`、Signal `#2A8CCB`、Warning `#D49A32`、Critical `#C64A43`。LOGO 同时提供 SVG、PNG、深色和浅色版本；GitHub 初代封面采用 1280 × 640，展示 Trust Frame、产品名、文案和审计概览，不放真实用户数据。
+基础色：Obsidian `#0F1215`、Cloud `#F4F6F7`、Surface `#171C20`、Border `#394149`、Trust `#21C786`、Muted `#AAB4BB`、Warning `#F0BD5C`、Critical `#EF7167`。LOGO 同时提供 SVG、PNG、深色和浅色版本；GitHub 初代封面采用 1280 × 640，严格使用已确认的深色 Trust Frame 版式，展示产品名、文案和审计概览，不放真实用户数据。
 
 ## 13. Alpha 发布门
 

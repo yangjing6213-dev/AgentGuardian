@@ -5,10 +5,12 @@
     <g fill="none" stroke="#0F1215" stroke-width="28" stroke-linecap="square">
       <path d="M64 148V64h84"/>
       <path d="M364 64h84v84"/>
+    </g>
+    <g fill="none" stroke="#21C786" stroke-width="28" stroke-linecap="square">
       <path d="M64 364v84h84"/>
       <path d="M364 448h84v-84"/>
     </g>
-    <text x="256" y="318" text-anchor="middle" fill="#0F1215" font-family="Arial, 'Segoe UI', sans-serif" font-size="154" font-weight="700">AG</text>
+    <text x="256" y="318" text-anchor="middle" fill="#0F1215" font-family="Arial, 'Segoe UI', sans-serif" font-size="154" font-weight="700">A<tspan fill="#21C786">G</tspan></text>
   </g>
   <text x="390" y="194" fill="#0F1215" font-family="Arial, 'Segoe UI', sans-serif" font-size="78" font-weight="700">AgentGuardian</text>
   <text x="394" y="274" fill="#4E5A61" font-family="'Microsoft YaHei', 'Noto Sans SC', sans-serif" font-size="42">AI Agent 守护者</text>

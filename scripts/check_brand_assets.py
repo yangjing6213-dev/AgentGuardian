@@ -43,12 +43,18 @@ def main() -> None:
         assert image.size == (1280, 640)
         assert image.mode in {"RGB", "RGBA"}
 
-    assert contrast("#15A36D", "#0F1215") >= 4.5
+    assert contrast("#21C786", "#0F1215") >= 4.5
     assert contrast("#0F1215", "#F4F6F7") >= 4.5
-    assert contrast("#D49A32", "#151A1E") >= 4.5
-    assert contrast("#C64A43", "#151A1E") >= 3.0
+    assert contrast("#AAB4BB", "#0F1215") >= 4.5
+    assert contrast("#F0BD5C", "#171C20") >= 4.5
+    assert contrast("#EF7167", "#171C20") >= 4.5
     cover = (BRAND / "agentguardian-cover.svg").read_text(encoding="utf-8")
-    assert "SYNTHETIC DEMO" in cover
+    for color in ("#0F1215", "#171C20", "#394149", "#21C786", "#AAB4BB", "#F0BD5C", "#EF7167"):
+        assert color in cover, color
+    assert "synthetic audit data" in cover
+    assert "审阅修复方案" in cover
+    assert "查看人工解决方案" not in cover
+    assert "rx=" not in cover
 
 
 if __name__ == "__main__":
