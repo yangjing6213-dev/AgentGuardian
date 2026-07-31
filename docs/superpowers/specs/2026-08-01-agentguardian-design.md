@@ -136,6 +136,8 @@ AgentGuardian 是一个本地优先的 AI Agent 数据安全审计平台，首�
 
 开发窗口为 2026-08-03 至 2026-08-09，目标是 `0.1.0 Founder Alpha`，仅在本机和合成测试数据上形成真实闭环。
 
+**Founder Alpha 安全边界修订：**首周版本只执行普通用户权限下的只读扫描并提供人工修复指引；不修改文件、不提权、不执行修复或回滚，不访问浏览器数据库、剪贴板或网络，也不包含遥测、LLM 调用、更新器、动态插件和第三方沙箱。下文涉及自动修复、回滚和联网验证的内容均属于后续阶段目标，不作为 Founder Alpha 验收项。
+
 | 日期 | 交付目标 | 验收证据 |
 | --- | --- | --- |
 | 08-03 | 威胁模型、架构、仓库、CI、UI 壳、数据契约和规则格式 | 文档、契约测试、健康构建 |
@@ -197,7 +199,7 @@ Founder Alpha 后用 5 至 7 周硬化为可邀请试用的 Windows MVP：增加
 - 中文：让 AI Agent 的数据边界可见、可控、可验证。
 - 英文：Local-first · Open-core · User-approved remediation.
 
-基础色：Obsidian `#0F1215`、Cloud `#F4F6F7`、Trust `#15A36D`、Signal `#2A8CCB`、Warning `#D49A32`、Critical `#C64A43`。LOGO 同时提供 SVG、PNG、深色和浅色版本；GitHub 初代封面采用 1280 × 640，展示 Trust Frame、产品名、文案和审计概览，不放真实用户数据。
+基础色：Ink `#1F2428`、White `#FFFFFF`、Sky `#48B7F2`、Electric `#079CF0`、Mint `#00B37A`、Coral `#FF5B20`、Sun `#FFC04D`、Cream `#F2EDDF`、Critical text `#D43F13`。明亮色用于图形、按钮、状态块或大字号，明亮色上的文字优先使用 Ink；小字号关键状态使用通过对比度校验的深色状态文字。LOGO 同时提供 SVG、PNG、深色和浅色版本；GitHub 初代封面采用 1280 × 640，使用白色/奶油色背景、明亮蓝绿点缀、产品名、文案和合成审计概览，不放真实用户数据。
 
 ## 13. Alpha 发布门
 

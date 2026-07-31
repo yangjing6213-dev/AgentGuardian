@@ -1,3 +1,5 @@
+![AgentGuardian](assets/brand/agentguardian-cover.svg)
+
 # AgentGuardian
 
 ## AI Agent 守护者
@@ -6,7 +8,9 @@ AgentGuardian（AG）是一个本地优先的 AI Agent 数据安全审计工具�
 
 产品承诺是：**让 AI Agent 的数据边界可见、可控、可验证。**
 
-当前版本目标：`0.1.0 Founder Alpha`（Windows，本地运行，范围受限，不代表生产安全等级）。
+当前版本目标：`0.1.0 Founder Alpha`（Windows、本地运行、只读扫描、人工修复指引，范围受限，不代表生产安全等级）。
+
+Founder Alpha 不修改用户文件、不提权，也不访问浏览器数据库、剪贴板或网络；自动修复、回滚代理、遥测、LLM 调用、更新器和动态插件均不在首周范围内。
 
 ## 核心原则
 
