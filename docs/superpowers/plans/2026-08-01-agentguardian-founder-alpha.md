@@ -305,7 +305,7 @@ Commit: `rtk git commit -m "Add local sensitive-data detectors"`
 - Create: `tests/test_scoring.py`
 - Create: `tests/test_reporting.py`
 
-- [ ] **Step 1: Test root-cause deduplication and hard caps**
+- [x] **Step 1: Test root-cause deduplication and hard caps**
 
 ```python
 from agentguardian.domain import Finding, RiskDomain, Severity
@@ -331,15 +331,15 @@ def test_duplicate_root_only_deducts_once():
     assert score([finding, finding], coverage=1.0).total == 93
 ```
 
-- [ ] **Step 2: Implement domain-capped deductions**
+- [x] **Step 2: Implement domain-capped deductions**
 
 Severity deductions are `{critical: 12, high: 7, medium: 3, low: 1}`. Deduplicate by `(domain, root_fingerprint)`, cap each domain at its weight, then apply the 39/59 hard caps. Coverage and confidence are separate fields and never increase the score.
 
-- [ ] **Step 3: Test masked JSON and HTML reports**
+- [x] **Step 3: Test masked JSON and HTML reports**
 
 Assert report output contains rule IDs, masked evidence, coverage, confidence, limits, and score cap reason; assert it does not contain the synthetic raw secret.
 
-- [ ] **Step 4: Implement standard-library reporting and commit**
+- [x] **Step 4: Implement standard-library reporting and commit**
 
 Use `json.dumps(..., ensure_ascii=False, indent=2)` and `html.escape` with a static HTML template. Do not add a template engine.
 Run: `rtk pytest tests/test_scoring.py tests/test_reporting.py -q`
@@ -353,7 +353,7 @@ Commit: `rtk git commit -m "Add explainable scoring and local reports"`
 - Create: `src/agentguardian/guidance.py`
 - Create: `tests/test_guidance.py`
 
-- [ ] **Step 1: Test provider-specific guidance and no-write behavior**
+- [x] **Step 1: Test provider-specific guidance and no-write behavior**
 
 ```python
 from agentguardian.guidance import guidance_for
@@ -365,11 +365,11 @@ def test_public_credential_guidance_is_manual_and_has_no_target_path():
     assert "revoke" in plan.steps[0].lower()
 ```
 
-- [ ] **Step 2: Implement read-only guidance**
+- [x] **Step 2: Implement read-only guidance**
 
 Return the frozen `RemediationPlan` containing rule ID, opaque asset reference, provider-specific manual steps, verification steps, and `manual` mode. The function does not accept a filesystem path. Do not rename, delete, chmod, edit, open a URL, invoke a shell, elevate, or mutate a target.
 
-- [ ] **Step 3: Verify and commit**
+- [x] **Step 3: Verify and commit**
 
 Run: `rtk pytest tests/test_guidance.py -q`
 Expected: all pass.
