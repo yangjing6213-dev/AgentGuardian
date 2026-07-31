@@ -198,7 +198,7 @@ Commit: `rtk git commit -m "Add immutable audit contracts"`
 - Create: `src/agentguardian/discovery.py`
 - Create: `tests/test_discovery.py`
 
-- [ ] **Step 1: Test known config and user-root discovery**
+- [x] **Step 1: Test known config and user-root discovery**
 
 ```python
 from pathlib import Path
@@ -212,12 +212,12 @@ def test_discovery_is_read_only_and_bounded(tmp_path: Path) -> None:
     assert found == [tmp_path / "mcp.json"]
 ```
 
-- [ ] **Step 2: Confirm red state**
+- [x] **Step 2: Confirm red state**
 
 Run: `rtk pytest tests/test_discovery.py -q`
 Expected: FAIL importing `agentguardian.discovery`.
 
-- [ ] **Step 3: Implement bounded pathlib traversal**
+- [x] **Step 3: Implement bounded pathlib traversal**
 
 ```python
 def discover_files(roots: list[Path], suffixes: set[str], max_files: int = 50_000) -> list[Path]:
@@ -232,11 +232,11 @@ def discover_files(roots: list[Path], suffixes: set[str], max_files: int = 50_00
     return sorted(found)
 ```
 
-- [ ] **Step 4: Add explicit known-path providers**
+- [x] **Step 4: Add explicit known-path providers**
 
 Known paths are returned only when they exist and remain under `%APPDATA%`, `%LOCALAPPDATA%`, `%USERPROFILE%\.config`, or user-selected roots. Do not scan the whole drive and do not follow junctions.
 
-- [ ] **Step 5: Test and commit**
+- [x] **Step 5: Test and commit**
 
 Run: `rtk pytest tests/test_discovery.py -q`
 Expected: pass.
@@ -250,7 +250,7 @@ Commit: `rtk git commit -m "Add bounded Windows asset discovery"`
 - Create: `src/agentguardian/detectors.py`
 - Create: `tests/test_detectors.py`
 
-- [ ] **Step 1: Add synthetic positive and negative tests**
+- [x] **Step 1: Add synthetic positive and negative tests**
 
 ```python
 from agentguardian.detectors import detect_text
@@ -277,20 +277,20 @@ def test_custom_chinese_keyword() -> None:
     assert findings[0].rule_id == "CUSTOM_KEYWORD"
 ```
 
-- [ ] **Step 2: Confirm tests fail**
+- [x] **Step 2: Confirm tests fail**
 
 Run: `rtk pytest tests/test_detectors.py -q`
 Expected: FAIL importing detector.
 
-- [ ] **Step 3: Implement regex matching with scan-scoped HMAC fingerprints**
+- [x] **Step 3: Implement regex matching with scan-scoped HMAC fingerprints**
 
 Use compiled patterns from `rules/default.json`, cap each file at 10 MiB, mask every match before constructing `Evidence`, and HMAC `rule_id + normalized_match` with an ephemeral per-scan key that is never exported. Never log match text. Support UTF-8, UTF-8 BOM, and UTF-16LE synthetic fixtures; undecodable files become explicit coverage limitations rather than silently counting as scanned.
 
-- [ ] **Step 4: Add MCP combination rule**
+- [x] **Step 4: Add MCP combination rule**
 
 Parse JSON structurally. Emit `MCP_DANGEROUS_COMBINATION` only when one server has shell/process capability, write-capable filesystem scope, and network access in the same configuration.
 
-- [ ] **Step 5: Test and commit**
+- [x] **Step 5: Test and commit**
 
 Run: `rtk pytest tests/test_detectors.py -q`
 Expected: all pass.
