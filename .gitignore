@@ -1,6 +1,7 @@
 # Local source analysis and visual brainstorming state
 .analysis/
 .superpowers/
+.worktrees/
 
 # Local secrets, evidence, and generated artifacts
 .env
