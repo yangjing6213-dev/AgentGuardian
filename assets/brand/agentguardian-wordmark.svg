@@ -2,16 +2,14 @@
   <title id="title">AgentGuardian wordmark</title>
   <desc id="desc">AgentGuardian wordmark with the Trust Frame AG mark.</desc>
   <g transform="translate(42 42) scale(.62)">
-    <g fill="none" stroke="#1F2428" stroke-width="28" stroke-linecap="square">
+    <g fill="none" stroke="#0F1215" stroke-width="28" stroke-linecap="square">
       <path d="M64 148V64h84"/>
       <path d="M364 64h84v84"/>
-    </g>
-    <g fill="none" stroke="#00B37A" stroke-width="28" stroke-linecap="square">
       <path d="M64 364v84h84"/>
       <path d="M364 448h84v-84"/>
     </g>
-    <text x="256" y="318" text-anchor="middle" fill="#1F2428" font-family="Arial, 'Segoe UI', sans-serif" font-size="154" font-weight="700">A<tspan fill="#079CF0">G</tspan></text>
+    <text x="256" y="318" text-anchor="middle" fill="#0F1215" font-family="Arial, 'Segoe UI', sans-serif" font-size="154" font-weight="700">AG</text>
   </g>
-  <text x="390" y="194" fill="#1F2428" font-family="Arial, 'Segoe UI', sans-serif" font-size="78" font-weight="700">AgentGuardian</text>
-  <text x="394" y="274" fill="#5F6B70" font-family="'Microsoft YaHei', 'Noto Sans SC', sans-serif" font-size="42">AI Agent 守护者</text>
+  <text x="390" y="194" fill="#0F1215" font-family="Arial, 'Segoe UI', sans-serif" font-size="78" font-weight="700">AgentGuardian</text>
+  <text x="394" y="274" fill="#4E5A61" font-family="'Microsoft YaHei', 'Noto Sans SC', sans-serif" font-size="42">AI Agent 守护者</text>
 </svg>

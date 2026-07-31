@@ -6,15 +6,12 @@
 
 颜色：
 
-- Ink: `#1F2428`
-- White: `#FFFFFF`
-- Sky: `#48B7F2`
-- Electric: `#079CF0`
-- Mint: `#00B37A`
-- Coral: `#FF5B20`
-- Sun: `#FFC04D`
-- Cream: `#F2EDDF`
-- Critical text: `#D43F13`
+- Obsidian: `#0F1215`
+- Cloud: `#F4F6F7`
+- Trust: `#15A36D`
+- Signal: `#2A8CCB`
+- Warning: `#D49A32`
+- Critical: `#C64A43`
 
 资产：
 
@@ -24,4 +21,4 @@
 - `agentguardian-cover.svg`：1280 × 640 GitHub 初代封面，数据明确为 `SYNTHETIC DEMO`。
 - PNG 文件是对应的发布预览，不替代 SVG 源文件。
 
-16px 以下只使用 mark，不使用 wordmark。普通文字统一使用 Ink；Sky、Electric、Mint、Coral 和 Sun 用于图形、按钮、状态块或大字号展示。明亮色上的文字优先使用 Ink；关键状态同时显示文字。
+16px 以下只使用 mark，不使用 wordmark。浅色背景上的关键笔画和文字使用 Obsidian；深色背景上的 Trust 可承载文字和关键图形。Warning、Critical 和 Signal 只作状态或辅助信号，关键状态同时显示文字。

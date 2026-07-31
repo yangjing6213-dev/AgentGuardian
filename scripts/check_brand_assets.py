@@ -43,12 +43,10 @@ def main() -> None:
         assert image.size == (1280, 640)
         assert image.mode in {"RGB", "RGBA"}
 
-    for accent in ("#48B7F2", "#079CF0", "#00B37A", "#FF5B20", "#FFC04D"):
-        assert contrast(accent, "#1F2428") >= 4.5, accent
-    assert contrast("#1F2428", "#FFFFFF") >= 4.5
-    assert contrast("#D43F13", "#FFFFFF") >= 4.5
-    assert contrast("#D43F13", "#FFFDF9") >= 4.5
-    assert contrast("#B97800", "#FFFDF9") >= 3.0
+    assert contrast("#15A36D", "#0F1215") >= 4.5
+    assert contrast("#0F1215", "#F4F6F7") >= 4.5
+    assert contrast("#D49A32", "#151A1E") >= 4.5
+    assert contrast("#C64A43", "#151A1E") >= 3.0
     cover = (BRAND / "agentguardian-cover.svg").read_text(encoding="utf-8")
     assert "SYNTHETIC DEMO" in cover
 

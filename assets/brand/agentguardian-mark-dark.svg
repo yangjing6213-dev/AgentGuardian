@@ -1,12 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
   <title id="title">AgentGuardian AG mark dark</title>
-  <desc id="desc">Open four-corner audit frame around the letters AG on an Ink background.</desc>
-  <rect width="512" height="512" fill="#1F2428"/>
-  <g fill="none" stroke="#00B37A" stroke-width="28" stroke-linecap="square">
+  <desc id="desc">Open four-corner audit frame around the letters AG on an Obsidian background.</desc>
+  <rect width="512" height="512" fill="#0F1215"/>
+  <g fill="none" stroke="#15A36D" stroke-width="28" stroke-linecap="square">
     <path d="M64 148V64h84"/>
     <path d="M364 64h84v84"/>
     <path d="M64 364v84h84"/>
     <path d="M364 448h84v-84"/>
   </g>
-  <text x="256" y="318" text-anchor="middle" fill="#FFFFFF" font-family="Arial, 'Segoe UI', sans-serif" font-size="154" font-weight="700">A<tspan fill="#48B7F2">G</tspan></text>
+  <text x="256" y="318" text-anchor="middle" fill="#15A36D" font-family="Arial, 'Segoe UI', sans-serif" font-size="154" font-weight="700">AG</text>
 </svg>

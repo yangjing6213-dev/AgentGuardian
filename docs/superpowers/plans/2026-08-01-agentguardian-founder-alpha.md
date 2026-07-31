@@ -86,7 +86,7 @@ Expected: FAIL with `FileNotFoundError` for `assets/brand/agentguardian-mark.svg
 
 - [ ] **Step 3: Create the minimum deterministic SVG set**
 
-The mark uses a 512 square viewBox, open corner strokes, Ink `#1F2428`, Electric `#079CF0`, Mint `#00B37A`, and a centered `AG` monogram. The broader system uses White `#FFFFFF`, Sky `#48B7F2`, Coral `#FF5B20`, Sun `#FFC04D`, and Cream `#F2EDDF` as restrained accents and surfaces. Use SVG paths/shapes only; do not embed raster images. The wordmark and cover may use the fallback stack `Inter, 'Noto Sans SC', 'Segoe UI', sans-serif` with `letter-spacing="0"`.
+The mark uses a 512 square viewBox, open corner strokes, Obsidian `#0F1215`, Trust `#15A36D`, and a centered `AG` monogram. The broader system uses Cloud `#F4F6F7`, Signal `#2A8CCB`, Warning `#D49A32`, and Critical `#C64A43`. The GitHub cover uses an opaque Obsidian background. Use SVG paths/shapes only; do not embed raster images. The wordmark and cover may use the fallback stack `Inter, 'Noto Sans SC', 'Segoe UI', sans-serif` with `letter-spacing="0"`.
 
 - [ ] **Step 4: Render the three required PNG exports**
 
@@ -397,7 +397,7 @@ Use a left navigation list and a stacked content area. Alpha pages are Scope, Fi
 
 - [ ] **Step 3: Apply fixed design tokens**
 
-Use Ink, White, Sky, Electric, Mint, Coral, Sun, Cream, and Critical text colors from the design spec; bright colors are for graphic/status surfaces and Ink carries small text; 6px maximum corner radius; 0 letter spacing; system font fallback; no gradients and no decorative cards.
+Use Obsidian, Cloud, Trust, Signal, Warning, and Critical from the design spec; neutral black, white, and gray establish hierarchy, Trust marks verified states, Warning and Critical mark risk, and Signal remains auxiliary; 6px maximum corner radius; 0 letter spacing; system font fallback; no gradients and no decorative cards.
 
 - [ ] **Step 4: Smoke test and commit**
 
