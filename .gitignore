@@ -1,0 +1,30 @@
+# Local source analysis and visual brainstorming state
+.analysis/
+.superpowers/
+
+# Local secrets, evidence, and generated artifacts
+.env
+.env.*
+*.key
+*.pem
+*.pfx
+*.p12
+*.mp4
+*.wav
+*.srt
+*.jsonl
+
+# Build and dependency output
+node_modules/
+target/
+dist/
+build/
+.venv/
+__pycache__/
+*.pyc
+
+# Editor and OS metadata
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
