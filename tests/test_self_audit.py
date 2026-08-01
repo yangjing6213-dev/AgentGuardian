@@ -527,6 +527,41 @@ def test_nested_app_does_not_receive_report_export_exception(tmp_path: Path) -> 
     assert static_capability_findings(package) == ("USER_DATA_WRITE",)
 
 
+def test_static_scan_allows_only_constrained_protected_state_write(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    module = package / "state_store.py"
+    source = (PROJECT_ROOT / "src" / "agentguardian" / "state_store.py").read_text(
+        encoding="utf-8"
+    )
+
+    module.write_text(source, encoding="utf-8")
+    assert static_capability_findings(package) == ()
+
+    mutations = (
+        source + '\nopen("extra.bin", "wb")\n',
+        source + '\nos.replace("extra.tmp", "extra.bin")\n',
+        source + '\nPath("extra").mkdir()\n',
+        source + '\nPath("extra").unlink()\n',
+    )
+    for mutated in mutations:
+        module.write_text(mutated, encoding="utf-8")
+        assert static_capability_findings(package) == ("USER_DATA_WRITE",)
+
+
+def test_nested_state_store_does_not_receive_write_exception(tmp_path: Path) -> None:
+    package = tmp_path / "agentguardian" / "nested"
+    package.mkdir(parents=True)
+    (package / "state_store.py").write_text(
+        'open("extra.bin", "wb")\n',
+        encoding="utf-8",
+    )
+
+    assert static_capability_findings(package.parent) == ("USER_DATA_WRITE",)
+
+
 def test_static_scan_reports_fixed_error_without_source_details(tmp_path: Path) -> None:
     package = tmp_path / "agentguardian"
     package.mkdir()

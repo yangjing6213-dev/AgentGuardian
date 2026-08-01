@@ -1,0 +1,171 @@
+from __future__ import annotations
+
+from collections.abc import Callable
+import os
+from pathlib import Path
+import secrets
+import stat
+
+from .evidence_state import (
+    MAX_STATE_BYTES,
+    EvidenceSnapshot,
+    EvidenceStateError,
+    decode_snapshot,
+    encode_snapshot,
+)
+from .windows_dpapi import DpapiError, protect_bytes, unprotect_bytes
+
+
+STATE_FILENAME = "evidence-state-v1.bin"
+_APP_DIRECTORY = "AgentGuardian"
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+
+
+class StateStoreError(RuntimeError):
+    pass
+
+
+def default_state_path() -> Path:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data or _is_unc_path(local_app_data):
+        raise StateStoreError("PROTECTED_STATE_UNAVAILABLE")
+    return Path(local_app_data) / _APP_DIRECTORY / STATE_FILENAME
+
+
+def save_protected_state(
+    snapshot: EvidenceSnapshot,
+    *,
+    directory: str | Path | None = None,
+    protect: Callable[[bytes], bytes] = protect_bytes,
+) -> None:
+    try:
+        plaintext = encode_snapshot(snapshot)
+        ciphertext = protect(plaintext)
+        if (
+            type(ciphertext) is not bytes
+            or not ciphertext
+            or len(ciphertext) > MAX_STATE_BYTES
+        ):
+            raise StateStoreError("PROTECTED_STATE_SAVE_FAILED")
+    except DpapiError as error:
+        if str(error) == "DPAPI_UNAVAILABLE":
+            raise StateStoreError("PROTECTED_STATE_UNAVAILABLE") from None
+        raise StateStoreError("PROTECTED_STATE_SAVE_FAILED") from None
+    except EvidenceStateError:
+        raise StateStoreError("PROTECTED_STATE_SAVE_FAILED") from None
+    except StateStoreError:
+        raise
+    except Exception:  # noqa: BLE001 - callbacks must not leak details.
+        raise StateStoreError("PROTECTED_STATE_SAVE_FAILED") from None
+
+    temporary: Path | None = None
+    try:
+        target = _target_path(directory, create=True)
+        parent = target.parent.resolve(strict=True)
+        if _is_reparse(target) or target.resolve(strict=False).parent != parent:
+            raise StateStoreError("PROTECTED_STATE_SAVE_FAILED")
+
+        temporary = parent / f".{STATE_FILENAME}.{secrets.token_hex(16)}.tmp"
+        if temporary.resolve(strict=False).parent != parent:
+            raise StateStoreError("PROTECTED_STATE_SAVE_FAILED")
+        with open(temporary, "xb") as stream:
+            stream.write(ciphertext)
+            stream.flush()
+            os.fsync(stream.fileno())
+
+        if (
+            _is_reparse(parent)
+            or parent.resolve(strict=True) != target.parent.resolve(strict=True)
+            or _is_reparse(target)
+            or target.resolve(strict=False).parent != parent
+        ):
+            raise StateStoreError("PROTECTED_STATE_SAVE_FAILED")
+        os.replace(temporary, target)
+        temporary = None
+    except StateStoreError:
+        raise
+    except Exception:  # noqa: BLE001 - paths and OS errors must not escape.
+        raise StateStoreError("PROTECTED_STATE_SAVE_FAILED") from None
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def load_protected_state(
+    *,
+    directory: str | Path | None = None,
+    unprotect: Callable[[bytes], bytes] = unprotect_bytes,
+) -> EvidenceSnapshot:
+    try:
+        target = _target_path(directory, create=False)
+    except StateStoreError as error:
+        if str(error) == "PROTECTED_STATE_UNAVAILABLE":
+            raise
+        raise StateStoreError("PROTECTED_STATE_INVALID") from None
+
+    try:
+        parent = target.parent.resolve(strict=True)
+        if (
+            _is_reparse(parent)
+            or _is_reparse(target)
+            or target.resolve(strict=True).parent != parent
+        ):
+            raise StateStoreError("PROTECTED_STATE_INVALID")
+        with open(target, "rb") as stream:
+            ciphertext = stream.read(MAX_STATE_BYTES + 1)
+        if not ciphertext or len(ciphertext) > MAX_STATE_BYTES:
+            raise StateStoreError("PROTECTED_STATE_INVALID")
+        plaintext = unprotect(ciphertext)
+        if type(plaintext) is not bytes:
+            raise StateStoreError("PROTECTED_STATE_INVALID")
+        return decode_snapshot(plaintext)
+    except FileNotFoundError:
+        raise StateStoreError("PROTECTED_STATE_UNAVAILABLE") from None
+    except DpapiError as error:
+        if str(error) == "DPAPI_UNAVAILABLE":
+            raise StateStoreError("PROTECTED_STATE_UNAVAILABLE") from None
+        raise StateStoreError("PROTECTED_STATE_INVALID") from None
+    except (EvidenceStateError, StateStoreError):
+        raise
+    except Exception:  # noqa: BLE001 - paths and OS errors must not escape.
+        raise StateStoreError("PROTECTED_STATE_INVALID") from None
+
+
+def _target_path(directory: str | Path | None, *, create: bool) -> Path:
+    if directory is None:
+        target = default_state_path()
+        parent = target.parent
+    else:
+        parent = Path(directory)
+        target = parent / STATE_FILENAME
+    if _is_unc_path(parent) or _is_reparse(parent):
+        raise StateStoreError("PROTECTED_STATE_SAVE_FAILED")
+    if create and not parent.exists():
+        ancestor = parent.parent
+        if not ancestor.is_dir() or _is_reparse(ancestor):
+            raise StateStoreError("PROTECTED_STATE_SAVE_FAILED")
+        parent.mkdir(mode=0o700, exist_ok=True)
+    if not parent.is_dir() or _is_reparse(parent):
+        code = "PROTECTED_STATE_SAVE_FAILED" if create else "PROTECTED_STATE_UNAVAILABLE"
+        raise StateStoreError(code)
+    if target.name != STATE_FILENAME:
+        raise StateStoreError("PROTECTED_STATE_SAVE_FAILED")
+    return target
+
+
+def _is_unc_path(path: str | Path) -> bool:
+    value = os.fspath(path)
+    return value.startswith(("\\\\", "//"))
+
+
+def _is_reparse(path: str | Path) -> bool:
+    try:
+        path_stat = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    return stat.S_ISLNK(path_stat.st_mode) or bool(
+        getattr(path_stat, "st_file_attributes", 0) & _REPARSE_POINT
+    )

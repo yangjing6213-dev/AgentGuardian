@@ -131,6 +131,9 @@ def _module_key(root: Path, module: Path) -> tuple[str, str]:
 def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> None:
     allow_ctypes = _allowed_ctypes_usage(relative_path, tree)
     allowed_report_call = _allowed_report_export_call(relative_path, tree)
+    allowed_user_data_calls = _allowed_state_store_write_calls(relative_path, tree)
+    if allowed_report_call is not None:
+        allowed_user_data_calls.add(allowed_report_call)
     imported_bindings: set[str] = set()
 
     for node in ast.walk(tree):
@@ -187,8 +190,10 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
             if (
                 mode is not None
                 and any(flag in mode for flag in "wax+")
-                and node is not allowed_report_call
+                and node not in allowed_user_data_calls
             ):
+                findings.add("USER_DATA_WRITE")
+            if _is_user_data_write_call(node) and node not in allowed_user_data_calls:
                 findings.add("USER_DATA_WRITE")
 
 
@@ -355,7 +360,101 @@ def _allowed_report_export_call(
     return write
 
 
-def _keyword_is(node: ast.Call, name: str, value: str) -> bool:
+def _allowed_state_store_write_calls(
+    relative_path: str, tree: ast.Module
+) -> set[ast.Call]:
+    if relative_path != "state_store.py":
+        return set()
+    save_functions = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "save_protected_state"
+    ]
+    target_functions = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_target_path"
+    ]
+    if len(save_functions) != 1 or len(target_functions) != 1:
+        return set()
+    save_function = save_functions[0]
+    target_function = target_functions[0]
+    if (
+        [argument.arg for argument in save_function.args.args] != ["snapshot"]
+        or [argument.arg for argument in save_function.args.kwonlyargs]
+        != ["directory", "protect"]
+        or [argument.arg for argument in target_function.args.args] != ["directory"]
+        or [argument.arg for argument in target_function.args.kwonlyargs] != ["create"]
+    ):
+        return set()
+
+    save_calls = [
+        node for node in ast.walk(save_function) if isinstance(node, ast.Call)
+    ]
+    target_calls = [
+        node for node in ast.walk(target_function) if isinstance(node, ast.Call)
+    ]
+    opens = [node for node in save_calls if _open_mode(node) == "xb"]
+    replaces = [
+        node for node in save_calls if _qualified_name(node.func) == "os.replace"
+    ]
+    directories = [
+        node for node in target_calls if _qualified_name(node.func) == "parent.mkdir"
+    ]
+    unlinks = [
+        node for node in save_calls if _qualified_name(node.func) == "temporary.unlink"
+    ]
+    stream_writes = [
+        node for node in save_calls if _qualified_name(node.func) == "stream.write"
+    ]
+    if not all(
+        len(group) == 1
+        for group in (opens, replaces, directories, unlinks, stream_writes)
+    ):
+        return set()
+
+    opened = opens[0]
+    replaced = replaces[0]
+    directory = directories[0]
+    unlinked = unlinks[0]
+    stream_write = stream_writes[0]
+    if (
+        len(opened.args) != 2
+        or not isinstance(opened.args[0], ast.Name)
+        or opened.args[0].id != "temporary"
+        or not isinstance(opened.args[1], ast.Constant)
+        or opened.args[1].value != "xb"
+        or len(replaced.args) != 2
+        or not all(isinstance(argument, ast.Name) for argument in replaced.args)
+        or [argument.id for argument in replaced.args] != ["temporary", "target"]
+        or directory.args
+        or not _keyword_is(directory, "mode", 0o700)
+        or not _keyword_is(directory, "exist_ok", True)
+        or unlinked.args
+        or not _keyword_is(unlinked, "missing_ok", True)
+        or len(stream_write.args) != 1
+        or not isinstance(stream_write.args[0], ast.Name)
+        or stream_write.args[0].id != "ciphertext"
+    ):
+        return set()
+    return {opened, replaced, directory, unlinked}
+
+
+def _is_user_data_write_call(node: ast.Call) -> bool:
+    name = _qualified_name(node.func)
+    return name in {
+        "os.makedirs",
+        "os.mkdir",
+        "os.remove",
+        "os.renames",
+        "os.rename",
+        "os.replace",
+        "os.rmdir",
+        "os.unlink",
+    } or _call_name(node.func) in {"mkdir", "rmdir", "touch", "unlink"}
+
+
+def _keyword_is(node: ast.Call, name: str, value: object) -> bool:
     return any(
         keyword.arg == name
         and isinstance(keyword.value, ast.Constant)

@@ -82,25 +82,25 @@ Commit: `Add constrained Windows DPAPI adapter`
 - Create: `src/agentguardian/state_store.py`
 - Create: `tests/test_state_store.py`
 
-- [ ] **Step 1: Write failing store tests**
+- [x] **Step 1: Write failing store tests**
 
 Require explicit save/load under a supplied temporary directory using injected protect/unprotect callables. Assert a successful replacement returns the decoded snapshot; no plaintext marker appears on disk; a corrupt, oversized, symlinked, or reparse target fails with a fixed error; and a failed replacement leaves the previous state readable.
 
-- [ ] **Step 2: Verify the red state**
+- [x] **Step 2: Verify the red state**
 
 Run: `python -B -m pytest -q -p no:cacheprovider tests/test_state_store.py`
 
 Expected: collection fails because `agentguardian.state_store` does not exist.
 
-- [ ] **Step 3: Implement bounded protected storage**
+- [x] **Step 3: Implement bounded protected storage**
 
 Use `%LOCALAPPDATA%\AgentGuardian\evidence-state-v1.bin` as the default only when no explicit test directory is supplied. Create the app directory only during an explicit save, reject UNC/reparse/symlink paths, write an exclusive temporary file, flush and `fsync`, then `os.replace`. Never log or include paths in exceptions.
 
-- [ ] **Step 4: Implement fail-closed loading**
+- [x] **Step 4: Implement fail-closed loading**
 
 Read at most 1 MiB plus one byte, reject missing/oversized/corrupt content with fixed errors, decrypt once, validate the complete snapshot, and return no partial object.
 
-- [ ] **Step 5: Run focused tests and commit**
+- [x] **Step 5: Run focused tests and commit**
 
 Run: `python -B -m pytest -q -p no:cacheprovider tests/test_state_store.py tests/test_evidence_state.py tests/test_windows_dpapi.py`
 
