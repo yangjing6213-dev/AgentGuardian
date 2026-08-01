@@ -108,7 +108,7 @@ Batch 2 在 Founder Alpha 之上增加当前 Windows 用户范围 DPAPI 状态�
 
 只有用户点击“保存加密状态”才会写入；启动、扫描完成和报告导出都不自动保存。实现不发起 API 调用，不导入 OpenAI SDK 或网络客户端，不增加云同步、自动修复或后台任务。DPAPI 不能抵御已经控制同一 Windows 用户会话的程序，也不支持跨用户或跨设备恢复。路径检查与最终 `os.replace` 之间仍有同用户竞态窗口，当前批次未实现句柄级目录约束。
 
-本批次的完整本地门禁和独立只读复审已按当前工作树记录；最终提交的 GitHub CI 仍需另行验证。在远程证据闭环前后，该增量都不代表 Windows MVP 完成或生产安全。
+本批次的完整本地门禁、独立只读复审和功能提交 GitHub CI 已分别记录。该增量不代表整个 Windows MVP 完成或生产安全。
 
 2026-08-02 Batch 2 当前工作树重新验证结果：
 
@@ -120,4 +120,10 @@ Batch 2 在 Founder Alpha 之上增加当前 Windows 用户范围 DPAPI 状态�
 - 当前规则 SHA-256：`83a14590d59f61a3c6aede084644fdbbd9f5cff6f55794b9af60e385e053ccba`。
 - 独立只读复审最初为 `Not Ready`，发现固定摘要边界、DPAPI 调用约束、写入调用约束、祖先 reparse/UNC 检查及 AST 别名旁路等 Important 问题。修复后复审者重放直接、下标、动态属性和别名探针，最终结论为 `Ready`，未发现剩余 Critical/Important；该结论只覆盖约定的静态 AST 策略，复审者未运行全量测试。
 
-以上为当前本地证据；最终提交的 GitHub push/PR CI 与注解仍未记录。
+功能提交 `e8e01f9415d3c2b6f21eb73d826eb36ea0655473` 的 GitHub 远程证据：
+
+- push CI run `30715647491`：success，Windows Server 2025、Python 3.12.10，`294 passed`，check-run 注解 0。
+- Draft PR CI run `30715649117`：success，同一提交，check-run 注解 0。
+- 远程测试无 skip，因此本机因创建权限跳过的真实祖先 symlink 用例已在托管 Windows runner 上执行通过。
+
+以上证明 Batch 2 当前约定门禁通过；状态同步提交自身的 CI 仍需在提交后独立验证。Batches 3-6 仍未实现。

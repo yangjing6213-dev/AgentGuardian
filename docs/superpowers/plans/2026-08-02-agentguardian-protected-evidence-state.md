@@ -165,6 +165,6 @@ Expected: zero failures and zero whitespace errors.
 
 Review schema minimization, native-memory cleanup, self-audit allowlist precision, path/reparse defenses, failure behavior, synthetic-only tests, and the no-network/no-LLM boundary. Resolve all Important findings before submission.
 
-- [ ] **Step 4: Commit, push, and verify remote evidence**
+- [x] **Step 4: Commit, push, and verify remote evidence**
 
 Push `agent/founder-alpha`, wait for push and Draft PR workflows, inspect check-run annotations, and record exact final SHA/run IDs. Keep Batch 3-6 open and do not claim Windows MVP or production safety.
