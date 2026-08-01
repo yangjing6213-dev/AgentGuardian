@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import socket
 import sys
 from pathlib import Path
@@ -521,6 +522,9 @@ def test_windows_ci_runs_required_local_checks_without_uploads() -> None:
         encoding="utf-8"
     )
     lowered = workflow.lower()
+    action_refs = re.findall(
+        r"^\s*-\s+uses:\s+([^@\s]+)@([^\s#]+)", workflow, flags=re.MULTILINE
+    )
 
     for required in (
         "windows-latest",
@@ -536,5 +540,11 @@ def test_windows_ci_runs_required_local_checks_without_uploads() -> None:
         "contents: read",
     ):
         assert required in workflow
+    assert action_refs == [
+        ("actions/checkout", "11d5960a326750d5838078e36cf38b85af677262"),
+        ("actions/setup-python", "a26af69be951a213d495a4c3e4e4022e16d87065"),
+    ]
+    for _, reference in action_refs:
+        assert re.fullmatch(r"[0-9a-f]{40}", reference)
     assert "upload-artifact" not in lowered
     assert "telemetry" not in lowered
