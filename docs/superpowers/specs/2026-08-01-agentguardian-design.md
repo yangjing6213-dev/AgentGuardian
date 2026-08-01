@@ -30,6 +30,12 @@ AgentGuardian 是一个本地优先的 AI Agent 数据安全审计平台，首�
 | 界面语言 | 极简、清楚、克制的未来科技感；借鉴成熟系统设计语言，不复制任何公司品牌 |
 | 品牌标识 | Trust Frame：开放四角边界 + AG 核心字标 |
 
+### 2.1 Windows MVP 硬化批次 1
+
+首个硬化批次聚焦 OpenAI Provider 本地配置：识别官方 SDK 使用的 `OPENAI_API_KEY`，提示 `OPENAI_BASE_URL` 和 Codex 用户级 `openai_base_url` 覆盖配置，并把对应发现路由到 OpenAI 人工指引。端点覆盖是需复核信号，不等同于恶意判定。
+
+本批次不添加 OpenAI SDK、HTTP 客户端、模型选择、API 请求、联网端点验证或自动修复。已知 Codex 范围仅在用户明确授权扫描时读取 `%USERPROFILE%\.codex`；项目不会默认扫描该目录。
+
 ## 3. 产品可信模型
 
 安全审计工具本身是潜在攻击面。可信性依赖可验证机制，而不是一句隐私承诺：

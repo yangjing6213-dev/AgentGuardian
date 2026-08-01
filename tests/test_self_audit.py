@@ -578,3 +578,21 @@ def test_design_status_tracks_windows_mvp_hardening() -> None:
     assert "Founder Alpha 已达内部 GO" in spec
     assert "下一阶段：Windows MVP 硬化" in spec
     assert "OpenAI Provider：本地适配、检测和人工指引优先，不默认调用 API" in spec
+
+
+def test_docs_track_openai_local_provider_hardening_batch() -> None:
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    report = (
+        PROJECT_ROOT / "docs" / "reports" / "alpha-0.1.0-stage-report.md"
+    ).read_text(encoding="utf-8")
+    spec = (
+        PROJECT_ROOT / "docs" / "superpowers" / "specs"
+        / "2026-08-01-agentguardian-design.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Windows MVP 硬化实施计划" in readme
+    assert "OpenAI Provider 本地适配批次" in readme
+    assert "不发起 API 调用或联网验证端点" in readme
+    assert "端点覆盖发现只表示配置需要人工复核" in report
+    assert "不证明端点属于恶意第三方" in report
+    assert "Windows MVP 硬化批次 1" in spec

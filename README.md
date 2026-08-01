@@ -29,6 +29,12 @@
 
 明确不包含：浏览器数据库、浏览器历史、剪贴板、联网分享验证、自动修复、回滚、云同步、企业控制台和生产级安全承诺。UNC 路径被拒绝；映射网络盘无法可靠识别，属于已知残余风险。
 
+## Windows MVP 硬化进度
+
+供应链基线批次已完成 GitHub Actions commit SHA 固定和 Windows Python 依赖哈希锁定。当前进入 **OpenAI Provider 本地适配批次**：覆盖 `%USERPROFILE%\.codex` 已知配置目录、`.env`/`.toml` 静态扫描、`OPENAI_API_KEY` 脱敏发现、`OPENAI_BASE_URL`/`openai_base_url` 覆盖配置提示，以及 OpenAI 专用人工修复指引。
+
+端点覆盖发现只表示该配置需要人工复核，不证明端点属于恶意第三方。AgentGuardian 只在用户授权的本地范围读取静态配置，不发起 API 调用或联网验证端点，也不自动修改 Provider、撤销密钥或轮换凭据。
+
 ## 开发与验证
 
 ```powershell
@@ -43,6 +49,7 @@ python -m agentguardian
 ## 文档
 
 - [Founder Alpha 实施计划](docs/superpowers/plans/2026-08-01-agentguardian-founder-alpha.md)
+- [Windows MVP 硬化实施计划](docs/superpowers/plans/2026-08-02-agentguardian-windows-mvp-hardening.md)
 - [产品与安全设计规范](docs/superpowers/specs/2026-08-01-agentguardian-design.md)
 - [系统架构与数据流](docs/architecture.md)
 - [Founder Alpha 阶段报告](docs/reports/alpha-0.1.0-stage-report.md)

@@ -79,3 +79,23 @@ Founder Alpha 不访问浏览器数据库、浏览器历史或剪贴板，不联
 ## 7. 阶段决策
 
 当前为 **GO（内部 Founder Alpha）**：本地发布门禁、GitHub CI、Task 7/8 双阶段审查和最终全仓只读安全复核均已通过。该结论只允许标记为内部 `0.1.0 Founder Alpha`，不允许表述为生产安全、公开稳定版或自动修复产品；第 6 节限制和安全债务继续有效。
+
+## 8. Windows MVP 硬化续接
+
+本报告第 1 至 7 节记录 Founder Alpha 历史门禁；其中测试计数、规则 SHA 和 CI 结果不自动代表后续提交已重新验证。Windows MVP 硬化从 2026-08-02 起按独立批次继续：供应链基线已完成，当前批次为 OpenAI Provider 本地适配、检测和人工指引。
+
+当前增量覆盖 `%USERPROFILE%\.codex`、`.env` 和 `.toml`，识别 `OPENAI_API_KEY` 与 `OPENAI_BASE_URL`/`openai_base_url` 覆盖配置。端点覆盖发现只表示配置需要人工复核，不证明端点属于恶意第三方。实现不导入 OpenAI SDK 或网络客户端，不发起 API 调用或联网验证端点，不读取或输出真实密钥，不自动修改 Provider 或凭据。
+
+本批次验收必须重新运行全量测试、品牌校验、源码编译、自审计能力检查和差异检查；通过后仍只代表 Windows MVP 硬化中的一个可验证增量，不改变非生产安全结论。
+
+2026-08-02 当前工作树重新验证结果：
+
+- `python -B -m pytest -q -p no:cacheprovider`：`245 passed, 5 skipped`。
+- `python -B scripts/check_brand_assets.py`：退出码 0。
+- `python -B -m compileall -q src`：退出码 0。
+- `git diff --check`：退出码 0。
+- 自审计：`network_capability=not_detected`、`findings=[]`、`local_only=false`。
+- 当前规则 SHA-256：`83a14590d59f61a3c6aede084644fdbbd9f5cff6f55794b9af60e385e053ccba`。
+- 独立只读代码复审：首轮 `With fixes` 的两项 Important 和一项 Minor 已关闭；最终结论 `Ready`，无剩余问题。
+
+这些结果是当前本地重新验证证据；GitHub CI 必须在提交推送后单独复核。

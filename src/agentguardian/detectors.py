@@ -79,7 +79,7 @@ def load_rules(path: str | Path = DEFAULT_RULES_PATH) -> RuleBundle:
         kind = item.get("kind")
         pattern_text = item.get("pattern")
         match_group = item.get("match_group", 0)
-        if kind not in {"secret", "email", "phone"}:
+        if kind not in {"secret", "email", "phone", "endpoint"}:
             raise ValueError(f"invalid kind for {rule_id}")
         if not isinstance(pattern_text, str) or not pattern_text:
             raise ValueError(f"pattern must be a non-empty string for {rule_id}")
@@ -272,6 +272,8 @@ def _parse_json(value: str, message: str) -> object:
 def _mask(value: str, kind: str) -> str:
     if kind == "mcp":
         return "shell + filesystem write + network"
+    if kind == "endpoint":
+        return "OpenAI API base URL override configured"
     if kind == "phone":
         return value[:3] + "****" + value[-4:]
     if kind == "email":

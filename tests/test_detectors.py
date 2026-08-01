@@ -17,6 +17,7 @@ from agentguardian.detectors import (
     detect_text,
     load_rules,
 )
+from agentguardian.domain import RiskDomain, Severity
 
 
 SCAN_KEY = b"k" * 32
@@ -110,9 +111,10 @@ def _check_open_mode(
 def test_default_rules_load_with_valid_schema() -> None:
     bundle = load_rules(DEFAULT_RULES_PATH)
 
-    assert bundle.version == "1.0.0"
+    assert bundle.version == "1.1.0"
     assert {rule.rule_id for rule in bundle.rules} == {
         "OPENAI_API_KEY",
+        "OPENAI_BASE_URL_OVERRIDE",
         "GENERIC_API_KEY",
         "EMAIL_ADDRESS",
         "CN_MOBILE_PHONE",
@@ -188,6 +190,28 @@ def test_secret_is_masked_and_hmac_fingerprinted() -> None:
     assert finding.evidence[0].masked.startswith("sk-p")
     assert secret not in finding.evidence[0].masked
     assert "abcdefghijkl" not in finding.evidence[0].masked
+
+
+def test_openai_base_url_override_is_masked() -> None:
+    endpoint = "https://synthetic-provider.invalid/v1"
+
+    finding = detect_text(
+        f"OPENAI_BASE_URL={endpoint}",
+        ".env",
+        scan_key=SCAN_KEY,
+    )[0]
+
+    expected = hmac.new(
+        SCAN_KEY,
+        ("OPENAI_BASE_URL_OVERRIDE" + endpoint).encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    assert finding.rule_id == "OPENAI_BASE_URL_OVERRIDE"
+    assert finding.domain is RiskDomain.SUPPLY_CHAIN
+    assert finding.severity is Severity.LOW
+    assert finding.root_fingerprint == expected
+    assert finding.evidence[0].masked == "OpenAI API base URL override configured"
+    assert endpoint not in repr(finding)
 
 
 def test_fingerprint_preserves_nfkc_normalized_match_boundaries() -> None:

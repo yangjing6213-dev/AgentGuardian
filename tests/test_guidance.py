@@ -70,6 +70,20 @@ def test_api_key_rules_use_credential_guidance(rule_id: str) -> None:
     assert "rotate" in plan.steps[1].lower()
 
 
+def test_openai_base_url_override_guidance_is_manual_and_local() -> None:
+    plan = guidance_for(
+        "OPENAI_BASE_URL_OVERRIDE",
+        ASSET_REF,
+        provider="openai",
+    )
+
+    assert plan.mode is domain.RemediationMode.MANUAL
+    assert "endpoint" in plan.steps[0].lower()
+    assert "built-in openai provider" in plan.steps[1].lower()
+    assert "rotate" in plan.steps[2].lower()
+    assert "read-only audit" in " ".join(plan.verification_steps).lower()
+
+
 def test_mcp_guidance_disables_service_before_restricting_capabilities() -> None:
     plan = guidance_for("MCP_DANGEROUS_COMBINATION", ASSET_REF)
 

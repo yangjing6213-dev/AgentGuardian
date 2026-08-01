@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "rules": [
     {
       "rule_id": "OPENAI_API_KEY",
@@ -7,6 +7,14 @@
       "severity": "high",
       "kind": "secret",
       "pattern": "\\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\\b"
+    },
+    {
+      "rule_id": "OPENAI_BASE_URL_OVERRIDE",
+      "domain": "supply_chain",
+      "severity": "low",
+      "kind": "endpoint",
+      "pattern": "(?im)^\\s*(?:export\\s+)?(?:OPENAI_BASE_URL|openai_base_url)\\s*[:=]\\s*[\\\"']?(?P<value>https?://[^\\s\\\"'#]+)",
+      "match_group": "value"
     },
     {
       "rule_id": "GENERIC_API_KEY",

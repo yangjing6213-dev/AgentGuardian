@@ -102,7 +102,7 @@ def test_window_navigation_trust_strip_and_approved_theme(qapp):
     assert [label.text() for label in window.trust_labels] == [
         "本地路径模式",
         "包源码网络能力：未发现",
-        "规则版本：1.0.0",
+        "规则版本：1.1.0",
         "Founder Alpha",
     ]
     assert "映射网络盘" in window.local_mode_label.toolTip()
@@ -133,6 +133,88 @@ def test_window_navigation_trust_strip_and_approved_theme(qapp):
     )
     assert not _global_rect(window.trust_strip).intersects(_global_rect(window.stack))
 
+    window.close()
+
+
+def test_openai_local_config_suffixes_are_supported() -> None:
+    assert {".env", ".toml"} <= app_module.SUPPORTED_SUFFIXES
+
+
+def test_openai_env_override_is_masked_end_to_end(qapp, tmp_path: Path) -> None:
+    endpoint = "https://synthetic-provider.invalid/v1"
+    (tmp_path / ".env").write_text(
+        f"export OPENAI_BASE_URL={endpoint}\n",
+        encoding="utf-8",
+    )
+
+    outcome = app_module._run_audit((tmp_path,))
+
+    finding = next(
+        item
+        for item in outcome.findings
+        if item.rule_id == "OPENAI_BASE_URL_OVERRIDE"
+    )
+    assert finding.evidence[0].masked == "OpenAI API base URL override configured"
+    for report in (outcome.report_json, outcome.report_html):
+        assert endpoint not in report
+
+    window = create_window()
+    window._scan_completed(outcome)
+    row = next(
+        index
+        for index in range(window.findings_table.rowCount())
+        if window.findings_table.item(index, 1).text()
+        == "OPENAI_BASE_URL_OVERRIDE"
+    )
+    window.findings_table.selectRow(row)
+    qapp.processEvents()
+    cells = " ".join(
+        window.findings_table.item(row, column).text()
+        for column in range(window.findings_table.columnCount())
+    )
+    assert endpoint not in cells
+    assert endpoint not in window.guidance_browser.toPlainText()
+    assert "OpenAI" in window.guidance_browser.toPlainText()
+    window.close()
+
+
+def test_openai_finding_uses_openai_manual_guidance(qapp) -> None:
+    finding = Finding(
+        rule_id="OPENAI_API_KEY",
+        domain=RiskDomain.CREDENTIALS,
+        severity=Severity.HIGH,
+        root_fingerprint="a" * 64,
+        evidence=(Evidence("settings.env", "a" * 64, "sk-p************wxyz"),),
+    )
+    window = create_window()
+
+    window._populate_findings((finding,))
+    window.findings_table.selectRow(0)
+    qapp.processEvents()
+
+    guidance = window.guidance_browser.toPlainText().lower()
+    assert "openai" in guidance
+    assert "revoke" in guidance
+    window.close()
+
+
+def test_non_openai_finding_keeps_generic_manual_guidance(qapp) -> None:
+    finding = Finding(
+        rule_id="GENERIC_API_KEY",
+        domain=RiskDomain.CREDENTIALS,
+        severity=Severity.HIGH,
+        root_fingerprint="b" * 64,
+        evidence=(Evidence("settings.env", "b" * 64, "g********h"),),
+    )
+    window = create_window()
+
+    window._populate_findings((finding,))
+    window.findings_table.selectRow(0)
+    qapp.processEvents()
+
+    guidance = window.guidance_browser.toPlainText().lower()
+    assert "generic provider" in guidance
+    assert "openai" not in guidance
     window.close()
 
 

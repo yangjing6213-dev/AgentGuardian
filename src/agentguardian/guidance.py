@@ -41,6 +41,12 @@ def guidance_for(
             "Review credential usage records for unauthorized activity.",
             "Perform a read-only review of the credential configuration.",
         )
+    elif rule_id == "OPENAI_BASE_URL_OVERRIDE":
+        steps = (
+            "Confirm who operates the configured OpenAI API endpoint.",
+            "Restore the built-in OpenAI provider or document an approved exception.",
+            "Rotate any credential that was sent to an untrusted endpoint.",
+        )
     elif rule_id == "MCP_DANGEROUS_COMBINATION":
         steps = (
             "Disable the affected MCP service before making configuration changes.",

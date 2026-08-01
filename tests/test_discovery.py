@@ -258,6 +258,7 @@ def test_known_config_roots_returns_only_existing_known_directories(
         appdata / "Claude",
         appdata / "Cursor" / "User",
         local_appdata / "OpenAI",
+        userprofile / ".codex",
         userprofile / ".config" / "codex",
     ]
     for path in expected:

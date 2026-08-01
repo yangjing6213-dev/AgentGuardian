@@ -46,7 +46,16 @@ COLOR_TOKENS = {
     "warning": "#F0BD5C",
     "critical": "#EF7167",
 }
-SUPPORTED_SUFFIXES = {".json", ".txt", ".md", ".log", ".yaml", ".yml"}
+SUPPORTED_SUFFIXES = {
+    ".env",
+    ".json",
+    ".log",
+    ".md",
+    ".toml",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
 MAX_AUDIT_FINDINGS = 2000
 MAX_AUDIT_EVIDENCE = 4000
 MAX_AUDIT_FILES = 10_000
@@ -563,7 +572,12 @@ class AgentGuardianWindow(QMainWindow):
             return
         finding = self._row_findings[row]
         try:
-            plan = guidance_for(finding.rule_id, finding.root_fingerprint)
+            provider = "openai" if finding.rule_id.startswith("OPENAI_") else None
+            plan = guidance_for(
+                finding.rule_id,
+                finding.root_fingerprint,
+                provider=provider,
+            )
         except (TypeError, ValueError):
             self.guidance_browser.setPlainText("无法生成修复步骤。")
             return

@@ -8,6 +8,7 @@ from pathlib import Path, PureWindowsPath
 _KNOWN_CONFIG_LOCATIONS = (
     ("APPDATA", (), (("Claude",), ("Cursor", "User"), ("Windsurf", "User"))),
     ("LOCALAPPDATA", (), (("OpenAI",),)),
+    ("USERPROFILE", (), ((".codex",),)),
     ("USERPROFILE", (".config",), (("claude",), ("codex",))),
 )
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
@@ -102,7 +103,10 @@ def discover_files(
             path = Path(entry.path)
             if stat.S_ISDIR(entry_stat.st_mode):
                 child_directories.append(path)
-            elif stat.S_ISREG(entry_stat.st_mode) and path.suffix.lower() in wanted_suffixes:
+            elif stat.S_ISREG(entry_stat.st_mode) and (
+                path.suffix.lower() in wanted_suffixes
+                or path.name.lower() in wanted_suffixes
+            ):
                 found.append(path)
                 if len(found) == max_files:
                     limits.append("file_limit_reached")
