@@ -101,3 +101,23 @@ Founder Alpha 不访问浏览器数据库、浏览器历史或剪贴板，不联
 - GitHub CI：push run `30712075199` 与 PR run `30712076712` 均成功；两个 check-run 的 annotations 均为 0，先前 Node.js 20 弃用告警已消失。
 
 本地门禁与 GitHub CI 为不同证据面；以上远程结果只覆盖所列提交和运行，不自动代表后续提交或整个 Windows MVP 已通过。
+
+## 9. Windows MVP 硬化 Batch 2：受保护证据状态
+
+Batch 2 在 Founder Alpha 之上增加当前 Windows 用户范围 DPAPI 状态：最小 schema 只保留规则 ID、固定规则摘要、扫描元数据和扫描级 HMAC 引用，不复制 detector 自由文本；不保存原始匹配、扫描密钥、完整路径或证据来源文件名。文件层使用固定本地文件名、1 MiB 上限、全部现存祖先 reparse/symlink 拒绝、解析后 UNC 重查、同目录临时文件和原子替换。密文内另有版本化 SHA-256 完整性封装，损坏或不兼容状态统一失败为 `PROTECTED_STATE_INVALID`。
+
+只有用户点击“保存加密状态”才会写入；启动、扫描完成和报告导出都不自动保存。实现不发起 API 调用，不导入 OpenAI SDK 或网络客户端，不增加云同步、自动修复或后台任务。DPAPI 不能抵御已经控制同一 Windows 用户会话的程序，也不支持跨用户或跨设备恢复。路径检查与最终 `os.replace` 之间仍有同用户竞态窗口，当前批次未实现句柄级目录约束。
+
+本批次的完整本地门禁和独立只读复审已按当前工作树记录；最终提交的 GitHub CI 仍需另行验证。在远程证据闭环前后，该增量都不代表 Windows MVP 完成或生产安全。
+
+2026-08-02 Batch 2 当前工作树重新验证结果：
+
+- `python -B -m pytest -q -p no:cacheprovider`：`288 passed, 6 skipped`，包含本机真实 DPAPI bytes 与文件往返测试。新增的真实祖先 symlink 用例因本机创建权限跳过；确定性祖先 reparse 模拟已通过，远程 Windows CI 仍需复核该用例。
+- `python -B scripts/check_brand_assets.py`：退出码 0。
+- `python -B -m compileall -q src`：退出码 0。
+- `git diff --check`：退出码 0。
+- 自审计：`network_capability=not_detected`、`findings=[]`、`ordinary_user_mode=true`、`local_only=false`。
+- 当前规则 SHA-256：`83a14590d59f61a3c6aede084644fdbbd9f5cff6f55794b9af60e385e053ccba`。
+- 独立只读复审最初为 `Not Ready`，发现固定摘要边界、DPAPI 调用约束、写入调用约束、祖先 reparse/UNC 检查及 AST 别名旁路等 Important 问题。修复后复审者重放直接、下标、动态属性和别名探针，最终结论为 `Ready`，未发现剩余 Critical/Important；该结论只覆盖约定的静态 AST 策略，复审者未运行全量测试。
+
+以上为当前本地证据；最终提交的 GitHub push/PR CI 与注解仍未记录。

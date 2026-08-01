@@ -74,7 +74,7 @@ def test_snapshot_contains_only_minimized_safe_fields() -> None:
                 "evidence": [
                     {
                         "hmac_fingerprint": "b" * 64,
-                        "masked": "sk-...last4",
+                        "masked": "OpenAI API key detected",
                     }
                 ],
             }
@@ -96,8 +96,8 @@ def test_snapshot_contains_only_minimized_safe_fields() -> None:
 
 def test_snapshot_encoding_is_deterministic_and_round_trips() -> None:
     findings = (
-        _finding("Z_RULE", "d", "f", masked="masked-z"),
-        _finding("A_RULE", "c", "e", masked="masked-a"),
+        _finding("OPENAI_API_KEY", "d", "f", masked="masked-z"),
+        _finding("GENERIC_API_KEY", "c", "e", masked="masked-a"),
     )
     first = build_snapshot(
         findings,
@@ -115,7 +115,34 @@ def test_snapshot_encoding_is_deterministic_and_round_trips() -> None:
     assert first == second
     assert encode_snapshot(first) == encode_snapshot(second)
     assert decode_snapshot(encode_snapshot(first)) == first
-    assert [finding.rule_id for finding in first.findings] == ["A_RULE", "Z_RULE"]
+    assert [finding.rule_id for finding in first.findings] == [
+        "GENERIC_API_KEY",
+        "OPENAI_API_KEY",
+    ]
+
+
+def test_snapshot_replaces_free_text_with_rule_owned_summary() -> None:
+    marker = "api.openai.com/v1-private-token"
+    snapshot = build_snapshot(
+        (_finding(masked=marker),),
+        _score(),
+        rule_version="1.1.0",
+        captured_at=CAPTURED_AT,
+    )
+    encoded = encode_snapshot(snapshot)
+
+    assert marker.encode() not in encoded
+    assert snapshot.findings[0].evidence[0].masked == "OpenAI API key detected"
+
+
+def test_snapshot_rejects_unknown_rule_without_persistence_summary() -> None:
+    with pytest.raises(EvidenceStateError, match="^PROTECTED_STATE_INVALID$"):
+        build_snapshot(
+            (_finding(rule_id="UNMAPPED_RULE"),),
+            _score(),
+            rule_version="1.1.0",
+            captured_at=CAPTURED_AT,
+        )
 
 
 @pytest.mark.parametrize(
@@ -165,3 +192,20 @@ def test_snapshot_requires_utc_aware_capture_time() -> None:
             rule_version="1.1.0",
             captured_at=datetime(2026, 8, 2, 1, 2, 3),
         )
+
+
+def test_decode_rejects_duplicate_json_keys() -> None:
+    snapshot = build_snapshot(
+        (_finding(),),
+        _score(),
+        rule_version="1.1.0",
+        captured_at=CAPTURED_AT,
+    )
+    encoded = encode_snapshot(snapshot).replace(
+        b'"schema_version":1,',
+        b'"schema_version":1,"schema_version":1,',
+        1,
+    )
+
+    with pytest.raises(EvidenceStateError, match="^PROTECTED_STATE_INVALID$"):
+        decode_snapshot(encoded)

@@ -45,6 +45,17 @@ _RESTRICTED_BINDINGS = {
     "shutil",
     "tkinter",
 }
+_WRITE_ATTRIBUTE_MEMBERS = {
+    "mkdir",
+    "open",
+    "rename",
+    "replace",
+    "rmdir",
+    "touch",
+    "unlink",
+    "write_bytes",
+    "write_text",
+}
 
 
 def collect_self_audit() -> dict[str, object]:
@@ -151,6 +162,8 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
             for alias in node.names:
                 imported_bindings.add(alias.asname or alias.name)
                 findings.update(_import_findings(node.module, alias.name))
+                if node.module == "builtins" and alias.name in {"getattr", "vars"}:
+                    findings.add("USER_DATA_WRITE")
                 if alias.asname and node.module.split(".", 1)[0] in {
                     "os",
                     "pathlib",
@@ -174,10 +187,28 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
     if rebound & _RESTRICTED_BINDINGS:
         findings.add("SOURCE_POLICY_VIOLATION")
 
+    dynamic_lookup_references = {
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and node.id in {"getattr", "vars"}
+    }
+    allowed_dynamic_lookup_references = {
+        node.func
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {"getattr", "vars"}
+    }
+    if dynamic_lookup_references != allowed_dynamic_lookup_references:
+        findings.add("USER_DATA_WRITE")
+
     for node in ast.walk(tree):
         alias_sources = _direct_alias_sources(node)
         if alias_sources & _RESTRICTED_BINDINGS:
             findings.add("SOURCE_POLICY_VIOLATION")
+        alias_attribute = _direct_alias_attribute(node)
+        if alias_attribute and _is_user_data_write_name(alias_attribute):
+            findings.add("USER_DATA_WRITE")
         if "__import__" in alias_sources:
             findings.add("DYNAMIC_EXECUTION")
         if isinstance(node, ast.Attribute):
@@ -186,6 +217,20 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
             name = _qualified_name(node.func)
             if name in {"__import__", "compile", "eval", "exec"}:
                 findings.add("DYNAMIC_EXECUTION")
+            if (
+                _call_name(node.func) in {"getattr", "vars"}
+                and node.args
+                and _qualified_name(node.args[0]).split(".", 1)[0]
+                in {"os", "pathlib", "Path"}
+            ):
+                findings.add("USER_DATA_WRITE")
+            dynamic_attribute = _dynamic_attribute_name(node)
+            if dynamic_attribute and (
+                _is_user_data_write_name(dynamic_attribute)
+                or dynamic_attribute.rsplit(".", 1)[-1]
+                in _WRITE_ATTRIBUTE_MEMBERS
+            ):
+                findings.add("USER_DATA_WRITE")
             mode = _open_mode(node)
             if (
                 mode is not None
@@ -253,6 +298,8 @@ def _classify_attribute(
             if name.startswith(("Path.", "pathlib.Path."))
             else "SOURCE_POLICY_VIOLATION"
         )
+    if node.attr == "__dict__" and root in {"os", "pathlib", "Path"}:
+        findings.add("USER_DATA_WRITE")
     if "clipboard_" in node.attr:
         findings.add("CLIPBOARD_CAPABILITY")
         if node.attr in {"clipboard_append", "clipboard_clear"}:
@@ -283,6 +330,15 @@ def _direct_alias_sources(node: ast.AST) -> set[str]:
     return set()
 
 
+def _direct_alias_attribute(node: ast.AST) -> str:
+    value: ast.expr | None = None
+    if isinstance(node, (ast.AnnAssign, ast.Assign, ast.NamedExpr)):
+        value = node.value
+    if isinstance(value, ast.Attribute):
+        return _qualified_name(value)
+    return ""
+
+
 def _qualified_name(expression: ast.expr) -> str:
     if isinstance(expression, ast.Name):
         return expression.id
@@ -295,11 +351,16 @@ def _qualified_name(expression: ast.expr) -> str:
 
 
 def _open_mode(node: ast.Call) -> str | None:
-    if _qualified_name(node.func) not in {"open", "builtins.open"}:
+    name = _qualified_name(node.func)
+    if name in {"open", "builtins.open"}:
+        positional_mode = node.args[1] if len(node.args) > 1 else None
+    elif name.endswith(".open"):
+        positional_mode = node.args[0] if node.args else None
+    else:
         return None
     mode_node = next(
         (keyword.value for keyword in node.keywords if keyword.arg == "mode"),
-        node.args[1] if len(node.args) > 1 else None,
+        positional_mode,
     )
     if mode_node is None:
         return "r"
@@ -442,16 +503,40 @@ def _allowed_state_store_write_calls(
 
 def _is_user_data_write_call(node: ast.Call) -> bool:
     name = _qualified_name(node.func)
+    return _is_user_data_write_name(name) or _call_name(node.func) in {
+        "mkdir",
+        "rmdir",
+        "touch",
+        "unlink",
+    }
+
+
+def _is_user_data_write_name(name: str) -> bool:
     return name in {
+        "os.fdopen",
         "os.makedirs",
         "os.mkdir",
+        "os.open",
         "os.remove",
         "os.renames",
         "os.rename",
         "os.replace",
         "os.rmdir",
         "os.unlink",
-    } or _call_name(node.func) in {"mkdir", "rmdir", "touch", "unlink"}
+    }
+
+
+def _dynamic_attribute_name(node: ast.Call) -> str:
+    if (
+        _qualified_name(node.func) == "getattr"
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Constant)
+        and isinstance(node.args[1].value, str)
+    ):
+        root = _qualified_name(node.args[0])
+        if root:
+            return f"{root}.{node.args[1].value}"
+    return ""
 
 
 def _keyword_is(node: ast.Call, name: str, value: object) -> bool:
@@ -562,6 +647,7 @@ def _allowed_windows_dpapi(tree: ast.AST) -> bool:
         "wintypes.DWORD",
         "wintypes.LPCWSTR",
         "wintypes.LPVOID",
+        "wintypes.LPWSTR",
     }
     wintypes_attributes = tuple(
         node
@@ -604,23 +690,140 @@ def _allowed_windows_dpapi(tree: ast.AST) -> bool:
             libraries[node.targets[0].id] = node.value.args[0].value
     if libraries != {"crypt32": "Crypt32.dll", "kernel32": "Kernel32.dll"}:
         return False
+    if any(_direct_alias_sources(node) & libraries.keys() for node in nodes):
+        return False
+    if any(
+        isinstance(node, ast.Subscript)
+        and any(
+            isinstance(child, ast.Name) and child.id in libraries
+            for child in ast.walk(node)
+        )
+        for node in nodes
+    ):
+        return False
+    if any(
+        isinstance(node, ast.Call)
+        and _qualified_name(node.func) in {"getattr", "setattr", "vars"}
+        for node in nodes
+    ):
+        return False
 
     allowed_native_attributes = {
         "crypt32.CryptProtectData",
         "crypt32.CryptUnprotectData",
         "kernel32.LocalFree",
     }
-    native_attributes = tuple(
-        _qualified_name(node)
+    native_attribute_nodes = tuple(
+        node
         for node in nodes
         if isinstance(node, ast.Attribute)
         and _qualified_name(node).split(".", 1)[0] in libraries
     )
+    native_attributes = tuple(
+        _qualified_name(node) for node in native_attribute_nodes
+    )
+    library_bindings = tuple(
+        node
+        for node in nodes
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Tuple)
+        and [
+            item.id if isinstance(item, ast.Name) else ""
+            for item in node.targets[0].elts
+        ]
+        == ["crypt32", "kernel32"]
+        and isinstance(node.value, ast.Call)
+        and _qualified_name(node.value.func) == "_libraries"
+        and not node.value.args
+        and not node.value.keywords
+    )
+    library_calls = tuple(
+        node
+        for node in nodes
+        if isinstance(node, ast.Call) and _qualified_name(node.func) == "_libraries"
+    )
+    library_factory_references = {
+        node
+        for node in nodes
+        if isinstance(node, ast.Name) and node.id == "_libraries"
+    }
+    allowed_library_factory_references = {
+        node.func
+        for node in library_calls
+        if isinstance(node.func, ast.Name)
+    }
+    library_functions = tuple(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_libraries"
+    )
+    dpapi_calls = tuple(
+        node
+        for node in nodes
+        if isinstance(node, ast.Call) and _qualified_name(node.func) == "_call"
+    )
+    if (
+        len(library_bindings) != 2
+        or set(library_calls) != {node.value for node in library_bindings}
+        or library_factory_references != allowed_library_factory_references
+        or len(library_functions) != 1
+        or len(dpapi_calls) != 2
+        or any(
+            len(node.args) < 3
+            or not isinstance(node.args[2], ast.Name)
+            or node.args[2].id != "kernel32"
+            for node in dpapi_calls
+        )
+    ):
+        return False
+    library_returns = tuple(
+        node
+        for node in ast.walk(library_functions[0])
+        if isinstance(node, ast.Return)
+    )
+    if (
+        len(library_returns) != 1
+        or not isinstance(library_returns[0].value, ast.Tuple)
+        or [
+            item.id if isinstance(item, ast.Name) else ""
+            for item in library_returns[0].value.elts
+        ]
+        != ["crypt32", "kernel32"]
+    ):
+        return False
+    library_references = {
+        node
+        for node in nodes
+        if isinstance(node, ast.Name) and node.id in libraries
+    }
+    allowed_library_references = {
+        child
+        for node in native_attribute_nodes
+        for child in ast.walk(node)
+        if isinstance(child, ast.Name) and child.id in libraries
+    }
+    allowed_library_references.update(
+        node.targets[0]
+        for node in nodes
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id in libraries
+        and isinstance(node.value, ast.Call)
+        and _qualified_name(node.value.func) == "ctypes.WinDLL"
+    )
+    allowed_library_references.update(
+        item for node in library_bindings for item in node.targets[0].elts
+    )
+    allowed_library_references.update(library_returns[0].value.elts)
+    allowed_library_references.update(node.args[2] for node in dpapi_calls)
     return (
         set(native_attributes) == allowed_native_attributes
         and native_attributes.count("crypt32.CryptProtectData") == 1
         and native_attributes.count("crypt32.CryptUnprotectData") == 1
         and native_attributes.count("kernel32.LocalFree") == 2
+        and library_references == allowed_library_references
     )
 
 

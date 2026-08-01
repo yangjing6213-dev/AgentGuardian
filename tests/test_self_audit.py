@@ -491,6 +491,13 @@ def test_static_scan_allows_only_constrained_windows_dpapi_adapter(
     mutations = (
         source.replace('"Crypt32.dll"', '"User32.dll"', 1),
         source + '\ncrypt32.CreateFileW\n',
+        source + '\nnative = crypt32\nnative.CreateFileW()\n',
+        source + '\nidentity = lambda value: value\nidentity(crypt32).CreateFileW()\n',
+        source + '\n_libraries()[0].CreateFileW()\n',
+        source + '\nloader = _libraries\nloader()[0].CreateFileW()\n',
+        source + '\nnative = getattr(crypt32, "CreateFileW")\nnative()\n',
+        source + '\ncrypt32["CreateFileW"]()\n',
+        source + '\nctypes.WinDLL("User32.dll").CreateFileW()\n',
         source + '\nctypes.CDLL("User32.dll")\n',
         source + '\n__import__("ctypes")\n',
         source + "\nnative = ctypes\n",
@@ -543,6 +550,16 @@ def test_static_scan_allows_only_constrained_protected_state_write(
     mutations = (
         source + '\nopen("extra.bin", "wb")\n',
         source + '\nos.replace("extra.tmp", "extra.bin")\n',
+        source + '\nreplace = os.replace\nreplace("extra.tmp", "extra.bin")\n',
+        source + '\ngetattr(os, "replace")("extra.tmp", "extra.bin")\n',
+        source + '\nos.__dict__["replace"]("extra.tmp", "extra.bin")\n',
+        source + '\nvars(os)["replace"]("extra.tmp", "extra.bin")\n',
+        source + '\ngetattr(os, "__dict__")["replace"]("extra.tmp", "extra.bin")\n',
+        source + '\nlookup = vars\nlookup(os)["replace"]("extra.tmp", "extra.bin")\n',
+        source + '\nlookup = getattr\nlookup(os, "replace")("extra.tmp", "extra.bin")\n',
+        source + '\nPath("extra.bin").open("wb").write(b"unsafe")\n',
+        source + '\ngetattr(Path("extra.bin"), "open")("wb").write(b"unsafe")\n',
+        source + '\nos.open("extra.bin", 1)\n',
         source + '\nPath("extra").mkdir()\n',
         source + '\nPath("extra").unlink()\n',
     )
@@ -656,3 +673,28 @@ def test_docs_track_openai_local_provider_hardening_batch() -> None:
     assert "端点覆盖发现只表示配置需要人工复核" in report
     assert "不证明端点属于恶意第三方" in report
     assert "Windows MVP 硬化批次 1" in spec
+
+
+def test_docs_track_protected_evidence_state_boundaries() -> None:
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    architecture = (PROJECT_ROOT / "docs" / "architecture.md").read_text(
+        encoding="utf-8"
+    )
+    report = (
+        PROJECT_ROOT / "docs" / "reports" / "alpha-0.1.0-stage-report.md"
+    ).read_text(encoding="utf-8")
+    combined = "\n".join((readme, architecture, report))
+
+    for required in (
+        "当前 Windows 用户范围 DPAPI",
+        "只有用户点击“保存加密状态”才会写入",
+        "不保存原始匹配、扫描密钥、完整路径或证据来源文件名",
+        "PROTECTED_STATE_INVALID",
+        "不能抵御已经控制同一 Windows 用户会话的程序",
+        "固定规则摘要",
+        "SHA-256 完整性封装",
+        "竞态窗口",
+        "不发起 API 调用",
+        "不代表 Windows MVP 完成或生产安全",
+    ):
+        assert required in combined

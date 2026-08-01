@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import ctypes
+from ctypes import wintypes
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -62,3 +65,60 @@ def test_dpapi_rejects_invalid_protect_input(data: object) -> None:
 def test_dpapi_rejects_invalid_unprotect_input(data: object) -> None:
     with pytest.raises(DpapiError, match="^PROTECTED_STATE_INVALID$"):
         unprotect_bytes(data)  # type: ignore[arg-type]
+
+
+def test_unprotect_uses_exact_description_pointer_signature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agentguardian.windows_dpapi as windows_dpapi
+
+    class FakeFunction:
+        argtypes = ()
+        restype = None
+
+        def __call__(self, *args: object) -> bool:
+            return False
+
+    function = FakeFunction()
+    crypt32 = SimpleNamespace(CryptUnprotectData=function)
+    kernel32 = SimpleNamespace(LocalFree=lambda pointer: None)
+    monkeypatch.setattr(windows_dpapi, "_libraries", lambda: (crypt32, kernel32))
+    monkeypatch.setattr(windows_dpapi.sys, "platform", "win32")
+
+    with pytest.raises(DpapiError, match="^PROTECTED_STATE_INVALID$"):
+        unprotect_bytes(b"synthetic")
+
+    assert function.argtypes[1] == ctypes.POINTER(wintypes.LPWSTR)
+
+
+def test_native_output_is_freed_when_call_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agentguardian.windows_dpapi as windows_dpapi
+
+    output_buffer = (ctypes.c_ubyte * 1)(42)
+    freed = []
+
+    class RaisingFunction:
+        argtypes = ()
+        restype = None
+
+        def __call__(self, *args: object) -> bool:
+            output = args[-1]._obj  # type: ignore[attr-defined]
+            output.cbData = 1
+            output.pbData = ctypes.cast(
+                output_buffer, ctypes.POINTER(ctypes.c_ubyte)
+            )
+            raise OSError("synthetic native detail")
+
+    crypt32 = SimpleNamespace(CryptProtectData=RaisingFunction())
+    kernel32 = SimpleNamespace(LocalFree=lambda pointer: freed.append(pointer))
+    monkeypatch.setattr(windows_dpapi, "_libraries", lambda: (crypt32, kernel32))
+    monkeypatch.setattr(windows_dpapi.sys, "platform", "win32")
+
+    with pytest.raises(DpapiError) as raised:
+        protect_bytes(b"synthetic")
+
+    assert str(raised.value) == "DPAPI_PROTECT_FAILED"
+    assert "synthetic native detail" not in str(raised.value)
+    assert len(freed) == 1

@@ -35,7 +35,9 @@
 
 端点覆盖发现只表示该配置需要人工复核，不证明端点属于恶意第三方。AgentGuardian 只在用户授权的本地范围读取静态配置，不发起 API 调用或联网验证端点，也不自动修改 Provider、撤销密钥或轮换凭据。
 
-下一批为 **DPAPI 保护的本地证据状态**。该能力尚未实现；开始前需锁定数据最小化、损坏状态失败关闭和 Windows 专属行为的测试契约。Founder Alpha 仍不代表 Windows MVP 完成或生产安全。
+**DPAPI 保护的本地证据状态批次**已实现当前 Windows 用户范围 DPAPI、最小化快照、原子替换和损坏状态失败关闭。只有用户点击“保存加密状态”才会写入；扫描、启动和报告导出都不会自动保存状态。状态只使用固定规则摘要，不复制 detector 的自由文本；不保存原始匹配、扫描密钥、完整路径或证据来源文件名。版本化 SHA-256 完整性封装、DPAPI、JSON 和 schema 任一验证失败时返回固定 `PROTECTED_STATE_INVALID`。
+
+DPAPI 不能抵御已经控制同一 Windows 用户会话的程序，状态也不能跨用户或跨设备恢复。路径检查与最终 `os.replace` 之间仍存在同用户可利用的竞态窗口；当前批次通过祖先 reparse/UNC 重查缩小风险，但未实现句柄级目录约束。该功能不发起 API 调用、不增加云同步或自动修复，当前 Founder Alpha 仍不代表 Windows MVP 完成或生产安全。
 
 ## 开发与验证
 
@@ -52,6 +54,8 @@ python -m agentguardian
 
 - [Founder Alpha 实施计划](docs/superpowers/plans/2026-08-01-agentguardian-founder-alpha.md)
 - [Windows MVP 硬化实施计划](docs/superpowers/plans/2026-08-02-agentguardian-windows-mvp-hardening.md)
+- [DPAPI 证据状态实施计划](docs/superpowers/plans/2026-08-02-agentguardian-protected-evidence-state.md)
+- [DPAPI 证据状态设计](docs/superpowers/specs/2026-08-02-agentguardian-protected-evidence-state-design.md)
 - [产品与安全设计规范](docs/superpowers/specs/2026-08-01-agentguardian-design.md)
 - [系统架构与数据流](docs/architecture.md)
 - [Founder Alpha 阶段报告](docs/reports/alpha-0.1.0-stage-report.md)

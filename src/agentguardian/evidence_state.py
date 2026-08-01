@@ -22,6 +22,15 @@ _RULE_ID = re.compile(r"[A-Z][A-Z0-9_]{0,79}")
 _VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
 _LIMIT = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _CAPTURED_AT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+_PERSISTED_SUMMARIES = {
+    "CN_MOBILE_PHONE": "Chinese mobile phone number detected",
+    "CUSTOM_KEYWORD": "Custom keyword detected",
+    "EMAIL_ADDRESS": "Email address detected",
+    "GENERIC_API_KEY": "Generic API credential detected",
+    "MCP_DANGEROUS_COMBINATION": "shell + filesystem write + network",
+    "OPENAI_API_KEY": "OpenAI API key detected",
+    "OPENAI_BASE_URL_OVERRIDE": "OpenAI API base URL override configured",
+}
 
 
 class EvidenceStateError(ValueError):
@@ -49,6 +58,7 @@ class FindingReference:
     evidence: tuple[EvidenceReference, ...]
 
     def __post_init__(self) -> None:
+        summary = _persistence_summary(self.rule_id)
         if (
             not isinstance(self.rule_id, str)
             or _RULE_ID.fullmatch(self.rule_id) is None
@@ -56,6 +66,7 @@ class FindingReference:
             or not isinstance(self.evidence, tuple)
             or len(self.evidence) > MAX_STATE_EVIDENCE
             or any(not isinstance(item, EvidenceReference) for item in self.evidence)
+            or any(item.masked != summary for item in self.evidence)
             or tuple(sorted(self.evidence, key=_evidence_key)) != self.evidence
         ):
             raise _invalid()
@@ -178,6 +189,7 @@ def decode_snapshot(data: bytes) -> EvidenceSnapshot:
         payload = json.loads(
             data.decode("utf-8"),
             parse_constant=lambda _: _raise_invalid(),
+            object_pairs_hook=_strict_object,
         )
         root = _exact_object(
             payload,
@@ -257,12 +269,13 @@ def decode_snapshot(data: bytes) -> EvidenceSnapshot:
 def _finding_reference(finding: Finding) -> FindingReference:
     if not isinstance(finding, Finding):
         raise _invalid()
+    summary = _persistence_summary(finding.rule_id)
     evidence = tuple(
         sorted(
             (
                 EvidenceReference(
                     hmac_fingerprint=item.fingerprint,
-                    masked=item.masked,
+                    masked=summary,
                 )
                 for item in finding.evidence
             ),
@@ -311,6 +324,15 @@ def _exact_object(value: object, keys: set[str]) -> dict[str, object]:
     return value
 
 
+def _strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _invalid()
+        result[key] = value
+    return result
+
+
 def _list(value: object) -> list[object]:
     if type(value) is not list:
         raise _invalid()
@@ -343,6 +365,12 @@ def _boolean(value: object) -> bool:
 
 def _is_hmac(value: object) -> bool:
     return isinstance(value, str) and _HMAC.fullmatch(value) is not None
+
+
+def _persistence_summary(rule_id: object) -> str:
+    if not isinstance(rule_id, str) or rule_id not in _PERSISTED_SUMMARIES:
+        raise _invalid()
+    return _PERSISTED_SUMMARIES[rule_id]
 
 
 def _is_version(value: object) -> bool:

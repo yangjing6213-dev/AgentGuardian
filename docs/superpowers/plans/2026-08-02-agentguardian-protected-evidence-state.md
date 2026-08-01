@@ -145,11 +145,11 @@ Commit: `Add explicit protected state save action`
 - Modify: `docs/superpowers/plans/2026-08-02-agentguardian-windows-mvp-hardening.md`
 - Modify: `tests/test_self_audit.py`
 
-- [ ] **Step 1: Add documentation assertions**
+- [x] **Step 1: Add documentation assertions**
 
 Require docs to state current-user DPAPI scope, explicit save, excluded fields, fixed failure behavior, same-user compromise limitation, no API calls, and non-production status.
 
-- [ ] **Step 2: Run the complete local gate**
+- [x] **Step 2: Run the complete local gate**
 
 Run: `python -B -m pytest -q -p no:cacheprovider`
 
@@ -161,7 +161,7 @@ Run: `git diff --check`
 
 Expected: zero failures and zero whitespace errors.
 
-- [ ] **Step 3: Run independent read-only review**
+- [x] **Step 3: Run independent read-only review**
 
 Review schema minimization, native-memory cleanup, self-audit allowlist precision, path/reparse defenses, failure behavior, synthetic-only tests, and the no-network/no-LLM boundary. Resolve all Important findings before submission.
 

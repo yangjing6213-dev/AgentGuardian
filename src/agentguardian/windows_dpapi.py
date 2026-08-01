@@ -70,7 +70,7 @@ def unprotect_bytes(ciphertext: bytes) -> bytes:
         function = crypt32.CryptUnprotectData
         function.argtypes = (
             ctypes.POINTER(_DataBlob),
-            wintypes.LPVOID,
+            ctypes.POINTER(wintypes.LPWSTR),
             ctypes.POINTER(_DataBlob),
             wintypes.LPVOID,
             wintypes.LPVOID,
@@ -116,16 +116,16 @@ def _call(
         len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte))
     )
     output_blob = _DataBlob()
-    succeeded = function(
-        ctypes.byref(input_blob),
-        description,
-        None,
-        None,
-        None,
-        _UI_FORBIDDEN,
-        ctypes.byref(output_blob),
-    )
     try:
+        succeeded = function(
+            ctypes.byref(input_blob),
+            description,
+            None,
+            None,
+            None,
+            _UI_FORBIDDEN,
+            ctypes.byref(output_blob),
+        )
         if not succeeded or not output_blob.pbData or output_blob.cbData == 0:
             raise DpapiError(failure)
         return ctypes.string_at(output_blob.pbData, output_blob.cbData)

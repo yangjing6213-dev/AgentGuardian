@@ -41,7 +41,7 @@ AgentGuardian 为用户明确保存的审计快照提供 Windows 当前用户范
       "evidence": [
         {
           "hmac_fingerprint": "<64 lowercase hex>",
-          "masked": "sk-…末四位"
+          "masked": "OpenAI API key detected"
         }
       ]
     }
@@ -49,13 +49,13 @@ AgentGuardian 为用户明确保存的审计快照提供 Windows 当前用户范
 }
 ```
 
-载荷不保存 `Evidence.source`、扫描根目录、文件路径、原始发现文本、`scan_key`、环境变量值或端点值。finding 与 evidence 使用现有上限 2,000/4,000；序列化明文和 DPAPI 密文分别限制为 1 MiB。读取时重新验证 schema、类型、范围、HMAC 格式和脱敏文本安全规则，任何未知字段、超限或不合法值都拒绝整个状态。
+载荷不保存 `Evidence.source`、扫描根目录、文件路径、原始发现文本、`scan_key`、环境变量值或端点值。`masked` 由 rule ID 映射到固定摘要，不复制 detector 的自由文本；没有已登记摘要的规则不能持久化。finding 与 evidence 使用现有上限 2,000/4,000；序列化明文和 DPAPI 密文分别限制为 1 MiB。读取时重新验证 schema、类型、范围、HMAC 格式和固定摘要，任何未知字段、重复键、超限或不合法值都拒绝整个状态。
 
 ## 4. 组件边界
 
 - `evidence_state.py`：从现有 `Finding`/`Score` 生成不可变快照，执行最小化、排序、JSON 编解码和 schema 验证。它不访问文件系统或 DPAPI。
 - `windows_dpapi.py`：只负责 bytes 到 bytes 的当前用户范围保护与解保护；使用 `CRYPTPROTECT_UI_FORBIDDEN`，不接收路径、不记录输入，不把 Windows 错误文本或载荷带入异常。
-- `state_store.py`：后续切片负责固定本地路径、大小限制、reparse/symlink 检查、临时文件和原子替换。它组合前两个模块，不解释业务字段。
+- `state_store.py`：负责固定本地路径、大小限制、全部现存祖先 reparse/symlink 检查、解析后 UNC 重查、版本化 SHA-256 完整性封装、临时文件和原子替换。它组合前两个模块，不解释业务字段。
 - `app.py`：后续切片只增加一次显式“保存加密状态”动作；扫描完成不会自动落盘。
 
 自审计必须把上述精确 DPAPI 调用识别为声明过的受限能力，同时继续把其他 `ctypes`/原生调用报告为 `NATIVE_CAPABILITY`。不得用宽泛模块白名单隐藏新增原生能力。
@@ -65,6 +65,8 @@ AgentGuardian 为用户明确保存的审计快照提供 Windows 当前用户范
 非 Windows 平台返回固定 `DPAPI_UNAVAILABLE`；保护失败返回 `DPAPI_PROTECT_FAILED`；解保护、格式或 schema 失败统一对调用方返回 `PROTECTED_STATE_INVALID`。异常不得包含 Windows 错误文本、状态内容、路径或密钥材料。
 
 损坏、截断、被替换或无法解密的状态不会返回部分数据，也不会自动覆盖。用户仍可继续当前内存中的只读扫描；只有再次显式保存才能创建新状态。
+
+路径检查与最终 `os.replace` 之间仍有同用户可利用的 TOCTOU 窗口；当前批次未实现句柄级 Windows 目录约束。该限制落在“同一 Windows 用户会话已被控制”的残余风险内，但必须继续公开记录。
 
 ## 6. 验证
 
@@ -76,4 +78,4 @@ AgentGuardian 为用户明确保存的审计快照提供 Windows 当前用户范
 
 ## 7. 明确限制
 
-DPAPI 绑定当前 Windows 用户，不能跨用户或跨设备恢复，也不能抵御已经控制同一用户会话的恶意程序。扫描级 HMAC 每次扫描使用新密钥，因此历史状态不能据此稳定关联同一原始值。此批次不构成密钥保险库、备份系统、企业证据链或生产安全证明。
+DPAPI 绑定当前 Windows 用户，不能跨用户或跨设备恢复，也不能抵御已经控制同一用户会话的恶意程序。Python 不保证对序列化和 native 调用过程中产生的所有不可变 bytes 副本执行安全内存清零。扫描级 HMAC 每次扫描使用新密钥，因此历史状态不能据此稳定关联同一原始值。此批次不构成密钥保险库、备份系统、企业证据链或生产安全证明。

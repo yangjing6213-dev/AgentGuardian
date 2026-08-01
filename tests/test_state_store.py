@@ -20,7 +20,7 @@ from agentguardian.windows_dpapi import DpapiError
 
 def _snapshot(masked: str = "masked-value"):
     finding = Finding(
-        "SYNTHETIC_RULE",
+        "EMAIL_ADDRESS",
         RiskDomain.PRIVACY,
         Severity.LOW,
         "a" * 64,
@@ -116,6 +116,20 @@ def test_load_rejects_corrupt_or_oversized_state(
         load_protected_state(directory=tmp_path, unprotect=_unprotect)
 
 
+def test_load_rejects_valid_json_changed_after_unprotect(tmp_path: Path) -> None:
+    save_protected_state(_snapshot(), directory=tmp_path, protect=_protect)
+    target = tmp_path / STATE_FILENAME
+    ciphertext = bytearray(target.read_bytes())
+    encoded_hmac = bytes(ord("a") ^ 0xA5 for _ in range(64))
+    index = ciphertext.find(encoded_hmac)
+    assert index >= 0
+    ciphertext[index] = ord("c") ^ 0xA5
+    target.write_bytes(ciphertext)
+
+    with pytest.raises(StateStoreError, match="^PROTECTED_STATE_INVALID$"):
+        load_protected_state(directory=tmp_path, unprotect=_unprotect)
+
+
 def test_store_rejects_reparse_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -133,6 +147,47 @@ def test_store_rejects_reparse_target(
     assert tuple(tmp_path.iterdir()) == ()
 
 
+def test_store_rejects_real_reparse_ancestor(tmp_path: Path) -> None:
+    real_parent = tmp_path / "real-parent"
+    real_child = real_parent / "ordinary-child"
+    real_child.mkdir(parents=True)
+    linked_parent = tmp_path / "linked-parent"
+    try:
+        linked_parent.symlink_to(real_parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlink creation unavailable")
+    linked_child = linked_parent / "ordinary-child"
+    snapshot = _snapshot()
+
+    with pytest.raises(StateStoreError, match="^PROTECTED_STATE_SAVE_FAILED$"):
+        save_protected_state(snapshot, directory=linked_child, protect=_protect)
+    assert not (real_child / STATE_FILENAME).exists()
+
+    save_protected_state(snapshot, directory=real_child, protect=_protect)
+    with pytest.raises(StateStoreError, match="^PROTECTED_STATE_INVALID$"):
+        load_protected_state(directory=linked_child, unprotect=_unprotect)
+
+
+def test_store_checks_every_existing_ancestor_for_reparse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import agentguardian.state_store as state_store
+
+    reparse_ancestor = tmp_path / "reparse-ancestor"
+    child = reparse_ancestor / "ordinary-child"
+    child.mkdir(parents=True)
+    monkeypatch.setattr(
+        state_store,
+        "_is_reparse",
+        lambda path: Path(path) == reparse_ancestor,
+    )
+
+    with pytest.raises(StateStoreError, match="^PROTECTED_STATE_SAVE_FAILED$"):
+        save_protected_state(_snapshot(), directory=child, protect=_protect)
+
+    assert not (child / STATE_FILENAME).exists()
+
+
 def test_default_state_path_uses_local_app_data_only_on_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -141,6 +196,28 @@ def test_default_state_path_uses_local_app_data_only_on_request(
     assert default_state_path() == tmp_path / "AgentGuardian" / STATE_FILENAME
 
     monkeypatch.delenv("LOCALAPPDATA")
+    with pytest.raises(StateStoreError, match="^PROTECTED_STATE_UNAVAILABLE$"):
+        default_state_path()
+
+
+def test_store_rejects_relative_directory_without_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(StateStoreError, match="^PROTECTED_STATE_SAVE_FAILED$"):
+        save_protected_state(
+            _snapshot(), directory=Path("relative-state"), protect=_protect
+        )
+
+    assert not (tmp_path / "relative-state").exists()
+
+
+def test_default_state_path_rejects_relative_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", "relative-local-app-data")
+
     with pytest.raises(StateStoreError, match="^PROTECTED_STATE_UNAVAILABLE$"):
         default_state_path()
 
