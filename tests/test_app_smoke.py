@@ -60,7 +60,7 @@ def test_window_navigation_trust_strip_and_approved_theme(qapp):
     window.show()
     qapp.processEvents()
 
-    assert window.local_mode_label.text() == "本地模式"
+    assert window.local_mode_label.text() == "本地路径模式"
     assert window.scan_button.text() == "开始审计"
     assert not window.scan_button.icon().isNull()
     assert window.scan_button.toolTip()
@@ -70,11 +70,13 @@ def test_window_navigation_trust_strip_and_approved_theme(qapp):
         "审计报告",
     ]
     assert [label.text() for label in window.trust_labels] == [
-        "本地模式",
-        "网络能力：无",
+        "本地路径模式",
+        "包源码网络能力：未发现",
         "规则版本：1.0.0",
         "Founder Alpha",
     ]
+    assert "映射网络盘" in window.local_mode_label.toolTip()
+    assert "依赖" in window.trust_labels[1].toolTip()
 
     for index, button in enumerate(window.navigation_buttons):
         button.click()
@@ -119,6 +121,44 @@ def test_folder_selection_shows_only_short_name(qapp, monkeypatch, tmp_path):
     assert window.root_display_label.text() == "selected-root"
     assert str(selected) not in window.root_display_label.text()
     assert window.scan_button.isEnabled()
+    window.close()
+
+
+def test_unc_paths_are_rejected_before_filesystem_access(monkeypatch):
+    unc_root = Path(r"\\synthetic-server\private-share")
+    monkeypatch.setattr(
+        app_module,
+        "_is_reparse",
+        lambda path: pytest.fail("UNC path reached filesystem inspection"),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "discover_files",
+        lambda *args, **kwargs: pytest.fail("UNC path reached discovery"),
+    )
+
+    assert app_module._is_unc_path(unc_root)
+    assert not app_module._is_unc_path(Path(r"C:\local"))
+    with pytest.raises(ValueError, match="UNC"):
+        export_new_report(unc_root / "report.json", "unsafe", [])
+    with pytest.raises(ValueError, match="UNC"):
+        app_module._run_audit((unc_root,))
+
+
+def test_folder_selection_rejects_unc_root(qapp, monkeypatch):
+    window = create_window()
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: r"\\synthetic-server\private-share",
+    )
+
+    window.folder_button.click()
+
+    assert window._roots == ()
+    assert not window.scan_button.isEnabled()
+    assert "UNC" in window.status_label.text()
+    assert "映射网络盘" in window.status_label.text()
     window.close()
 
 

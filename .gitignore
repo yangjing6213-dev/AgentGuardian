@@ -23,6 +23,9 @@ build/
 .venv/
 __pycache__/
 *.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
 
 # Editor and OS metadata
 .vscode/

@@ -1,0 +1,540 @@
+import hashlib
+import json
+import socket
+import sys
+from pathlib import Path
+
+import pytest
+
+from agentguardian import __version__, self_audit
+from agentguardian.self_audit import collect_self_audit, static_capability_findings
+
+PROJECT_ROOT = Path(__file__).parents[1]
+
+
+def test_collect_self_audit_is_transparent_and_keeps_environment_private(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret_name = "AGENTGUARDIAN_SYNTHETIC_SECRET"
+    secret_value = "synthetic-secret-must-not-leak"
+    monkeypatch.setenv(secret_name, secret_value)
+    monkeypatch.setattr(
+        socket,
+        "socket",
+        lambda *args, **kwargs: pytest.fail("self-audit attempted network access"),
+    )
+    monkeypatch.setattr(self_audit, "_ordinary_user_mode", lambda: True)
+
+    audit = collect_self_audit()
+    serialized = json.dumps(audit)
+
+    assert audit == {
+        "version": __version__,
+        "executable_path": sys.executable,
+        "rules_sha256": hashlib.sha256(
+            (PROJECT_ROOT / "rules" / "default.json").read_bytes()
+        ).hexdigest(),
+        "local_only": False,
+        "network_capability": "not_detected",
+        "ordinary_user_mode": True,
+        "alpha_status": "Founder Alpha",
+        "findings": [],
+        "scope": {
+            "capabilities": "package_source_policy",
+            "semantic_analysis": "not_performed",
+            "dependencies": "not_scanned",
+            "binaries": "not_scanned",
+            "mapped_network_drives": "not_reliably_detected",
+        },
+    }
+    assert secret_name not in serialized
+    assert secret_value not in serialized
+
+
+def test_current_package_has_no_prohibited_static_capabilities() -> None:
+    assert static_capability_findings() == ()
+
+
+@pytest.mark.parametrize(
+    ("findings", "network_capability", "local_only"),
+    (
+        ((), "not_detected", False),
+        (("NETWORK_MODULE_IMPORT",), "detected", False),
+        (("NETWORK_CAPABILITY",), "detected", False),
+        (("DYNAMIC_EXECUTION",), "unverified", False),
+        (("NATIVE_CAPABILITY",), "unverified", False),
+        (("SOURCE_SCAN_ERROR",), "unverified", False),
+    ),
+)
+def test_collect_self_audit_derives_trust_fields_from_findings(
+    monkeypatch: pytest.MonkeyPatch,
+    findings: tuple[str, ...],
+    network_capability: str,
+    local_only: bool,
+) -> None:
+    monkeypatch.setattr(self_audit, "static_capability_findings", lambda: findings)
+    monkeypatch.setattr(self_audit, "_ordinary_user_mode", lambda: True)
+
+    audit = collect_self_audit()
+
+    assert audit["network_capability"] == network_capability
+    assert audit["local_only"] is local_only
+    assert audit["findings"] == list(findings)
+
+
+def test_collect_self_audit_reports_elevated_process_as_not_ordinary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(self_audit, "static_capability_findings", lambda: ())
+    monkeypatch.setattr(self_audit, "_ordinary_user_mode", lambda: False)
+
+    assert collect_self_audit()["ordinary_user_mode"] is False
+
+
+def test_ordinary_user_mode_uses_windows_admin_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Shell32:
+        @staticmethod
+        def IsUserAnAdmin() -> int:
+            return 1
+
+    class Windll:
+        shell32 = Shell32()
+
+    monkeypatch.setattr(self_audit.sys, "platform", "win32")
+    monkeypatch.setattr(self_audit.ctypes, "windll", Windll(), raising=False)
+
+    assert self_audit._ordinary_user_mode() is False
+
+
+def test_ordinary_user_mode_fails_closed_off_windows_or_on_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(self_audit.sys, "platform", "linux")
+    assert self_audit._ordinary_user_mode() is False
+
+    class BrokenShell32:
+        @staticmethod
+        def IsUserAnAdmin() -> int:
+            raise OSError("synthetic failure")
+
+    class Windll:
+        shell32 = BrokenShell32()
+
+    monkeypatch.setattr(self_audit.sys, "platform", "win32")
+    monkeypatch.setattr(self_audit.ctypes, "windll", Windll(), raising=False)
+    assert self_audit._ordinary_user_mode() is False
+
+
+def test_collect_self_audit_uses_fixed_rule_read_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    missing = tmp_path / "private" / "rules.json"
+    monkeypatch.setattr(self_audit, "DEFAULT_RULES_PATH", missing)
+    monkeypatch.setattr(self_audit, "_ordinary_user_mode", lambda: True)
+
+    with pytest.raises(RuntimeError) as error:
+        collect_self_audit()
+
+    assert str(error.value) == "SELF_AUDIT_READ_ERROR"
+    assert str(missing) not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    (
+        ("import socket\n", "NETWORK_MODULE_IMPORT"),
+        ("import subprocess\n", "SHELL_EXECUTION"),
+        ("eval('40 + 2')\n", "DYNAMIC_EXECUTION"),
+        ("open('private.txt', 'w')\n", "USER_DATA_WRITE"),
+        ("import sentry_sdk\n", "TELEMETRY_CAPABILITY"),
+        ("import pip\n", "UPDATER_CAPABILITY"),
+        ("import openai\n", "LLM_CAPABILITY"),
+        ("import ctypes\n", "NATIVE_CAPABILITY"),
+        ("import runpy\n", "DYNAMIC_EXECUTION"),
+        ("import importlib\n", "DYNAMIC_EXECUTION"),
+        ("import webbrowser\n", "NETWORK_MODULE_IMPORT"),
+        ("import webbrowser\n", "EXTERNAL_CAPABILITY"),
+        ("import pyperclip\n", "CLIPBOARD_CAPABILITY"),
+        ("import pyperclip\n", "USER_DATA_WRITE"),
+        ("import win32clipboard\n", "CLIPBOARD_CAPABILITY"),
+        ("import win32clipboard\n", "USER_DATA_WRITE"),
+        (
+            "import asyncio\nasyncio.create_subprocess_exec('cmd')\n",
+            "NETWORK_CAPABILITY",
+        ),
+        (
+            "import asyncio\nasyncio.create_subprocess_shell('cmd')\n",
+            "NETWORK_CAPABILITY",
+        ),
+        ("import os\nos.startfile('file.txt')\n", "SHELL_EXECUTION"),
+    ),
+)
+def test_static_scan_returns_only_fixed_codes(
+    tmp_path: Path, source: str, expected: str
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    module = package / "synthetic.py"
+    module.write_text(source, encoding="utf-8")
+
+    findings = static_capability_findings(package)
+    serialized = json.dumps(findings)
+
+    assert expected in findings
+    assert str(module) not in serialized
+    assert source.strip() not in serialized
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    (
+        (
+            "import asyncio\nasyncio.open_connection('host', 443)\n",
+            ("NETWORK_CAPABILITY",),
+        ),
+        (
+            "import os as operating_system\noperating_system.system('cmd')\n",
+            ("SOURCE_POLICY_VIOLATION",),
+        ),
+        (
+            "from os import system as run_command\nrun_command('cmd')\n",
+            ("SHELL_EXECUTION", "SOURCE_POLICY_VIOLATION"),
+        ),
+        (
+            "import shutil as files\nfiles.copyfile('source', 'target')\n",
+            ("USER_DATA_WRITE",),
+        ),
+        (
+            "from shutil import copyfile as duplicate\nduplicate('source', 'target')\n",
+            ("USER_DATA_WRITE",),
+        ),
+        (
+            "import tkinter as tk\nroot = tk.Tk()\nroot.clipboard_get()\n",
+            ("CLIPBOARD_CAPABILITY",),
+        ),
+        (
+            "import builtins as runtime\nruntime.__import__('socket')\n",
+            ("DYNAMIC_EXECUTION",),
+        ),
+        (
+            "from builtins import __import__ as load\nload('socket')\n",
+            ("DYNAMIC_EXECUTION",),
+        ),
+    ),
+)
+def test_static_scan_resolves_import_and_call_provenance(
+    tmp_path: Path, source: str, expected: tuple[str, ...]
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(source, encoding="utf-8")
+
+    assert static_capability_findings(package) == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    (
+        ("import asyncio\n", ("NETWORK_CAPABILITY",)),
+        ("import shutil\n", ("USER_DATA_WRITE",)),
+        ("import tkinter\n", ("CLIPBOARD_CAPABILITY",)),
+        ("import builtins\n", ("DYNAMIC_EXECUTION",)),
+        ("import os as operating_system\n", ("SOURCE_POLICY_VIOLATION",)),
+        ("import pathlib as paths\n", ("SOURCE_POLICY_VIOLATION",)),
+        ("from os import system\n", ("SHELL_EXECUTION",)),
+    ),
+)
+def test_static_scan_reports_conservative_import_capabilities(
+    tmp_path: Path, source: str, expected: tuple[str, ...]
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(source, encoding="utf-8")
+
+    assert static_capability_findings(package) == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    (
+        (
+            "from pathlib import Path\nPath('report').write_text('data')\n",
+            ("USER_DATA_WRITE",),
+        ),
+        (
+            "import builtins\nbuiltins.open('report', 'w')\n",
+            ("DYNAMIC_EXECUTION", "USER_DATA_WRITE"),
+        ),
+        (
+            "import tkinter\ntkinter.Tk().clipboard_append('data')\n",
+            ("CLIPBOARD_CAPABILITY", "USER_DATA_WRITE"),
+        ),
+    ),
+)
+def test_static_scan_reports_direct_write_capabilities(
+    tmp_path: Path, source: str, expected: tuple[str, ...]
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(source, encoding="utf-8")
+
+    assert static_capability_findings(package) == expected
+
+
+def test_static_scan_marks_ambiguous_write_api_as_policy_violation(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(
+        "class Status:\n"
+        "    def system(self):\n"
+        "        return 'memory only'\n"
+        "class Label:\n"
+        "    def write_text(self):\n"
+        "        return 'memory only'\n"
+        "Status().system()\n"
+        "Label().write_text()\n",
+        encoding="utf-8",
+    )
+
+    assert static_capability_findings(package) == ("SOURCE_POLICY_VIOLATION",)
+
+
+def test_dangerous_attribute_alias_stays_reported_after_rebinding(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(
+        "import os\n"
+        "run = os.system\n"
+        "run = lambda value: value\n"
+        "run('cmd')\n",
+        encoding="utf-8",
+    )
+
+    assert static_capability_findings(package) == ("SHELL_EXECUTION",)
+
+
+def test_function_parameter_shadows_outer_import(tmp_path: Path) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(
+        "import os\n"
+        "def use(os):\n"
+        "    return os.system()\n",
+        encoding="utf-8",
+    )
+
+    assert static_capability_findings(package) == ("SOURCE_POLICY_VIOLATION",)
+
+
+def test_function_default_uses_outer_import_before_parameter_binding(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(
+        "import os\n"
+        "def use(os=os.system('cmd')):\n"
+        "    return os\n",
+        encoding="utf-8",
+    )
+
+    assert static_capability_findings(package) == ("SOURCE_POLICY_VIOLATION",)
+
+
+def test_class_body_uses_outer_import_before_rebinding(tmp_path: Path) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(
+        "import os\n"
+        "class Status:\n"
+        "    before = os.system('cmd')\n"
+        "    os = object()\n",
+        encoding="utf-8",
+    )
+
+    assert static_capability_findings(package) == ("SOURCE_POLICY_VIOLATION",)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import os\nalias = os\nalias.system('cmd')\n",
+        "load = __import__\nload('socket')\n",
+        "from pathlib import Path\ntarget = Path('report')\ntarget.write_text('data')\n",
+        "import pathlib\npathlib.Path('report').write_text('data')\n",
+        "import os.path as osp\nosp.join('a', 'b')\n",
+        "import os\nclass Memory:\n    def system(self): return 'memory'\nos = Memory()\nos.system()\n",
+        "import os\ndef outer():\n    os.system('cmd')\n    def inner():\n        os = object()\n",
+    ),
+)
+def test_source_policy_fails_closed_for_ambiguous_capability_code(
+    tmp_path: Path, source: str
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(source, encoding="utf-8")
+
+    assert static_capability_findings(package)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import os\nalias: object = os\nalias.system('cmd')\n",
+        "load: object = __import__\nload('socket')\n",
+        "import os\nif alias := os:\n    alias.system('cmd')\n",
+        "import os\nalias, marker = os, object()\n",
+    ),
+)
+def test_source_policy_covers_direct_alias_assignment_forms(
+    tmp_path: Path, source: str
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(source, encoding="utf-8")
+
+    assert static_capability_findings(package)
+
+
+def test_static_scan_rejects_top_level_exclusive_open_in_app(tmp_path: Path) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "app.py").write_text(
+        "with open('report.json', 'x', encoding='utf-8') as stream:\n"
+        "    stream.write('{}')\n",
+        encoding="utf-8",
+    )
+
+    assert static_capability_findings(package) == ("USER_DATA_WRITE",)
+
+
+def test_real_app_export_contract_is_the_only_allowed_write() -> None:
+    findings = static_capability_findings(PROJECT_ROOT / "src" / "agentguardian")
+
+    assert "USER_DATA_WRITE" not in findings
+
+
+def test_static_scan_recurses_into_nested_package(tmp_path: Path) -> None:
+    package = tmp_path / "agentguardian"
+    nested = package / "nested"
+    nested.mkdir(parents=True)
+    (nested / "capability.py").write_text("import socket\n", encoding="utf-8")
+
+    assert static_capability_findings(package) == ("NETWORK_MODULE_IMPORT",)
+
+
+def test_static_scan_allows_only_exact_self_audit_admin_probe(tmp_path: Path) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    module = package / "self_audit.py"
+    module.write_text(
+        "import ctypes\nctypes.windll.shell32.IsUserAnAdmin()\n",
+        encoding="utf-8",
+    )
+
+    assert static_capability_findings(package) == ()
+
+    module.write_text(
+        "import ctypes\n"
+        "native = ctypes\n"
+        "ctypes.windll.shell32.IsUserAnAdmin()\n",
+        encoding="utf-8",
+    )
+    assert static_capability_findings(package) == ("NATIVE_CAPABILITY",)
+
+    module.write_text(
+        "import ctypes\n"
+        "native = ctypes.windll\n"
+        "ctypes.windll.shell32.IsUserAnAdmin()\n",
+        encoding="utf-8",
+    )
+    assert static_capability_findings(package) == ("NATIVE_CAPABILITY",)
+
+    module.write_text(
+        "import ctypes\n"
+        "ctypes.windll.shell32.IsUserAnAdmin()\n"
+        "ctypes.windll.shell32.IsUserAnAdmin()\n",
+        encoding="utf-8",
+    )
+    assert static_capability_findings(package) == ("NATIVE_CAPABILITY",)
+
+    module.write_text(
+        "import ctypes\nctypes.CDLL('synthetic-library')\n",
+        encoding="utf-8",
+    )
+    assert static_capability_findings(package) == ("NATIVE_CAPABILITY",)
+
+    module.write_text("import ctypes\n", encoding="utf-8")
+    assert static_capability_findings(package) == ("NATIVE_CAPABILITY",)
+
+
+def test_nested_self_audit_does_not_receive_admin_probe_exception(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "agentguardian"
+    nested = package / "nested"
+    nested.mkdir(parents=True)
+    (nested / "self_audit.py").write_text(
+        "import ctypes\nctypes.windll.shell32.IsUserAnAdmin()\n",
+        encoding="utf-8",
+    )
+
+    assert static_capability_findings(package) == ("NATIVE_CAPABILITY",)
+
+
+def test_nested_app_does_not_receive_report_export_exception(tmp_path: Path) -> None:
+    package = tmp_path / "agentguardian"
+    nested = package / "nested"
+    nested.mkdir(parents=True)
+    (nested / "app.py").write_text(
+        "with open('report.json', 'x', encoding='utf-8') as stream:\n"
+        "    stream.write('{}')\n",
+        encoding="utf-8",
+    )
+
+    assert static_capability_findings(package) == ("USER_DATA_WRITE",)
+
+
+def test_static_scan_reports_fixed_error_without_source_details(tmp_path: Path) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    marker = "synthetic-secret-source-marker"
+    module = package / "broken.py"
+    module.write_text(f"value = '{marker}\n", encoding="utf-8")
+
+    findings = static_capability_findings(package)
+    serialized = json.dumps(findings)
+
+    assert findings == ("SOURCE_SCAN_ERROR",)
+    assert marker not in serialized
+    assert str(module) not in serialized
+
+
+def test_windows_ci_runs_required_local_checks_without_uploads() -> None:
+    workflow = (PROJECT_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    lowered = workflow.lower()
+
+    for required in (
+        "windows-latest",
+        "python-version: '3.12'",
+        'pip install -e ".[dev]"',
+        "rtk pytest",
+        "python -m pytest",
+        "scripts/check_brand_assets.py",
+        "python -m compileall -q src",
+        "git diff --exit-code",
+        "git status --porcelain --untracked-files=all",
+        "if ($status)",
+        "contents: read",
+    ):
+        assert required in workflow
+    assert "upload-artifact" not in lowered
+    assert "telemetry" not in lowered

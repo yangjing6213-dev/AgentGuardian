@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Full test suite
+        shell: pwsh
+        run: |
+          if (Get-Command rtk -ErrorAction SilentlyContinue) {
+            rtk pytest -q
+          } else {
+            python -m pytest -q
+          }
+      - name: Brand validator
+        shell: pwsh
+        run: |
+          if (Get-Command rtk -ErrorAction SilentlyContinue) {
+            rtk proxy python scripts/check_brand_assets.py
+          } else {
+            python scripts/check_brand_assets.py
+          }
+      - name: Compile source
+        shell: pwsh
+        run: |
+          if (Get-Command rtk -ErrorAction SilentlyContinue) {
+            rtk proxy python -m compileall -q src
+          } else {
+            python -m compileall -q src
+          }
+      - name: Verify clean tree
+        shell: pwsh
+        run: |
+          git diff --exit-code
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          $status = git status --porcelain --untracked-files=all
+          if ($status) {
+            $status
+            exit 1
+          }

@@ -63,6 +63,11 @@ class AuditOutcome:
     scanned_roots: tuple[Path, ...]
 
 
+def _is_unc_path(path: str | Path) -> bool:
+    value = os.fspath(path)
+    return value.startswith(("\\\\", "//"))
+
+
 def export_new_report(
     path: str | Path,
     content: str,
@@ -73,12 +78,15 @@ def export_new_report(
     Founder Alpha does not provide a handle sandbox against an active local
     reparse replacement race between the final resolution and exclusive open.
     """
+    roots = tuple(scanned_roots)
+    if _is_unc_path(path) or any(_is_unc_path(root) for root in roots):
+        raise ValueError("UNC paths are not allowed")
     target = Path(path)
     if _is_reparse(target):
         raise ValueError("report destination is a reparse point")
     if not target.parent.is_dir():
         raise FileNotFoundError("parent directory does not exist")
-    resolved_roots = tuple(Path(root).resolve(strict=False) for root in scanned_roots)
+    resolved_roots = tuple(Path(root).resolve(strict=False) for root in roots)
     resolved_parent = target.parent.resolve(strict=True)
     resolved_target = target.resolve(strict=False)
     if resolved_target.parent != resolved_parent:
@@ -146,6 +154,8 @@ def _append_finding_batch(
 
 
 def _run_audit(roots: tuple[Path, ...]) -> AuditOutcome:
+    if any(_is_unc_path(root) for root in roots):
+        raise ValueError("UNC scan roots are not allowed")
     scan_key = secrets.token_bytes(32)
     discovered = discover_files(
         list(roots), SUPPORTED_SUFFIXES, max_files=MAX_AUDIT_FILES + 1
@@ -296,12 +306,17 @@ class AgentGuardianWindow(QMainWindow):
         trust_layout = QHBoxLayout(self.trust_strip)
         trust_layout.setContentsMargins(20, 0, 20, 0)
         trust_layout.setSpacing(18)
-        self.local_mode_label = QLabel("本地模式")
+        self.local_mode_label = QLabel("本地路径模式")
         self.local_mode_label.setObjectName("localMode")
+        self.local_mode_label.setToolTip(
+            "拒绝 UNC 路径；映射网络盘无法可靠识别，仍属残余风险。"
+        )
+        network_scope_label = QLabel("包源码网络能力：未发现")
+        network_scope_label.setToolTip("仅静态扫描包源码；不证明依赖或二进制无网络能力。")
         rule_version = load_rules().version
         self.trust_labels = [
             self.local_mode_label,
-            QLabel("网络能力：无"),
+            network_scope_label,
             QLabel(f"规则版本：{rule_version}"),
             QLabel("Founder Alpha"),
         ]
@@ -424,6 +439,12 @@ class AgentGuardianWindow(QMainWindow):
     def _select_folder(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "选择审计文件夹")
         if not selected:
+            return
+        if _is_unc_path(selected):
+            self._invalidate_report()
+            self._roots = ()
+            self.scan_button.setEnabled(False)
+            self.status_label.setText("不支持 UNC 路径；映射网络盘无法可靠识别。")
             return
         root = Path(selected)
         self._invalidate_report()
