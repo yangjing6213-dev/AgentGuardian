@@ -146,7 +146,7 @@ Expected: zero test failures, brand validator exit 0, compile exit 0, and no whi
 
 Confirm `collect_self_audit()` still reports no network, LLM, telemetry, updater, shell, clipboard, or unexpected user-data-write capability. Confirm all tests use synthetic values.
 
-- [ ] **Step 5: Commit and push the verified batch**
+- [x] **Step 5: Commit and push the verified batch**
 
 Run: `git add rules/default.json src/agentguardian tests README.md docs/superpowers docs/reports`
 
