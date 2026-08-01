@@ -50,6 +50,7 @@ SUPPORTED_SUFFIXES = {".json", ".txt", ".md", ".log", ".yaml", ".yml"}
 MAX_AUDIT_FINDINGS = 2000
 MAX_AUDIT_EVIDENCE = 4000
 MAX_AUDIT_FILES = 10_000
+MAX_AUDIT_ENTRIES = 50_000
 MAX_AUDIT_BYTES = 512 * 1024 * 1024
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
 
@@ -157,13 +158,16 @@ def _run_audit(roots: tuple[Path, ...]) -> AuditOutcome:
     if any(_is_unc_path(root) for root in roots):
         raise ValueError("UNC scan roots are not allowed")
     scan_key = secrets.token_bytes(32)
-    discovered = discover_files(
-        list(roots), SUPPORTED_SUFFIXES, max_files=MAX_AUDIT_FILES + 1
+    discovery = discover_files(
+        list(roots),
+        SUPPORTED_SUFFIXES,
+        max_files=MAX_AUDIT_FILES,
+        max_entries=MAX_AUDIT_ENTRIES,
     )
-    files = discovered[:MAX_AUDIT_FILES]
+    files = list(discovery.files)
     findings: list[Finding] = []
     seen_findings: set[Finding] = set()
-    limits = ["file_limit_reached"] if len(discovered) > MAX_AUDIT_FILES else []
+    limits = list(discovery.limits)
     scanned = 0
     scanned_bytes = 0
     evidence_count = 0
@@ -209,8 +213,9 @@ def _run_audit(roots: tuple[Path, ...]) -> AuditOutcome:
                 break
         scanned += 1
 
-    if discovered:
-        coverage = scanned / len(discovered)
+    coverage_denominator = len(files) + bool(discovery.limits)
+    if coverage_denominator:
+        coverage = scanned / coverage_denominator
     else:
         coverage = 0.0
         limits.append("no_supported_files")

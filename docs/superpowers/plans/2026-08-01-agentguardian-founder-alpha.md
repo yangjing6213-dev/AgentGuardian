@@ -383,7 +383,7 @@ Commit: `rtk git commit -m "Add manual remediation guidance"`
 - Create: `src/agentguardian/__main__.py`
 - Create: `tests/test_app_smoke.py`
 
-- [ ] **Step 1: Write offscreen UI smoke test**
+- [x] **Step 1: Write offscreen UI smoke test**
 
 ```python
 import os
@@ -403,15 +403,15 @@ def test_window_exposes_trust_state():
         app.processEvents()
 ```
 
-- [ ] **Step 2: Implement one-window workflow**
+- [x] **Step 2: Implement one-window workflow**
 
 Use a left navigation list and a stacked content area. Alpha pages are Scope, Findings, and Report; a compact trust strip always shows local-only mode, network capability, rule version, and Alpha status. The scan button opens a folder chooser, runs bounded discovery in a worker thread, passes results to pure detectors/scoring, and updates the overview. Do not implement accounts, cloud sync, animations, theming engines, plugin marketplaces, embedded web pages, or remediation controls.
 
-- [ ] **Step 3: Apply fixed design tokens**
+- [x] **Step 3: Apply fixed design tokens**
 
 Use Obsidian, Cloud, Surface, Border, Trust, Muted, Warning, and Critical from the design spec; Trust marks verified states, Warning and Critical mark risk, and neutral tones establish hierarchy; 6px maximum corner radius; 0 letter spacing; system font fallback; no gradients and no decorative cards.
 
-- [ ] **Step 4: Smoke test and commit**
+- [x] **Step 4: Smoke test and commit**
 
 Run: `rtk pytest tests/test_app_smoke.py -q`
 Expected: pass offscreen.
@@ -427,26 +427,26 @@ Commit: `rtk git commit -m "Add minimal local audit interface"`
 - Create: `docs/reports/alpha-0.1.0-stage-report.md`
 - Modify: `README.md`
 
-- [ ] **Step 1: Test self-audit output**
+- [x] **Step 1: Test self-audit output**
 
 Assert the output includes version, executable path, rule-bundle SHA-256, local-only mode, and `network_capability: absent`. It must not enumerate environment variable values. The binary must contain no update, telemetry, LLM, share-verification, or network client module.
 
-- [ ] **Step 2: Add Windows CI**
+- [x] **Step 2: Add Windows CI**
 
 CI installs `.[dev]`, runs `rtk pytest -q` when RTK is available or `pytest -q` on GitHub-hosted runners, runs `python scripts/check_brand_assets.py`, and fails on uncommitted generated artifacts.
 
-- [ ] **Step 3: Run complete release gate**
+- [x] **Step 3: Run complete release gate**
 
 Run: `rtk pytest -q`
 Run: `rtk python scripts/check_brand_assets.py`
 Run: `rtk git diff --check`
 Expected: all tests pass, brand validator exits 0, no whitespace errors, and `rtk git status --short` lists only intentional release-report changes.
 
-- [ ] **Step 4: Independent read-only review**
+- [x] **Step 4: Independent read-only review**
 
 Reviewer confirms no raw evidence in logs/reports, no network calls in the binary, no arbitrary command execution, no user-data writes, no browser/clipboard collection, and README says Founder Alpha rather than production-safe.
 
-- [ ] **Step 5: Commit and push**
+- [x] **Step 5: Commit and push**
 
 Run: `rtk git add .github/workflows/ci.yml src/agentguardian/self_audit.py tests/test_self_audit.py docs/reports/alpha-0.1.0-stage-report.md README.md`
 Run: `rtk git commit -m "Prepare AgentGuardian 0.1.0 Founder Alpha"`

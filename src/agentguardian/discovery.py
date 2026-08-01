@@ -1,9 +1,9 @@
 import ntpath
 import os
-from pathlib import Path, PureWindowsPath
 import stat
-from typing import Mapping
-
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path, PureWindowsPath
 
 _KNOWN_CONFIG_LOCATIONS = (
     ("APPDATA", (), (("Claude",), ("Cursor", "User"), ("Windsurf", "User"))),
@@ -13,9 +13,19 @@ _KNOWN_CONFIG_LOCATIONS = (
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
 
 
+@dataclass(frozen=True, slots=True)
+class DiscoveryResult:
+    files: tuple[Path, ...]
+    limits: tuple[str, ...]
+    entries_seen: int
+
+
 def discover_files(
-    roots: list[Path], suffixes: set[str], max_files: int = 50_000
-) -> list[Path]:
+    roots: list[Path],
+    suffixes: set[str],
+    max_files: int = 50_000,
+    max_entries: int = 100_000,
+) -> DiscoveryResult:
     """Audit regular files from explicit roots as a bounded stable snapshot.
 
     This read-only Alpha rechecks reparse components around each directory scan.
@@ -25,19 +35,25 @@ def discover_files(
     """
     if max_files <= 0:
         raise ValueError("max_files must be positive")
+    if max_entries <= 0:
+        raise ValueError("max_entries must be positive")
 
     wanted_suffixes = {suffix.lower() for suffix in suffixes}
     accepted_roots: list[Path] = []
+    limits: list[str] = []
     for root in roots:
         if _is_windows_root(root):
             raise ValueError("Windows root paths are not allowed")
         path = Path(root)
         if not _has_reparse_component(path):
             accepted_roots.append(path)
+        else:
+            limits.append("root_reparse_excluded")
 
-    pending = list(reversed(sorted(accepted_roots, key=_sort_key)))
+    pending = sorted(accepted_roots, key=_sort_key, reverse=True)
     seen_directories: set[str] = set()
     found: list[Path] = []
+    entries_seen = 0
 
     while pending:
         directory = pending.pop()
@@ -47,18 +63,29 @@ def discover_files(
         seen_directories.add(directory_key)
 
         if _has_reparse_component(directory):
+            limits.append("reparse_excluded")
             continue
 
         try:
             directory_stat = os.lstat(directory)
             if not stat.S_ISDIR(directory_stat.st_mode) or _is_reparse(directory_stat):
+                limits.append("directory_excluded")
                 continue
             with os.scandir(directory) as iterator:
-                entries = sorted(iterator, key=_entry_sort_key)
+                entries = []
+                for entry in iterator:
+                    if entries_seen >= max_entries:
+                        limits.append("entry_limit_reached")
+                        return _discovery_result(found, limits, entries_seen)
+                    entries_seen += 1
+                    entries.append(entry)
+                entries.sort(key=_entry_sort_key)
         except OSError:
+            limits.append("directory_read_limited")
             continue
 
         if _has_reparse_component(directory):
+            limits.append("reparse_changed")
             continue
 
         child_directories: list[Path] = []
@@ -66,8 +93,10 @@ def discover_files(
             try:
                 entry_stat = entry.stat(follow_symlinks=False)
             except OSError:
+                limits.append("entry_read_limited")
                 continue
             if _is_reparse(entry_stat):
+                limits.append("reparse_excluded")
                 continue
 
             path = Path(entry.path)
@@ -76,11 +105,22 @@ def discover_files(
             elif stat.S_ISREG(entry_stat.st_mode) and path.suffix.lower() in wanted_suffixes:
                 found.append(path)
                 if len(found) == max_files:
-                    return sorted(found, key=_sort_key)
+                    limits.append("file_limit_reached")
+                    return _discovery_result(found, limits, entries_seen)
 
         pending.extend(reversed(child_directories))
 
-    return sorted(found, key=_sort_key)
+    return _discovery_result(found, limits, entries_seen)
+
+
+def _discovery_result(
+    found: list[Path], limits: list[str], entries_seen: int
+) -> DiscoveryResult:
+    return DiscoveryResult(
+        files=tuple(sorted(found, key=_sort_key)),
+        limits=tuple(dict.fromkeys(limits)),
+        entries_seen=entries_seen,
+    )
 
 
 def known_config_roots(environ: Mapping[str, str]) -> list[Path]:

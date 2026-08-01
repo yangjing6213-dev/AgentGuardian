@@ -3,6 +3,7 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 import agentguardian.app as app_module
 from agentguardian.app import COLOR_TOKENS, create_window, export_new_report
 from agentguardian.detectors import FileDetectionResult
+from agentguardian.discovery import DiscoveryResult
 from agentguardian.domain import Evidence, Finding, RiskDomain, Severity
 
 
@@ -36,6 +38,12 @@ def _global_rect(widget) -> QRect:
     return QRect(widget.mapToGlobal(QPoint(0, 0)), widget.size())
 
 
+def _discovery_result(
+    files: tuple[Path, ...], limits: tuple[str, ...] = ()
+) -> DiscoveryResult:
+    return DiscoveryResult(files=files, limits=limits, entries_seen=len(files))
+
+
 def _synthetic_finding(index: int, evidence_count: int = 1) -> Finding:
     evidence = tuple(
         Evidence(
@@ -52,6 +60,28 @@ def _synthetic_finding(index: int, evidence_count: int = 1) -> Finding:
         root_fingerprint=f"{index:064x}",
         evidence=evidence,
     )
+
+
+def test_discovery_limit_marks_audit_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "visible.txt"
+    path.write_text("safe", encoding="utf-8")
+    monkeypatch.setattr(
+        app_module,
+        "discover_files",
+        lambda *args, **kwargs: SimpleNamespace(
+            files=(path,),
+            limits=("directory_read_limited",),
+            entries_seen=1,
+        ),
+    )
+
+    outcome = app_module._run_audit((tmp_path,))
+
+    assert outcome.score.coverage == 0.5
+    assert outcome.score.incomplete is True
+    assert "directory_read_limited" in outcome.score.limits
 
 
 def test_window_navigation_trust_strip_and_approved_theme(qapp):
@@ -342,7 +372,7 @@ def test_audit_finding_cap_stops_remaining_files_and_uses_complete_coverage(
     monkeypatch.setattr(
         app_module,
         "discover_files",
-        lambda roots, suffixes, *, max_files: list(files),
+        lambda roots, suffixes, *, max_files, max_entries: _discovery_result(files),
     )
 
     def fake_detect_file(path, *, scan_key):
@@ -382,7 +412,7 @@ def test_audit_evidence_cap_rejects_partial_finding_batch(monkeypatch, tmp_path)
     monkeypatch.setattr(
         app_module,
         "discover_files",
-        lambda roots, suffixes, *, max_files: list(files),
+        lambda roots, suffixes, *, max_files, max_entries: _discovery_result(files),
     )
 
     def fake_detect_file(path, *, scan_key):
@@ -407,9 +437,9 @@ def test_discovery_file_sentinel_marks_scan_incomplete(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(app_module, "MAX_AUDIT_FILES", 2)
 
-    def fake_discover(roots, suffixes, *, max_files):
-        assert max_files == 3
-        return list(files)
+    def fake_discover(roots, suffixes, *, max_files, max_entries):
+        assert max_files == 2
+        return _discovery_result(files[:2], ("file_limit_reached",))
 
     def fake_detect_file(path, *, scan_key):
         calls.append(path)
@@ -436,7 +466,7 @@ def test_total_byte_limit_stops_before_over_budget_file(monkeypatch, tmp_path):
     monkeypatch.setattr(
         app_module,
         "discover_files",
-        lambda roots, suffixes, *, max_files: list(files),
+        lambda roots, suffixes, *, max_files, max_entries: _discovery_result(files),
     )
 
     def fake_detect_file(path, *, scan_key):
@@ -469,7 +499,7 @@ def test_duplicate_findings_are_aggregated_once(monkeypatch, tmp_path):
     monkeypatch.setattr(
         app_module,
         "discover_files",
-        lambda roots, suffixes, *, max_files: [path],
+        lambda roots, suffixes, *, max_files, max_entries: _discovery_result((path,)),
     )
     monkeypatch.setattr(
         app_module,

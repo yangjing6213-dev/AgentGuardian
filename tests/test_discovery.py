@@ -1,8 +1,8 @@
 import errno
 import inspect
 import os
-from pathlib import Path, PureWindowsPath
 import subprocess
+from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
@@ -63,9 +63,48 @@ def test_discovery_accepts_sorted_bounded_directory_below_drive_root(
     (root / "ignore.bin").write_bytes(b"x")
     (root / "folder.json").mkdir()
 
-    found = discover_files([root], {".json"}, max_files=2)
+    result = discover_files([root], {".json"}, max_files=2)
 
-    assert found == [root / "a.JSON", root / "b.json"]
+    assert result.files == (root / "a.JSON", root / "b.json")
+    assert result.limits == ("file_limit_reached",)
+
+
+def test_discovery_bounds_all_directory_entries(tmp_path: Path) -> None:
+    root = tmp_path / "selected"
+    root.mkdir()
+    for index in range(5):
+        (root / f"ignored-{index}.bin").write_bytes(b"x")
+
+    result = discover_files(
+        [root], {".json"}, max_files=10, max_entries=3
+    )
+
+    assert result.files == ()
+    assert result.entries_seen == 3
+    assert result.limits == ("entry_limit_reached",)
+
+
+def test_discovery_reports_unreadable_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "selected"
+    blocked = root / "blocked"
+    blocked.mkdir(parents=True)
+    visible = root / "visible.json"
+    visible.write_text("{}", encoding="utf-8")
+    real_scandir = discovery.os.scandir
+
+    def deny_blocked(path: os.PathLike[str]):
+        if Path(path) == blocked:
+            raise PermissionError("synthetic denial")
+        return real_scandir(path)
+
+    monkeypatch.setattr(discovery.os, "scandir", deny_blocked)
+
+    result = discover_files([root], {".json"})
+
+    assert result.files == (visible,)
+    assert "directory_read_limited" in result.limits
 
 
 @pytest.mark.parametrize("max_files", (0, -1))
@@ -133,7 +172,10 @@ def test_discovery_does_not_follow_symlinks(tmp_path: Path) -> None:
     _symlink_or_skip(root / "linked-directory", outside, directory=True)
     _symlink_or_skip(root / "linked-file.json", secret, directory=False)
 
-    assert discover_files([root], {".json"}) == [root / "local.json"]
+    result = discover_files([root], {".json"})
+
+    assert result.files == (root / "local.json",)
+    assert result.limits == ("reparse_excluded",)
 
 
 def test_discovery_skips_root_beneath_symlink(tmp_path: Path) -> None:
@@ -144,7 +186,10 @@ def test_discovery_skips_root_beneath_symlink(tmp_path: Path) -> None:
     link = tmp_path / "link"
     _symlink_or_skip(link, outside, directory=True)
 
-    assert discover_files([link / "nested"], {".json"}) == []
+    result = discover_files([link / "nested"], {".json"})
+
+    assert result.files == ()
+    assert result.limits == ("root_reparse_excluded",)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows junction test")
@@ -158,7 +203,10 @@ def test_discovery_does_not_follow_junctions(tmp_path: Path) -> None:
     junction = root / "linked-directory"
     _junction_or_skip(junction, outside)
 
-    assert discover_files([root], {".json"}) == [root / "local.json"]
+    result = discover_files([root], {".json"})
+
+    assert result.files == (root / "local.json",)
+    assert result.limits == ("reparse_excluded",)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows junction test")
@@ -170,7 +218,10 @@ def test_discovery_skips_root_beneath_junction(tmp_path: Path) -> None:
     junction = tmp_path / "link"
     _junction_or_skip(junction, outside)
 
-    assert discover_files([junction / "nested"], {".json"}) == []
+    result = discover_files([junction / "nested"], {".json"})
+
+    assert result.files == ()
+    assert result.limits == ("root_reparse_excluded",)
 
 
 def test_discovery_discards_batch_when_reparse_appears_after_scandir(
@@ -190,7 +241,10 @@ def test_discovery_discards_batch_when_reparse_appears_after_scandir(
         discovery, "_has_reparse_component", reparse_appears_after_scandir
     )
 
-    assert discover_files([root], {".json"}) == []
+    result = discover_files([root], {".json"})
+
+    assert result.files == ()
+    assert result.limits == ("reparse_changed",)
     assert checks == 3
 
 
