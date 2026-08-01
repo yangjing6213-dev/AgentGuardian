@@ -16,25 +16,25 @@
 - Create: `src/agentguardian/evidence_state.py`
 - Create: `tests/test_evidence_state.py`
 
-- [ ] **Step 1: Write failing schema tests**
+- [x] **Step 1: Write failing schema tests**
 
 Create synthetic `Finding` and `Score` values. Require `build_snapshot(...)` and `encode_snapshot(...)` to produce schema version 1 with UTC capture time, product/rule versions, coverage/confidence/incomplete/limits, rule IDs, masked summaries, and HMAC references. Assert serialized bytes do not contain source names, root paths, raw values, endpoint values, or a `scan_key` field.
 
-- [ ] **Step 2: Verify the red state**
+- [x] **Step 2: Verify the red state**
 
 Run: `python -B -m pytest -q -p no:cacheprovider tests/test_evidence_state.py`
 
 Expected: collection fails because `agentguardian.evidence_state` does not exist.
 
-- [ ] **Step 3: Implement immutable snapshot types and canonical encoding**
+- [x] **Step 3: Implement immutable snapshot types and canonical encoding**
 
 Add frozen dataclasses for the snapshot, scan metadata, finding reference, and evidence reference. Convert iterables to tuples, sort findings/evidence deterministically, reuse the existing masked-evidence safety contract, and encode with `json.dumps(..., ensure_ascii=False, separators=(",", ":"), allow_nan=False)`.
 
-- [ ] **Step 4: Add strict decoding tests and implementation**
+- [x] **Step 4: Add strict decoding tests and implementation**
 
 Require exact object keys, schema `1`, UTC `Z` timestamps, 64-character lowercase HMAC values, bounded counts, finite numeric values, and no unknown fields. Invalid or over-limit payloads must raise `EvidenceStateError("PROTECTED_STATE_INVALID")` without echoing input.
 
-- [ ] **Step 5: Run focused tests and commit**
+- [x] **Step 5: Run focused tests and commit**
 
 Run: `python -B -m pytest -q -p no:cacheprovider tests/test_evidence_state.py tests/test_domain.py`
 
