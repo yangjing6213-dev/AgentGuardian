@@ -529,7 +529,8 @@ def test_windows_ci_runs_required_local_checks_without_uploads() -> None:
     for required in (
         "windows-latest",
         "python-version: '3.12'",
-        'pip install -e ".[dev]"',
+        "python -m pip install --require-hashes -r requirements-dev.lock",
+        "python -m pip install --no-build-isolation --no-deps -e .",
         "rtk pytest",
         "python -m pytest",
         "scripts/check_brand_assets.py",
@@ -548,3 +549,32 @@ def test_windows_ci_runs_required_local_checks_without_uploads() -> None:
         assert re.fullmatch(r"[0-9a-f]{40}", reference)
     assert "upload-artifact" not in lowered
     assert "telemetry" not in lowered
+    assert 'pip install -e ".[dev]"' not in workflow
+
+
+def test_python_dependencies_are_hash_locked_for_windows_ci() -> None:
+    lock = (PROJECT_ROOT / "requirements-dev.lock").read_text(encoding="utf-8")
+    requirement_lines = [
+        line
+        for line in lock.splitlines()
+        if line and not line.startswith("#") and not line.startswith(" ")
+    ]
+
+    assert "Generated for Windows Python 3.12 CI" in lock
+    assert requirement_lines
+    for line in requirement_lines:
+        assert re.fullmatch(
+            r"[A-Za-z0-9_.-]+==[A-Za-z0-9_.!+-]+ --hash=sha256:[0-9a-f]{64}",
+            line,
+        )
+
+
+def test_design_status_tracks_windows_mvp_hardening() -> None:
+    spec = (
+        PROJECT_ROOT / "docs" / "superpowers" / "specs"
+        / "2026-08-01-agentguardian-design.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Founder Alpha 已达内部 GO" in spec
+    assert "下一阶段：Windows MVP 硬化" in spec
+    assert "OpenAI Provider：本地适配、检测和人工指引优先，不默认调用 API" in spec

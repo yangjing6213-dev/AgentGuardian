@@ -1,6 +1,6 @@
 # AgentGuardian 设计规范
 
-状态：用户已确认的设计基线，Founder Alpha 实施中
+状态：用户已确认的设计基线；Founder Alpha 已达内部 GO；下一阶段：Windows MVP 硬化
 版本：0.1  
 日期：2026-08-01  
 产品中文名：AI Agent 守护者  
@@ -23,6 +23,7 @@ AgentGuardian 是一个本地优先的 AI Agent 数据安全审计平台，首�
 | 数据边界 | 本地优先、可验证出口；原始聊天、完整凭据和完整分享链接默认不外发 |
 | 产品路线 | 分阶段开放内核；先交付真实可运行的 Windows Founder Alpha |
 | 首周版本 | `0.1.0 Founder Alpha`，仅对有限范围作真实运行承诺，不称为生产安全版 |
+| OpenAI Provider | OpenAI Provider：本地适配、检测和人工指引优先，不默认调用 API |
 | 交互闭环 | Founder Alpha：范围预览 → 只读扫描 → 证据确认 → 人工修复指引 → `not_performed` 复审状态；限权执行与自动复审在 Alpha 后实现 |
 | 评分表达 | 安全分数 / 100 + 审计覆盖率 + 证据置信度 + 限制项 |
 | 用户定制 | 支持个人规则和企业签名策略包；关键词原文默认本地加密，不上传 |

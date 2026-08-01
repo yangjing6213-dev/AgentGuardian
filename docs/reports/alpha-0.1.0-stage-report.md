@@ -71,7 +71,7 @@ Founder Alpha 不访问浏览器数据库、浏览器历史或剪贴板，不联
 - 自审计是源码策略检查器，不是完整 Python 语义分析器，也不扫描依赖和二进制。
 - UNC 路径被拒绝；映射网络盘仍无法可靠识别。
 - 报告导出未实现目录句柄相对创建；主动本地 reparse replacement race 仍是 Alpha 残余风险。
-- GitHub Actions 已固定到 commit SHA；Python 依赖尚未锁定哈希。
+- GitHub Actions 已固定到 commit SHA；Windows CI Python 依赖已通过 `requirements-dev.lock` 锁定哈希。
 - Python 3.12 GitHub-hosted CI 已通过；本地门禁运行于当前开发解释器。
 - 自动修复、回滚、联网验证和自动复审均未实现。
 - GitHub Milestone/Issue 创建及 Draft PR 标题/正文更新被当前凭据权限阻止：`Resource not accessible by personal access token`。代码推送、现有 Draft PR 读取和 CI 正常。
