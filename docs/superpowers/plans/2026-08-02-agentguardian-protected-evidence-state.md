@@ -114,21 +114,21 @@ Commit: `Persist protected evidence state atomically`
 - Modify: `src/agentguardian/app.py`
 - Modify: `tests/test_app_smoke.py`
 
-- [ ] **Step 1: Write failing UI behavior tests**
+- [x] **Step 1: Write failing UI behavior tests**
 
 Require no state-store call during application startup or `_run_audit`. After a completed audit, an explicit save control invokes the store once with the in-memory findings/score and current rule version. Fixed success/failure text must not include a path, native error, finding value, or endpoint.
 
-- [ ] **Step 2: Verify the red state**
+- [x] **Step 2: Verify the red state**
 
 Run: `python -B -m pytest -q -p no:cacheprovider tests/test_app_smoke.py -k "protected_state"`
 
 Expected: tests fail because the explicit save action is absent.
 
-- [ ] **Step 3: Add the minimal explicit action**
+- [x] **Step 3: Add the minimal explicit action**
 
 Add one report-page save control that is disabled before a completed audit and enabled afterward. It writes only after the user activates it; do not add auto-save, startup load, background task, history browser, or cloud behavior.
 
-- [ ] **Step 4: Run UI and boundary tests and commit**
+- [x] **Step 4: Run UI and boundary tests and commit**
 
 Run: `python -B -m pytest -q -p no:cacheprovider tests/test_app_smoke.py tests/test_state_store.py tests/test_self_audit.py`
 

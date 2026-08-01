@@ -5,6 +5,7 @@ import stat
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
@@ -32,9 +33,11 @@ from PySide6.QtWidgets import (
 from .detectors import MAX_FILE_BYTES, detect_file, detect_mcp_config, load_rules
 from .discovery import discover_files
 from .domain import Finding, Score, Severity
+from .evidence_state import EvidenceStateError, build_snapshot
 from .guidance import guidance_for
 from .reporting import render_html, render_json
 from .scoring import score
+from .state_store import StateStoreError, save_protected_state
 
 COLOR_TOKENS = {
     "obsidian": "#0F1215",
@@ -68,6 +71,7 @@ _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
 class AuditOutcome:
     findings: tuple[Finding, ...]
     score: Score
+    rule_version: str
     report_json: str
     report_html: str
     scanned_roots: tuple[Path, ...]
@@ -235,6 +239,7 @@ def _run_audit(roots: tuple[Path, ...]) -> AuditOutcome:
     return AuditOutcome(
         findings=frozen_findings,
         score=audit_score,
+        rule_version=rule_version,
         report_json=render_json(
             audit_score, frozen_findings, rule_version=rule_version
         ),
@@ -271,6 +276,7 @@ class AgentGuardianWindow(QMainWindow):
         self._thread: QThread | None = None
         self._worker: AuditWorker | None = None
         self._row_findings: list[Finding] = []
+        self._audit_outcome: AuditOutcome | None = None
         self.is_scanning = False
         self.report_json = ""
         self.report_html = ""
@@ -435,9 +441,17 @@ class AgentGuardianWindow(QMainWindow):
         self.save_button.setToolTip("导出一份新的审计报告")
         self.save_button.setEnabled(False)
         self.save_button.clicked.connect(self._export_report)
+        self.protected_state_button = QPushButton("保存加密状态")
+        self.protected_state_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton)
+        )
+        self.protected_state_button.setToolTip("保存当前用户范围的 DPAPI 加密状态")
+        self.protected_state_button.setEnabled(False)
+        self.protected_state_button.clicked.connect(self._save_protected_state)
         controls.addWidget(self.report_mode_combo)
         controls.addStretch()
         controls.addWidget(self.review_button)
+        controls.addWidget(self.protected_state_button)
         controls.addWidget(self.save_button)
         layout.addLayout(controls)
         self.report_browser = QTextBrowser()
@@ -494,12 +508,14 @@ class AgentGuardianWindow(QMainWindow):
 
     @Slot(object)
     def _scan_completed(self, outcome: AuditOutcome) -> None:
+        self._audit_outcome = outcome
         self.report_json = outcome.report_json
         self.report_html = outcome.report_html
         self._report_roots = outcome.scanned_roots
         self._populate_findings(outcome.findings)
         self._refresh_report()
         self.save_button.setEnabled(True)
+        self.protected_state_button.setEnabled(True)
         if outcome.score.incomplete:
             coverage = f"{outcome.score.coverage:.0%}"
             finding_summary = (
@@ -524,6 +540,7 @@ class AgentGuardianWindow(QMainWindow):
         self.guidance_browser.setPlainText("无法生成修复步骤。")
 
     def _invalidate_report(self) -> None:
+        self._audit_outcome = None
         self.report_json = ""
         self.report_html = ""
         self._report_roots = ()
@@ -531,6 +548,7 @@ class AgentGuardianWindow(QMainWindow):
         self._row_findings.clear()
         self.guidance_browser.setPlainText("选择一项风险以查看人工步骤。")
         self.save_button.setEnabled(False)
+        self.protected_state_button.setEnabled(False)
         self._refresh_report()
 
     @Slot()
@@ -620,6 +638,26 @@ class AgentGuardianWindow(QMainWindow):
             QMessageBox.warning(self, "导出失败", "无法导出报告。")
             return
         QMessageBox.information(self, "导出完成", "报告已导出。")
+
+    def _save_protected_state(self) -> None:
+        if self._audit_outcome is None:
+            return
+        try:
+            snapshot = build_snapshot(
+                self._audit_outcome.findings,
+                self._audit_outcome.score,
+                rule_version=self._audit_outcome.rule_version,
+                captured_at=datetime.now(timezone.utc),
+            )
+            save_protected_state(snapshot)
+        except (EvidenceStateError, StateStoreError, TypeError, ValueError):
+            QMessageBox.warning(self, "保存失败", "无法保存加密状态。")
+            return
+        QMessageBox.information(
+            self,
+            "保存完成",
+            "加密状态已保存到当前 Windows 用户。",
+        )
 
     def closeEvent(self, event) -> None:
         if self._thread is not None and self._thread.isRunning():

@@ -17,6 +17,8 @@ from agentguardian.app import COLOR_TOKENS, create_window, export_new_report
 from agentguardian.detectors import FileDetectionResult
 from agentguardian.discovery import DiscoveryResult
 from agentguardian.domain import Evidence, Finding, RiskDomain, Severity
+from agentguardian.evidence_state import encode_snapshot
+from agentguardian.state_store import StateStoreError
 
 
 @pytest.fixture(scope="session")
@@ -112,6 +114,16 @@ def test_window_navigation_trust_strip_and_approved_theme(qapp):
         button.click()
         assert window.stack.currentIndex() == index
 
+    assert not window.protected_state_button.icon().isNull()
+    assert not window.protected_state_button.isEnabled()
+    report_actions = (
+        window.review_button,
+        window.protected_state_button,
+        window.save_button,
+    )
+    for left, right in zip(report_actions, report_actions[1:]):
+        assert not _global_rect(left).intersects(_global_rect(right))
+
     assert COLOR_TOKENS == {
         "obsidian": "#0F1215",
         "surface": "#171C20",
@@ -195,6 +207,77 @@ def test_openai_finding_uses_openai_manual_guidance(qapp) -> None:
     guidance = window.guidance_browser.toPlainText().lower()
     assert "openai" in guidance
     assert "revoke" in guidance
+    window.close()
+
+
+def test_protected_state_is_saved_only_after_explicit_action(
+    qapp, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    marker = "synthetic-state-marker"
+    (tmp_path / "private.env").write_text(
+        f"OPENAI_API_KEY=sk-proj-{marker}-123456789\n",
+        encoding="utf-8",
+    )
+    saved = []
+    messages = []
+    monkeypatch.setattr(
+        app_module,
+        "save_protected_state",
+        lambda snapshot: saved.append(snapshot),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda parent, title, message: messages.append((title, message)),
+    )
+    window = create_window()
+
+    assert not window.protected_state_button.isEnabled()
+    assert saved == []
+    outcome = app_module._run_audit((tmp_path,))
+    assert saved == []
+
+    window._scan_completed(outcome)
+    assert window.protected_state_button.isEnabled()
+    assert saved == []
+
+    window.protected_state_button.click()
+
+    assert len(saved) == 1
+    encoded = encode_snapshot(saved[0])
+    assert marker.encode() not in encoded
+    assert b"private.env" not in encoded
+    assert str(tmp_path).encode() not in encoded
+    assert messages == [("保存完成", "加密状态已保存到当前 Windows 用户。")]
+    window.close()
+
+
+def test_protected_state_failure_uses_fixed_safe_message(
+    qapp, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "safe.txt").write_text("safe", encoding="utf-8")
+    outcome = app_module._run_audit((tmp_path,))
+    messages = []
+    marker = "synthetic-private-path-marker"
+    monkeypatch.setattr(
+        app_module,
+        "save_protected_state",
+        lambda snapshot: (_ for _ in ()).throw(StateStoreError(marker)),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda parent, title, message: messages.append((title, message)),
+    )
+    window = create_window()
+    window._scan_completed(outcome)
+
+    window.protected_state_button.click()
+
+    assert messages == [("保存失败", "无法保存加密状态。")]
+    assert marker not in repr(messages)
+    window._invalidate_report()
+    assert not window.protected_state_button.isEnabled()
     window.close()
 
 
