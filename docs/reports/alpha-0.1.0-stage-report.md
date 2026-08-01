@@ -82,7 +82,7 @@ Founder Alpha 不访问浏览器数据库、浏览器历史或剪贴板，不联
 
 ## 8. Windows MVP 硬化续接
 
-本报告第 1 至 7 节记录 Founder Alpha 历史门禁；其中测试计数、规则 SHA 和 CI 结果不自动代表后续提交已重新验证。Windows MVP 硬化从 2026-08-02 起按独立批次继续：供应链基线已完成，当前批次为 OpenAI Provider 本地适配、检测和人工指引。
+本报告第 1 至 7 节记录 Founder Alpha 历史门禁；其中测试计数、规则 SHA 和 CI 结果不自动代表后续提交已重新验证。Windows MVP 硬化从 2026-08-02 起按独立批次继续：供应链基线与 OpenAI Provider 本地适配、检测和人工指引批次已完成。下一批为 DPAPI 保护的本地证据状态，目前尚未实现。
 
 当前增量覆盖 `%USERPROFILE%\.codex`、`.env` 和 `.toml`，识别 `OPENAI_API_KEY` 与 `OPENAI_BASE_URL`/`openai_base_url` 覆盖配置。端点覆盖发现只表示配置需要人工复核，不证明端点属于恶意第三方。实现不导入 OpenAI SDK 或网络客户端，不发起 API 调用或联网验证端点，不读取或输出真实密钥，不自动修改 Provider 或凭据。
 
@@ -97,5 +97,7 @@ Founder Alpha 不访问浏览器数据库、浏览器历史或剪贴板，不联
 - 自审计：`network_capability=not_detected`、`findings=[]`、`local_only=false`。
 - 当前规则 SHA-256：`83a14590d59f61a3c6aede084644fdbbd9f5cff6f55794b9af60e385e053ccba`。
 - 独立只读代码复审：首轮 `With fixes` 的两项 Important 和一项 Minor 已关闭；最终结论 `Ready`，无剩余问题。
+- CI Action Node.js 24 运行时刷新提交：`fb01c2a51a57c1f2ad87e486f0a4cfe280b8392b`。
+- GitHub CI：push run `30712075199` 与 PR run `30712076712` 均成功；两个 check-run 的 annotations 均为 0，先前 Node.js 20 弃用告警已消失。
 
-这些结果是当前本地重新验证证据；GitHub CI 必须在提交推送后单独复核。
+本地门禁与 GitHub CI 为不同证据面；以上远程结果只覆盖所列提交和运行，不自动代表后续提交或整个 Windows MVP 已通过。

@@ -22,7 +22,7 @@
 
 | Batch | Deliverable | Acceptance gate |
 | --- | --- | --- |
-| 0 | Supply-chain baseline | GitHub Actions pinned to commit SHAs; Windows Python dependencies hash-locked; CI green. Completed in `63b1327` and `3afe5e6`. |
+| 0 | Supply-chain baseline | GitHub Actions pinned to commit SHAs; Node.js 24 Action runtime; Windows Python dependencies hash-locked; CI green. Completed in `63b1327`, `3afe5e6`, and the Node runtime refresh `fb01c2a`. |
 | 1 | OpenAI local Provider hardening | Detect local OpenAI key and base-URL override evidence, cover the official Codex user config root, route OpenAI findings to manual OpenAI guidance, and retain zero network/LLM capability. |
 | 2 | Protected local evidence state | Persist only rule IDs, masked summaries, scan metadata, and HMAC references under Windows DPAPI; never persist raw matches or scan keys; corrupted state fails closed. |
 | 3 | Finding disposition and exceptions | Add local false-positive/accepted-risk states with reason, expiry, and reviewer metadata; expired exceptions reopen automatically; scoring and reports remain auditable. |
@@ -32,7 +32,7 @@
 
 Deferred beyond Windows MVP: default API calls, remote share verification, browser database or clipboard collection, runtime interception, automatic credential revocation, arbitrary command execution, dynamic plugins, macOS, enterprise control plane, and production-safety claims.
 
-## Current Batch: OpenAI Local Provider Hardening
+## Completed Batch: OpenAI Local Provider Hardening
 
 ### Task 1: Lock the OpenAI Detection Contract
 
