@@ -475,6 +475,31 @@ def test_static_scan_allows_only_exact_self_audit_admin_probe(tmp_path: Path) ->
     assert static_capability_findings(package) == ("NATIVE_CAPABILITY",)
 
 
+def test_static_scan_allows_only_constrained_windows_dpapi_adapter(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    module = package / "windows_dpapi.py"
+    source = (
+        PROJECT_ROOT / "src" / "agentguardian" / "windows_dpapi.py"
+    ).read_text(encoding="utf-8")
+
+    module.write_text(source, encoding="utf-8")
+    assert static_capability_findings(package) == ()
+
+    mutations = (
+        source.replace('"Crypt32.dll"', '"User32.dll"', 1),
+        source + '\ncrypt32.CreateFileW\n',
+        source + '\nctypes.CDLL("User32.dll")\n',
+        source + '\n__import__("ctypes")\n',
+        source + "\nnative = ctypes\n",
+    )
+    for mutated in mutations:
+        module.write_text(mutated, encoding="utf-8")
+        assert static_capability_findings(package)
+
+
 def test_nested_self_audit_does_not_receive_admin_probe_exception(
     tmp_path: Path,
 ) -> None:

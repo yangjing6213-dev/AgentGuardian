@@ -50,25 +50,25 @@ Commit: `Add minimized evidence snapshot schema`
 - Modify: `src/agentguardian/self_audit.py`
 - Modify: `tests/test_self_audit.py`
 
-- [ ] **Step 1: Write failing DPAPI contract tests**
+- [x] **Step 1: Write failing DPAPI contract tests**
 
 On Windows, require `protect_bytes(plaintext)` to return different bytes that do not contain plaintext and require `unprotect_bytes(ciphertext)` to recover it. A one-byte mutation must raise `DpapiError("PROTECTED_STATE_INVALID")`. A monkeypatched non-Windows platform must raise `DpapiError("DPAPI_UNAVAILABLE")`.
 
-- [ ] **Step 2: Verify the red state**
+- [x] **Step 2: Verify the red state**
 
 Run: `python -B -m pytest -q -p no:cacheprovider tests/test_windows_dpapi.py`
 
 Expected: collection fails because `agentguardian.windows_dpapi` does not exist.
 
-- [ ] **Step 3: Implement the minimum DPAPI adapter**
+- [x] **Step 3: Implement the minimum DPAPI adapter**
 
 Use current-user `CryptProtectData`/`CryptUnprotectData` with `CRYPTPROTECT_UI_FORBIDDEN`, a fixed `AgentGuardian protected evidence state` description, explicit ctypes signatures, and `LocalFree` in `finally`. Enforce non-empty input and the 1 MiB boundary before native calls. Return only fixed error codes.
 
-- [ ] **Step 4: Lock the self-audit exception to the exact adapter**
+- [x] **Step 4: Lock the self-audit exception to the exact adapter**
 
 Add AST tests proving the committed adapter is accepted while a copied module that adds another DLL name, native API, dynamic import, or ctypes reference yields `NATIVE_CAPABILITY` or `SOURCE_POLICY_VIOLATION`. Keep all existing arbitrary-ctypes tests unchanged.
 
-- [ ] **Step 5: Run focused tests and commit**
+- [x] **Step 5: Run focused tests and commit**
 
 Run: `python -B -m pytest -q -p no:cacheprovider tests/test_windows_dpapi.py tests/test_self_audit.py`
 

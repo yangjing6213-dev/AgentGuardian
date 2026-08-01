@@ -129,7 +129,7 @@ def _module_key(root: Path, module: Path) -> tuple[str, str]:
 
 
 def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> None:
-    allow_admin_probe = _allowed_ctypes_usage(relative_path, tree)
+    allow_ctypes = _allowed_ctypes_usage(relative_path, tree)
     allowed_report_call = _allowed_report_export_call(relative_path, tree)
     imported_bindings: set[str] = set()
 
@@ -142,7 +142,7 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
                 root = alias.name.split(".", 1)[0]
                 if alias.asname and root in {"os", "pathlib"}:
                     findings.add("SOURCE_POLICY_VIOLATION")
-                if root == "ctypes" and not allow_admin_probe:
+                if root == "ctypes" and not allow_ctypes:
                     findings.add("NATIVE_CAPABILITY")
         elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
             for alias in node.names:
@@ -153,7 +153,7 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
                     "pathlib",
                 }:
                     findings.add("SOURCE_POLICY_VIOLATION")
-                if node.module.split(".", 1)[0] == "ctypes":
+                if node.module.split(".", 1)[0] == "ctypes" and not allow_ctypes:
                     findings.add("NATIVE_CAPABILITY")
 
     rebound = {
@@ -178,7 +178,7 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
         if "__import__" in alias_sources:
             findings.add("DYNAMIC_EXECUTION")
         if isinstance(node, ast.Attribute):
-            _classify_attribute(node, rebound, findings, allow_admin_probe)
+            _classify_attribute(node, rebound, findings, allow_ctypes)
         elif isinstance(node, ast.Call):
             name = _qualified_name(node.func)
             if name in {"__import__", "compile", "eval", "exec"}:
@@ -229,7 +229,7 @@ def _classify_attribute(
     node: ast.Attribute,
     rebound: set[str],
     findings: set[str],
-    allow_admin_probe: bool,
+    allow_ctypes: bool,
 ) -> None:
     name = _qualified_name(node)
     root = name.split(".", 1)[0]
@@ -252,7 +252,7 @@ def _classify_attribute(
         findings.add("CLIPBOARD_CAPABILITY")
         if node.attr in {"clipboard_append", "clipboard_clear"}:
             findings.add("USER_DATA_WRITE")
-    if name.startswith("ctypes.") and not allow_admin_probe:
+    if name.startswith("ctypes.") and not allow_ctypes:
         findings.add("NATIVE_CAPABILITY")
 
 
@@ -382,8 +382,14 @@ def _exact_ctypes_import(node: ast.AST) -> bool:
 
 
 def _allowed_ctypes_usage(relative_path: str, tree: ast.AST) -> bool:
-    if relative_path != "self_audit.py":
-        return False
+    if relative_path == "self_audit.py":
+        return _allowed_admin_probe(tree)
+    if relative_path == "windows_dpapi.py":
+        return _allowed_windows_dpapi(tree)
+    return False
+
+
+def _allowed_admin_probe(tree: ast.AST) -> bool:
     nodes = tuple(ast.walk(tree))
     imports = tuple(node for node in nodes if _exact_ctypes_import(node))
     calls = tuple(
@@ -402,6 +408,121 @@ def _allowed_ctypes_usage(relative_path: str, tree: ast.AST) -> bool:
         if isinstance(node, ast.Name) and node.id == "ctypes"
     }
     return references == allowed_references and len(allowed_references) == 1
+
+
+def _allowed_windows_dpapi(tree: ast.AST) -> bool:
+    nodes = tuple(ast.walk(tree))
+    imports = tuple(node for node in nodes if _exact_ctypes_import(node))
+    from_imports = tuple(
+        node
+        for node in nodes
+        if isinstance(node, ast.ImportFrom) and node.module == "ctypes"
+    )
+    if (
+        len(imports) != 1
+        or len(from_imports) != 1
+        or len(from_imports[0].names) != 1
+        or from_imports[0].names[0].name != "wintypes"
+        or from_imports[0].names[0].asname is not None
+    ):
+        return False
+
+    allowed_ctypes = {
+        "ctypes.POINTER",
+        "ctypes.Structure",
+        "ctypes.WinDLL",
+        "ctypes.byref",
+        "ctypes.c_ubyte",
+        "ctypes.cast",
+        "ctypes.string_at",
+    }
+    ctypes_attributes = tuple(
+        node
+        for node in nodes
+        if isinstance(node, ast.Attribute)
+        and _qualified_name(node).startswith("ctypes.")
+    )
+    if {
+        _qualified_name(node) for node in ctypes_attributes
+    } - allowed_ctypes:
+        return False
+    ctypes_references = {
+        node for node in nodes if isinstance(node, ast.Name) and node.id == "ctypes"
+    }
+    allowed_ctypes_references = {
+        child
+        for node in ctypes_attributes
+        for child in ast.walk(node)
+        if isinstance(child, ast.Name) and child.id == "ctypes"
+    }
+    if ctypes_references != allowed_ctypes_references:
+        return False
+
+    allowed_wintypes = {
+        "wintypes.BOOL",
+        "wintypes.DWORD",
+        "wintypes.LPCWSTR",
+        "wintypes.LPVOID",
+    }
+    wintypes_attributes = tuple(
+        node
+        for node in nodes
+        if isinstance(node, ast.Attribute)
+        and _qualified_name(node).startswith("wintypes.")
+    )
+    if {
+        _qualified_name(node) for node in wintypes_attributes
+    } - allowed_wintypes:
+        return False
+    wintypes_references = {
+        node for node in nodes if isinstance(node, ast.Name) and node.id == "wintypes"
+    }
+    allowed_wintypes_references = {
+        child
+        for node in wintypes_attributes
+        for child in ast.walk(node)
+        if isinstance(child, ast.Name) and child.id == "wintypes"
+    }
+    if wintypes_references != allowed_wintypes_references:
+        return False
+
+    libraries: dict[str, str] = {}
+    for node in nodes:
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Call)
+            and _qualified_name(node.value.func) == "ctypes.WinDLL"
+            and len(node.value.args) == 1
+            and isinstance(node.value.args[0], ast.Constant)
+            and isinstance(node.value.args[0].value, str)
+            and len(node.value.keywords) == 1
+            and node.value.keywords[0].arg == "use_last_error"
+            and isinstance(node.value.keywords[0].value, ast.Constant)
+            and node.value.keywords[0].value.value is True
+        ):
+            libraries[node.targets[0].id] = node.value.args[0].value
+    if libraries != {"crypt32": "Crypt32.dll", "kernel32": "Kernel32.dll"}:
+        return False
+
+    allowed_native_attributes = {
+        "crypt32.CryptProtectData",
+        "crypt32.CryptUnprotectData",
+        "kernel32.LocalFree",
+    }
+    native_attributes = tuple(
+        _qualified_name(node)
+        for node in nodes
+        if isinstance(node, ast.Attribute)
+        and _qualified_name(node).split(".", 1)[0] in libraries
+    )
+    return (
+        set(native_attributes) == allowed_native_attributes
+        and native_attributes.count("crypt32.CryptProtectData") == 1
+        and native_attributes.count("crypt32.CryptUnprotectData") == 1
+        and native_attributes.count("kernel32.LocalFree") == 2
+    )
 
 
 def _exact_admin_probe(node: ast.Call) -> bool:
