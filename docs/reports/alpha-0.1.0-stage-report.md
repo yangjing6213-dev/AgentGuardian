@@ -74,7 +74,7 @@ Founder Alpha 不访问浏览器数据库、浏览器历史或剪贴板，不联
 - GitHub Actions 使用可变 action 标签，Python 依赖尚未锁定哈希。
 - Python 3.12 GitHub-hosted CI 已通过；本地门禁运行于当前开发解释器。
 - 自动修复、回滚、联网验证和自动复审均未实现。
-- GitHub Milestone/Issue 创建被当前凭据权限阻止：`Resource not accessible by personal access token`。代码推送和 Draft PR 正常。
+- GitHub Milestone/Issue 创建及 Draft PR 标题/正文更新被当前凭据权限阻止：`Resource not accessible by personal access token`。代码推送、现有 Draft PR 读取和 CI 正常。
 
 ## 7. 阶段决策
 
