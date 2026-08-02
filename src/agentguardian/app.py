@@ -144,6 +144,18 @@ def _canonical_utc_seconds(value: datetime) -> str:
     return normalized.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _audit_status_text(outcome: AuditOutcome) -> str:
+    if outcome.score.incomplete:
+        coverage = f"{outcome.score.coverage:.0%}"
+        finding_summary = (
+            f"发现 {len(outcome.findings)} 项风险" if outcome.findings else "未发现风险"
+        )
+        return f"审计未完整：{finding_summary}，覆盖率 {coverage}；不能判定为安全。"
+    if outcome.findings:
+        return f"审计完成：发现 {len(outcome.findings)} 项风险。"
+    return "审计完成：未发现风险。"
+
+
 class _DispositionDialog(QDialog):
     def __init__(
         self,
@@ -958,22 +970,7 @@ class AgentGuardianWindow(QMainWindow):
         self._schedule_expiry_timer(outcome.evaluated_at)
         self.save_button.setEnabled(True)
         self.protected_state_button.setEnabled(True)
-        if outcome.score.incomplete:
-            coverage = f"{outcome.score.coverage:.0%}"
-            finding_summary = (
-                f"发现 {len(outcome.findings)} 项风险"
-                if outcome.findings
-                else "未发现风险"
-            )
-            self.status_label.setText(
-                f"审计未完整：{finding_summary}，覆盖率 {coverage}；不能判定为安全。"
-            )
-        elif outcome.findings:
-            self.status_label.setText(
-                f"审计完成：发现 {len(outcome.findings)} 项风险。"
-            )
-        else:
-            self.status_label.setText("审计完成：未发现风险。")
+        self.status_label.setText(_audit_status_text(outcome))
 
     @Slot(str)
     def _scan_failed(self, _code: str) -> None:
@@ -1147,9 +1144,10 @@ class AgentGuardianWindow(QMainWindow):
                 expires_at=expires_at,
             )
             candidate = upsert_disposition(self._dispositions, record)
-            self._save_and_commit_dispositions(candidate, commit_now)
         except Exception:  # noqa: BLE001 - fixed user callback boundary
             self._show_save_failure()
+            return
+        self._save_and_commit_dispositions(candidate, commit_now)
 
     def _withdraw_disposition(self) -> None:
         try:
@@ -1175,54 +1173,39 @@ class AgentGuardianWindow(QMainWindow):
                 self._dispositions,
                 finding.disposition_ref,
             )
-            self._save_and_commit_dispositions(candidate, commit_now)
         except Exception:  # noqa: BLE001 - fixed user callback boundary
             self._show_save_failure()
+            return
+        self._save_and_commit_dispositions(candidate, commit_now)
 
     def _save_and_commit_dispositions(
         self,
         candidate: tuple[DispositionRecord, ...],
         now: datetime,
     ) -> None:
-        outcome, snapshot, selected_row = self._prepare_disposition_transaction(
-            candidate,
-            now,
-        )
-        save_protected_state(snapshot)
         try:
-            self._commit_saved_dispositions_no_throw(candidate, outcome, selected_row)
-        except Exception:  # noqa: BLE001 - the persisted candidate must roll forward
-            self._dispositions = candidate
-            self._protected_state_invalid = False
-            self._set_reviewed_core(outcome)
-            self._recover_reviewed_ui_no_throw(
-                outcome,
-                selected_row,
-                _SAVED_REFRESH_FAILURE,
+            outcome, snapshot, selected_row = self._prepare_disposition_transaction(
+                candidate,
+                now,
             )
-
-    def _commit_saved_dispositions_no_throw(
-        self,
-        records: tuple[DispositionRecord, ...],
-        outcome: AuditOutcome,
-        selected_row: int,
-    ) -> None:
-        # A successful protected save is authoritative; UI failures cannot roll it back.
-        self._dispositions = records
+            save_protected_state(snapshot)
+        except Exception:  # noqa: BLE001 - persistence failure boundary ends here
+            self._show_save_failure()
+            return
+        # A successful protected save is authoritative before any fallible UI work.
+        self._dispositions = candidate
         self._protected_state_invalid = False
-        self._set_reviewed_core(outcome)
+        self._audit_outcome = outcome
+        self.report_json = outcome.report_json
+        self.report_html = outcome.report_html
         try:
-            self._commit_disposition_state(
-                records,
-                outcome=outcome,
-                selected_row=selected_row,
-            )
-        except Exception:  # noqa: BLE001 - enforce post-save roll-forward
-            self._recover_reviewed_ui_no_throw(
-                outcome,
+            self._refresh_reviewed_ui_no_throw(
+                outcome.evaluated_at,
                 selected_row,
-                _SAVED_REFRESH_FAILURE,
+                failure_message=_SAVED_REFRESH_FAILURE,
             )
+        except Exception:
+            pass
 
     def _prepare_disposition_transaction(
         self,
@@ -1311,59 +1294,14 @@ class AgentGuardianWindow(QMainWindow):
             scanned_roots=outcome.scanned_roots,
         )
 
-    def _commit_disposition_state(
-        self,
-        records: tuple[DispositionRecord, ...],
-        *,
-        outcome: AuditOutcome,
-        selected_row: int | None = None,
-    ) -> None:
-        if selected_row is None:
-            selected_row = self.findings_table.currentRow()
-        self._dispositions = records
-        self._protected_state_invalid = False
-        self._set_reviewed_core(outcome)
-        try:
-            self._apply_reviewed_outcome(
-                outcome,
-                selected_row,
-                failure_message=_SAVED_REFRESH_FAILURE,
-            )
-        except Exception:  # noqa: BLE001 - no-throw post-save commit invariant
-            self._recover_reviewed_ui_no_throw(
-                outcome,
-                selected_row,
-                _SAVED_REFRESH_FAILURE,
-            )
-
-    def _set_reviewed_core(self, outcome: AuditOutcome) -> None:
-        self._audit_outcome = outcome
-        self.report_json = outcome.report_json
-        self.report_html = outcome.report_html
-
-    def _apply_reviewed_outcome(
-        self,
-        outcome: AuditOutcome,
-        selected_row: int,
-        *,
-        failure_message: str = _TIMER_REFRESH_FAILURE,
-    ) -> None:
-        self._set_reviewed_core(outcome)
-        self._refresh_reviewed_ui_no_throw(
-            outcome.evaluated_at,
-            selected_row,
-            failure_message=failure_message,
-        )
-
     def _refresh_reviewed_ui_no_throw(
         self,
         now: datetime,
         selected_row: int,
         *,
         failure_message: str,
-        already_failed: bool = False,
     ) -> None:
-        failed = already_failed
+        failed = False
         try:
             self._refresh_disposition_ui(now)
         except Exception:  # noqa: BLE001 - independent status fallback
@@ -1391,33 +1329,17 @@ class AgentGuardianWindow(QMainWindow):
             self._schedule_expiry_timer(now)
         except Exception:  # noqa: BLE001 - bounded timer fallback
             failed = True
-            try:
-                self._start_expiry_retry_no_throw()
-            except Exception:
-                pass
+            self._start_expiry_retry_no_throw()
         if failed:
-            try:
-                self._indicate_refresh_failure_no_throw(failure_message)
-            except Exception:
-                pass
+            self._indicate_refresh_failure_no_throw(failure_message)
         else:
+            was_failed = self._refresh_failure_notified
             self._refresh_failure_notified = False
-
-    def _recover_reviewed_ui_no_throw(
-        self,
-        outcome: AuditOutcome,
-        selected_row: int,
-        failure_message: str,
-    ) -> None:
-        try:
-            self._refresh_reviewed_ui_no_throw(
-                outcome.evaluated_at,
-                selected_row,
-                failure_message=failure_message,
-                already_failed=True,
-            )
-        except Exception:
-            pass
+            if was_failed and self._audit_outcome is not None:
+                try:
+                    self.status_label.setText(_audit_status_text(self._audit_outcome))
+                except Exception:
+                    pass
 
     def _start_expiry_retry_no_throw(self) -> None:
         try:
@@ -1480,28 +1402,20 @@ class AgentGuardianWindow(QMainWindow):
             selected_row = self.findings_table.currentRow()
             outcome = self._reviewed_outcome(self._dispositions, now)
         except Exception:  # noqa: BLE001 - fixed timer callback boundary
-            try:
-                self._start_expiry_retry_no_throw()
-            except Exception:
-                pass
-            try:
-                self._indicate_refresh_failure_no_throw(_TIMER_REFRESH_FAILURE)
-            except Exception:
-                pass
+            self._start_expiry_retry_no_throw()
+            self._indicate_refresh_failure_no_throw(_TIMER_REFRESH_FAILURE)
             return
-        self._set_reviewed_core(outcome)
+        self._audit_outcome = outcome
+        self.report_json = outcome.report_json
+        self.report_html = outcome.report_html
         try:
-            self._apply_reviewed_outcome(
-                outcome,
+            self._refresh_reviewed_ui_no_throw(
+                outcome.evaluated_at,
                 selected_row,
                 failure_message=_TIMER_REFRESH_FAILURE,
             )
-        except Exception:  # noqa: BLE001 - roll forward the refreshed outcome
-            self._recover_reviewed_ui_no_throw(
-                outcome,
-                selected_row,
-                _TIMER_REFRESH_FAILURE,
-            )
+        except Exception:
+            pass
 
     def _refresh_report(self) -> None:
         if self.report_mode_combo.currentText() == "JSON":

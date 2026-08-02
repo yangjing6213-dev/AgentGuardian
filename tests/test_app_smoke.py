@@ -236,6 +236,8 @@ def _window_transaction_state(window) -> tuple[object, ...]:
         window.report_browser.toHtml(),
         window._report_roots,
         window.guidance_browser.toPlainText(),
+        window.status_label.text(),
+        window._refresh_failure_notified,
         window._expiry_timer.isActive(),
         window._expiry_timer.interval(),
         (
@@ -1536,9 +1538,7 @@ def test_disposition_transaction_builds_reports_and_snapshot_before_save(
 @pytest.mark.parametrize(
     "failure_stage",
     (
-        "commit_boundary",
-        "commit",
-        "apply",
+        "set_reviewed_core",
         "status_ui",
         "report_ui",
         "selection",
@@ -1587,12 +1587,8 @@ def test_post_save_failures_roll_forward_persisted_core_without_save_warning(
     window._scan_completed(original)
     window.findings_table.selectRow(0)
 
-    if failure_stage == "commit_boundary":
-        monkeypatch.setattr(window, "_commit_saved_dispositions_no_throw", fail)
-    elif failure_stage == "commit":
-        monkeypatch.setattr(window, "_commit_disposition_state", fail)
-    elif failure_stage == "apply":
-        monkeypatch.setattr(window, "_apply_reviewed_outcome", fail)
+    if failure_stage == "set_reviewed_core":
+        monkeypatch.setattr(window, "_set_reviewed_core", fail, raising=False)
     elif failure_stage == "status_ui":
         monkeypatch.setattr(window, "_refresh_disposition_ui", fail)
     elif failure_stage == "report_ui":
@@ -1645,8 +1641,14 @@ def test_post_save_failures_roll_forward_persisted_core_without_save_warning(
     else:
         assert window._expiry_timer.isActive()
     assert warnings == []
-    assert window._refresh_failure_notified
-    assert window.status_label.text() == "处置已保存，界面刷新受限。"
+    ui_failed = failure_stage != "set_reviewed_core"
+    assert window._refresh_failure_notified is ui_failed
+    expected_message = (
+        "处置已保存，界面刷新受限。"
+        if ui_failed
+        else "审计未完整：发现 1 项风险，覆盖率 75%；不能判定为安全。"
+    )
+    assert window.status_label.text() == expected_message
     visible = " ".join(
         (
             window.status_label.text(),
@@ -1978,7 +1980,14 @@ def test_expiry_timer_refreshes_scores_reports_and_status_without_writing(
     )
     window._dispositions = (accepted,)
     prepared = window._reviewed_outcome((accepted,), clock[0])
-    window._commit_disposition_state((accepted,), outcome=prepared)
+    window._audit_outcome = prepared
+    window.report_json = prepared.report_json
+    window.report_html = prepared.report_html
+    window._refresh_reviewed_ui_no_throw(
+        prepared.evaluated_at,
+        window.findings_table.currentRow(),
+        failure_message="处置已保存，界面刷新受限。",
+    )
 
     assert window.findings_table.item(0, 4).text() == "已接受风险"
     assert window._audit_outcome.reviewed_score == window._audit_outcome.score
@@ -2064,6 +2073,50 @@ def test_expiry_timer_contains_failure_with_bounded_retry_or_roll_forward(
     assert marker not in " ".join(
         (window.status_label.text(), window.report_browser.toPlainText())
     )
+    window.close()
+
+
+def test_expiry_timer_success_clears_failure_and_restores_audit_status(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finding = _disposition_finding()
+    active = _disposition(
+        finding,
+        DispositionStatus.FALSE_POSITIVE,
+        expires_at="2026-08-02T12:00:10Z",
+    )
+    attempts = 0
+
+    def current_time():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("private-recovery-marker")
+        return EVALUATED_AT + timedelta(seconds=1)
+
+    monkeypatch.setattr(app_module, "_utc_now", lambda: EVALUATED_AT)
+    window = create_window()
+    window._dispositions = (active,)
+    window._scan_completed(_audit_outcome((finding,), (active,)))
+    window.findings_table.selectRow(0)
+    monkeypatch.setattr(app_module, "_utc_now", current_time)
+
+    window._handle_expiry_timeout()
+    assert window._refresh_failure_notified
+    assert window.status_label.text() == "处置状态刷新受限，将稍后重试。"
+
+    window._handle_expiry_timeout()
+
+    assert attempts == 2
+    assert not window._refresh_failure_notified
+    assert (
+        window.status_label.text()
+        == "审计未完整：发现 1 项风险，覆盖率 75%；不能判定为安全。"
+    )
+    assert window.findings_table.item(0, 4).text() == "误报"
+    assert window._expiry_timer.isActive()
+    assert window._expiry_timer.interval() == 9_000
     window.close()
 
 
