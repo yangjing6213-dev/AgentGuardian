@@ -38,9 +38,9 @@ class DispositionRecord:
             created = parse_utc(self.created_at)
             expires = parse_utc(self.expires_at)
             if (
-                not isinstance(self.disposition_ref, str)
+                type(self.disposition_ref) is not str
                 or _HEX.fullmatch(self.disposition_ref) is None
-                or not isinstance(self.rule_id, str)
+                or type(self.rule_id) is not str
                 or _RULE_ID.fullmatch(self.rule_id) is None
                 or not isinstance(self.status, DispositionStatus)
                 or not created < expires
@@ -55,7 +55,7 @@ class DispositionRecord:
                 "reviewer",
                 validate_safe_annotation("reviewer", self.reviewer, 80),
             )
-        except (TypeError, ValueError, OverflowError):
+        except Exception:
             raise ValueError(_ERROR) from None
 
 
@@ -87,7 +87,7 @@ def make_disposition_ref(
         if (
             type(key) is not bytes
             or len(key) != 32
-            or not isinstance(rule_id, str)
+            or type(rule_id) is not str
             or _RULE_ID.fullmatch(rule_id) is None
             or type(source) is not str
             or not source
@@ -95,15 +95,12 @@ def make_disposition_ref(
             or not raw_match
         ):
             raise ValueError
-        path = unicodedata.normalize(
-            "NFKC",
-            ntpath.normcase(ntpath.normpath(ntpath.abspath(source))),
-        )
+        path = ntpath.normcase(ntpath.abspath(source))
         raw = unicodedata.normalize("NFKC", raw_match)
         parts = (rule_id.encode("utf-8"), path.encode("utf-8"), raw.encode("utf-8"))
         message = b"".join(len(part).to_bytes(4, "big") + part for part in parts)
         return hmac.digest(key, message, "sha256").hex()
-    except (TypeError, ValueError, OSError, OverflowError, UnicodeError):
+    except Exception:
         raise ValueError(_ERROR) from None
 
 
@@ -114,13 +111,13 @@ def disposition_index(
         index: dict[str, DispositionRecord] = {}
         for record in records:
             if (
-                not isinstance(record, DispositionRecord)
+                type(record) is not DispositionRecord
                 or record.disposition_ref in index
             ):
                 raise ValueError
             index[record.disposition_ref] = record
         return dict(sorted(index.items()))
-    except (TypeError, ValueError):
+    except Exception:
         raise ValueError(_ERROR) from None
 
 
@@ -133,21 +130,29 @@ def evaluate_disposition(
     _validate_now(now)
     if not isinstance(finding, Finding) or not isinstance(records, Mapping):
         raise ValueError(_ERROR)
-    reference = finding.disposition_ref
-    record = records.get(reference) if reference is not None else None
-    if (
-        not isinstance(record, DispositionRecord)
-        or record.disposition_ref != reference
-        or record.rule_id != finding.rule_id
-    ):
-        return DispositionEvaluation("open", None)
-    created = parse_utc(record.created_at)
-    expires = parse_utc(record.expires_at)
-    if now < created:
-        return DispositionEvaluation("open", None)
-    if now >= expires:
-        return DispositionEvaluation("expired", record)
-    return DispositionEvaluation(record.status.value, record)
+    try:
+        reference = finding.disposition_ref
+        rule_id = finding.rule_id
+        if type(rule_id) is not str or (
+            reference is not None and type(reference) is not str
+        ):
+            raise ValueError
+        record = records.get(reference) if reference is not None else None
+        if (
+            type(record) is not DispositionRecord
+            or record.disposition_ref != reference
+            or record.rule_id != rule_id
+        ):
+            return DispositionEvaluation("open", None)
+        created = parse_utc(record.created_at)
+        expires = parse_utc(record.expires_at)
+        if now < created:
+            return DispositionEvaluation("open", None)
+        if now >= expires:
+            return DispositionEvaluation("expired", record)
+        return DispositionEvaluation(record.status.value, record)
+    except Exception:
+        raise ValueError(_ERROR) from None
 
 
 def reviewed_findings(
@@ -157,6 +162,8 @@ def reviewed_findings(
     now: datetime,
 ) -> tuple[Finding, ...]:
     _validate_now(now)
+    if not isinstance(records, Mapping):
+        raise ValueError(_ERROR)
     try:
         return tuple(
             finding
@@ -164,14 +171,14 @@ def reviewed_findings(
             if evaluate_disposition(finding, records, now=now).state
             != DispositionStatus.FALSE_POSITIVE.value
         )
-    except TypeError:
+    except Exception:
         raise ValueError(_ERROR) from None
 
 
 def upsert_disposition(
     records: Iterable[DispositionRecord], record: DispositionRecord
 ) -> tuple[DispositionRecord, ...]:
-    if not isinstance(record, DispositionRecord):
+    if type(record) is not DispositionRecord:
         raise ValueError(_ERROR)
     index = disposition_index(records)
     index[record.disposition_ref] = record
@@ -182,7 +189,7 @@ def withdraw_disposition(
     records: Iterable[DispositionRecord], disposition_ref: str
 ) -> tuple[DispositionRecord, ...]:
     if (
-        not isinstance(disposition_ref, str)
+        type(disposition_ref) is not str
         or _HEX.fullmatch(disposition_ref) is None
     ):
         raise ValueError(_ERROR)
@@ -199,5 +206,5 @@ def _validate_now(now: datetime) -> None:
             or now.utcoffset() != timedelta(0)
         ):
             raise ValueError
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         raise ValueError(_ERROR) from None

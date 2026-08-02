@@ -99,7 +99,7 @@ class Finding:
         if (
             self.disposition_ref is not None
             and (
-                not isinstance(self.disposition_ref, str)
+                type(self.disposition_ref) is not str
                 or _SHA256_HEX.fullmatch(self.disposition_ref) is None
             )
         ):

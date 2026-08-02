@@ -221,3 +221,36 @@ def test_expired_false_positive_reenters_deductions_and_caps() -> None:
     assert reviewed == technical
     assert reviewed.total == 39
     assert reviewed.cap_reason == "public_active_credential"
+
+
+def test_active_false_positive_removes_reviewed_deduction_and_cap_only() -> None:
+    finding = Finding(
+        "PUBLIC_ACTIVE_CREDENTIAL",
+        RiskDomain.CREDENTIALS,
+        Severity.HIGH,
+        "a" * 64,
+        (),
+        "f" * 64,
+    )
+    record = DispositionRecord(
+        "f" * 64,
+        "PUBLIC_ACTIVE_CREDENTIAL",
+        DispositionStatus.FALSE_POSITIVE,
+        "Synthetic false positive",
+        "Local reviewer",
+        "2026-08-02T08:00:00Z",
+        "2026-08-03T08:00:00Z",
+    )
+
+    technical = score((finding,), coverage=1.0)
+    reviewed = score(
+        reviewed_findings((finding,), disposition_index((record,)), now=NOW),
+        coverage=1.0,
+    )
+
+    assert technical.total == 39
+    assert technical.cap_reason == "public_active_credential"
+    assert dict(technical.deductions)[RiskDomain.CREDENTIALS] == 7
+    assert reviewed.total == 100
+    assert reviewed.cap_reason is None
+    assert dict(reviewed.deductions)[RiskDomain.CREDENTIALS] == 0

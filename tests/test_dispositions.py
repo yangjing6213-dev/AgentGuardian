@@ -1,5 +1,6 @@
+from collections.abc import Callable
 from dataclasses import FrozenInstanceError, replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 
 import pytest
 
@@ -20,6 +21,39 @@ from agentguardian.domain import Finding, RiskDomain, Severity
 
 FIXED_NOW = datetime(2026, 8, 2, 9, 0, tzinfo=timezone.utc)
 KEY = b"d" * 32
+PRIVATE_MARKER = r"C:\private\review-secret.txt"
+
+
+class _AdversarialStr(str):
+    def encode(self, *args: object, **kwargs: object) -> bytes:
+        raise RuntimeError(PRIVATE_MARKER)
+
+    def __hash__(self) -> int:
+        raise RuntimeError(PRIVATE_MARKER)
+
+
+class _ExplodingIterable:
+    def __iter__(self) -> object:
+        raise RuntimeError(PRIVATE_MARKER)
+
+
+class _ExplodingMapping(dict[str, DispositionRecord]):
+    def get(self, key: object, default: object = None) -> object:
+        raise RuntimeError(PRIVATE_MARKER)
+
+
+class _ExplodingTimezone(tzinfo):
+    def utcoffset(self, value: datetime | None) -> timedelta | None:
+        raise RuntimeError(PRIVATE_MARKER)
+
+
+def _assert_disposition_invalid(call: Callable[[], object]) -> None:
+    with pytest.raises(ValueError) as raised:
+        call()
+
+    assert str(raised.value) == "DISPOSITION_INVALID"
+    assert PRIVATE_MARKER not in str(raised.value)
+    assert raised.value.__cause__ is None
 
 
 def _record(
@@ -99,6 +133,49 @@ def test_disposition_reference_separates_every_input_component() -> None:
 
 
 @pytest.mark.parametrize(
+    ("first_source", "second_source"),
+    (
+        (
+            r"C:\Synthetic\file.txt",
+            "C:\\Synthetic\\\uff46\uff49\uff4c\uff45.txt",
+        ),
+        (
+            "C:\\Synthetic\\caf\u00e9.txt",
+            "C:\\Synthetic\\cafe\u0301.txt",
+        ),
+    ),
+)
+def test_disposition_reference_preserves_distinct_windows_unicode_filenames(
+    first_source: str, second_source: str
+) -> None:
+    first = make_disposition_ref(
+        KEY, rule_id="OPENAI_API_KEY", source=first_source, raw_match="value"
+    )
+    second = make_disposition_ref(
+        KEY, rule_id="OPENAI_API_KEY", source=second_source, raw_match="value"
+    )
+
+    assert first != second
+
+
+def test_disposition_reference_length_prefixes_separate_path_and_raw_parts() -> None:
+    first = make_disposition_ref(
+        KEY,
+        rule_id="OPENAI_API_KEY",
+        source=r"C:\Synthetic\ab",
+        raw_match="c",
+    )
+    second = make_disposition_ref(
+        KEY,
+        rule_id="OPENAI_API_KEY",
+        source=r"C:\Synthetic\a",
+        raw_match="bc",
+    )
+
+    assert first != second
+
+
+@pytest.mark.parametrize(
     ("key", "rule_id", "source", "raw_match"),
     (
         (b"short", "OPENAI_API_KEY", r"C:\Synthetic\a.env", "value"),
@@ -159,6 +236,19 @@ def test_disposition_record_rejects_malformed_contract(changes: dict[str, object
         replace(_record(), **changes)
 
 
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"disposition_ref": _AdversarialStr("a" * 64)},
+        {"rule_id": _AdversarialStr("OPENAI_API_KEY")},
+    ),
+)
+def test_disposition_record_rejects_adversarial_string_subclasses(
+    changes: dict[str, object],
+) -> None:
+    _assert_disposition_invalid(lambda: replace(_record(), **changes))
+
+
 def test_disposition_record_allows_exact_366_day_lifetime() -> None:
     record = _record(
         created_at="2026-08-02T08:00:00Z",
@@ -212,6 +302,21 @@ def test_disposition_index_rejects_non_records_and_duplicates() -> None:
         disposition_index((record, record))
     with pytest.raises(ValueError, match="^DISPOSITION_INVALID$"):
         disposition_index((object(),))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "call",
+    (
+        lambda: disposition_index(_ExplodingIterable()),
+        lambda: reviewed_findings(_ExplodingIterable(), {}, now=FIXED_NOW),
+        lambda: upsert_disposition(_ExplodingIterable(), _record()),
+        lambda: withdraw_disposition(_ExplodingIterable(), "a" * 64),
+    ),
+)
+def test_public_apis_mask_adversarial_iterable_errors(
+    call: Callable[[], object],
+) -> None:
+    _assert_disposition_invalid(call)
 
 
 def test_evaluate_disposition_covers_open_active_expired_and_future_states() -> None:
@@ -271,6 +376,80 @@ def test_evaluate_disposition_requires_aware_utc_now(now: object) -> None:
         evaluate_disposition(  # type: ignore[arg-type]
             _finding(), disposition_index((_record(),)), now=now
         )
+
+
+@pytest.mark.parametrize(
+    "call",
+    (
+        lambda: evaluate_disposition(
+            _finding(), _ExplodingMapping(), now=FIXED_NOW
+        ),
+        lambda: reviewed_findings(
+            (_finding(),), _ExplodingMapping(), now=FIXED_NOW
+        ),
+    ),
+)
+def test_public_apis_mask_adversarial_mapping_errors(
+    call: Callable[[], object],
+) -> None:
+    _assert_disposition_invalid(call)
+
+
+def test_reviewed_findings_validates_records_for_empty_findings() -> None:
+    _assert_disposition_invalid(
+        lambda: reviewed_findings((), object(), now=FIXED_NOW)  # type: ignore[arg-type]
+    )
+
+
+@pytest.mark.parametrize(
+    "call",
+    (
+        lambda: evaluate_disposition(
+            _finding(), {}, now=datetime(2026, 8, 2, 9, tzinfo=_ExplodingTimezone())
+        ),
+        lambda: reviewed_findings(
+            (), {}, now=datetime(2026, 8, 2, 9, tzinfo=_ExplodingTimezone())
+        ),
+    ),
+)
+def test_public_apis_mask_adversarial_timezone_errors(
+    call: Callable[[], object],
+) -> None:
+    _assert_disposition_invalid(call)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        {
+            "rule_id": _AdversarialStr("OPENAI_API_KEY"),
+            "source": r"C:\Synthetic\a.env",
+            "raw_match": "value",
+        },
+        {
+            "rule_id": "OPENAI_API_KEY",
+            "source": _AdversarialStr(r"C:\Synthetic\a.env"),
+            "raw_match": "value",
+        },
+        {
+            "rule_id": "OPENAI_API_KEY",
+            "source": r"C:\Synthetic\a.env",
+            "raw_match": _AdversarialStr("value"),
+        },
+    ),
+)
+def test_reference_builder_rejects_adversarial_string_subclasses(
+    arguments: dict[str, object],
+) -> None:
+    _assert_disposition_invalid(
+        lambda: make_disposition_ref(KEY, **arguments)  # type: ignore[arg-type]
+    )
+
+
+def test_withdraw_rejects_adversarial_reference_subclass() -> None:
+    _assert_disposition_invalid(
+        lambda: withdraw_disposition((), _AdversarialStr("a" * 64))
+    )
 
 
 def test_reviewed_findings_excludes_only_active_false_positives() -> None:

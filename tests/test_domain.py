@@ -129,6 +129,21 @@ def test_finding_rejects_invalid_disposition_reference(reference: object) -> Non
         )
 
 
+def test_finding_rejects_disposition_reference_string_subclass() -> None:
+    class Reference(str):
+        pass
+
+    with pytest.raises(ValueError, match="disposition_ref"):
+        Finding(
+            "R-1",
+            RiskDomain.CREDENTIALS,
+            Severity.HIGH,
+            "b" * 64,
+            (),
+            Reference("d" * 64),
+        )
+
+
 def test_safe_annotation_trims_and_rejects_private_content() -> None:
     assert validate_safe_annotation("reason", "  Synthetic fixture  ", 240) == (
         "Synthetic fixture"
