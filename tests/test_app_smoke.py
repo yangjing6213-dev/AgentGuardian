@@ -2120,6 +2120,62 @@ def test_expiry_timer_success_clears_failure_and_restores_audit_status(
     window.close()
 
 
+def test_expiry_timer_retries_normal_status_after_one_shot_label_failure(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finding = _disposition_finding()
+    active = _disposition(
+        finding,
+        DispositionStatus.FALSE_POSITIVE,
+        expires_at="2026-08-02T12:00:10Z",
+    )
+    normal_status = "审计未完整：发现 1 项风险，覆盖率 75%；不能判定为安全。"
+    clock_attempts = 0
+    normal_status_attempts = 0
+    original_set_text = QLabel.setText
+
+    def current_time():
+        nonlocal clock_attempts
+        clock_attempts += 1
+        if clock_attempts == 1:
+            raise RuntimeError("private-clock-marker")
+        return EVALUATED_AT + timedelta(seconds=1)
+
+    monkeypatch.setattr(app_module, "_utc_now", lambda: EVALUATED_AT)
+    window = create_window()
+    window._dispositions = (active,)
+    window._scan_completed(_audit_outcome((finding,), (active,)))
+    window.findings_table.selectRow(0)
+
+    def one_shot_label_failure(label, text):
+        nonlocal normal_status_attempts
+        if label is window.status_label and text == normal_status:
+            normal_status_attempts += 1
+            if normal_status_attempts == 1:
+                raise RuntimeError("private-label-marker")
+        return original_set_text(label, text)
+
+    monkeypatch.setattr(app_module, "_utc_now", current_time)
+    monkeypatch.setattr(QLabel, "setText", one_shot_label_failure)
+
+    window._handle_expiry_timeout()
+    assert window._refresh_failure_notified
+    assert window.status_label.text() == "处置状态刷新受限，将稍后重试。"
+
+    window._handle_expiry_timeout()
+    assert window._refresh_failure_notified
+    assert window.status_label.text() == "处置状态刷新受限，将稍后重试。"
+
+    window._handle_expiry_timeout()
+
+    assert clock_attempts == 3
+    assert normal_status_attempts == 2
+    assert not window._refresh_failure_notified
+    assert window.status_label.text() == normal_status
+    window.close()
+
+
 def test_repeated_timer_failures_never_escape_spin_or_repeat_notification(
     qapp,
     monkeypatch: pytest.MonkeyPatch,

@@ -1333,13 +1333,12 @@ class AgentGuardianWindow(QMainWindow):
         if failed:
             self._indicate_refresh_failure_no_throw(failure_message)
         else:
-            was_failed = self._refresh_failure_notified
-            self._refresh_failure_notified = False
-            if was_failed and self._audit_outcome is not None:
+            if self._refresh_failure_notified and self._audit_outcome is not None:
                 try:
                     self.status_label.setText(_audit_status_text(self._audit_outcome))
                 except Exception:
-                    pass
+                    return
+            self._refresh_failure_notified = False
 
     def _start_expiry_retry_no_throw(self) -> None:
         try:
