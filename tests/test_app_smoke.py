@@ -10,14 +10,25 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QDate, QDateTime, QPoint, QRect, QTime, QTimeZone, Qt
+from PySide6.QtCore import (
+    QDate,
+    QDateTime,
+    QPoint,
+    QRect,
+    QTime,
+    QTimeZone,
+    QTimer,
+    Qt,
+)
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QLabel,
     QMessageBox,
+    QTableWidget,
 )
 
 import agentguardian.app as app_module
@@ -876,6 +887,7 @@ def test_disposition_dialog_validates_form_and_converts_local_expiry_to_utc(qapp
         EVALUATED_AT,
     )
     ok_button = dialog.button_box.button(QDialogButtonBox.StandardButton.Ok)
+    cancel_button = dialog.button_box.button(QDialogButtonBox.StandardButton.Cancel)
 
     assert dialog.status_combo.count() == 2
     assert dialog.windowTitle() == "风险发现处置"
@@ -885,6 +897,8 @@ def test_disposition_dialog_validates_form_and_converts_local_expiry_to_utc(qapp
     assert layout.labelForField(dialog.reason_edit).text() == "原因"
     assert layout.labelForField(dialog.reviewer_edit).text() == "复核人"
     assert layout.labelForField(dialog.expiry_edit).text() == "本地到期时间"
+    assert ok_button.text() == "确定"
+    assert cancel_button.text() == "取消"
     assert not ok_button.isEnabled()
 
     dialog.reason_edit.setText("Synthetic review reason")
@@ -918,6 +932,29 @@ def test_disposition_dialog_validates_form_and_converts_local_expiry_to_utc(qapp
         )
     )
     qapp.processEvents()
+    assert not ok_button.isEnabled()
+    dialog.close()
+
+
+def test_disposition_dialog_unexpected_validation_error_keeps_ok_disabled(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dialog = app_module._DispositionDialog(
+        None,
+        DispositionStatus.FALSE_POSITIVE,
+        EVALUATED_AT,
+    )
+    ok_button = dialog.button_box.button(QDialogButtonBox.StandardButton.Ok)
+    ok_button.setEnabled(True)
+    monkeypatch.setattr(
+        dialog,
+        "values",
+        lambda: (_ for _ in ()).throw(RuntimeError("private-validation-marker")),
+    )
+
+    dialog._update_validity()
+
     assert not ok_button.isEnabled()
     dialog.close()
 
@@ -1496,6 +1533,131 @@ def test_disposition_transaction_builds_reports_and_snapshot_before_save(
     window.close()
 
 
+@pytest.mark.parametrize(
+    "failure_stage",
+    (
+        "commit_boundary",
+        "commit",
+        "apply",
+        "status_ui",
+        "report_ui",
+        "selection",
+        "timer_schedule",
+        "timer_start",
+    ),
+)
+def test_post_save_failures_roll_forward_persisted_core_without_save_warning(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    finding = _disposition_finding()
+    marker = f"private-post-save-{failure_stage}-marker"
+    saved = []
+    warnings = []
+
+    class AcceptDialog:
+        def __init__(self, parent, status, now):
+            self.status = status
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def values(self):
+            return (
+                self.status,
+                "Synthetic audit review",
+                "Local reviewer",
+                "2026-08-03T12:00:00Z",
+            )
+
+    def fail(*args, **kwargs):
+        raise RuntimeError(marker)
+
+    monkeypatch.setattr(app_module, "_DispositionDialog", AcceptDialog)
+    monkeypatch.setattr(app_module, "_utc_now", lambda: EVALUATED_AT)
+    monkeypatch.setattr(app_module, "save_protected_state", saved.append)
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda parent, title, message: warnings.append((title, message)),
+    )
+    window = create_window()
+    original = _audit_outcome((finding,))
+    window._scan_completed(original)
+    window.findings_table.selectRow(0)
+
+    if failure_stage == "commit_boundary":
+        monkeypatch.setattr(window, "_commit_saved_dispositions_no_throw", fail)
+    elif failure_stage == "commit":
+        monkeypatch.setattr(window, "_commit_disposition_state", fail)
+    elif failure_stage == "apply":
+        monkeypatch.setattr(window, "_apply_reviewed_outcome", fail)
+    elif failure_stage == "status_ui":
+        monkeypatch.setattr(window, "_refresh_disposition_ui", fail)
+    elif failure_stage == "report_ui":
+        monkeypatch.setattr(window, "_refresh_report", fail)
+    elif failure_stage == "selection":
+        original_select_row = QTableWidget.selectRow
+
+        def fail_selection(table, row):
+            if table is window.findings_table:
+                fail()
+            return original_select_row(table, row)
+
+        monkeypatch.setattr(QTableWidget, "selectRow", fail_selection)
+    elif failure_stage == "timer_schedule":
+        monkeypatch.setattr(window, "_schedule_expiry_timer", fail)
+    elif failure_stage == "timer_start":
+        original_timer_start = QTimer.start
+
+        def fail_timer_start(timer, *args):
+            if timer is window._expiry_timer:
+                fail()
+            return original_timer_start(timer, *args)
+
+        monkeypatch.setattr(QTimer, "start", fail_timer_start)
+
+    window.false_positive_button.click()
+
+    assert len(saved) == 1
+    persisted = saved[0].dispositions
+    assert window._dispositions == persisted
+    assert not window._protected_state_invalid
+    assert window._audit_outcome.findings is original.findings
+    assert window._audit_outcome.score is original.score
+    assert window._audit_outcome.reviewed_score.total == 100
+    assert window._audit_outcome.report_json == window.report_json
+    assert window._audit_outcome.report_html == window.report_html
+    payload = json.loads(window.report_json)
+    assert payload["findings"][0]["disposition"]["status"] == "false_positive"
+    expected_status = "状态待刷新" if failure_stage == "status_ui" else "误报"
+    assert window.findings_table.item(0, 4).text() == expected_status
+    if failure_stage == "report_ui":
+        assert window.report_browser.toPlainText() == "报告已更新，界面暂时无法刷新。"
+    assert window.findings_table.currentRow() == 0
+    assert {index.row() for index in window.findings_table.selectedIndexes()} == {0}
+    if failure_stage == "timer_schedule":
+        assert window._expiry_timer.isActive()
+        assert window._expiry_timer.interval() == 60_000
+    elif failure_stage == "timer_start":
+        assert not window._expiry_timer.isActive()
+    else:
+        assert window._expiry_timer.isActive()
+    assert warnings == []
+    assert window._refresh_failure_notified
+    assert window.status_label.text() == "处置已保存，界面刷新受限。"
+    visible = " ".join(
+        (
+            window.status_label.text(),
+            window.report_browser.toPlainText(),
+            window.findings_table.item(0, 4).text(),
+        )
+    )
+    assert marker not in visible
+    window.close()
+
+
 @pytest.mark.parametrize("failure_point", ("clock", "dialog_values"))
 def test_create_callback_contains_unexpected_clock_and_dialog_errors(
     qapp,
@@ -1836,7 +1998,7 @@ def test_expiry_timer_refreshes_scores_reports_and_status_without_writing(
 
 
 @pytest.mark.parametrize("failure_point", ("clock", "review", "report_ui"))
-def test_expiry_timer_contains_unexpected_failure_and_preserves_schedule(
+def test_expiry_timer_contains_failure_with_bounded_retry_or_roll_forward(
     qapp,
     monkeypatch: pytest.MonkeyPatch,
     failure_point: str,
@@ -1848,7 +2010,6 @@ def test_expiry_timer_contains_unexpected_failure_and_preserves_schedule(
         expires_at="2026-08-02T12:00:10Z",
     )
     marker = f"private-timer-{failure_point}-marker"
-    warnings = []
     saves = []
     monkeypatch.setattr(app_module, "save_protected_state", saves.append)
     monkeypatch.setattr(app_module, "_utc_now", lambda: EVALUATED_AT)
@@ -1876,19 +2037,94 @@ def test_expiry_timer_contains_unexpected_failure_and_preserves_schedule(
             target,
             lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(marker)),
         )
+    previous_outcome = window._audit_outcome
     monkeypatch.setattr(
         QMessageBox,
         "warning",
-        lambda parent, title, message: warnings.append((title, message)),
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(marker)),
     )
-    before = _window_transaction_state(window)
 
     window._handle_expiry_timeout()
 
-    assert warnings == [("刷新失败", "无法刷新处置状态。")]
-    assert marker not in repr(warnings)
     assert saves == []
-    assert _window_transaction_state(window) == before
+    assert window._dispositions == (active,)
+    assert window._refresh_failure_notified
+    assert window.status_label.text() == "处置状态刷新受限，将稍后重试。"
+    if failure_point == "report_ui":
+        assert window._audit_outcome.evaluated_at == EVALUATED_AT + timedelta(seconds=10)
+        assert window._audit_outcome.reviewed_score == window._audit_outcome.score
+        assert window.findings_table.item(0, 4).text() == "已过期"
+        assert window.report_browser.toPlainText() == "报告已更新，界面暂时无法刷新。"
+        assert not window._expiry_timer.isActive()
+    else:
+        assert window._audit_outcome is previous_outcome
+        assert window.findings_table.item(0, 4).text() == "误报"
+        assert window._expiry_timer.isActive()
+        assert window._expiry_timer.interval() == 60_000
+    assert marker not in " ".join(
+        (window.status_label.text(), window.report_browser.toPlainText())
+    )
+    window.close()
+
+
+def test_repeated_timer_failures_never_escape_spin_or_repeat_notification(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finding = _disposition_finding()
+    active = _disposition(
+        finding,
+        DispositionStatus.FALSE_POSITIVE,
+        expires_at="2026-08-02T12:00:10Z",
+    )
+    marker = "private-repeated-timer-marker"
+    timer_starts = []
+    notification_attempts = []
+    original_timer_start = QTimer.start
+    original_label_set_text = QLabel.setText
+
+    monkeypatch.setattr(app_module, "_utc_now", lambda: EVALUATED_AT)
+    window = create_window()
+    window._dispositions = (active,)
+    window._scan_completed(_audit_outcome((finding,), (active,)))
+    window.findings_table.selectRow(0)
+    previous_outcome = window._audit_outcome
+
+    monkeypatch.setattr(
+        app_module,
+        "_utc_now",
+        lambda: (_ for _ in ()).throw(RuntimeError(marker)),
+    )
+
+    def fail_timer_start(timer, interval):
+        if timer is window._expiry_timer:
+            timer_starts.append(interval)
+            raise RuntimeError(marker)
+        return original_timer_start(timer, interval)
+
+    def fail_notification(label, text):
+        if label is window.status_label:
+            notification_attempts.append(text)
+            raise RuntimeError(marker)
+        return original_label_set_text(label, text)
+
+    monkeypatch.setattr(QTimer, "start", fail_timer_start)
+    monkeypatch.setattr(QLabel, "setText", fail_notification)
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(marker)),
+    )
+
+    for _ in range(3):
+        window._handle_expiry_timeout()
+
+    assert window._audit_outcome is previous_outcome
+    assert window._dispositions == (active,)
+    assert timer_starts == [60_000, 60_000, 60_000]
+    assert notification_attempts == ["处置状态刷新受限，将稍后重试。"]
+    assert window._refresh_failure_notified
+    assert not window._expiry_timer.isActive()
     window.close()
 
 

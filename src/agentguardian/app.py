@@ -102,9 +102,12 @@ _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
 _CONTEXT_ERROR = "invalid disposition context"
 _SAVE_FAILURE_TITLE = "保存失败"
 _SAVE_FAILURE_MESSAGE = "无法保存加密状态。"
-_REFRESH_FAILURE_TITLE = "刷新失败"
-_REFRESH_FAILURE_MESSAGE = "无法刷新处置状态。"
 _EXPIRY_TIMER_CAP_MS = 86_400_000
+_EXPIRY_RETRY_MS = 60_000
+_STATUS_REFRESH_FALLBACK = "状态待刷新"
+_REPORT_REFRESH_FALLBACK = "报告已更新，界面暂时无法刷新。"
+_SAVED_REFRESH_FAILURE = "处置已保存，界面刷新受限。"
+_TIMER_REFRESH_FAILURE = "处置状态刷新受限，将稍后重试。"
 _STATUS_LABELS = {
     "open": "待处理",
     "false_positive": "误报",
@@ -194,6 +197,8 @@ class _DispositionDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
         )
+        self.button_box.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+        self.button_box.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
         layout.addRow(self.button_box)
@@ -221,7 +226,7 @@ class _DispositionDialog(QDialog):
         try:
             self.values()
             valid = True
-        except (TypeError, ValueError):
+        except Exception:  # noqa: BLE001 - validation must keep the dialog inert
             valid = False
         self.button_box.button(QDialogButtonBox.StandardButton.Ok).setEnabled(valid)
 
@@ -662,6 +667,7 @@ class AgentGuardianWindow(QMainWindow):
         self.is_scanning = False
         self.report_json = ""
         self.report_html = ""
+        self._refresh_failure_notified = False
         self._expiry_timer = QTimer(self)
         self._expiry_timer.setSingleShot(True)
         self._expiry_timer.timeout.connect(self._handle_expiry_timeout)
@@ -1183,11 +1189,40 @@ class AgentGuardianWindow(QMainWindow):
             now,
         )
         save_protected_state(snapshot)
-        self._commit_disposition_state(
-            candidate,
-            outcome=outcome,
-            selected_row=selected_row,
-        )
+        try:
+            self._commit_saved_dispositions_no_throw(candidate, outcome, selected_row)
+        except Exception:  # noqa: BLE001 - the persisted candidate must roll forward
+            self._dispositions = candidate
+            self._protected_state_invalid = False
+            self._set_reviewed_core(outcome)
+            self._recover_reviewed_ui_no_throw(
+                outcome,
+                selected_row,
+                _SAVED_REFRESH_FAILURE,
+            )
+
+    def _commit_saved_dispositions_no_throw(
+        self,
+        records: tuple[DispositionRecord, ...],
+        outcome: AuditOutcome,
+        selected_row: int,
+    ) -> None:
+        # A successful protected save is authoritative; UI failures cannot roll it back.
+        self._dispositions = records
+        self._protected_state_invalid = False
+        self._set_reviewed_core(outcome)
+        try:
+            self._commit_disposition_state(
+                records,
+                outcome=outcome,
+                selected_row=selected_row,
+            )
+        except Exception:  # noqa: BLE001 - enforce post-save roll-forward
+            self._recover_reviewed_ui_no_throw(
+                outcome,
+                selected_row,
+                _SAVED_REFRESH_FAILURE,
+            )
 
     def _prepare_disposition_transaction(
         self,
@@ -1287,21 +1322,121 @@ class AgentGuardianWindow(QMainWindow):
             selected_row = self.findings_table.currentRow()
         self._dispositions = records
         self._protected_state_invalid = False
-        self._apply_reviewed_outcome(outcome, selected_row)
+        self._set_reviewed_core(outcome)
+        try:
+            self._apply_reviewed_outcome(
+                outcome,
+                selected_row,
+                failure_message=_SAVED_REFRESH_FAILURE,
+            )
+        except Exception:  # noqa: BLE001 - no-throw post-save commit invariant
+            self._recover_reviewed_ui_no_throw(
+                outcome,
+                selected_row,
+                _SAVED_REFRESH_FAILURE,
+            )
+
+    def _set_reviewed_core(self, outcome: AuditOutcome) -> None:
+        self._audit_outcome = outcome
+        self.report_json = outcome.report_json
+        self.report_html = outcome.report_html
 
     def _apply_reviewed_outcome(
         self,
         outcome: AuditOutcome,
         selected_row: int,
+        *,
+        failure_message: str = _TIMER_REFRESH_FAILURE,
     ) -> None:
-        self._audit_outcome = outcome
-        self.report_json = outcome.report_json
-        self.report_html = outcome.report_html
-        self._refresh_disposition_ui(outcome.evaluated_at)
-        self._refresh_report()
-        if 0 <= selected_row < self.findings_table.rowCount():
-            self.findings_table.selectRow(selected_row)
-        self._schedule_expiry_timer(outcome.evaluated_at)
+        self._set_reviewed_core(outcome)
+        self._refresh_reviewed_ui_no_throw(
+            outcome.evaluated_at,
+            selected_row,
+            failure_message=failure_message,
+        )
+
+    def _refresh_reviewed_ui_no_throw(
+        self,
+        now: datetime,
+        selected_row: int,
+        *,
+        failure_message: str,
+        already_failed: bool = False,
+    ) -> None:
+        failed = already_failed
+        try:
+            self._refresh_disposition_ui(now)
+        except Exception:  # noqa: BLE001 - independent status fallback
+            failed = True
+            try:
+                for row in range(self.findings_table.rowCount()):
+                    self.findings_table.item(row, 4).setText(_STATUS_REFRESH_FALLBACK)
+                self._update_disposition_commands()
+            except Exception:
+                pass
+        try:
+            self._refresh_report()
+        except Exception:  # noqa: BLE001 - independent report fallback
+            failed = True
+            try:
+                self.report_browser.setPlainText(_REPORT_REFRESH_FALLBACK)
+            except Exception:
+                pass
+        try:
+            if 0 <= selected_row < self.findings_table.rowCount():
+                self.findings_table.selectRow(selected_row)
+        except Exception:  # noqa: BLE001 - preserve the existing selection
+            failed = True
+        try:
+            self._schedule_expiry_timer(now)
+        except Exception:  # noqa: BLE001 - bounded timer fallback
+            failed = True
+            try:
+                self._start_expiry_retry_no_throw()
+            except Exception:
+                pass
+        if failed:
+            try:
+                self._indicate_refresh_failure_no_throw(failure_message)
+            except Exception:
+                pass
+        else:
+            self._refresh_failure_notified = False
+
+    def _recover_reviewed_ui_no_throw(
+        self,
+        outcome: AuditOutcome,
+        selected_row: int,
+        failure_message: str,
+    ) -> None:
+        try:
+            self._refresh_reviewed_ui_no_throw(
+                outcome.evaluated_at,
+                selected_row,
+                failure_message=failure_message,
+                already_failed=True,
+            )
+        except Exception:
+            pass
+
+    def _start_expiry_retry_no_throw(self) -> None:
+        try:
+            self._expiry_timer.stop()
+        except Exception:
+            pass
+        try:
+            self._expiry_timer.start(_EXPIRY_RETRY_MS)
+        except Exception:
+            pass
+
+    def _indicate_refresh_failure_no_throw(self, message: str) -> None:
+        if self._refresh_failure_notified:
+            return
+        self._refresh_failure_notified = True
+        try:
+            self.status_label.setText(message)
+        except Exception:
+            pass
 
     def _schedule_expiry_timer(self, now: datetime | None = None) -> None:
         self._expiry_timer.stop()
@@ -1334,76 +1469,39 @@ class AgentGuardianWindow(QMainWindow):
 
     @Slot()
     def _handle_expiry_timeout(self) -> None:
-        retry_interval = _EXPIRY_TIMER_CAP_MS
-        previous_outcome = self._audit_outcome
-        applying_outcome = False
         try:
-            retry_interval = max(1, self._expiry_timer.interval())
-            previous_json = self.report_json
-            previous_html = self.report_html
-            previous_report_mode = self.report_mode_combo.currentText()
-            previous_guidance = self.guidance_browser.toPlainText()
-            previous_statuses = tuple(
-                self.findings_table.item(row, 4).text()
-                for row in range(self.findings_table.rowCount())
-            )
-            previous_row = self.findings_table.currentRow()
-            previous_column = self.findings_table.currentColumn()
-            previous_commands = (
-                self.false_positive_button.isEnabled(),
-                self.accepted_risk_button.isEnabled(),
-                self.withdraw_button.isEnabled(),
-            )
             if self._audit_outcome is None:
-                self._expiry_timer.stop()
+                try:
+                    self._expiry_timer.stop()
+                except Exception:
+                    pass
                 return
             now = _validated_evaluation_time(_utc_now())
             selected_row = self.findings_table.currentRow()
             outcome = self._reviewed_outcome(self._dispositions, now)
-            applying_outcome = True
-            self._apply_reviewed_outcome(outcome, selected_row)
         except Exception:  # noqa: BLE001 - fixed timer callback boundary
             try:
-                if applying_outcome:
-                    self._audit_outcome = previous_outcome
-                    self.report_json = previous_json
-                    self.report_html = previous_html
-                    if previous_report_mode == "JSON":
-                        self.report_browser.setPlainText(previous_json)
-                    else:
-                        self.report_browser.setHtml(previous_html)
-                    self.guidance_browser.setPlainText(previous_guidance)
-                    for row, status in enumerate(previous_statuses):
-                        self.findings_table.item(row, 4).setText(status)
-                    blocked = self.findings_table.blockSignals(True)
-                    self.findings_table.clearSelection()
-                    if previous_row >= 0:
-                        self.findings_table.selectRow(previous_row)
-                        self.findings_table.setCurrentCell(previous_row, previous_column)
-                    self.findings_table.blockSignals(blocked)
-                    for button, enabled in zip(
-                        (
-                            self.false_positive_button,
-                            self.accepted_risk_button,
-                            self.withdraw_button,
-                        ),
-                        previous_commands,
-                    ):
-                        button.setEnabled(enabled)
+                self._start_expiry_retry_no_throw()
             except Exception:
                 pass
-            if previous_outcome is not None:
-                self._expiry_timer.start(
-                    min(retry_interval, _EXPIRY_TIMER_CAP_MS)
-                )
-            self._show_refresh_failure()
-
-    def _show_refresh_failure(self) -> None:
-        QMessageBox.warning(
-            self,
-            _REFRESH_FAILURE_TITLE,
-            _REFRESH_FAILURE_MESSAGE,
-        )
+            try:
+                self._indicate_refresh_failure_no_throw(_TIMER_REFRESH_FAILURE)
+            except Exception:
+                pass
+            return
+        self._set_reviewed_core(outcome)
+        try:
+            self._apply_reviewed_outcome(
+                outcome,
+                selected_row,
+                failure_message=_TIMER_REFRESH_FAILURE,
+            )
+        except Exception:  # noqa: BLE001 - roll forward the refreshed outcome
+            self._recover_reviewed_ui_no_throw(
+                outcome,
+                selected_row,
+                _TIMER_REFRESH_FAILURE,
+            )
 
     def _refresh_report(self) -> None:
         if self.report_mode_combo.currentText() == "JSON":
