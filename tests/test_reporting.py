@@ -1,5 +1,5 @@
 import ast
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from html import escape
 import json
 import math
@@ -20,6 +20,93 @@ from agentguardian.scoring import score as calculate_score
 
 
 EVALUATED_AT = datetime(2026, 8, 2, 12, tzinfo=timezone.utc)
+REPORT_MARKER = r"C:\Synthetic\private\report-marker.txt"
+REPORT_LIMIT = 2_000
+
+
+class _LeakyStr(str):
+    def __str__(self) -> str:
+        return REPORT_MARKER
+
+    def __lt__(self, other: object) -> bool:
+        raise RuntimeError(REPORT_MARKER)
+
+
+class _StatefulFinding(Finding):
+    def __getattribute__(self, name: str) -> object:
+        if name == "rule_id":
+            state = object.__getattribute__(self, "__dict__")
+            state["rule_reads"] = state.get("rule_reads", 0) + 1
+            if state["rule_reads"] > 1:
+                return object.__getattribute__(self, "disposition_ref")
+        return super().__getattribute__(name)
+
+
+class _EvidenceSubclass(Evidence):
+    pass
+
+
+class _ScoreSubclass(Score):
+    pass
+
+
+class _NoHintIterator:
+    def __init__(self, value: object) -> None:
+        self.value = value
+        self.consumed = 0
+
+    def __iter__(self) -> "_NoHintIterator":
+        return self
+
+    def __next__(self) -> object:
+        if self.consumed == REPORT_LIMIT + 2:
+            raise StopIteration
+        self.consumed += 1
+        return self.value
+
+    def __len__(self) -> int:
+        raise RuntimeError(REPORT_MARKER)
+
+    def __length_hint__(self) -> int:
+        raise RuntimeError(REPORT_MARKER)
+
+
+class _ExplodingIterator:
+    def __init__(self, value: object) -> None:
+        self.value = value
+        self.consumed = 0
+
+    def __iter__(self) -> "_ExplodingIterator":
+        return self
+
+    def __next__(self) -> object:
+        self.consumed += 1
+        if self.consumed > 1:
+            raise RuntimeError(REPORT_MARKER)
+        return self.value
+
+
+class _ExplodingMapping(dict[str, DispositionRecord]):
+    def __iter__(self) -> object:
+        raise RuntimeError(REPORT_MARKER)
+
+
+class _HostileTimezone(tzinfo):
+    def utcoffset(self, value: datetime | None) -> timedelta:
+        raise RuntimeError(REPORT_MARKER)
+
+
+class _CountingUtc(tzinfo):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def utcoffset(self, value: datetime | None) -> timedelta:
+        self.calls += 1
+        return timedelta(0)
+
+
+class _DatetimeSubclass(datetime):
+    pass
 
 
 def _score() -> Score:
@@ -56,6 +143,94 @@ def _findings() -> tuple[Finding, ...]:
             "a" * 64,
             (Evidence("分享记录.txt", "e" * 64, "已脱敏分享标识"),),
         ),
+    )
+
+
+def _assert_report_invalid(
+    renderer: object,
+    score: object,
+    findings: object,
+    rule_version: object = "rules-1",
+    **kwargs: object,
+) -> None:
+    with pytest.raises(ValueError) as caught:
+        renderer(score, findings, rule_version=rule_version, **kwargs)  # type: ignore[operator]
+
+    assert caught.value.args == ("REPORT_INVALID",)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert REPORT_MARKER not in str(caught.value)
+    assert REPORT_MARKER not in repr(caught.value)
+
+
+def _unchecked_score(**overrides: object) -> Score:
+    values = {
+        "total": 100,
+        "deductions": tuple((domain, 0) for domain in RiskDomain),
+        "cap_reason": None,
+        "coverage": 1.0,
+        "confidence": 1.0,
+        "limits": (),
+        "incomplete": False,
+    }
+    values.update(overrides)
+    result = object.__new__(Score)
+    for name, value in values.items():
+        object.__setattr__(result, name, value)
+    return result
+
+
+def _score_subclass() -> Score:
+    base = _score()
+    return _ScoreSubclass(
+        base.total,
+        base.deductions,
+        base.cap_reason,
+        base.coverage,
+        base.confidence,
+        base.limits,
+        base.incomplete,
+    )
+
+
+def _unchecked_finding(**overrides: object) -> Finding:
+    values = {
+        "rule_id": "RULE",
+        "domain": RiskDomain.PRIVACY,
+        "severity": Severity.MEDIUM,
+        "root_fingerprint": "a" * 64,
+        "evidence": (),
+        "disposition_ref": None,
+    }
+    values.update(overrides)
+    result = object.__new__(Finding)
+    for name, value in values.items():
+        object.__setattr__(result, name, value)
+    return result
+
+
+def _unchecked_evidence(**overrides: object) -> Evidence:
+    values = {
+        "source": "safe.txt",
+        "fingerprint": "a" * 64,
+        "masked": "safe masked evidence",
+    }
+    values.update(overrides)
+    result = object.__new__(Evidence)
+    for name, value in values.items():
+        object.__setattr__(result, name, value)
+    return result
+
+
+def _disposition_record() -> DispositionRecord:
+    return DispositionRecord(
+        "5" * 64,
+        "SAME_RULE",
+        DispositionStatus.FALSE_POSITIVE,
+        "Synthetic duplicate review",
+        "Local reviewer",
+        "2026-08-02T08:00:00Z",
+        "2026-08-03T08:00:00Z",
     )
 
 
@@ -171,6 +346,214 @@ def _expected_score_data(score: Score) -> dict[str, object]:
         "incomplete": score.incomplete,
         "limits": list(score.limits),
     }
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
+def test_renderers_reject_stateful_finding_subclasses_before_field_access(
+    renderer: object,
+) -> None:
+    finding = _StatefulFinding(
+        "SAFE_RULE",
+        RiskDomain.PRIVACY,
+        Severity.MEDIUM,
+        "a" * 64,
+        (),
+        "f" * 64,
+    )
+
+    _assert_report_invalid(renderer, _score(), (finding,))
+
+    assert finding.__dict__.get("rule_reads", 0) == 0
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
+@pytest.mark.parametrize(
+    "location",
+    ("finding", "evidence", "score", "rule_version"),
+)
+def test_renderers_reject_string_subclasses_without_leaking_paths(
+    renderer: object,
+    location: str,
+) -> None:
+    score: Score = _score()
+    findings: tuple[Finding, ...] = ()
+    rule_version: object = "rules-1"
+    if location == "finding":
+        findings = (_unchecked_finding(rule_id=_LeakyStr(REPORT_MARKER)),)
+    elif location == "evidence":
+        findings = (
+            _unchecked_finding(
+                evidence=(
+                    Evidence(
+                        _LeakyStr("safe.txt"),
+                        "a" * 64,
+                        "safe masked evidence",
+                    ),
+                )
+            ),
+        )
+    elif location == "score":
+        score = _unchecked_score(cap_reason=_LeakyStr(REPORT_MARKER))
+    else:
+        rule_version = _LeakyStr(REPORT_MARKER)
+
+    _assert_report_invalid(
+        renderer,
+        score,
+        findings,
+        rule_version=rule_version,
+    )
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
+@pytest.mark.parametrize(
+    "finding",
+    (
+        _unchecked_finding(domain="privacy"),
+        _unchecked_finding(severity="medium"),
+        _unchecked_finding(evidence=[]),
+        _unchecked_finding(
+            evidence=(
+                _EvidenceSubclass(
+                    "safe.txt",
+                    "a" * 64,
+                    "safe masked evidence",
+                ),
+            )
+        ),
+        _unchecked_finding(evidence=(_unchecked_evidence(source=1),)),
+        _unchecked_finding(
+            disposition_ref=_LeakyStr("f" * 64),
+        ),
+    ),
+    ids=(
+        "string-domain",
+        "string-severity",
+        "list-evidence",
+        "evidence-subclass",
+        "integer-evidence-source",
+        "string-subclass-reference",
+    ),
+)
+def test_renderers_reject_noncanonical_finding_and_evidence_fields(
+    renderer: object,
+    finding: Finding,
+) -> None:
+    _assert_report_invalid(renderer, _score(), (finding,))
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
+@pytest.mark.parametrize("target", ("findings", "dispositions"))
+def test_renderers_bound_one_pass_inputs_without_length_hints(
+    renderer: object,
+    target: str,
+) -> None:
+    finding = Finding(
+        "SAME_RULE",
+        RiskDomain.PRIVACY,
+        Severity.MEDIUM,
+        "a" * 64,
+        (),
+    )
+    value: object = finding if target == "findings" else _disposition_record()
+    probe = _NoHintIterator(value)
+    findings: object = probe if target == "findings" else ()
+    dispositions: object = probe if target == "dispositions" else ()
+
+    _assert_report_invalid(
+        renderer,
+        _score(),
+        findings,
+        dispositions=dispositions,
+        evaluated_at=EVALUATED_AT,
+    )
+
+    assert probe.consumed == REPORT_LIMIT + 1
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
+@pytest.mark.parametrize("target", ("findings", "dispositions", "mapping"))
+def test_renderers_normalize_iterator_and_mapping_failures(
+    renderer: object,
+    target: str,
+) -> None:
+    finding = Finding(
+        "SAME_RULE",
+        RiskDomain.PRIVACY,
+        Severity.MEDIUM,
+        "a" * 64,
+        (),
+    )
+    record = _disposition_record()
+    findings: object = ()
+    dispositions: object = ()
+    if target == "findings":
+        findings = _ExplodingIterator(finding)
+    elif target == "dispositions":
+        dispositions = _ExplodingIterator(record)
+    else:
+        dispositions = _ExplodingMapping({record.disposition_ref: record})
+
+    _assert_report_invalid(
+        renderer,
+        _score(),
+        findings,
+        dispositions=dispositions,
+        evaluated_at=EVALUATED_AT,
+    )
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
+@pytest.mark.parametrize(
+    "evaluated_at",
+    (
+        datetime(2026, 8, 2, 12),
+        datetime(2026, 8, 2, 12, tzinfo=timezone(timedelta(hours=1))),
+        _DatetimeSubclass(2026, 8, 2, 12, tzinfo=timezone.utc),
+    ),
+    ids=("naive", "non-utc", "datetime-subclass"),
+)
+def test_renderers_validate_evaluated_at_with_empty_findings(
+    renderer: object,
+    evaluated_at: datetime,
+) -> None:
+    _assert_report_invalid(
+        renderer,
+        _score(),
+        (),
+        evaluated_at=evaluated_at,
+    )
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
+def test_renderers_normalize_hostile_timezone_failures(
+    renderer: object,
+) -> None:
+    hostile = datetime(2026, 8, 2, 12, tzinfo=_HostileTimezone())
+
+    _assert_report_invalid(
+        renderer,
+        _score(),
+        (),
+        evaluated_at=hostile,
+    )
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
+def test_renderers_validate_evaluated_at_once(
+    renderer: object,
+) -> None:
+    counting_utc = _CountingUtc()
+    evaluated_at = datetime(2026, 8, 2, 12, tzinfo=counting_utc)
+
+    renderer(  # type: ignore[operator]
+        _score(),
+        _findings(),
+        rule_version="rules-1",
+        evaluated_at=evaluated_at,
+    )
+
+    assert counting_utc.calls == 1
 
 
 def test_render_json_contains_safe_complete_deterministic_report() -> None:
@@ -341,27 +724,59 @@ def test_real_detection_scoring_reporting_chain_keeps_raw_data_private() -> None
     assert escape("Analyst & owner", quote=True) in html_report
 
 
-def test_render_json_rejects_non_finite_score_values() -> None:
-    malformed = Score(
-        100,
-        ((RiskDomain.EXPOSURE, math.nan),),
-        None,
-        1.0,
-        1.0,
+@pytest.mark.parametrize("renderer", (render_json, render_html))
+@pytest.mark.parametrize("position", ("technical", "reviewed"))
+@pytest.mark.parametrize(
+    "malformed",
+    (
+        _score_subclass(),
+        _unchecked_score(total=True),
+        _unchecked_score(deductions=[]),
+        _unchecked_score(deductions=((RiskDomain.PRIVACY,),)),
+        _unchecked_score(deductions=(("privacy", 1),)),
+        _unchecked_score(deductions=((RiskDomain.PRIVACY, True),)),
+        _unchecked_score(deductions=((RiskDomain.PRIVACY, -1),)),
+        _unchecked_score(deductions=((RiskDomain.PRIVACY, math.nan),)),
+        _unchecked_score(cap_reason=1),
+        _unchecked_score(coverage=math.nan),
+        _unchecked_score(coverage=True),
+        _unchecked_score(confidence=math.inf),
+        _unchecked_score(limits=[]),
+        _unchecked_score(limits=(_LeakyStr(REPORT_MARKER),)),
+        _unchecked_score(incomplete=1),
+    ),
+    ids=(
+        "score-subclass",
+        "bool-total",
+        "list-deductions",
+        "short-deduction",
+        "string-domain",
+        "bool-deduction",
+        "negative-deduction",
+        "nan-deduction",
+        "integer-cap",
+        "nan-coverage",
+        "bool-coverage",
+        "infinite-confidence",
+        "list-limits",
+        "string-subclass-limit",
+        "integer-incomplete",
+    ),
+)
+def test_renderers_reject_malformed_technical_and_reviewed_scores(
+    renderer: object,
+    position: str,
+    malformed: Score,
+) -> None:
+    technical = malformed if position == "technical" else _score()
+    reviewed = malformed if position == "reviewed" else None
+
+    _assert_report_invalid(
+        renderer,
+        technical,
         (),
-        False,
+        reviewed_score=reviewed,
     )
-
-    with pytest.raises(ValueError, match="Out of range float values"):
-        render_json(malformed, (), rule_version="rules-1")
-
-    with pytest.raises(ValueError, match="Out of range float values"):
-        render_json(
-            _score(),
-            (),
-            rule_version="rules-1",
-            reviewed_score=malformed,
-        )
 
 
 def test_render_html_escapes_every_dynamic_text_field() -> None:
@@ -539,20 +954,20 @@ def test_renderers_stabilize_identical_findings_by_safe_disposition(
         "SAME_RULE",
         RiskDomain.PRIVACY,
         Severity.MEDIUM,
-        "f" * 64,
+        "a" * 64,
         evidence,
-        "5" * 64,
+        "f" * 64,
     )
     open_finding = Finding(
         "SAME_RULE",
         RiskDomain.PRIVACY,
         Severity.MEDIUM,
-        "f" * 64,
+        "a" * 64,
         evidence,
-        "6" * 64,
+        "0" * 64,
     )
     record = DispositionRecord(
-        "5" * 64,
+        "f" * 64,
         "SAME_RULE",
         DispositionStatus.FALSE_POSITIVE,
         "Synthetic duplicate review",
@@ -577,6 +992,18 @@ def test_renderers_stabilize_identical_findings_by_safe_disposition(
     )
 
     assert forward == reverse
+    if renderer is render_json:
+        states = [
+            finding["disposition"]["status"]
+            for finding in json.loads(forward)["findings"]
+        ]
+        assert states == ["false_positive", "open"]
+    else:
+        assert forward.index("Disposition status: false_positive") < forward.index(
+            "Disposition status: open"
+        )
+    assert "f" * 64 not in forward
+    assert "0" * 64 not in forward
 
 
 @pytest.mark.parametrize("renderer", (render_json, render_html))
@@ -630,10 +1057,15 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
                 "from",
                 0,
                 "datetime",
-                (("datetime", None), ("timezone", None)),
+                (
+                    ("datetime", None),
+                    ("timedelta", None),
+                    ("timezone", None),
+                ),
             ),
             ("from", 0, "html", (("escape", None),)),
             ("import", 0, None, (("json", None),)),
+            ("from", 0, "math", (("isfinite", None),)),
             ("from", 1, None, (("__version__", None),)),
             (
                 "from",
@@ -649,7 +1081,13 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
                 "from",
                 1,
                 "domain",
-                (("Evidence", None), ("Finding", None), ("Score", None)),
+                (
+                    ("Evidence", None),
+                    ("Finding", None),
+                    ("RiskDomain", None),
+                    ("Score", None),
+                    ("Severity", None),
+                ),
             ),
         },
     }
@@ -664,25 +1102,41 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
             "tuple",
         },
         "reporting.py": {
+            "Evidence",
+            "Finding",
+            "ValueError",
+            "_bounded_items",
             "_disposition_data",
             "_disposition_sort_key",
             "_finding_data",
-            "_score_data",
-            "_sorted_evidence",
-            "_sorted_finding_dispositions",
+            "_prepare_report",
             "_text",
+            "_validated_finding",
+            "_validated_score_data",
+            "_validated_time",
             "disposition_index",
             "escape",
             "evaluate_disposition",
-            "list",
+            "isfinite",
             "sorted",
             "str",
+            "timedelta",
             "tuple",
+            "type",
         },
     }
     allowed_attribute_calls = {
         "scoring.py": {"add", "get", "items"},
-        "reporting.py": {"append", "dumps", "extend", "join", "lower", "now"},
+        "reporting.py": {
+            "append",
+            "dumps",
+            "extend",
+            "join",
+            "lower",
+            "now",
+            "replace",
+            "utcoffset",
+        },
     }
     blocked_dynamic_calls = {"__import__", "eval", "exec", "getattr", "open"}
 
@@ -711,8 +1165,8 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
         }
 
         assert imports == allowed_imports[module_name]
-        assert name_calls <= allowed_name_calls[module_name]
-        assert attribute_calls <= allowed_attribute_calls[module_name]
+        assert name_calls == allowed_name_calls[module_name]
+        assert attribute_calls == allowed_attribute_calls[module_name]
         assert name_calls.isdisjoint(blocked_dynamic_calls)
         assert attribute_calls.isdisjoint(blocked_dynamic_calls)
         assert dynamic_calls == set()
