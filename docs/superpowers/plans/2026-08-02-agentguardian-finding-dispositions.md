@@ -736,11 +736,11 @@ Run with `PYTHONPATH=src`: `rtk proxy python -c "import json; from agentguardian
 
 Expected: zero failures, zero whitespace errors, `findings=[]`, and `network_capability=not_detected`. Record local skips separately from passes.
 
-- [ ] **Step 4: Run an independent read-only security review**
+- [x] **Step 4: Run an independent read-only security review**
 
 Review stable-reference privacy, canonical-message collision resistance, path normalization, key lifecycle, schema migration, expiry/clock handling, dual-score semantics, report leakage, transactional rollback, corrupt-state replacement, self-audit precision, synthetic-only tests, and no-network/no-LLM boundaries. Resolve every Critical or Important finding with a new failing test before submission.
 
-Historical review result: `READY` at `537b3d9ba9829f1e85e5eec5671e90e1853c030e`; Critical 0, Important 0, Minor 1. That result covered the superseded canonical AST model. Final-SHA runs `30759350802` and `30759352079` failed at `d719e0fb79eae9132fabc713e23f5256d0c1f70c`, and the source-policy model has since changed to canonical decoded source, so independent security re-review is pending for the new SHA.
+Review result: `APPROVED / READY` at `ef7808975879bea153172c09e647e04d0bf48e9b`; Critical 0, Important 0, Minor 0. The earlier failed final-SHA runs `30759350802` and `30759352079` at `d719e0fb79eae9132fabc713e23f5256d0c1f70c` remain historical evidence in the stage report and do not count as remote acceptance.
 
 - [ ] **Step 5: Commit, push, and verify remote evidence**
 
@@ -748,4 +748,4 @@ Commit the review fixes and synchronized evidence, push `agent/founder-alpha`, w
 
 Passing this plan proves only the documented Batch 3 gate. It does not complete the Windows MVP or establish production safety.
 
-**Local evidence status (2026-08-03):** Automated local gates complete; independent security re-review and final-SHA remote acceptance pending. Acceptance pending independent security re-review and final-SHA remote verification. 当前精确本地门禁记录在阶段报告；Batches 4-6 仍待完成。未经控制者验证，不声明当前或最终远程 CI；不得用 Batch 2 历史远程证据替代 Batch 3 最终提交验证。
+**Local evidence status (2026-08-03):** Automated local gates and independent security review complete at `ef7808975879bea153172c09e647e04d0bf48e9b`; final-SHA remote acceptance pending. Acceptance pending final-SHA remote verification. 当前精确本地门禁和复审记录在阶段报告；Batches 4-6 仍待完成。未经控制者验证，不声明当前或最终远程 CI；不得用 Batch 2 历史远程证据替代 Batch 3 最终提交验证。

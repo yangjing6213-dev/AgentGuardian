@@ -34,7 +34,7 @@ Deferred beyond Windows MVP: default API calls, remote share verification, brows
 
 ## Batch 3 Local Implementation and Gate Status
 
-Batch 3 本地实现的自动门禁已重新通过；独立安全复审和最终 SHA 远程验收仍待完成。Acceptance pending independent security re-review and final-SHA remote verification. 跨扫描精确匹配使用规则 ID、按 Windows 词法规则规范化的源路径，以及 NFKC 规范化的原始匹配。路径不做 NFKC。本地处置 HMAC 密钥与每次扫描随机生成的报告 HMAC 密钥彼此独立，报告 HMAC 仍限定于单次扫描。处置有效期必须有限且不超过 366 天。有效误报只从复核分排除；接受风险仍计入复核分；技术分不受处置影响。
+Batch 3 本地实现的自动门禁和独立安全复审已完成；验收仍待最终 SHA 的远程验证。Independent security review complete; acceptance pending final-SHA remote verification. 跨扫描精确匹配使用规则 ID、按 Windows 词法规则规范化的源路径，以及 NFKC 规范化的原始匹配。路径不做 NFKC。本地处置 HMAC 密钥与每次扫描随机生成的报告 HMAC 密钥彼此独立，报告 HMAC 仍限定于单次扫描。处置有效期必须有限且不超过 366 天。有效误报只从复核分排除；接受风险仍计入复核分；技术分不受处置影响。
 
 schema v1 只读兼容，只有显式保存才迁移到 schema v2。损坏、不可解密或无效的受保护状态必须先获得明确确认，才允许替换。实现只支持本地静态操作和人工指引，不发起 API 调用，也不默认访问 OpenAI API。
 

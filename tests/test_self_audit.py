@@ -1080,7 +1080,7 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
     }
     assert documented_fields == actual_fields
 
-    status = "Batch 3 本地实现的自动门禁已重新通过；独立安全复审和最终 SHA 远程验收仍待完成。"
+    status = "Batch 3 本地实现的自动门禁和独立安全复审已完成；验收仍待最终 SHA 的远程验证。"
     pending = "Batches 4-6 仍待完成"
     premature = (
         "Batch 3 已完成。",
@@ -1174,8 +1174,9 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "`30759352079`",
         "Python 3.12 与本地 Python 3.14 的 `ast.dump` 输出不同",
         "`build` 不在哈希锁定的 CI 开发依赖中",
-        "当前独立安全复审：待完成",
-        "当前新 SHA 不声明 `READY`",
+        "复审对象 SHA：`ef7808975879bea153172c09e647e04d0bf48e9b`",
+        "结论：`APPROVED / READY`",
+        "Critical：0；Important：0；Minor：0",
         "`findings=[]`、`local_only=true`、`network_capability=not_detected`",
         "`source_policy.json`",
         "canonical source SHA-256",
@@ -1203,7 +1204,7 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
 
     for required in (
         "## Batch 3 Local Implementation and Gate Status",
-        "Acceptance pending independent security re-review and final-SHA remote verification",
+        "Independent security review complete; acceptance pending final-SHA remote verification",
         status,
         pending,
         "非生产",
@@ -1213,8 +1214,8 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
     for required in (
         "Path matching follows Windows lexical rules through",
         "Do not Unicode-normalize the path; NFKC applies only to the raw match",
-        "Acceptance pending independent security re-review and final-SHA remote verification",
-        "Automated local gates complete; independent security re-review and final-SHA remote acceptance pending.",
+        "Acceptance pending final-SHA remote verification",
+        "Automated local gates and independent security review complete at `ef7808975879bea153172c09e647e04d0bf48e9b`; final-SHA remote acceptance pending.",
         pending,
         "production safety",
     ):
@@ -1230,11 +1231,11 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "Step 1: Add failing documentation assertions",
         "Step 2: Update status documents after implementation evidence exists",
         "Step 3: Run the complete local gate",
+        "Step 4: Run an independent read-only security review",
     ):
         assert f"- [x] **{completed_step}**" in task_seven
-    assert "- [ ] **Step 4: Run an independent read-only security review**" in task_seven
     assert "- [ ] **Step 5: Commit, push, and verify remote evidence**" in task_seven
-    assert "independent security re-review and final-SHA remote acceptance pending" in task_seven
+    assert "independent security review complete" in task_seven
 
     for forbidden in premature:
         assert forbidden not in readme, f"README contains premature status: {forbidden}"

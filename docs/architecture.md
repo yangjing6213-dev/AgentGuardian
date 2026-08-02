@@ -109,7 +109,7 @@ Batch 3 为每个 finding 计算一个不导出的 `disposition_ref`。精确跨
 
 仓库顶层 `rules/default.json` 是规则权威来源；`src/agentguardian/rules/default.json` 是仅供安装包运行的 byte-identical 副本。测试在复制的临时源码树中直接调用已锁定的 `setuptools.build_meta.build_wheel`，不调用打包或安装前端；wheel `RECORD` 必须同时包含该规则副本和 `agentguardian/source_policy.json`，两项资源的 URL-safe base64 SHA-256 和记录的字节大小都必须与成员 bytes 匹配。wheel 再由 `zipfile` 直接解压并运行隔离探针，避免污染原工作树或依赖仓库目录布局。
 
-该批次仅增加本地静态操作和人工指引，不发起 API 调用，也不默认访问 OpenAI API。DPAPI 不能抵御已经控制同一 Windows 用户会话的程序。主机时钟、路径别名或文件移动可能重新打开发现，但不会扩大处置范围。路径检查与 `os.replace` 之间仍有同用户竞态窗口，且没有句柄级目录绑定。Python 不能保证清除所有不可变 bytes 或字符串副本。静态自审计只覆盖已复核源码清单和有界启发式，不扫描依赖或二进制。清单未签名；同一用户控制代码和清单时可以同时替换两者，因此生产构建来源、签名和发布物证明仍属于 Batch 5。Batch 3 本地实现的自动门禁已重新通过；独立安全复审和最终 SHA 远程验收仍待完成。Batches 4-6 仍待完成，当前 Founder Alpha 仍是非生产状态。
+该批次仅增加本地静态操作和人工指引，不发起 API 调用，也不默认访问 OpenAI API。DPAPI 不能抵御已经控制同一 Windows 用户会话的程序。主机时钟、路径别名或文件移动可能重新打开发现，但不会扩大处置范围。路径检查与 `os.replace` 之间仍有同用户竞态窗口，且没有句柄级目录绑定。Python 不能保证清除所有不可变 bytes 或字符串副本。静态自审计只覆盖已复核源码清单和有界启发式，不扫描依赖或二进制。清单未签名；同一用户控制代码和清单时可以同时替换两者，因此生产构建来源、签名和发布物证明仍属于 Batch 5。Batch 3 本地实现的自动门禁和独立安全复审已完成；验收仍待最终 SHA 的远程验证。Batches 4-6 仍待完成，当前 Founder Alpha 仍是非生产状态。
 
 ## 后续可信性要求（未实现门禁）
 
