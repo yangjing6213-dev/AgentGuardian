@@ -132,7 +132,7 @@ Batch 2 在 Founder Alpha 之上增加当前 Windows 用户范围 DPAPI 状态�
 
 ## 10. Windows MVP 硬化 Batch 3：发现处置与到期例外
 
-Batch 3 本地实现的自动门禁和独立安全复审已完成；验收仍待最终 SHA 的远程验证。跨扫描精确匹配只使用规则 ID、按 Windows 词法规则规范化的源路径，以及 NFKC 规范化的原始匹配。路径使用 `ntpath.abspath`、`ntpath.normpath` 和 `ntpath.normcase`，不做 NFKC。规则、路径、原始匹配或本地密钥任一变化都会重新打开发现。本地处置 HMAC 密钥与每次扫描随机生成的报告 HMAC 密钥彼此独立；报告 HMAC 仍限定于单次扫描，且本地引用和密钥不导出。
+Batch 3 本地实现、自动门禁、独立安全复审和最终 SHA 远程验收已完成。跨扫描精确匹配只使用规则 ID、按 Windows 词法规则规范化的源路径，以及 NFKC 规范化的原始匹配。路径使用 `ntpath.abspath`、`ntpath.normpath` 和 `ntpath.normcase`，不做 NFKC。规则、路径、原始匹配或本地密钥任一变化都会重新打开发现。本地处置 HMAC 密钥与每次扫描随机生成的报告 HMAC 密钥彼此独立；报告 HMAC 仍限定于单次扫描，且本地引用和密钥不导出。
 
 每项处置都需要安全的原因、复核人、创建时间和到期时间；处置有效期必须有限且不超过 366 天。有效误报只从复核分排除；接受风险仍计入复核分；技术分不受处置影响。过期记录保留审计上下文但重新打开发现。状态读取保持 schema v1 只读兼容，只有显式保存才迁移到 schema v2。损坏、不可解密或无效的受保护状态必须先获得明确确认，才允许替换。
 
@@ -142,7 +142,7 @@ Batch 3 本地实现的自动门禁和独立安全复审已完成；验收仍待
 
 仓库顶层 `rules/default.json` 仍是权威规则来源；wheel 使用 byte-identical 的 `agentguardian/rules/default.json` 副本，并由包数据、`RECORD` 和无网络直接解压探针约束其来源与可用性。
 
-### Batch 3 最终 SHA 远程失败证据
+### Batch 3 历史远程失败证据
 
 - 失败提交：`d719e0fb79eae9132fabc713e23f5256d0c1f70c`。
 - push workflow `30759350802` 和 Draft PR workflow `30759352079` 均失败，不能作为 Batch 3 远程验收证据。
@@ -162,6 +162,14 @@ Batch 3 本地实现的自动门禁和独立安全复审已完成；验收仍待
 - `rtk git diff --check`：退出码 0，无输出。
 - 使用 `PYTHONPATH=src` 调用 `collect_self_audit()`：`findings=[]`、`local_only=true`、`network_capability=not_detected`、`ordinary_user_mode=true`；范围仍为 `package_source_policy`，依赖和二进制未扫描。
 
+### Batch 3 最终 SHA 远程验收证据
+
+- 最终验收 SHA：`50b74e6cc50dd7a4681a26b3084e7f312c096c47`。
+- push run `30762254791` / job `91534776936`：`SUCCESS`；Windows Full test suite：`687 passed`；[运行与 job](https://github.com/hqwzhu/AgentGuardian/actions/runs/30762254791/job/91534776936)。
+- PR run `30762256518` / job `91534781660`：`SUCCESS`；Windows Full test suite：`687 passed`；[运行与 job](https://github.com/hqwzhu/AgentGuardian/actions/runs/30762256518/job/91534781660)。
+- 两次运行的 Install、Full test suite、Brand validator、Compile source、Verify clean tree 均通过；annotations：0/0。
+- Draft PR #1 保持 `OPEN / DRAFT`，head 指向最终验收 SHA；[PR 链接](https://github.com/hqwzhu/AgentGuardian/pull/1)。
+
 ### Batch 3 当前独立安全复审状态
 
 - 历史复审对象 `537b3d9ba9829f1e85e5eec5671e90e1853c030e` 在 canonical AST 模型下曾得到 `READY`，发现计数为 Critical 0、Important 0、Minor 1；该结果已由当前 canonical source 模型复审取代。
@@ -171,4 +179,4 @@ Batch 3 本地实现的自动门禁和独立安全复审已完成；验收仍待
 - canonical source 证明规范化后的解码源码，包括注释和编码 cookie；它有意不区分 LF、CRLF 和 CR，也不等同于原始字节、依赖、二进制或完整语义证明。
 - 残余限制不变：清单未签名，同一用户可同时替换代码和清单；有限启发式不是语义证明；依赖和二进制未扫描；DPAPI 同用户、主机时钟、路径别名、文件移动、路径检查竞态和不可变 bytes 副本限制继续存在。
 
-当前证据支持 Batch 3 本地实现、自动门禁和独立安全复审结论，但不构成 Batch 3 验收。最终 SHA 远程验证仍待完成；未经控制者验证，不声明当前或最终远程 CI。Batches 4-6 仍待完成；Founder Alpha 继续保持非生产、Windows MVP 不完整状态，不建立生产安全结论。
+当前证据支持 Batch 3 本地实现、自动门禁、独立安全复审和最终 SHA 远程验收，Batch 3 已完成。该验收不构成生产安全结论。Batches 4-6 仍待完成；Founder Alpha 继续保持非生产、Windows MVP 不完整状态，不建立生产安全结论。

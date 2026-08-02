@@ -742,10 +742,10 @@ Review stable-reference privacy, canonical-message collision resistance, path no
 
 Review result: `APPROVED / READY` at `ef7808975879bea153172c09e647e04d0bf48e9b`; Critical 0, Important 0, Minor 0. The earlier failed final-SHA runs `30759350802` and `30759352079` at `d719e0fb79eae9132fabc713e23f5256d0c1f70c` remain historical evidence in the stage report and do not count as remote acceptance.
 
-- [ ] **Step 5: Commit, push, and verify remote evidence**
+- [x] **Step 5: Commit, push, and verify remote evidence**
 
-Commit the review fixes and synchronized evidence, push `agent/founder-alpha`, wait for both push and Draft PR workflows on the final SHA, inspect check-run annotations, and record exact run IDs and Windows test counts. Keep Batches 4-6 pending.
+Final remote acceptance complete at `50b74e6cc50dd7a4681a26b3084e7f312c096c47`. [Push run `30762254791` / job `91534776936`](https://github.com/hqwzhu/AgentGuardian/actions/runs/30762254791/job/91534776936) and [PR run `30762256518` / job `91534781660`](https://github.com/hqwzhu/AgentGuardian/actions/runs/30762256518/job/91534781660) both succeeded with `687 passed`, all five named workflow steps passed, and annotations were 0/0. [Draft PR #1](https://github.com/hqwzhu/AgentGuardian/pull/1) remains open and draft at the accepted SHA. Keep Batches 4-6 pending.
 
-Passing this plan proves only the documented Batch 3 gate. It does not complete the Windows MVP or establish production safety.
+Passing this plan completes only the documented Batch 3 acceptance. It does not complete the Windows MVP or establish production safety.
 
-**Local evidence status (2026-08-03):** Automated local gates and independent security review complete at `ef7808975879bea153172c09e647e04d0bf48e9b`; final-SHA remote acceptance pending. Acceptance pending final-SHA remote verification. 当前精确本地门禁和复审记录在阶段报告；Batches 4-6 仍待完成。未经控制者验证，不声明当前或最终远程 CI；不得用 Batch 2 历史远程证据替代 Batch 3 最终提交验证。
+**Batch 3 acceptance status (2026-08-03):** Local gates and independent security review are complete; final remote acceptance complete at `50b74e6cc50dd7a4681a26b3084e7f312c096c47`. 当前精确本地门禁、复审和远程验收记录在阶段报告；Batches 4-6 仍待完成。Batch 3 验收不表示 Windows MVP 完成或生产安全。

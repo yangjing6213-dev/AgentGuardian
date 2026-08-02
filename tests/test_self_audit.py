@@ -1080,12 +1080,9 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
     }
     assert documented_fields == actual_fields
 
-    status = "Batch 3 本地实现的自动门禁和独立安全复审已完成；验收仍待最终 SHA 的远程验证。"
+    status = "Batch 3 本地实现、自动门禁、独立安全复审和最终 SHA 远程验收已完成。"
     pending = "Batches 4-6 仍待完成"
     premature = (
-        "Batch 3 已完成。",
-        "Batch 3 已完成；",
-        "Batch 3 已完成本地实现",
         "只关闭 Batch 3",
         "Completed locally",
         "## Completed Batch: Finding Dispositions",
@@ -1174,6 +1171,16 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "`30759352079`",
         "Python 3.12 与本地 Python 3.14 的 `ast.dump` 输出不同",
         "`build` 不在哈希锁定的 CI 开发依赖中",
+        "最终验收 SHA：`50b74e6cc50dd7a4681a26b3084e7f312c096c47`",
+        "push run `30762254791` / job `91534776936`：`SUCCESS`",
+        "PR run `30762256518` / job `91534781660`：`SUCCESS`",
+        "https://github.com/hqwzhu/AgentGuardian/actions/runs/30762254791/job/91534776936",
+        "https://github.com/hqwzhu/AgentGuardian/actions/runs/30762256518/job/91534781660",
+        "Windows Full test suite：`687 passed`",
+        "Install、Full test suite、Brand validator、Compile source、Verify clean tree 均通过",
+        "annotations：0/0",
+        "Draft PR #1 保持 `OPEN / DRAFT`",
+        "https://github.com/hqwzhu/AgentGuardian/pull/1",
         "复审对象 SHA：`ef7808975879bea153172c09e647e04d0bf48e9b`",
         "结论：`APPROVED / READY`",
         "Critical：0；Important：0；Minor：0",
@@ -1194,7 +1201,7 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "不调用打包或安装前端",
         "清单未签名",
         "Batch 5",
-        "未经控制者验证，不声明当前或最终远程 CI",
+        "该验收不构成生产安全结论",
         status,
         pending,
         "非生产",
@@ -1204,7 +1211,7 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
 
     for required in (
         "## Batch 3 Local Implementation and Gate Status",
-        "Independent security review complete; acceptance pending final-SHA remote verification",
+        "Batch 3 accepted at final SHA `50b74e6cc50dd7a4681a26b3084e7f312c096c47`",
         status,
         pending,
         "非生产",
@@ -1214,8 +1221,9 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
     for required in (
         "Path matching follows Windows lexical rules through",
         "Do not Unicode-normalize the path; NFKC applies only to the raw match",
-        "Acceptance pending final-SHA remote verification",
-        "Automated local gates and independent security review complete at `ef7808975879bea153172c09e647e04d0bf48e9b`; final-SHA remote acceptance pending.",
+        "Final remote acceptance complete at `50b74e6cc50dd7a4681a26b3084e7f312c096c47`",
+        "https://github.com/hqwzhu/AgentGuardian/actions/runs/30762254791/job/91534776936",
+        "https://github.com/hqwzhu/AgentGuardian/actions/runs/30762256518/job/91534781660",
         pending,
         "production safety",
     ):
@@ -1232,10 +1240,11 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "Step 2: Update status documents after implementation evidence exists",
         "Step 3: Run the complete local gate",
         "Step 4: Run an independent read-only security review",
+        "Step 5: Commit, push, and verify remote evidence",
     ):
         assert f"- [x] **{completed_step}**" in task_seven
-    assert "- [ ] **Step 5: Commit, push, and verify remote evidence**" in task_seven
-    assert "independent security review complete" in task_seven
+    assert "- [ ] **Step" not in task_seven
+    assert "Final remote acceptance complete" in task_seven
 
     for forbidden in premature:
         assert forbidden not in readme, f"README contains premature status: {forbidden}"
