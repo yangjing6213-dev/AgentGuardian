@@ -1,6 +1,6 @@
 import ast
 from dataclasses import FrozenInstanceError
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 import json
 import os
 import time
@@ -30,6 +30,7 @@ from agentguardian.state_store import StateStoreError
 
 
 EVALUATED_AT = datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
+DISPOSITION_KEY = b"d" * 32
 
 
 @pytest.fixture(scope="session")
@@ -132,7 +133,9 @@ def test_discovery_limit_marks_audit_incomplete(
         ),
     )
 
-    outcome = app_module._run_audit((tmp_path,))
+    outcome = app_module._run_audit(
+        (tmp_path,), disposition_key=DISPOSITION_KEY
+    )
 
     assert outcome.score.coverage == 0.5
     assert outcome.score.incomplete is True
@@ -195,6 +198,7 @@ def test_window_loads_disposition_context_once_without_writing(
     if state == "v2":
         assert window._disposition_key == stored_key
         assert window._dispositions == (record,)
+        assert window._dispositions[0] is not record
         assert window._protected_state_invalid is False
         assert fresh_calls == []
     else:
@@ -242,6 +246,82 @@ def test_malformed_disposition_state_fails_closed_without_leaking(
 
     assert calls == [None]
     assert context.key == b"n" * 32
+    assert context.records == ()
+    assert context.invalid_state is True
+    assert marker not in repr(context)
+
+
+@pytest.mark.parametrize("failure", ("type", "length", "exception"))
+def test_startup_fresh_key_failure_is_fixed_and_unchained(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    marker = "synthetic-private-startup-key-marker"
+
+    def invalid_token_bytes(length: int):
+        assert length == 32
+        if failure == "type":
+            return bytearray(b"x" * 32)
+        if failure == "length":
+            return b"x" * 31
+        raise RuntimeError(marker)
+
+    monkeypatch.setattr(
+        app_module,
+        "load_protected_state",
+        lambda: (_ for _ in ()).throw(
+            StateStoreError("PROTECTED_STATE_UNAVAILABLE")
+        ),
+    )
+    monkeypatch.setattr(app_module.secrets, "token_bytes", invalid_token_bytes)
+
+    with pytest.raises(ValueError, match="^invalid disposition context$") as error:
+        app_module._load_disposition_context()
+
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert marker not in repr(error.value)
+
+
+@pytest.mark.parametrize("forgery", ("snapshot", "record"))
+def test_startup_revalidates_forged_exact_v2_state(
+    monkeypatch: pytest.MonkeyPatch,
+    forgery: str,
+) -> None:
+    marker = "synthetic-private-forged-state-marker"
+    stored_key = b"s" * 32
+    fresh_key = b"f" * 32
+    record = DispositionRecord(
+        "a" * 64,
+        "OPENAI_API_KEY",
+        DispositionStatus.FALSE_POSITIVE,
+        "Synthetic false positive",
+        "Local reviewer",
+        "2026-08-02T08:00:00Z",
+        "2026-08-03T08:00:00Z",
+    )
+    snapshot = _state_snapshot(
+        2,
+        disposition_key=stored_key,
+        dispositions=(record,),
+    )
+    if forgery == "snapshot":
+        object.__setattr__(snapshot, "disposition_key", b"short")
+    else:
+        object.__setattr__(record, "reason", f"C:\\{marker}")
+    load_calls = []
+
+    def load_state():
+        load_calls.append(None)
+        return snapshot
+
+    monkeypatch.setattr(app_module, "load_protected_state", load_state)
+    monkeypatch.setattr(app_module.secrets, "token_bytes", lambda length: fresh_key)
+
+    context = app_module._load_disposition_context()
+
+    assert load_calls == [None]
+    assert context.key == fresh_key
     assert context.records == ()
     assert context.invalid_state is True
     assert marker not in repr(context)
@@ -320,7 +400,9 @@ def test_openai_env_override_is_masked_end_to_end(qapp, tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    outcome = app_module._run_audit((tmp_path,))
+    outcome = app_module._run_audit(
+        (tmp_path,), disposition_key=DISPOSITION_KEY
+    )
 
     finding = next(
         item
@@ -515,6 +597,309 @@ def test_cross_scan_dispositions_keep_identity_and_reviewed_score_context(
         assert first_finding.disposition_ref not in report
 
 
+def test_audit_freezes_relative_paths_before_cwd_changes_during_mcp_processing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    original = tmp_path / "original"
+    decoy = tmp_path / "decoy"
+    for base, dangerous in ((original, True), (decoy, False)):
+        root = base / "relative"
+        root.mkdir(parents=True)
+        (root / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "synthetic": {
+                            "capabilities": {
+                                "shell": dangerous,
+                                "filesystem_write": dangerous,
+                                "network": dangerous,
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+    expected_root = original / "relative"
+    expected_file = expected_root / "mcp.json"
+    discovered_roots = []
+    detected_paths = []
+    json_paths = []
+    mcp_sources = []
+    real_discover = app_module.discover_files
+    real_detect_file = app_module.detect_file
+    real_read_json = app_module._read_limited_json
+    real_detect_mcp = app_module.detect_mcp_config
+
+    def capture_discovery(roots, *args, **kwargs):
+        discovered_roots.extend(roots)
+        return real_discover(roots, *args, **kwargs)
+
+    def change_cwd_after_detection(path, **kwargs):
+        detected_paths.append(path)
+        result = real_detect_file(path, **kwargs)
+        monkeypatch.chdir(decoy)
+        return result
+
+    def capture_json_path(path):
+        json_paths.append(path)
+        return real_read_json(path)
+
+    def capture_mcp_source(config, source, **kwargs):
+        mcp_sources.append(source)
+        return real_detect_mcp(config, source, **kwargs)
+
+    monkeypatch.setattr(app_module, "discover_files", capture_discovery)
+    monkeypatch.setattr(app_module, "detect_file", change_cwd_after_detection)
+    monkeypatch.setattr(app_module, "_read_limited_json", capture_json_path)
+    monkeypatch.setattr(app_module, "detect_mcp_config", capture_mcp_source)
+    monkeypatch.chdir(original)
+
+    outcome = app_module._run_audit(
+        (Path("relative"),),
+        disposition_key=DISPOSITION_KEY,
+        evaluated_at=EVALUATED_AT,
+    )
+
+    assert {finding.rule_id for finding in outcome.findings} == {
+        "MCP_DANGEROUS_COMBINATION"
+    }
+    assert discovered_roots == [expected_root]
+    assert outcome.scanned_roots == (expected_root,)
+    assert discovered_roots[0] is outcome.scanned_roots[0]
+    assert detected_paths == [expected_file]
+    assert json_paths[0] is detected_paths[0]
+    assert mcp_sources == [str(expected_file)]
+
+
+@pytest.mark.parametrize("failure", ("type", "length", "exception"))
+def test_scan_key_generation_fails_before_discovery_without_leaking(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    marker = "synthetic-private-random-marker"
+    calls = []
+
+    def invalid_token_bytes(length: int):
+        assert length == 32
+        if failure == "type":
+            return bytearray(b"x" * 32)
+        if failure == "length":
+            return b"x" * 31
+        raise RuntimeError(marker)
+
+    monkeypatch.setattr(app_module.secrets, "token_bytes", invalid_token_bytes)
+    monkeypatch.setattr(
+        app_module,
+        "discover_files",
+        lambda *args, **kwargs: calls.append("discovery"),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "detect_file",
+        lambda *args, **kwargs: calls.append("detector"),
+    )
+
+    with pytest.raises(ValueError, match="^invalid disposition context$") as error:
+        app_module._run_audit(
+            (tmp_path,),
+            disposition_key=DISPOSITION_KEY,
+            evaluated_at=EVALUATED_AT,
+        )
+
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert marker not in repr(error.value)
+    assert calls == []
+
+
+def test_worker_maps_scan_key_generation_failure_to_fixed_signal(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    marker = "synthetic-private-worker-marker"
+    failures = []
+    worker = app_module.AuditWorker((tmp_path,), DISPOSITION_KEY, ())
+    worker.failed.connect(failures.append)
+    monkeypatch.setattr(
+        app_module.secrets,
+        "token_bytes",
+        lambda length: (_ for _ in ()).throw(RuntimeError(marker)),
+    )
+
+    worker.run()
+
+    assert failures == ["scan_failed"]
+    assert marker not in repr(failures)
+
+
+def test_disposition_context_validation_consumes_once_without_length_hint() -> None:
+    records = (
+        DispositionRecord(
+            reference * 64,
+            "OPENAI_API_KEY",
+            DispositionStatus.ACCEPTED_RISK,
+            "Synthetic accepted risk",
+            "Local reviewer",
+            "2026-08-02T08:00:00Z",
+            "2026-08-03T08:00:00Z",
+        )
+        for reference in ("b", "a")
+    )
+    original = tuple(records)
+
+    class OneShotRecords:
+        def __init__(self):
+            self.iterations = 0
+            self.length_calls = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            if self.iterations > 1:
+                raise AssertionError("iterated twice")
+            return iter(original)
+
+        def __len__(self):
+            self.length_calls += 1
+            raise AssertionError("length hint requested")
+
+    values = OneShotRecords()
+
+    context = app_module._validated_disposition_context(DISPOSITION_KEY, values)
+
+    assert context.key == DISPOSITION_KEY
+    assert tuple(record.disposition_ref for record in context.records) == (
+        "a" * 64,
+        "b" * 64,
+    )
+    assert all(
+        rebuilt is not source
+        for rebuilt, source in zip(context.records, reversed(original))
+    )
+    assert values.iterations == 1
+    assert values.length_calls == 0
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ("key", "naive_time", "hostile_time", "time_subclass", "record", "overflow", "iterator"),
+)
+def test_invalid_audit_context_stops_before_randomness_and_callbacks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    marker = "synthetic-private-context-marker"
+    token_calls = []
+    callbacks = []
+    valid_record = DispositionRecord(
+        "a" * 64,
+        "OPENAI_API_KEY",
+        DispositionStatus.FALSE_POSITIVE,
+        "Synthetic false positive",
+        "Local reviewer",
+        "2026-08-02T08:00:00Z",
+        "2026-08-03T08:00:00Z",
+    )
+
+    class HostileTimezone(tzinfo):
+        def utcoffset(self, value):
+            raise RuntimeError(marker)
+
+    class DatetimeSubclass(datetime):
+        pass
+
+    class OverflowingRecords:
+        def __init__(self):
+            self.iterations = 0
+            self.length_calls = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            for _index in range(app_module.MAX_AUDIT_FINDINGS + 1):
+                yield valid_record
+
+        def __len__(self):
+            self.length_calls += 1
+            raise RuntimeError(marker)
+
+    class ExplodingRecords:
+        def __init__(self):
+            self.iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            yield valid_record
+            raise RuntimeError(marker)
+
+    key = DISPOSITION_KEY
+    evaluated_at = EVALUATED_AT
+    dispositions = ()
+    tracked = None
+    if failure == "key":
+        key = b"short"
+    elif failure == "naive_time":
+        evaluated_at = datetime(2026, 8, 2, 12, 0)
+    elif failure == "hostile_time":
+        evaluated_at = datetime(2026, 8, 2, 12, 0, tzinfo=HostileTimezone())
+    elif failure == "time_subclass":
+        evaluated_at = DatetimeSubclass(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
+    elif failure == "record":
+        object.__setattr__(valid_record, "reason", f"C:\\{marker}")
+        dispositions = (valid_record,)
+    elif failure == "overflow":
+        tracked = OverflowingRecords()
+        dispositions = tracked
+    else:
+        tracked = ExplodingRecords()
+        dispositions = tracked
+
+    def token_bytes(length: int) -> bytes:
+        token_calls.append(length)
+        return b"s" * 32
+
+    monkeypatch.setattr(app_module.secrets, "token_bytes", token_bytes)
+    monkeypatch.setattr(
+        app_module,
+        "discover_files",
+        lambda *args, **kwargs: callbacks.append("discovery")
+        or _discovery_result(()),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "detect_file",
+        lambda *args, **kwargs: callbacks.append("file"),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "detect_mcp_config",
+        lambda *args, **kwargs: callbacks.append("mcp"),
+    )
+
+    with pytest.raises(ValueError, match="^invalid disposition context$") as error:
+        app_module._run_audit(
+            (tmp_path,),
+            disposition_key=key,
+            dispositions=dispositions,
+            evaluated_at=evaluated_at,
+        )
+
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert marker not in repr(error.value)
+    assert token_calls == []
+    assert callbacks == []
+    if failure == "overflow":
+        assert tracked.iterations == 1
+        assert tracked.length_calls == 0
+    elif failure == "iterator":
+        assert tracked.iterations == 1
+
+
 def test_openai_finding_uses_openai_manual_guidance(qapp) -> None:
     finding = Finding(
         rule_id="OPENAI_API_KEY",
@@ -565,7 +950,9 @@ def test_protected_state_is_saved_only_after_explicit_action(
 
     assert not window.protected_state_button.isEnabled()
     assert saved == []
-    outcome = app_module._run_audit((tmp_path,))
+    outcome = app_module._run_audit(
+        (tmp_path,), disposition_key=DISPOSITION_KEY
+    )
     assert saved == []
 
     window._scan_completed(outcome)
@@ -661,7 +1048,9 @@ def test_protected_state_failure_uses_fixed_safe_message(
     qapp, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     (tmp_path / "safe.txt").write_text("safe", encoding="utf-8")
-    outcome = app_module._run_audit((tmp_path,))
+    outcome = app_module._run_audit(
+        (tmp_path,), disposition_key=DISPOSITION_KEY
+    )
     messages = []
     marker = "synthetic-private-path-marker"
     monkeypatch.setattr(
@@ -742,7 +1131,7 @@ def test_unc_paths_are_rejected_before_filesystem_access(monkeypatch):
     with pytest.raises(ValueError, match="UNC"):
         export_new_report(unc_root / "report.json", "unsafe", [])
     with pytest.raises(ValueError, match="UNC"):
-        app_module._run_audit((unc_root,))
+        app_module._run_audit((unc_root,), disposition_key=DISPOSITION_KEY)
 
 
 def test_folder_selection_rejects_unc_root(qapp, monkeypatch):
@@ -796,7 +1185,9 @@ def test_export_uses_roots_that_produced_report(qapp, monkeypatch, tmp_path):
     current_root = tmp_path / "current-root"
     report_root.mkdir()
     current_root.mkdir()
-    outcome = app_module._run_audit((report_root,))
+    outcome = app_module._run_audit(
+        (report_root,), disposition_key=DISPOSITION_KEY
+    )
     window = create_window()
     window._scan_completed(outcome)
     window._roots = (current_root,)
@@ -951,7 +1342,9 @@ def test_audit_finding_cap_stops_remaining_files_and_uses_complete_coverage(
 
     monkeypatch.setattr(app_module, "detect_file", fake_detect_file)
 
-    outcome = app_module._run_audit((tmp_path,))
+    outcome = app_module._run_audit(
+        (tmp_path,), disposition_key=DISPOSITION_KEY
+    )
 
     assert calls == list(files[:2])
     assert len(outcome.findings) == 2
@@ -991,7 +1384,9 @@ def test_audit_evidence_cap_rejects_partial_finding_batch(monkeypatch, tmp_path)
 
     monkeypatch.setattr(app_module, "detect_file", fake_detect_file)
 
-    outcome = app_module._run_audit((tmp_path,))
+    outcome = app_module._run_audit(
+        (tmp_path,), disposition_key=DISPOSITION_KEY
+    )
 
     assert calls == list(files[:2])
     assert outcome.findings == batches[files[0]]
@@ -1018,7 +1413,9 @@ def test_discovery_file_sentinel_marks_scan_incomplete(monkeypatch, tmp_path):
     monkeypatch.setattr(app_module, "discover_files", fake_discover)
     monkeypatch.setattr(app_module, "detect_file", fake_detect_file)
 
-    outcome = app_module._run_audit((tmp_path,))
+    outcome = app_module._run_audit(
+        (tmp_path,), disposition_key=DISPOSITION_KEY
+    )
 
     assert calls == list(files[:2])
     assert outcome.score.coverage == pytest.approx(2 / 3)
@@ -1045,7 +1442,9 @@ def test_total_byte_limit_stops_before_over_budget_file(monkeypatch, tmp_path):
 
     monkeypatch.setattr(app_module, "detect_file", fake_detect_file)
 
-    outcome = app_module._run_audit((tmp_path,))
+    outcome = app_module._run_audit(
+        (tmp_path,), disposition_key=DISPOSITION_KEY
+    )
 
     assert calls == [files[0]]
     assert outcome.score.coverage == pytest.approx(1 / 3)
@@ -1079,7 +1478,9 @@ def test_duplicate_findings_are_aggregated_once(monkeypatch, tmp_path):
         ),
     )
 
-    outcome = app_module._run_audit((tmp_path,))
+    outcome = app_module._run_audit(
+        (tmp_path,), disposition_key=DISPOSITION_KEY
+    )
 
     assert outcome.findings == (finding,)
     assert len(json.loads(outcome.report_json)["findings"]) == 1

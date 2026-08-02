@@ -5,7 +5,8 @@ import stat
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from itertools import islice
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
@@ -66,6 +67,7 @@ MAX_AUDIT_FILES = 10_000
 MAX_AUDIT_ENTRIES = 50_000
 MAX_AUDIT_BYTES = 512 * 1024 * 1024
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+_CONTEXT_ERROR = "invalid disposition context"
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,33 +89,86 @@ class AuditOutcome:
     scanned_roots: tuple[Path, ...]
 
 
+def _generate_key() -> bytes:
+    try:
+        key = secrets.token_bytes(32)
+        if type(key) is not bytes or len(key) != 32:
+            raise ValueError
+        return key
+    except Exception:
+        pass
+    raise ValueError(_CONTEXT_ERROR) from None
+
+
+def _validated_disposition_context(
+    key: object,
+    records: Iterable[DispositionRecord],
+) -> _DispositionContext:
+    try:
+        if type(key) is not bytes or len(key) != 32:
+            raise ValueError
+        items = tuple(islice(records, MAX_AUDIT_FINDINGS + 1))
+        if len(items) > MAX_AUDIT_FINDINGS:
+            raise ValueError
+        rebuilt = []
+        for record in items:
+            if type(record) is not DispositionRecord:
+                raise ValueError
+            rebuilt.append(
+                DispositionRecord(
+                    record.disposition_ref,
+                    record.rule_id,
+                    record.status,
+                    record.reason,
+                    record.reviewer,
+                    record.created_at,
+                    record.expires_at,
+                )
+            )
+        ordered = tuple(disposition_index(rebuilt).values())
+        return _DispositionContext(key, ordered, False)
+    except Exception:
+        pass
+    raise ValueError(_CONTEXT_ERROR) from None
+
+
+def _validated_evaluation_time(value: datetime | None) -> datetime:
+    try:
+        evaluated_at = datetime.now(timezone.utc) if value is None else value
+        if type(evaluated_at) is not datetime or evaluated_at.tzinfo is None:
+            raise ValueError
+        offset = evaluated_at.utcoffset()
+        if type(offset) is not timedelta or offset != timedelta(0):
+            raise ValueError
+        return evaluated_at.replace(tzinfo=timezone.utc)
+    except Exception:
+        pass
+    raise ValueError(_CONTEXT_ERROR) from None
+
+
 def _load_disposition_context() -> _DispositionContext:
     try:
         snapshot = load_protected_state()
-        if type(snapshot) is not EvidenceSnapshot:
-            raise ValueError
-        if snapshot.schema_version == 1:
-            return _DispositionContext(secrets.token_bytes(32), (), False)
-        if (
-            snapshot.schema_version != 2
-            or type(snapshot.disposition_key) is not bytes
-            or len(snapshot.disposition_key) != 32
-            or type(snapshot.dispositions) is not tuple
-        ):
-            raise ValueError
-        return _DispositionContext(
-            snapshot.disposition_key,
-            snapshot.dispositions,
-            False,
-        )
     except StateStoreError as error:
-        return _DispositionContext(
-            secrets.token_bytes(32),
-            (),
-            error.args != ("PROTECTED_STATE_UNAVAILABLE",),
-        )
+        invalid_state = error.args != ("PROTECTED_STATE_UNAVAILABLE",)
     except Exception:  # noqa: BLE001 - protected state must fail closed
-        return _DispositionContext(secrets.token_bytes(32), (), True)
+        invalid_state = True
+    else:
+        try:
+            if type(snapshot) is not EvidenceSnapshot:
+                raise ValueError
+            schema_version = snapshot.schema_version
+            if type(schema_version) is not int:
+                raise ValueError
+            if schema_version == 2:
+                return _validated_disposition_context(
+                    snapshot.disposition_key,
+                    snapshot.dispositions,
+                )
+            invalid_state = schema_version != 1
+        except Exception:
+            invalid_state = True
+    return _DispositionContext(_generate_key(), (), invalid_state)
 
 
 def _is_unc_path(path: str | Path) -> bool:
@@ -209,25 +264,26 @@ def _append_finding_batch(
 def _run_audit(
     roots: tuple[Path, ...],
     *,
-    disposition_key: bytes | None = None,
+    disposition_key: bytes,
     dispositions: Iterable[DispositionRecord] = (),
     evaluated_at: datetime | None = None,
 ) -> AuditOutcome:
-    if any(_is_unc_path(root) for root in roots):
+    frozen_roots = tuple(Path(os.path.abspath(root)) for root in roots)
+    if any(_is_unc_path(root) for root in frozen_roots):
         raise ValueError("UNC scan roots are not allowed")
-    local_disposition_key = (
-        secrets.token_bytes(32) if disposition_key is None else disposition_key
+    evaluation_time = _validated_evaluation_time(evaluated_at)
+    disposition_context = _validated_disposition_context(
+        disposition_key,
+        dispositions,
     )
-    if type(local_disposition_key) is not bytes or len(local_disposition_key) != 32:
-        raise ValueError("invalid disposition context")
-    frozen_dispositions = tuple(dispositions)
-    disposition_records = disposition_index(frozen_dispositions)
-    evaluation_time = (
-        datetime.now(timezone.utc) if evaluated_at is None else evaluated_at
-    )
-    scan_key = secrets.token_bytes(32)
+    local_disposition_key = disposition_context.key
+    frozen_dispositions = disposition_context.records
+    disposition_records = {
+        record.disposition_ref: record for record in frozen_dispositions
+    }
+    scan_key = _generate_key()
     discovery = discover_files(
-        list(roots),
+        list(frozen_roots),
         SUPPORTED_SUFFIXES,
         max_files=MAX_AUDIT_FILES,
         max_entries=MAX_AUDIT_ENTRIES,
@@ -240,7 +296,8 @@ def _run_audit(
     scanned_bytes = 0
     evidence_count = 0
 
-    for path in files:
+    for candidate in files:
+        path = Path(os.path.abspath(candidate))
         try:
             file_bytes = path.stat().st_size
         except OSError:
@@ -275,7 +332,7 @@ def _run_audit(
                 config = _read_limited_json(path)
                 mcp_findings = detect_mcp_config(
                     config,
-                    str(path.absolute()),
+                    str(path),
                     scan_key=scan_key,
                     disposition_key=local_disposition_key,
                 )
@@ -338,7 +395,7 @@ def _run_audit(
             dispositions=frozen_dispositions,
             evaluated_at=evaluation_time,
         ),
-        scanned_roots=roots,
+        scanned_roots=frozen_roots,
     )
 
 
