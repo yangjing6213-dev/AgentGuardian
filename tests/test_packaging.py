@@ -2,8 +2,8 @@ import csv
 import hashlib
 import io
 import json
-import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -12,31 +12,27 @@ import zipfile
 PROJECT_ROOT = Path(__file__).parents[1]
 
 
-def test_wheel_installs_with_self_audit_resources_offline(tmp_path: Path) -> None:
+def test_wheel_extracts_with_self_audit_resources_offline(tmp_path: Path) -> None:
+    source_tree = tmp_path / "source"
     wheel_dir = tmp_path / "wheel"
     install_dir = tmp_path / "installed"
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
-            "PIP_NO_INDEX": "1",
-            "PYTHONDONTWRITEBYTECODE": "1",
-        }
-    )
+    source_tree.mkdir()
+    wheel_dir.mkdir()
+    for name in ("pyproject.toml", "README.md"):
+        shutil.copy2(PROJECT_ROOT / name, source_tree / name)
+    shutil.copytree(PROJECT_ROOT / "src", source_tree / "src")
+
     subprocess.run(
         [
             sys.executable,
-            "-m",
-            "pip",
-            "wheel",
-            "--no-deps",
-            "--no-build-isolation",
-            "--wheel-dir",
+            "-c",
+            (
+                "import setuptools.build_meta as backend,sys;"
+                "backend.build_wheel(sys.argv[1])"
+            ),
             str(wheel_dir),
-            ".",
         ],
-        cwd=PROJECT_ROOT,
-        env=environment,
+        cwd=source_tree,
         check=True,
         capture_output=True,
         text=True,
@@ -60,25 +56,8 @@ def test_wheel_installs_with_self_audit_resources_offline(tmp_path: Path) -> Non
         assert archive.read("agentguardian/rules/default.json") == (
             PROJECT_ROOT / "rules" / "default.json"
         ).read_bytes()
+        archive.extractall(install_dir)
 
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--no-index",
-            "--no-deps",
-            "--target",
-            str(install_dir),
-            str(wheel),
-        ],
-        cwd=tmp_path,
-        env=environment,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
     probe = subprocess.run(
         [
             sys.executable,
@@ -97,7 +76,6 @@ def test_wheel_installs_with_self_audit_resources_offline(tmp_path: Path) -> Non
             ),
         ],
         cwd=tmp_path,
-        env=environment,
         check=True,
         capture_output=True,
         text=True,

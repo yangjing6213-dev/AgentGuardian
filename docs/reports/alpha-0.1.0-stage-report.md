@@ -138,9 +138,9 @@ Batch 3 本地实现的自动门禁已重新通过；独立安全复审和最终
 
 操作边界仍是本地静态检查、桌面处置和人工指引，不发起 API 调用，也不默认访问 OpenAI API。DPAPI 不能抵御已经控制同一 Windows 用户会话的程序。主机时钟、路径别名或文件移动可能重新打开发现，但不会扩大处置范围。路径检查与 `os.replace` 之间仍有同用户竞态窗口；Python 不能保证清除所有不可变 bytes 或字符串副本。
 
-当前静态自审计严格加载随包分发的 `source_policy.json` schema 1，并要求精确模块集合以及每个已复核 `.py` 文件的 canonical source SHA-256 完全匹配。源码先通过 `tokenize.detect_encoding` 按 PEP 263 编码声明解码，将 CRLF 和 CR 确定性规范化为 LF，再对规范化 Unicode 的 UTF-8 表示取哈希；注释和编码 cookie 因而被证明。换行表示被有意忽略，UTF-8 BOM 按解码语义被消费，所以该清单不是原始字节身份的证明。原始 bytes 还独立交给 `ast.parse(..., filename=...)`，保证 Python 实际执行的语法通过检查，UTF-7 编码中的运行时注入也会对扫描可见。新增、删除、未知编码、语法错误或 canonical source 变化都会以固定 finding 失败关闭；已复核包不再进入启发式。有限启发式仅对清单外的合成未知模块运行，检查代表性的网络导入、动态执行和用户数据写入能力，而不是 Python 表达式解释器。这不是语义、依赖或二进制证明。清单未签名，同一用户控制代码和清单时可以同时替换两者；生产来源和签名仍待 Batch 5。
+当前静态自审计严格加载随包分发的 `source_policy.json` schema 1，并要求精确模块集合以及每个已复核 `.py` 文件的 canonical source SHA-256 完全匹配。源码先将原始 ASCII newline bytes 中的 CRLF 和 CR 确定性规范化为 LF，再通过 `tokenize.detect_encoding` 按 PEP 263 编码声明解码，并对规范化 Unicode 的 UTF-8 表示取哈希；注释和编码 cookie 因而被证明。换行表示被有意忽略，UTF-8 BOM 按解码语义被消费，所以该清单不是原始字节身份的证明。未经规范化的原始 bytes 还独立交给 `ast.parse(..., filename=...)`，保证 Python 实际执行的语法通过检查，UTF-7 编码中的运行时注入也会对扫描可见。新增、删除、未知编码、语法错误或 canonical source 变化都会以固定 finding 失败关闭；已复核包不再进入启发式。有限启发式仅对清单外的合成未知模块运行，检查代表性的网络导入、动态执行和用户数据写入能力，而不是 Python 表达式解释器。这不是语义、依赖或二进制证明。清单未签名，同一用户控制代码和清单时可以同时替换两者；生产来源和签名仍待 Batch 5。
 
-仓库顶层 `rules/default.json` 仍是权威规则来源；wheel 使用 byte-identical 的 `agentguardian/rules/default.json` 副本，并由包数据、`RECORD` 和无网络临时安装测试约束其来源与可用性。
+仓库顶层 `rules/default.json` 仍是权威规则来源；wheel 使用 byte-identical 的 `agentguardian/rules/default.json` 副本，并由包数据、`RECORD` 和无网络直接解压探针约束其来源与可用性。
 
 ### Batch 3 最终 SHA 远程失败证据
 
@@ -153,12 +153,12 @@ Batch 3 本地实现的自动门禁已重新通过；独立安全复审和最终
 
 2026-08-03 在当前工作树重新运行：
 
-- `py -3.12 -m pytest -q`：`679 passed, 6 skipped`，0 failed；按不安装要求，通过 `PYTHONPATH` 使用机器上既有的测试依赖。
-- `py -3.14 -m pytest -q -p no:cacheprovider`：`679 passed, 6 skipped`，0 failed。
+- `py -3.12 -m pytest -q`：`680 passed, 6 skipped`，0 failed；按不安装要求，通过 `PYTHONPATH` 使用机器上既有的测试依赖。
+- `py -3.14 -m pytest -q -p no:cacheprovider`：`680 passed, 6 skipped`，0 failed。
 - Python 3.12 与 3.14 对全部包模块产生相同 canonical source 清单；LF 与 CRLF/CR 的 digest 相同，编码 cookie 或解码后源码变化的 digest 不同。
 - `rtk proxy python scripts/check_brand_assets.py`：退出码 0。
 - `rtk proxy python -m compileall -q src`：退出码 0。
-- 打包测试改用 `pip wheel --no-deps --no-build-isolation`；wheel `RECORD` 包含 `agentguardian/source_policy.json` 和 byte-identical 的 `agentguardian/rules/default.json`。使用 `pip --no-index --no-deps` 临时安装后，`load_rules()`、`static_capability_findings()` 和 `collect_self_audit()` 均成功。
+- 打包测试复制最小源码树后直接调用已锁定的 `setuptools.build_meta.build_wheel`，不调用打包或安装前端；wheel `RECORD` 包含 `agentguardian/source_policy.json` 和 byte-identical 的 `agentguardian/rules/default.json`。由 `zipfile` 直接解压后，隔离探针中的 `load_rules()`、`static_capability_findings()` 和 `collect_self_audit()` 均成功，原工作树不承载构建输出。
 - `rtk git diff --check`：退出码 0，无输出。
 - 使用 `PYTHONPATH=src` 调用 `collect_self_audit()`：`findings=[]`、`local_only=true`、`network_capability=not_detected`、`ordinary_user_mode=true`；范围仍为 `package_source_policy`，依赖和二进制未扫描。
 

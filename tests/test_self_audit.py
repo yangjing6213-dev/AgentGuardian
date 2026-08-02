@@ -22,12 +22,9 @@ SOURCE_POLICY_PATH = PACKAGE_ROOT / "source_policy.json"
 
 
 def _canonical_source_digest(path: Path) -> str:
-    raw = path.read_bytes()
-    encoding, _ = tokenize.detect_encoding(io.BytesIO(raw).readline)
-    normalized = (
-        raw.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")
-    )
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    normalized = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    encoding, _ = tokenize.detect_encoding(io.BytesIO(normalized).readline)
+    return hashlib.sha256(normalized.decode(encoding).encode("utf-8")).hexdigest()
 
 
 def _copy_reviewed_package(tmp_path: Path) -> Path:
@@ -193,6 +190,20 @@ def test_canonical_source_digest_normalizes_newlines_but_attests_text() -> None:
     assert self_audit._canonical_source_sha256(source) != (
         self_audit._canonical_source_sha256(changed_source)
     )
+
+
+def test_canonical_source_digest_handles_latin1_bare_cr() -> None:
+    source = b"\n# coding: latin-1\nvalue = 'caf\xe9'\n"
+    crlf_source = source.replace(b"\n", b"\r\n")
+    cr_source = source.replace(b"\n", b"\r")
+
+    for runtime_source in (source, crlf_source, cr_source):
+        ast.parse(runtime_source, filename="latin1_newlines.py")
+
+    assert {
+        self_audit._canonical_source_sha256(runtime_source)
+        for runtime_source in (source, crlf_source, cr_source)
+    } == {self_audit._canonical_source_sha256(source)}
 
 
 def test_utf7_runtime_injection_is_scanned_from_raw_bytes(tmp_path: Path) -> None:
@@ -1120,11 +1131,14 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "`source_policy.json`",
         "canonical source SHA-256",
         "PEP 263 编码声明",
+        "原始 ASCII newline bytes",
         "CRLF 和 CR 确定性规范化为 LF",
         "注释和编码 cookie",
         "`src/agentguardian/rules/default.json`",
         "byte-identical",
         "wheel `RECORD`",
+        "`setuptools.build_meta.build_wheel`",
+        "`zipfile` 直接解压",
         "有限启发式仅对清单外的合成未知模块运行",
         "不是 Python 表达式解释器",
         "清单未签名",
@@ -1151,8 +1165,8 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "第 8 节为已被第 9 至 10 节取代的历史交接记录",
         "Batch 2 历史远程证据",
         "Batch 3 当前本地证据",
-        "`py -3.12 -m pytest -q`：`679 passed, 6 skipped`",
-        "`py -3.14 -m pytest -q -p no:cacheprovider`：`679 passed, 6 skipped`",
+        "`py -3.12 -m pytest -q`：`680 passed, 6 skipped`",
+        "`py -3.14 -m pytest -q -p no:cacheprovider`：`680 passed, 6 skipped`",
         "`d719e0fb79eae9132fabc713e23f5256d0c1f70c`",
         "`30759350802`",
         "`30759352079`",
@@ -1164,13 +1178,15 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "`source_policy.json`",
         "canonical source SHA-256",
         "PEP 263 编码声明",
+        "原始 ASCII newline bytes",
         "CRLF 和 CR 确定性规范化为 LF",
         "有限启发式仅对清单外的合成未知模块运行",
         "不是 Python 表达式解释器",
         "wheel `RECORD` 包含 `agentguardian/source_policy.json`",
         "`agentguardian/rules/default.json`",
-        "`pip wheel --no-deps --no-build-isolation`",
-        "`pip --no-index --no-deps`",
+        "`setuptools.build_meta.build_wheel`",
+        "`zipfile` 直接解压",
+        "不调用打包或安装前端",
         "清单未签名",
         "Batch 5",
         "未经控制者验证，不声明当前或最终远程 CI",

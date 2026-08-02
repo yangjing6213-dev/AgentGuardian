@@ -284,10 +284,10 @@ def _canonical_digest(value: object) -> bool:
 
 
 def _canonical_source_sha256(source: bytes) -> str:
-    encoding, _ = tokenize.detect_encoding(io.BytesIO(source).readline)
-    decoded = source.decode(encoding)
-    normalized = decoded.replace("\r\n", "\n").replace("\r", "\n")
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    normalized = source.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    encoding, _ = tokenize.detect_encoding(io.BytesIO(normalized).readline)
+    decoded = normalized.decode(encoding)
+    return hashlib.sha256(decoded.encode("utf-8")).hexdigest()
 
 
 def _package_root(package_root: str | Path | None) -> Path:
