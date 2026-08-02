@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import unicodedata
 
+from .dispositions import make_disposition_ref
 from .domain import Evidence, Finding, RiskDomain, Severity
 
 
@@ -103,8 +104,18 @@ def detect_text(
     *,
     scan_key: bytes,
     keywords: Sequence[str] = (),
+    disposition_key: bytes | None = None,
 ) -> tuple[Finding, ...]:
-    findings, limit_reached = _detect_text(text, source, scan_key, keywords)
+    key = _validated_key(scan_key)
+    local_key = _validated_disposition_key(disposition_key)
+    findings, limit_reached = _detect_text(
+        text,
+        source,
+        key,
+        keywords,
+        disposition_key=local_key,
+        source_identity=source,
+    )
     if limit_reached:
         raise DetectionLimitError()
     return findings
@@ -115,6 +126,9 @@ def _detect_text(
     source: str,
     scan_key: bytes,
     keywords: Sequence[str],
+    *,
+    disposition_key: bytes | None = None,
+    source_identity: str,
 ) -> tuple[tuple[Finding, ...], bool]:
     key = _validated_key(scan_key)
     source_name = _display_name(source)
@@ -137,6 +151,8 @@ def _detect_text(
                     rule.kind,
                     source_name,
                     key,
+                    disposition_key=disposition_key,
+                    source_identity=source_identity,
                 )
             )
             occupied.append(span)
@@ -157,6 +173,8 @@ def _detect_text(
                     "keyword",
                     source_name,
                     key,
+                    disposition_key=disposition_key,
+                    source_identity=source_identity,
                 )
             )
             start = index + len(keyword)
@@ -168,8 +186,10 @@ def detect_mcp_config(
     source: str,
     *,
     scan_key: bytes,
+    disposition_key: bytes | None = None,
 ) -> tuple[Finding, ...]:
     key = _validated_key(scan_key)
+    local_key = _validated_disposition_key(disposition_key)
     if isinstance(config, str):
         parsed = _parse_json(config, "MCP config must be valid JSON")
     else:
@@ -211,6 +231,8 @@ def detect_mcp_config(
                     "mcp",
                     _display_name(source),
                     key,
+                    disposition_key=local_key,
+                    source_identity=source,
                 )
             )
     return tuple(findings)
@@ -221,8 +243,10 @@ def detect_file(
     *,
     scan_key: bytes,
     keywords: Sequence[str] = (),
+    disposition_key: bytes | None = None,
 ) -> FileDetectionResult:
     key = _validated_key(scan_key)
+    local_key = _validated_disposition_key(disposition_key)
     file_path = Path(path)
     try:
         if file_path.stat().st_size > MAX_FILE_BYTES:
@@ -236,7 +260,14 @@ def detect_file(
     text = _decode_text(data)
     if text is None:
         return FileDetectionResult((), False, ("unsupported_text_encoding",))
-    findings, limit_reached = _detect_text(text, file_path.name, key, keywords)
+    findings, limit_reached = _detect_text(
+        text,
+        file_path.name,
+        key,
+        keywords,
+        disposition_key=local_key,
+        source_identity=str(file_path.absolute()),
+    )
     if limit_reached:
         return FileDetectionResult(findings, False, ("finding_limit_reached",))
     return FileDetectionResult(findings, True, ())
@@ -250,6 +281,9 @@ def _finding(
     kind: str,
     source: str,
     scan_key: bytes,
+    *,
+    disposition_key: bytes | None = None,
+    source_identity: str,
 ) -> Finding:
     masked = _mask(raw_match, kind)
     fingerprint = hmac.new(
@@ -257,8 +291,25 @@ def _finding(
         (rule_id + unicodedata.normalize("NFKC", raw_match)).encode("utf-8"),
         sha256,
     ).hexdigest()
+    local_reference = (
+        make_disposition_ref(
+            disposition_key,
+            rule_id=rule_id,
+            source=source_identity,
+            raw_match=raw_match,
+        )
+        if disposition_key is not None
+        else None
+    )
     evidence = Evidence(source=source, fingerprint=fingerprint, masked=masked)
-    return Finding(rule_id, domain, severity, fingerprint, (evidence,))
+    return Finding(
+        rule_id,
+        domain,
+        severity,
+        fingerprint,
+        (evidence,),
+        disposition_ref=local_reference,
+    )
 
 
 def _parse_json(value: str, message: str) -> object:
@@ -290,6 +341,14 @@ def _validated_key(scan_key: bytes) -> bytes:
     if not isinstance(scan_key, bytes) or len(scan_key) < 32:
         raise ValueError("scan_key must contain at least 32 bytes")
     return scan_key
+
+
+def _validated_disposition_key(disposition_key: bytes | None) -> bytes | None:
+    if disposition_key is not None and (
+        type(disposition_key) is not bytes or len(disposition_key) != 32
+    ):
+        raise ValueError("DISPOSITION_INVALID")
+    return disposition_key
 
 
 def _display_name(source: str) -> str:

@@ -17,10 +17,16 @@ from agentguardian.detectors import (
     detect_text,
     load_rules,
 )
+from agentguardian.dispositions import make_disposition_ref
 from agentguardian.domain import RiskDomain, Severity
 
 
 SCAN_KEY = b"k" * 32
+DISPOSITION_KEY = b"d" * 32
+
+
+class _BytesSubclass(bytes):
+    pass
 
 
 def _track_finding_calls(monkeypatch: pytest.MonkeyPatch) -> list[int]:
@@ -192,6 +198,147 @@ def test_secret_is_masked_and_hmac_fingerprinted() -> None:
     assert "abcdefghijkl" not in finding.evidence[0].masked
 
 
+def test_detector_keeps_report_and_disposition_hmac_purposes_separate() -> None:
+    secret = "sk-" + "proj-" + "synthetic-private-value"
+    source = r"C:\Synthetic\private\config.env"
+    arguments = {
+        "text": f"OPENAI_API_KEY={secret}",
+        "source": source,
+        "disposition_key": DISPOSITION_KEY,
+    }
+
+    first = detect_text(**arguments, scan_key=b"a" * 32)[0]
+    second = detect_text(**arguments, scan_key=b"b" * 32)[0]
+
+    assert first.root_fingerprint != second.root_fingerprint
+    assert first.disposition_ref == second.disposition_ref
+    assert first.disposition_ref == make_disposition_ref(
+        DISPOSITION_KEY,
+        rule_id="OPENAI_API_KEY",
+        source=source,
+        raw_match=secret,
+    )
+    assert first.disposition_ref is not None
+    assert first.disposition_ref not in repr(first)
+    evidence = repr(first.evidence)
+    for private_value in (
+        secret,
+        source,
+        "private",
+        repr(DISPOSITION_KEY),
+        DISPOSITION_KEY.hex(),
+        first.disposition_ref,
+    ):
+        assert private_value not in evidence
+
+
+def test_detector_disposition_ref_separates_inputs_and_normalizes_windows_paths() -> None:
+    secret = "sk-" + "proj-" + "synthetic-disposition-value"
+
+    def reference(
+        *,
+        source: str = r"C:\Synthetic\config.env",
+        key: bytes = DISPOSITION_KEY,
+        raw: str = secret,
+    ) -> str | None:
+        return detect_text(
+            raw,
+            source,
+            scan_key=SCAN_KEY,
+            disposition_key=key,
+        )[0].disposition_ref
+
+    base = reference()
+    equivalent = reference(source=r"c:\synthetic\.\config.env")
+    custom_rule = detect_text(
+        secret,
+        r"C:\Synthetic\config.env",
+        scan_key=SCAN_KEY,
+        disposition_key=DISPOSITION_KEY,
+        keywords=(secret,),
+    )[1]
+    separated = {
+        base,
+        reference(key=b"e" * 32),
+        reference(source=r"C:\Synthetic\moved.env"),
+        reference(raw="sk-proj-synthetic-changed-value"),
+        custom_rule.disposition_ref,
+    }
+
+    assert base == equivalent
+    assert custom_rule.rule_id == "CUSTOM_KEYWORD"
+    assert len(separated) == 5
+    assert reference(source="C:\\Synthetic\\caf\u00e9.env") != reference(
+        source="C:\\Synthetic\\cafe\u0301.env"
+    )
+
+
+@pytest.mark.parametrize(
+    "disposition_key",
+    (
+        b"short",
+        b"x" * 33,
+        bytearray(b"private-key-marker".ljust(32, b"x")),
+        _BytesSubclass(b"y" * 32),
+    ),
+)
+def test_public_detectors_reject_invalid_disposition_key_before_zero_findings(
+    tmp_path: Path,
+    disposition_key: object,
+) -> None:
+    raw_marker = "private-raw-marker"
+    source_marker = r"C:\Private\private-source-marker.txt"
+    file_path = tmp_path / "private-file-marker.txt"
+    file_path.write_text("safe", encoding="utf-8")
+    calls = (
+        lambda: detect_text(
+            raw_marker,
+            source_marker,
+            scan_key=SCAN_KEY,
+            disposition_key=disposition_key,  # type: ignore[arg-type]
+        ),
+        lambda: detect_mcp_config(
+            {},
+            source_marker,
+            scan_key=SCAN_KEY,
+            disposition_key=disposition_key,  # type: ignore[arg-type]
+        ),
+        lambda: detect_file(
+            file_path,
+            scan_key=SCAN_KEY,
+            disposition_key=disposition_key,  # type: ignore[arg-type]
+        ),
+    )
+
+    for call in calls:
+        with pytest.raises(ValueError) as captured:
+            call()
+
+        error = captured.value
+        assert str(error) == "DISPOSITION_INVALID"
+        assert error.__cause__ is None
+        assert error.__context__ is None
+        exception_text = repr(error)
+        for private_value in (
+            raw_marker,
+            source_marker,
+            "private-source-marker",
+            str(file_path),
+            file_path.name,
+            repr(disposition_key),
+            bytes(disposition_key).hex(),
+        ):
+            assert private_value not in exception_text
+
+
+def test_omitted_disposition_key_preserves_none_reference() -> None:
+    secret = "sk-" + "proj-" + "synthetic-backward-compatible"
+
+    finding = detect_text(secret, "sample.env", scan_key=SCAN_KEY)[0]
+
+    assert finding.disposition_ref is None
+
+
 def test_openai_base_url_override_is_masked() -> None:
     endpoint = "https://synthetic-provider.invalid/v1"
 
@@ -256,10 +403,16 @@ def test_detect_text_allows_exact_finding_limit() -> None:
     phone = "138" + "1234" + "5678"
     text = (phone + " ") * MAX_FINDINGS
 
-    findings = detect_text(text, "sample.txt", scan_key=SCAN_KEY)
+    findings = detect_text(
+        text,
+        "sample.txt",
+        scan_key=SCAN_KEY,
+        disposition_key=DISPOSITION_KEY,
+    )
 
     assert MAX_FINDINGS == 1000
     assert len(findings) == MAX_FINDINGS
+    assert all(finding.disposition_ref is not None for finding in findings)
 
 
 def test_detect_text_stops_before_excess_rule_finding(
@@ -399,6 +552,55 @@ def test_mcp_combination_requires_all_capabilities_on_same_server() -> None:
     assert detect_mcp_config(read_only, "mcp.json", scan_key=SCAN_KEY) == ()
 
 
+def test_custom_keyword_and_mcp_findings_receive_local_references() -> None:
+    keyword = "synthetic-private-keyword"
+    text_source = r"C:\Synthetic\private\chat.txt"
+    server_name = "synthetic-private-server"
+    mcp_source = r"C:\Synthetic\private\mcp.json"
+    config = {
+        "mcpServers": {
+            server_name: {
+                "capabilities": {
+                    "process": True,
+                    "filesystem": {"write": True},
+                    "network": True,
+                }
+            }
+        }
+    }
+
+    keyword_finding = detect_text(
+        keyword,
+        text_source,
+        scan_key=SCAN_KEY,
+        keywords=(keyword,),
+        disposition_key=DISPOSITION_KEY,
+    )[0]
+    mcp_finding = detect_mcp_config(
+        config,
+        mcp_source,
+        scan_key=SCAN_KEY,
+        disposition_key=DISPOSITION_KEY,
+    )[0]
+
+    assert keyword_finding.disposition_ref == make_disposition_ref(
+        DISPOSITION_KEY,
+        rule_id="CUSTOM_KEYWORD",
+        source=text_source,
+        raw_match=keyword,
+    )
+    assert mcp_finding.disposition_ref == make_disposition_ref(
+        DISPOSITION_KEY,
+        rule_id="MCP_DANGEROUS_COMBINATION",
+        source=mcp_source,
+        raw_match=server_name,
+    )
+    assert keyword_finding.evidence[0].source == "chat.txt"
+    assert mcp_finding.evidence[0].source == "mcp.json"
+    assert keyword not in repr(keyword_finding)
+    assert server_name not in repr(mcp_finding)
+
+
 def test_mcp_detector_rejects_non_object_json() -> None:
     with pytest.raises(ValueError, match="JSON object"):
         detect_mcp_config("[]", "mcp.json", scan_key=SCAN_KEY)
@@ -477,6 +679,43 @@ def test_detect_file_supports_required_text_encodings(
     assert len(result.findings) == 1
 
 
+def test_detect_file_uses_full_path_only_for_disposition_identity(
+    tmp_path: Path,
+) -> None:
+    secret = "sk-" + "proj-" + "synthetic-file-identity"
+    first_path = tmp_path / "first-private-directory" / "config.env"
+    second_path = tmp_path / "second-private-directory" / "config.env"
+    first_path.parent.mkdir()
+    second_path.parent.mkdir()
+    first_path.write_text(secret, encoding="utf-8")
+    second_path.write_text(secret, encoding="utf-8")
+
+    first = detect_file(
+        first_path,
+        scan_key=SCAN_KEY,
+        disposition_key=DISPOSITION_KEY,
+    ).findings[0]
+    second = detect_file(
+        second_path,
+        scan_key=SCAN_KEY,
+        disposition_key=DISPOSITION_KEY,
+    ).findings[0]
+    direct = detect_text(
+        secret,
+        str(first_path.absolute()),
+        scan_key=SCAN_KEY,
+        disposition_key=DISPOSITION_KEY,
+    )[0]
+
+    assert first.disposition_ref == direct.disposition_ref
+    assert first.disposition_ref != second.disposition_ref
+    assert first.evidence[0].source == second.evidence[0].source == "config.env"
+    assert str(first_path) not in repr(first)
+    assert str(second_path) not in repr(second)
+    assert first_path.parent.name not in repr(first)
+    assert second_path.parent.name not in repr(second)
+
+
 def test_detect_file_reports_oversize_without_scanning(tmp_path: Path) -> None:
     path = tmp_path / "large.txt"
     with path.open("wb") as stream:
@@ -521,12 +760,18 @@ def test_detect_file_returns_masked_findings_when_keyword_limit_is_reached(
     path.write_text((keyword + " ") * (MAX_FINDINGS + 1), encoding="utf-8")
     calls = _track_finding_calls(monkeypatch)
 
-    result = detect_file(path, scan_key=SCAN_KEY, keywords=(keyword,))
+    result = detect_file(
+        path,
+        scan_key=SCAN_KEY,
+        keywords=(keyword,),
+        disposition_key=DISPOSITION_KEY,
+    )
 
     assert result.scanned is False
     assert result.limits == ("finding_limit_reached",)
     assert len(result.findings) == MAX_FINDINGS
     assert all(finding.evidence[0].masked == "******" for finding in result.findings)
+    assert all(finding.disposition_ref is not None for finding in result.findings)
     assert calls == [MAX_FINDINGS]
 
 
