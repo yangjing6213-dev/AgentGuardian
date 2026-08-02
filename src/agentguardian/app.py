@@ -107,7 +107,7 @@ _EXPIRY_RETRY_MS = 60_000
 _STATUS_REFRESH_FALLBACK = "状态待刷新"
 _REPORT_REFRESH_FALLBACK = "报告已更新，界面暂时无法刷新。"
 _SAVED_REFRESH_FAILURE = "处置已保存，界面刷新受限。"
-_TIMER_REFRESH_FAILURE = "处置状态刷新受限，将稍后重试。"
+_TIMER_REFRESH_FAILURE = "处置状态刷新受限，请复核当前界面状态。"
 _STATUS_LABELS = {
     "open": "待处理",
     "false_positive": "误报",

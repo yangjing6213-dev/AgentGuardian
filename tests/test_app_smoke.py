@@ -2058,7 +2058,7 @@ def test_expiry_timer_contains_failure_with_bounded_retry_or_roll_forward(
     assert saves == []
     assert window._dispositions == (active,)
     assert window._refresh_failure_notified
-    assert window.status_label.text() == "处置状态刷新受限，将稍后重试。"
+    assert window.status_label.text() == "处置状态刷新受限，请复核当前界面状态。"
     if failure_point == "report_ui":
         assert window._audit_outcome.evaluated_at == EVALUATED_AT + timedelta(seconds=10)
         assert window._audit_outcome.reviewed_score == window._audit_outcome.score
@@ -2104,7 +2104,7 @@ def test_expiry_timer_success_clears_failure_and_restores_audit_status(
 
     window._handle_expiry_timeout()
     assert window._refresh_failure_notified
-    assert window.status_label.text() == "处置状态刷新受限，将稍后重试。"
+    assert window.status_label.text() == "处置状态刷新受限，请复核当前界面状态。"
 
     window._handle_expiry_timeout()
 
@@ -2161,11 +2161,11 @@ def test_expiry_timer_retries_normal_status_after_one_shot_label_failure(
 
     window._handle_expiry_timeout()
     assert window._refresh_failure_notified
-    assert window.status_label.text() == "处置状态刷新受限，将稍后重试。"
+    assert window.status_label.text() == "处置状态刷新受限，请复核当前界面状态。"
 
     window._handle_expiry_timeout()
     assert window._refresh_failure_notified
-    assert window.status_label.text() == "处置状态刷新受限，将稍后重试。"
+    assert window.status_label.text() == "处置状态刷新受限，请复核当前界面状态。"
 
     window._handle_expiry_timeout()
 
@@ -2231,7 +2231,7 @@ def test_repeated_timer_failures_never_escape_spin_or_repeat_notification(
     assert window._audit_outcome is previous_outcome
     assert window._dispositions == (active,)
     assert timer_starts == [60_000, 60_000, 60_000]
-    assert notification_attempts == ["处置状态刷新受限，将稍后重试。"]
+    assert notification_attempts == ["处置状态刷新受限，请复核当前界面状态。"]
     assert window._refresh_failure_notified
     assert not window._expiry_timer.isActive()
     window.close()

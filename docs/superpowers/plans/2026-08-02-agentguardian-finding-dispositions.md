@@ -31,7 +31,7 @@
 - Modify: `src/agentguardian/domain.py`
 - Modify: `tests/test_domain.py`
 
-- [ ] **Step 1: Write failing model and reference tests**
+- [x] **Step 1: Write failing model and reference tests**
 
 Add tests that require a hidden 64-hex `Finding.disposition_ref`, exact status values, bounded safe metadata, canonical UTC seconds, a maximum 366-day lifetime, deterministic reference construction, and separation when the key, rule, path, or raw value changes.
 
@@ -91,13 +91,13 @@ def test_disposition_record_requires_safe_finite_metadata() -> None:
         replace(record, expires_at="2027-08-04T09:00:00Z")
 ```
 
-- [ ] **Step 2: Run the new tests and verify red**
+- [x] **Step 2: Run the new tests and verify red**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_dispositions.py tests/test_domain.py`
 
 Expected: collection or assertion failures because the disposition module, status, record, reference builder, and hidden finding field do not exist.
 
-- [ ] **Step 3: Implement the minimum pure model**
+- [x] **Step 3: Implement the minimum pure model**
 
 Add the optional field at the end of `Finding` so existing positional construction remains valid:
 
@@ -295,11 +295,11 @@ def validate_safe_annotation(name: str, value: object, max_length: int) -> str:
 
 Path matching follows Windows lexical rules through `ntpath.abspath`, `ntpath.normpath`, and `ntpath.normcase`. Do not Unicode-normalize the path; NFKC applies only to the raw match.
 
-- [ ] **Step 4: Add fixed-time evaluation, replacement, withdrawal, and score tests**
+- [x] **Step 4: Add fixed-time evaluation, replacement, withdrawal, and score tests**
 
 Require open, active false-positive, active accepted-risk, expired, future-created, rule mismatch, and reference mismatch behavior. Require upsert to replace only the same reference, withdrawal to leave every other sorted record unchanged, and malformed references to fail. Call the existing `score()` on all findings and on `reviewed_findings()`; assert accepted risks do not improve the reviewed score and expired false positives re-enter caps and deductions.
 
-- [ ] **Step 5: Run focused tests and commit**
+- [x] **Step 5: Run focused tests and commit**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_dispositions.py tests/test_domain.py tests/test_scoring.py`
 
@@ -314,7 +314,7 @@ Commit: `Add expiring finding disposition model`
 - Modify: `tests/test_detectors.py`
 - Modify: `tests/test_app_smoke.py`
 
-- [ ] **Step 1: Write failing dual-HMAC detector tests**
+- [x] **Step 1: Write failing dual-HMAC detector tests**
 
 Require the scan fingerprint to change with `scan_key` while `disposition_ref` remains stable with the same matching key and exact source occurrence. Require a moved path, changed raw value, changed rule, or changed matching key to produce a different local reference.
 
@@ -333,13 +333,13 @@ def test_detector_keeps_report_and_disposition_hmac_purposes_separate() -> None:
     assert first.disposition_ref not in repr(first)
 ```
 
-- [ ] **Step 2: Run the detector tests and verify red**
+- [x] **Step 2: Run the detector tests and verify red**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_detectors.py`
 
 Expected: failures show that `disposition_key` is not accepted and findings do not carry a local reference.
 
-- [ ] **Step 3: Thread the matching key through all detector paths**
+- [x] **Step 3: Thread the matching key through all detector paths**
 
 Add keyword-only `disposition_key: bytes | None = None` and a full `source_identity` path where needed to `detect_text`, `_detect_text`, `detect_file`, `detect_mcp_config`, and `_finding`. Preserve the display-only basename in `Evidence.source`.
 
@@ -383,7 +383,7 @@ def _finding(
 
 `detect_file()` passes the full `Path` only as `source_identity`; reports continue to receive `file_path.name`. The application must supply a 32-byte matching key for every production scan.
 
-- [ ] **Step 4: Verify privacy and complete detector integration**
+- [x] **Step 4: Verify privacy and complete detector integration**
 
 Assert raw values, full paths, the matching key, and `disposition_ref` do not appear in evidence fields, exceptions, or `repr`. Cover MCP and custom-keyword findings as well as rule findings.
 
@@ -391,7 +391,7 @@ Run: `rtk pytest -q -p no:cacheprovider tests/test_detectors.py tests/test_app_s
 
 Expected: all focused tests pass with no API or network imports.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit: `Add local disposition references to findings`
 
@@ -403,7 +403,7 @@ Commit: `Add local disposition references to findings`
 - Modify: `tests/test_state_store.py`
 - Modify: `tests/test_windows_dpapi.py`
 
-- [ ] **Step 1: Write failing schema-v2 and legacy-v1 tests**
+- [x] **Step 1: Write failing schema-v2 and legacy-v1 tests**
 
 Require schema v2 to contain an exact 64-hex `disposition_hmac_key` and deterministically sorted disposition records. Add a literal canonical schema-v1 fixture using the old exact key set and require it to decode with `disposition_key is None` and no records. Require encoding a legacy snapshot to fail until the caller builds a v2 snapshot.
 
@@ -435,13 +435,13 @@ def test_schema_v2_round_trip_keeps_key_hidden_from_repr() -> None:
     assert (b"d" * 32).hex() not in repr(decoded)
 ```
 
-- [ ] **Step 2: Run evidence/store tests and verify red**
+- [x] **Step 2: Run evidence/store tests and verify red**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_evidence_state.py tests/test_state_store.py tests/test_windows_dpapi.py`
 
 Expected: failures show schema version 2, key, records, and version-1 compatibility are missing.
 
-- [ ] **Step 3: Implement exact versioned decoding and v2-only encoding**
+- [x] **Step 3: Implement exact versioned decoding and v2-only encoding**
 
 Extend `EvidenceSnapshot` with hidden key and records:
 
@@ -460,7 +460,7 @@ class EvidenceSnapshot:
 
 `build_snapshot()` requires `disposition_key: bytes` and `dispositions: Iterable[DispositionRecord]`, validates exact length and count, and always returns schema 2. `decode_snapshot()` selects the exact allowed root keys by integer schema version; version 1 accepts only the historical keys, while version 2 additionally requires `disposition_hmac_key` and `dispositions`. Unknown versions, duplicate JSON keys, unknown fields, invalid ordering, malformed records, or an oversized payload return only `PROTECTED_STATE_INVALID`.
 
-- [ ] **Step 4: Prove the existing DPAPI and atomic boundary is unchanged**
+- [x] **Step 4: Prove the existing DPAPI and atomic boundary is unchanged**
 
 Update state-store fixtures to build schema v2. Assert ciphertext excludes matching-key bytes, references, reasons, reviewer labels, source names, and raw markers. Keep the same `STATE_FILENAME`, application-integrity envelope, exclusive temporary file, `fsync`, and `os.replace` path.
 
@@ -468,7 +468,7 @@ Run: `rtk pytest -q -p no:cacheprovider tests/test_evidence_state.py tests/test_
 
 Expected: all schema, synthetic protection, native Windows DPAPI, corruption, legacy, size, UNC, reparse, and replacement tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit: `Persist dispositions in protected state v2`
 
@@ -480,7 +480,7 @@ Commit: `Persist dispositions in protected state v2`
 - Modify: `tests/test_scoring.py`
 - Modify: `tests/test_self_audit.py`
 
-- [ ] **Step 1: Write failing report and cap tests**
+- [x] **Step 1: Write failing report and cap tests**
 
 Require JSON to retain `score` as the technical score and add `reviewed_score`. Require every finding to have one safe disposition state; active records include metadata, expired records retain metadata, and open records contain only `{"status": "open"}`. Require accepted risk to retain deductions and cap reasons, while an active false positive can remove its deduction and cap only from the reviewed score.
 
@@ -531,13 +531,13 @@ assert report["findings"][0]["disposition"] == {
 }
 ```
 
-- [ ] **Step 2: Run reporting tests and verify red**
+- [x] **Step 2: Run reporting tests and verify red**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_reporting.py tests/test_scoring.py`
 
 Expected: renderers reject the new arguments or omit reviewed score and dispositions.
 
-- [ ] **Step 3: Extend renderers without exporting local identifiers**
+- [x] **Step 3: Extend renderers without exporting local identifiers**
 
 Use this backward-compatible signature shape:
 
@@ -571,7 +571,7 @@ def render_json(
 
 Move the existing score dictionary construction into `_score_data(score)`. Extend `_finding_data()` to add only the safe evaluation fields. `render_html()` receives the same keyword-only arguments and evaluates the same frozen input once. When no disposition inputs are provided, reviewed score equals technical score and every finding is open. Do not add `disposition_ref` or the key to any output or sort key.
 
-- [ ] **Step 4: Verify escaping, determinism, generators, and import policy**
+- [x] **Step 4: Verify escaping, determinism, generators, and import policy**
 
 Update the exact reporting import/call allowlist. Assert reason and reviewer HTML are escaped, input ordering does not alter output, one-shot finding generators still work, and synthetic raw paths/values/keys/references are absent from both formats.
 
@@ -579,7 +579,7 @@ Run: `rtk pytest -q -p no:cacheprovider tests/test_reporting.py tests/test_scori
 
 Expected: all focused tests pass and self-audit reports no network or unexpected write capability.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit: `Report reviewed finding dispositions`
 
@@ -589,7 +589,7 @@ Commit: `Report reviewed finding dispositions`
 - Modify: `src/agentguardian/app.py`
 - Modify: `tests/test_app_smoke.py`
 
-- [ ] **Step 1: Isolate app tests and write failing startup tests**
+- [x] **Step 1: Isolate app tests and write failing startup tests**
 
 Add an autouse fixture that points `LOCALAPPDATA` at `tmp_path`, preventing tests from reading a real user state. Require startup behavior for valid v2, valid v1, missing, and invalid states, and assert none of them write a file.
 
@@ -608,13 +608,13 @@ def test_missing_state_creates_only_an_in_memory_matching_key(qapp, tmp_path: Pa
     assert tuple(tmp_path.rglob("*")) == ()
 ```
 
-- [ ] **Step 2: Run app tests and verify red**
+- [x] **Step 2: Run app tests and verify red**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_app_smoke.py`
 
 Expected: the window has no loaded disposition context and scans do not accept its key or records.
 
-- [ ] **Step 3: Add a read-only startup context and dual-score audit outcome**
+- [x] **Step 3: Add a read-only startup context and dual-score audit outcome**
 
 Add a frozen internal context with a hidden key, records, and invalid-state flag. `_load_disposition_context()` maps `PROTECTED_STATE_UNAVAILABLE` to a fresh key, maps `PROTECTED_STATE_INVALID` to a fresh key plus `invalid=True`, and maps schema v1 to a fresh key plus no records. It never calls the save API.
 
@@ -633,7 +633,7 @@ class AuditOutcome:
     evaluated_at: datetime
 ```
 
-- [ ] **Step 4: Prove cross-scan application and zero automatic writes**
+- [x] **Step 4: Prove cross-scan application and zero automatic writes**
 
 Run two audits with different scan keys but the same matching key and path. Assert the second audit applies the saved disposition. Move the synthetic file and assert it reopens. Assert window creation, folder selection, scan start, scan completion, report refresh, and report export never call `save_protected_state`.
 
@@ -641,7 +641,7 @@ Run: `rtk pytest -q -p no:cacheprovider tests/test_app_smoke.py tests/test_detec
 
 Expected: all focused tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit: `Apply protected dispositions during audits`
 
@@ -652,7 +652,7 @@ Commit: `Apply protected dispositions during audits`
 - Modify: `tests/test_app_smoke.py`
 - Modify: `tests/test_self_audit.py`
 
-- [ ] **Step 1: Write failing control and transaction tests**
+- [x] **Step 1: Write failing control and transaction tests**
 
 Require a stable five-column findings table with disposition status, explicit false-positive/accepted-risk/withdraw commands, mandatory validated form values, and disabled commands without a selected local-reference finding. Require the candidate protected state to save before any in-memory score, row, or report changes.
 
@@ -662,13 +662,13 @@ Add three failure-path tests:
 2. DPAPI/store save fails, preserving the previous state, scores, reports, and row status;
 3. startup state was invalid and the user rejects replacement confirmation, producing no write.
 
-- [ ] **Step 2: Run UI tests and verify red**
+- [x] **Step 2: Run UI tests and verify red**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_app_smoke.py`
 
 Expected: disposition controls and transactional update behavior do not exist.
 
-- [ ] **Step 3: Implement explicit create, replace, and withdraw flows**
+- [x] **Step 3: Implement explicit create, replace, and withdraw flows**
 
 Use PySide6-native controls only: a `QComboBox` for status, `QLineEdit` fields for reason/reviewer, `QDateTimeEdit` for local expiry converted to canonical UTC seconds, and standard dialog buttons. Store one selected `Finding`, never raw detector input. Build the candidate tuple with pure helpers, then persist:
 
@@ -688,11 +688,11 @@ self._commit_disposition_state(candidate, now=now)
 
 Withdrawal follows the same save-before-commit sequence. If `_protected_state_invalid` is true, require `QMessageBox.Yes` before the save; successful replacement clears the flag. Fixed messages must not include paths, keys, references, native errors, or callback text.
 
-- [ ] **Step 4: Refresh expiry without writing state**
+- [x] **Step 4: Refresh expiry without writing state**
 
 Use one single-shot `QTimer` for the nearest active expiry. Bound each interval to `min(remaining_ms, 86_400_000)` and reschedule after every timeout so a 366-day exception cannot overflow a Qt timer and clock changes are re-evaluated daily. On timeout, recalculate reviewed score, table statuses, and both reports from the immutable findings and existing records. Do not delete expired records and do not call the state store.
 
-- [ ] **Step 5: Verify layout, rollback, expiry, and write allowlist**
+- [x] **Step 5: Verify layout, rollback, expiry, and write allowlist**
 
 Assert controls do not overlap at the minimum window size, status text fits, selection state is stable, expiry refresh performs zero writes, and the exact self-audit write exception still permits only the existing `state_store.py` atomic path.
 
@@ -700,7 +700,7 @@ Run: `rtk pytest -q -p no:cacheprovider tests/test_app_smoke.py tests/test_self_
 
 Expected: all focused tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Commit: `Add transactional finding dispositions`
 
@@ -714,15 +714,15 @@ Commit: `Add transactional finding dispositions`
 - Modify: `docs/superpowers/plans/2026-08-02-agentguardian-finding-dispositions.md`
 - Modify: `tests/test_self_audit.py`
 
-- [ ] **Step 1: Add failing documentation assertions**
+- [x] **Step 1: Add failing documentation assertions**
 
 Require current docs to state exact cross-scan matching, separate local and report HMAC purposes, mandatory finite expiry, accepted-risk scoring, schema-v1 read compatibility, corrupt-state replacement confirmation, no API calls, residual same-user/clock/path risks, and non-production status.
 
-- [ ] **Step 2: Update status documents after implementation evidence exists**
+- [x] **Step 2: Update status documents after implementation evidence exists**
 
 Describe only implemented behavior. Keep Batches 4-6 open. Do not claim production safety, stable matching after moves, cloud/team workflow, automatic remediation, or default OpenAI API access.
 
-- [ ] **Step 3: Run the complete local gate**
+- [x] **Step 3: Run the complete local gate**
 
 Run: `rtk pytest -q -p no:cacheprovider`
 
@@ -746,4 +746,4 @@ Commit the review fixes and synchronized evidence, push `agent/founder-alpha`, w
 
 Passing this plan proves only the documented Batch 3 gate. It does not complete the Windows MVP or establish production safety.
 
-**Local evidence status (2026-08-02):** Batch 3 本地实现和门禁已完成；验收仍待最终 SHA 的远程验证。Acceptance pending final-SHA remote verification. 当前精确本地门禁记录在阶段报告；Batches 4-6 仍待完成。未经控制者验证，不声明当前或最终远程 CI；不得用 Batch 2 历史远程证据替代 Batch 3 最终提交验证。
+**Local evidence status (2026-08-02):** Automated local gates complete; independent security re-review and final-SHA remote acceptance pending. Acceptance pending final-SHA remote verification. 当前精确本地门禁记录在阶段报告；Batches 4-6 仍待完成。未经控制者验证，不声明当前或最终远程 CI；不得用 Batch 2 历史远程证据替代 Batch 3 最终提交验证。

@@ -65,6 +65,7 @@ def test_current_package_has_no_prohibited_static_capabilities() -> None:
         (("NETWORK_CAPABILITY",), "detected", False),
         (("DYNAMIC_EXECUTION",), "unverified", False),
         (("NATIVE_CAPABILITY",), "unverified", False),
+        (("SOURCE_POLICY_VIOLATION",), "unverified", False),
         (("SOURCE_SCAN_ERROR",), "unverified", False),
     ),
 )
@@ -189,6 +190,62 @@ def test_static_scan_returns_only_fixed_codes(
     assert source.strip() not in serialized
 
 
+def test_static_scan_detects_network_import_families_and_aliases(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    module = package / "synthetic.py"
+    sources = (
+        "import urllib3\n",
+        "import urllib3 as transport\n",
+        "from urllib3 import PoolManager as Client\n",
+        "import xmlrpc.client\n",
+        "import xmlrpc.client as rpc\n",
+        "from xmlrpc import client as rpc\n",
+        "from xmlrpc.client import ServerProxy as Proxy\n",
+        "import imaplib\n",
+        "import imaplib as mail\n",
+        "from imaplib import IMAP4_SSL as Client\n",
+        "import PySide6.QtNetwork\n",
+        "import PySide6.QtWebSockets as sockets\n",
+        "import PySide6.QtWebEngineWidgets as web\n",
+        "from PySide6 import QtNetwork as network\n",
+        "from PySide6 import QtWebSockets\n",
+        "from PySide6 import QtWebEngineWidgets as web\n",
+        "from PySide6.QtWebEngineWidgets import QWebEngineView as View\n",
+    )
+
+    for source in sources:
+        module.write_text(source, encoding="utf-8")
+        assert static_capability_findings(package) == (
+            "NETWORK_MODULE_IMPORT",
+        ), source
+
+
+def test_static_scan_fails_closed_for_unknown_absolute_but_allows_relative_imports(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    module = package / "synthetic.py"
+    for source in (
+        "import future_transport\n",
+        "import future_transport as transport\n",
+        "from future_transport import Client as Transport\n",
+    ):
+        module.write_text(source, encoding="utf-8")
+        assert static_capability_findings(package) == (
+            "SOURCE_POLICY_VIOLATION",
+        ), source
+
+    module.write_text(
+        "from . import local_helper\nfrom .local_helper import value\n",
+        encoding="utf-8",
+    )
+    assert static_capability_findings(package) == ()
+
+
 @pytest.mark.parametrize(
     ("source", "expected"),
     (
@@ -283,6 +340,34 @@ def test_static_scan_reports_direct_write_capabilities(
     (package / "synthetic.py").write_text(source, encoding="utf-8")
 
     assert static_capability_findings(package) == expected
+
+
+def test_static_scan_detects_path_moves_and_write_alias_chains(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    module = package / "synthetic.py"
+    sources = (
+        "from pathlib import Path\nPath('a').rename('b')\n",
+        "from pathlib import Path\nPath('a').replace('b')\n",
+        "from pathlib import Path as P\nP('a').rename('b')\n",
+        "import pathlib as paths\npaths.Path('a').replace('b')\n",
+        "writer = open\n",
+        "first = open\nwriter = first\nwriter('report', 'w')\n",
+        "from pathlib import Path\nopener = Path.open\n",
+        (
+            "from pathlib import Path\n"
+            "opener = Path.open\nwriter = opener\n"
+            "writer(Path('report'), 'wb')\n"
+        ),
+        "import os as files\nmove = files.rename\nmove('a', 'b')\n",
+        "from os import replace as move\nalias = move\nalias('a', 'b')\n",
+    )
+
+    for source in sources:
+        module.write_text(source, encoding="utf-8")
+        assert "USER_DATA_WRITE" in static_capability_findings(package), source
 
 
 def test_static_scan_marks_ambiguous_write_api_as_policy_violation(
@@ -807,7 +892,7 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "第 8 节为已被第 9 至 10 节取代的历史交接记录",
         "Batch 2 历史远程证据",
         "Batch 3 当前本地证据",
-        "`632 passed, 6 skipped`，0 failed",
+        "`636 passed, 6 skipped`，0 failed",
         "`findings=[]`、`local_only=true`、`network_capability=not_detected`",
         "未经控制者验证，不声明当前或最终远程 CI",
         status,
@@ -830,11 +915,29 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "Path matching follows Windows lexical rules through",
         "Do not Unicode-normalize the path; NFKC applies only to the raw match",
         "Acceptance pending final-SHA remote verification",
-        status,
+        "Automated local gates complete; independent security re-review and final-SHA remote acceptance pending.",
         pending,
         "production safety",
     ):
         assert required in disposition_plan
+
+    tasks_one_to_six, task_seven = disposition_plan.split(
+        "## Task 7: Synchronize Local Evidence Before Batch 3 Acceptance",
+        1,
+    )
+    assert tasks_one_to_six.count("- [x] **Step") == 31
+    assert "- [ ] **Step" not in tasks_one_to_six
+    for completed_step in (
+        "Step 1: Add failing documentation assertions",
+        "Step 2: Update status documents after implementation evidence exists",
+        "Step 3: Run the complete local gate",
+    ):
+        assert f"- [x] **{completed_step}**" in task_seven
+    for pending_step in (
+        "Step 4: Run an independent read-only security review",
+        "Step 5: Commit, push, and verify remote evidence",
+    ):
+        assert f"- [ ] **{pending_step}**" in task_seven
 
     for forbidden in premature:
         assert forbidden not in readme, f"README contains premature status: {forbidden}"

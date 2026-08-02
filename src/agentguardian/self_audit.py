@@ -13,11 +13,55 @@ _NETWORK_MODULES = {
     "ftplib",
     "http",
     "httpx",
+    "imaplib",
+    "nntplib",
+    "poplib",
     "requests",
     "smtplib",
     "socket",
+    "socketserver",
+    "telnetlib",
     "urllib",
+    "urllib3",
     "websockets",
+    "xmlrpc",
+}
+_NETWORK_IMPORT_PREFIXES = (
+    "pyside6.qtnetwork",
+    "pyside6.qtwebengine",
+    "pyside6.qtwebsockets",
+)
+_SAFE_DIRECT_IMPORTS = {
+    "ast",
+    "ctypes",
+    "hashlib",
+    "hmac",
+    "json",
+    "math",
+    "ntpath",
+    "os",
+    "re",
+    "secrets",
+    "stat",
+    "sys",
+    "unicodedata",
+}
+_SAFE_FROM_IMPORTS = {
+    "__future__",
+    "agentguardian",
+    "collections.abc",
+    "ctypes",
+    "dataclasses",
+    "datetime",
+    "enum",
+    "hashlib",
+    "html",
+    "itertools",
+    "math",
+    "pathlib",
+    "pyside6.qtcore",
+    "pyside6.qtgui",
+    "pyside6.qtwidgets",
 }
 _CLIPBOARD_MODULES = {"pyperclip", "win32clipboard"}
 _TELEMETRY_MODULES = {
@@ -146,6 +190,7 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
     allowed_user_data_calls = _allowed_state_store_write_calls(relative_path, tree)
     if allowed_report_call is not None:
         allowed_user_data_calls.add(allowed_report_call)
+    binding_sources = _binding_sources(tree)
     imported_bindings: set[str] = set()
 
     for node in ast.walk(tree):
@@ -210,6 +255,9 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
         alias_attribute = _direct_alias_attribute(node)
         if alias_attribute and _is_user_data_write_name(alias_attribute):
             findings.add("USER_DATA_WRITE")
+        assigned_reference = _assigned_reference(node, binding_sources)
+        if assigned_reference and _is_user_data_write_reference(assigned_reference):
+            findings.add("USER_DATA_WRITE")
         if "__import__" in alias_sources:
             findings.add("DYNAMIC_EXECUTION")
         if isinstance(node, ast.Attribute):
@@ -232,22 +280,30 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
                 in _WRITE_ATTRIBUTE_MEMBERS
             ):
                 findings.add("USER_DATA_WRITE")
-            mode = _open_mode(node)
+            mode = _open_mode(node, binding_sources)
             if (
                 mode is not None
                 and any(flag in mode for flag in "wax+")
                 and node not in allowed_user_data_calls
             ):
                 findings.add("USER_DATA_WRITE")
-            if _is_user_data_write_call(node) and node not in allowed_user_data_calls:
+            if (
+                _is_user_data_write_call(node, binding_sources)
+                and node not in allowed_user_data_calls
+            ):
                 findings.add("USER_DATA_WRITE")
 
 
 def _import_findings(module: str, member: str | None = None) -> set[str]:
     normalized = module.casefold()
+    qualified = (
+        f"{normalized}.{member.casefold()}" if member is not None else normalized
+    )
     root = normalized.split(".", 1)[0]
     findings: set[str] = set()
-    if root in _NETWORK_MODULES or normalized.startswith("pyside6.qtnetwork"):
+    if root in _NETWORK_MODULES or any(
+        qualified.startswith(prefix) for prefix in _NETWORK_IMPORT_PREFIXES
+    ):
         findings.add("NETWORK_MODULE_IMPORT")
     if root == "asyncio":
         findings.add("NETWORK_CAPABILITY")
@@ -273,7 +329,78 @@ def _import_findings(module: str, member: str | None = None) -> set[str]:
         findings.add("DATABASE_CAPABILITY")
     if root == "os" and member and _is_shell_member(member):
         findings.add("SHELL_EXECUTION")
+    if root == "os" and member and _is_user_data_write_name(f"os.{member}"):
+        findings.add("USER_DATA_WRITE")
+    safe_import = (
+        normalized in _SAFE_DIRECT_IMPORTS
+        if member is None
+        else normalized in _SAFE_FROM_IMPORTS
+    )
+    if not findings and not safe_import:
+        findings.add("SOURCE_POLICY_VIOLATION")
     return findings
+
+
+def _binding_sources(tree: ast.Module) -> dict[str, str]:
+    sources = {"open": "builtins.open"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                binding = alias.asname or alias.name.split(".", 1)[0]
+                sources[binding] = alias.name if alias.asname else binding
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            for alias in node.names:
+                if alias.name != "*":
+                    sources[alias.asname or alias.name] = (
+                        f"{node.module}.{alias.name}"
+                    )
+
+    assignments = tuple(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.AnnAssign, ast.Assign, ast.NamedExpr))
+    )
+    for _ in range(len(assignments) + 1):
+        changed = False
+        for node in assignments:
+            target = _assigned_name(node)
+            value = node.value
+            if target is None or value is None:
+                continue
+            resolved = _resolved_name(value, sources)
+            if resolved and sources.get(target) != resolved:
+                sources[target] = resolved
+                changed = True
+        if not changed:
+            break
+    return sources
+
+
+def _assigned_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Assign):
+        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            return node.targets[0].id
+        return None
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        return node.target.id
+    if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+        return node.target.id
+    return None
+
+
+def _assigned_reference(node: ast.AST, sources: dict[str, str]) -> str:
+    if not isinstance(node, (ast.AnnAssign, ast.Assign, ast.NamedExpr)):
+        return ""
+    return _resolved_name(node.value, sources) if node.value is not None else ""
+
+
+def _resolved_name(expression: ast.expr, sources: dict[str, str]) -> str:
+    name = _qualified_name(expression)
+    if not name:
+        return ""
+    root, separator, remainder = name.partition(".")
+    resolved = sources.get(root, root)
+    return f"{resolved}.{remainder}" if separator else resolved
 
 
 def _classify_attribute(
@@ -351,8 +478,14 @@ def _qualified_name(expression: ast.expr) -> str:
     return ""
 
 
-def _open_mode(node: ast.Call) -> str | None:
-    name = _qualified_name(node.func)
+def _open_mode(
+    node: ast.Call, binding_sources: dict[str, str] | None = None
+) -> str | None:
+    name = (
+        _resolved_name(node.func, binding_sources)
+        if binding_sources is not None
+        else _qualified_name(node.func)
+    )
     if name in {"open", "builtins.open"}:
         positional_mode = node.args[1] if len(node.args) > 1 else None
     elif name.endswith(".open"):
@@ -502,8 +635,14 @@ def _allowed_state_store_write_calls(
     return {opened, replaced, directory, unlinked}
 
 
-def _is_user_data_write_call(node: ast.Call) -> bool:
-    name = _qualified_name(node.func)
+def _is_user_data_write_call(
+    node: ast.Call, binding_sources: dict[str, str] | None = None
+) -> bool:
+    name = (
+        _resolved_name(node.func, binding_sources)
+        if binding_sources is not None
+        else _qualified_name(node.func)
+    )
     return _is_user_data_write_name(name) or _call_name(node.func) in {
         "mkdir",
         "rmdir",
@@ -514,6 +653,8 @@ def _is_user_data_write_call(node: ast.Call) -> bool:
 
 def _is_user_data_write_name(name: str) -> bool:
     return name in {
+        "Path.rename",
+        "Path.replace",
         "os.fdopen",
         "os.makedirs",
         "os.mkdir",
@@ -524,6 +665,17 @@ def _is_user_data_write_name(name: str) -> bool:
         "os.replace",
         "os.rmdir",
         "os.unlink",
+        "pathlib.Path.rename",
+        "pathlib.Path.replace",
+    }
+
+
+def _is_user_data_write_reference(name: str) -> bool:
+    return _is_user_data_write_name(name) or name in {
+        "Path.open",
+        "builtins.open",
+        "open",
+        "pathlib.Path.open",
     }
 
 
