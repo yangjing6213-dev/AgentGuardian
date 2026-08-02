@@ -138,16 +138,18 @@ Batch 3 本地实现和门禁已完成；验收仍待最终 SHA 的远程验证�
 
 操作边界仍是本地静态检查、桌面处置和人工指引，不发起 API 调用，也不默认访问 OpenAI API。DPAPI 不能抵御已经控制同一 Windows 用户会话的程序。主机时钟、路径别名或文件移动可能重新打开发现，但不会扩大处置范围。路径检查与 `os.replace` 之间仍有同用户竞态窗口；Python 不能保证清除所有不可变 bytes 或字符串副本。
 
-当前静态自审计严格加载随包分发的 `source_policy.json` schema 1，并要求精确模块集合以及每个已复核 `.py` 文件的 canonical AST SHA-256 完全匹配。新增、删除、无法解析或 AST 变化都会以 `SOURCE_POLICY_VIOLATION` 失败关闭；已复核包不再进入启发式。有限启发式仅对清单外的合成未知模块运行，检查代表性的网络导入、动态执行和用户数据写入能力，而不是 Python 表达式解释器。这不是语义、依赖或二进制证明。清单未签名，同一用户控制代码和清单时可以同时替换两者；生产来源和签名仍待 Batch 5。
+当前静态自审计严格加载随包分发的 `source_policy.json` schema 1，并要求精确模块集合以及每个已复核 `.py` 文件的 canonical AST SHA-256 完全匹配。源码以原始 bytes 交给 `ast.parse(..., filename=...)`，与 Python 运行时一致地处理 PEP 263 编码声明。新增、删除、未知编码、语法错误或 AST 变化都会以固定 finding 失败关闭；已复核包不再进入启发式。有限启发式仅对清单外的合成未知模块运行，检查代表性的网络导入、动态执行和用户数据写入能力，而不是 Python 表达式解释器。这不是语义、依赖或二进制证明。清单未签名，同一用户控制代码和清单时可以同时替换两者；生产来源和签名仍待 Batch 5。
+
+仓库顶层 `rules/default.json` 仍是权威规则来源；wheel 使用 byte-identical 的 `agentguardian/rules/default.json` 副本，并由包数据、`RECORD` 和无网络临时安装测试约束其来源与可用性。
 
 ### Batch 3 当前本地证据
 
 2026-08-03 在当前工作树重新运行：
 
-- `rtk pytest -q -p no:cacheprovider`：`666 passed, 6 skipped`，0 failed。
+- `rtk pytest -q -p no:cacheprovider`：`676 passed, 6 skipped`，0 failed。
 - `rtk proxy python scripts/check_brand_assets.py`：退出码 0。
 - `rtk proxy python -m compileall -q src`：退出码 0。
-- `rtk proxy python -m build --wheel --no-isolation`：退出码 0；wheel 包含 `agentguardian/source_policy.json`。
+- `rtk proxy python -m build --wheel --no-isolation`：退出码 0；wheel `RECORD` 包含 `agentguardian/source_policy.json` 和 byte-identical 的 `agentguardian/rules/default.json`。使用 `pip --no-index --no-deps` 临时安装后，`load_rules()`、`static_capability_findings()` 和 `collect_self_audit()` 均成功。
 - `rtk git diff --check`：退出码 0，无输出。
 - 使用 `PYTHONPATH=src` 调用 `collect_self_audit()`：`findings=[]`、`local_only=true`、`network_capability=not_detected`、`ordinary_user_mode=true`；范围仍为 `package_source_policy`，依赖和二进制未扫描。
 

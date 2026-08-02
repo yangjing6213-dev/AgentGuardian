@@ -11,7 +11,7 @@ from .dispositions import make_disposition_ref
 from .domain import Evidence, Finding, RiskDomain, Severity
 
 
-DEFAULT_RULES_PATH = Path(__file__).resolve().parents[2] / "rules" / "default.json"
+DEFAULT_RULES_PATH = Path(__file__).with_name("rules") / "default.json"
 MAX_FILE_BYTES = 10 * 1024 * 1024
 MAX_FINDINGS = 1000
 _INPUT_ERROR = "DETECTOR_INPUT_INVALID"

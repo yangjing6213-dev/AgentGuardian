@@ -7,7 +7,7 @@ from pathlib import Path
 
 from . import __version__
 
-DEFAULT_RULES_PATH = Path(__file__).resolve().parents[2] / "rules" / "default.json"
+DEFAULT_RULES_PATH = Path(__file__).with_name("rules") / "default.json"
 SOURCE_POLICY_PATH = Path(__file__).with_name("source_policy.json")
 
 _MAX_MANIFEST_BYTES = 65_536
@@ -213,7 +213,7 @@ def static_capability_findings(
         findings.add("SOURCE_POLICY_VIOLATION")
     for module, relative_path in zip(modules, relative_paths, strict=True):
         try:
-            tree = ast.parse(module.read_text(encoding="utf-8"))
+            tree = ast.parse(module.read_bytes(), filename=str(module))
         except (OSError, SyntaxError, UnicodeError):
             if reviewed_package:
                 findings.add("SOURCE_POLICY_VIOLATION")
@@ -300,23 +300,6 @@ def _module_key(root: Path, module: Path) -> tuple[str, str]:
     return relative.casefold(), relative
 
 
-def _scan_module(
-    relative_path: str,
-    tree: ast.Module,
-    findings: set[str],
-    policy: dict[str, str] | None = None,
-) -> None:
-    reviewed = _load_source_policy() if policy is None else policy
-    if reviewed is None:
-        findings.update(_MANIFEST_ERROR)
-        return
-    expected = reviewed.get(relative_path)
-    if expected is None:
-        _scan_heuristic(tree, findings)
-    elif _canonical_ast_sha256(tree) != expected:
-        findings.add("SOURCE_POLICY_VIOLATION")
-
-
 def _scan_heuristic(tree: ast.Module, findings: set[str]) -> None:
     direct_calls = {
         node.func: node for node in ast.walk(tree) if isinstance(node, ast.Call)
@@ -358,7 +341,12 @@ def _scan_call(node: ast.Call, findings: set[str]) -> None:
     if name in {"globals", "locals"} or (name == "vars" and not node.args):
         findings.add("SOURCE_POLICY_VIOLATION")
     if name == "getattr":
-        if member is None or member in _SENSITIVE_DYNAMIC_MEMBERS or member in _WRITE_MEMBERS:
+        if (
+            member is None
+            or member in _SENSITIVE_DYNAMIC_MEMBERS
+            or member in _WRITE_MEMBERS
+            or not _has_exact_zero_default(node)
+        ):
             findings.add("SOURCE_POLICY_VIOLATION")
         if member == "__import__":
             findings.add("DYNAMIC_EXECUTION")
@@ -446,6 +434,17 @@ def _literal_getattr_member(node: ast.Call) -> str | None:
     if isinstance(member, ast.Constant) and isinstance(member.value, str):
         return member.value
     return None
+
+
+def _has_exact_zero_default(node: ast.Call) -> bool:
+    if len(node.args) != 3 or node.keywords:
+        return False
+    default = node.args[2]
+    return (
+        isinstance(default, ast.Constant)
+        and type(default.value) is int
+        and default.value == 0
+    )
 
 
 def _import_findings(module: str, member: str | None = None) -> set[str]:

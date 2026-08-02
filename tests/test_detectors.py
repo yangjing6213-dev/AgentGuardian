@@ -25,6 +25,8 @@ from agentguardian.domain import RiskDomain, Severity
 SCAN_KEY = b"k" * 32
 DISPOSITION_KEY = b"d" * 32
 PRIVATE_INPUT_MARKER = r"C:\Private\detector-input-marker.txt"
+PROJECT_ROOT = Path(__file__).parents[1]
+PACKAGE_RULES_PATH = PROJECT_ROOT / "src" / "agentguardian" / "rules" / "default.json"
 
 
 class _BytesSubclass(bytes):
@@ -144,6 +146,13 @@ def test_default_rules_load_with_valid_schema() -> None:
         "EMAIL_ADDRESS",
         "CN_MOBILE_PHONE",
     }
+
+
+def test_packaged_rules_match_repository_authority() -> None:
+    repository_rules = PROJECT_ROOT / "rules" / "default.json"
+
+    assert DEFAULT_RULES_PATH == PACKAGE_RULES_PATH
+    assert PACKAGE_RULES_PATH.read_bytes() == repository_rules.read_bytes()
 
 
 def test_rule_loader_rejects_invalid_schema(tmp_path: Path) -> None:

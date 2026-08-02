@@ -19,7 +19,7 @@ SOURCE_POLICY_PATH = PACKAGE_ROOT / "source_policy.json"
 
 
 def _canonical_ast_digest(path: Path) -> str:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tree = ast.parse(path.read_bytes(), filename=str(path))
     canonical = ast.dump(tree, annotate_fields=True, include_attributes=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -136,6 +136,54 @@ def test_source_policy_rejects_unparseable_reviewed_module(tmp_path: Path) -> No
     )
 
 
+@pytest.mark.parametrize(
+    ("encoding", "marker"),
+    (("utf-7", "\u20ac"), ("latin-1", "\xe9")),
+)
+def test_source_policy_uses_runtime_pep263_byte_parsing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    encoding: str,
+    marker: str,
+) -> None:
+    package = _copy_reviewed_package(tmp_path)
+    module = package / "guidance.py"
+    source = module.read_text(encoding="utf-8")
+    module.write_bytes(
+        (f"# coding: {encoding}\n{source}\nreview_marker = {marker!r}\n").encode(
+            encoding
+        )
+    )
+    ast.parse(module.read_bytes(), filename=str(module))
+
+    policy = json.loads(SOURCE_POLICY_PATH.read_text(encoding="utf-8"))
+    policy["modules"] = {
+        path.relative_to(package).as_posix(): _canonical_ast_digest(path)
+        for path in sorted(package.rglob("*.py"))
+    }
+    updated_manifest = tmp_path / f"{encoding}-source-policy.json"
+    _write_manifest(updated_manifest, policy["modules"])
+    monkeypatch.setattr(self_audit, "SOURCE_POLICY_PATH", updated_manifest)
+
+    assert static_capability_findings(package) == ()
+
+
+@pytest.mark.parametrize(
+    "source",
+    (b"# coding: no-such-encoding\nvalue = 1\n", b"def broken(:\n"),
+)
+def test_source_policy_reports_fixed_finding_for_invalid_encoding_or_syntax(
+    tmp_path: Path, source: bytes
+) -> None:
+    package = _copy_reviewed_package(tmp_path)
+    (package / "guidance.py").write_bytes(source)
+
+    assert static_capability_findings(package) == (
+        "SOURCE_POLICY_VIOLATION",
+        "SOURCE_SCAN_ERROR",
+    )
+
+
 def test_reviewed_module_mismatch_does_not_run_unknown_module_heuristic(
     tmp_path: Path,
 ) -> None:
@@ -192,19 +240,17 @@ def test_source_policy_rejects_replacing_all_reviewed_modules(
         ),
     ),
 )
-def test_reviewed_source_in_memory_injections_are_manifest_violations(
-    relative_path: str, injection: str
+def test_reviewed_source_injections_are_manifest_violations(
+    tmp_path: Path, relative_path: str, injection: str
 ) -> None:
-    source = (PACKAGE_ROOT / relative_path).read_text(encoding="utf-8")
-    findings: set[str] = set()
-
-    self_audit._scan_module(
-        relative_path,
-        ast.parse(source + "\n" + injection),
-        findings,
+    package = _copy_reviewed_package(tmp_path)
+    module = package / relative_path
+    module.write_text(
+        module.read_text(encoding="utf-8") + "\n" + injection,
+        encoding="utf-8",
     )
 
-    assert findings == {"SOURCE_POLICY_VIOLATION"}
+    assert static_capability_findings(package) == ("SOURCE_POLICY_VIOLATION",)
 
 
 def test_source_policy_manifest_update_is_required_after_ast_change(
@@ -287,7 +333,8 @@ def test_source_policy_manifest_is_configured_as_package_data() -> None:
     project = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text("utf-8"))
 
     assert project["tool"]["setuptools"]["package-data"]["agentguardian"] == [
-        "source_policy.json"
+        "rules/*.json",
+        "source_policy.json",
     ]
 
 
@@ -479,6 +526,32 @@ def test_static_scan_fails_closed_for_unknown_absolute_but_allows_relative_impor
         encoding="utf-8",
     )
     assert static_capability_findings(package) == ()
+
+
+def test_static_scan_allows_exact_integer_zero_getattr_default(tmp_path: Path) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(
+        "import stat\ngetattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)\n",
+        encoding="utf-8",
+    )
+
+    assert static_capability_findings(package) == ()
+
+
+@pytest.mark.parametrize("default", ("False", "0.0", "0j"))
+def test_static_scan_rejects_non_integer_zero_getattr_defaults(
+    tmp_path: Path, default: str
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(
+        "import stat\n"
+        f"getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', {default})\n",
+        encoding="utf-8",
+    )
+
+    assert static_capability_findings(package) == ("SOURCE_POLICY_VIOLATION",)
 
 
 @pytest.mark.parametrize(
@@ -959,6 +1032,10 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "静态自审计只覆盖已复核源码清单和有界启发式，不扫描依赖或二进制",
         "`source_policy.json`",
         "canonical AST SHA-256",
+        "PEP 263 编码声明",
+        "`src/agentguardian/rules/default.json`",
+        "byte-identical",
+        "wheel `RECORD`",
         "有限启发式仅对清单外的合成未知模块运行",
         "不是 Python 表达式解释器",
         "清单未签名",
@@ -985,13 +1062,16 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "第 8 节为已被第 9 至 10 节取代的历史交接记录",
         "Batch 2 历史远程证据",
         "Batch 3 当前本地证据",
-        "`666 passed, 6 skipped`，0 failed",
+        "`676 passed, 6 skipped`，0 failed",
         "`findings=[]`、`local_only=true`、`network_capability=not_detected`",
         "`source_policy.json`",
         "canonical AST SHA-256",
+        "PEP 263 编码声明",
         "有限启发式仅对清单外的合成未知模块运行",
         "不是 Python 表达式解释器",
-        "wheel 包含 `agentguardian/source_policy.json`",
+        "wheel `RECORD` 包含 `agentguardian/source_policy.json`",
+        "`agentguardian/rules/default.json`",
+        "`pip --no-index --no-deps`",
         "清单未签名",
         "Batch 5",
         "未经控制者验证，不声明当前或最终远程 CI",
