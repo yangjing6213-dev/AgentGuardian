@@ -81,7 +81,6 @@ _LLM_MODULES = {
 }
 _RESTRICTED_BINDINGS = {
     "Path",
-    "__import__",
     "asyncio",
     "builtins",
     "os",
@@ -186,11 +185,14 @@ def _module_key(root: Path, module: Path) -> tuple[str, str]:
 
 def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> None:
     allow_ctypes = _allowed_ctypes_usage(relative_path, tree)
-    allowed_report_call = _allowed_report_export_call(relative_path, tree)
     allowed_user_data_calls = _allowed_state_store_write_calls(relative_path, tree)
-    if allowed_report_call is not None:
-        allowed_user_data_calls.add(allowed_report_call)
-    binding_sources = _binding_sources(tree)
+    allowed_user_data_calls.update(_allowed_report_export_calls(relative_path, tree))
+    allowed_user_data_references = {
+        call.func for call in allowed_user_data_calls
+    }
+    direct_calls = {
+        node.func: node for node in ast.walk(tree) if isinstance(node, ast.Call)
+    }
     imported_bindings: set[str] = set()
 
     for node in ast.walk(tree):
@@ -252,14 +254,18 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
         alias_sources = _direct_alias_sources(node)
         if alias_sources & _RESTRICTED_BINDINGS:
             findings.add("SOURCE_POLICY_VIOLATION")
-        alias_attribute = _direct_alias_attribute(node)
-        if alias_attribute and _is_user_data_write_name(alias_attribute):
-            findings.add("USER_DATA_WRITE")
-        assigned_reference = _assigned_reference(node, binding_sources)
-        if assigned_reference and _is_user_data_write_reference(assigned_reference):
-            findings.add("USER_DATA_WRITE")
-        if "__import__" in alias_sources:
-            findings.add("DYNAMIC_EXECUTION")
+        reference_finding = _capability_reference_finding(node)
+        direct_call = direct_calls.get(node)
+        direct_open_mode = _open_mode(direct_call) if direct_call else None
+        if (
+            reference_finding
+            and node not in allowed_user_data_references
+            and not (
+                direct_open_mode is not None
+                and not any(flag in direct_open_mode for flag in "wax+")
+            )
+        ):
+            findings.add(reference_finding)
         if isinstance(node, ast.Attribute):
             _classify_attribute(node, rebound, findings, allow_ctypes)
         elif isinstance(node, ast.Call):
@@ -280,7 +286,7 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
                 in _WRITE_ATTRIBUTE_MEMBERS
             ):
                 findings.add("USER_DATA_WRITE")
-            mode = _open_mode(node, binding_sources)
+            mode = _open_mode(node)
             if (
                 mode is not None
                 and any(flag in mode for flag in "wax+")
@@ -288,7 +294,7 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
             ):
                 findings.add("USER_DATA_WRITE")
             if (
-                _is_user_data_write_call(node, binding_sources)
+                _is_user_data_write_call(node)
                 and node not in allowed_user_data_calls
             ):
                 findings.add("USER_DATA_WRITE")
@@ -331,6 +337,8 @@ def _import_findings(module: str, member: str | None = None) -> set[str]:
         findings.add("SHELL_EXECUTION")
     if root == "os" and member and _is_user_data_write_name(f"os.{member}"):
         findings.add("USER_DATA_WRITE")
+    if root == "builtins" and member == "open":
+        findings.add("USER_DATA_WRITE")
     safe_import = (
         normalized in _SAFE_DIRECT_IMPORTS
         if member is None
@@ -339,68 +347,6 @@ def _import_findings(module: str, member: str | None = None) -> set[str]:
     if not findings and not safe_import:
         findings.add("SOURCE_POLICY_VIOLATION")
     return findings
-
-
-def _binding_sources(tree: ast.Module) -> dict[str, str]:
-    sources = {"open": "builtins.open"}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                binding = alias.asname or alias.name.split(".", 1)[0]
-                sources[binding] = alias.name if alias.asname else binding
-        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
-            for alias in node.names:
-                if alias.name != "*":
-                    sources[alias.asname or alias.name] = (
-                        f"{node.module}.{alias.name}"
-                    )
-
-    assignments = tuple(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.AnnAssign, ast.Assign, ast.NamedExpr))
-    )
-    for _ in range(len(assignments) + 1):
-        changed = False
-        for node in assignments:
-            target = _assigned_name(node)
-            value = node.value
-            if target is None or value is None:
-                continue
-            resolved = _resolved_name(value, sources)
-            if resolved and sources.get(target) != resolved:
-                sources[target] = resolved
-                changed = True
-        if not changed:
-            break
-    return sources
-
-
-def _assigned_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Assign):
-        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-            return node.targets[0].id
-        return None
-    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-        return node.target.id
-    if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
-        return node.target.id
-    return None
-
-
-def _assigned_reference(node: ast.AST, sources: dict[str, str]) -> str:
-    if not isinstance(node, (ast.AnnAssign, ast.Assign, ast.NamedExpr)):
-        return ""
-    return _resolved_name(node.value, sources) if node.value is not None else ""
-
-
-def _resolved_name(expression: ast.expr, sources: dict[str, str]) -> str:
-    name = _qualified_name(expression)
-    if not name:
-        return ""
-    root, separator, remainder = name.partition(".")
-    resolved = sources.get(root, root)
-    return f"{resolved}.{remainder}" if separator else resolved
 
 
 def _classify_attribute(
@@ -458,15 +404,6 @@ def _direct_alias_sources(node: ast.AST) -> set[str]:
     return set()
 
 
-def _direct_alias_attribute(node: ast.AST) -> str:
-    value: ast.expr | None = None
-    if isinstance(node, (ast.AnnAssign, ast.Assign, ast.NamedExpr)):
-        value = node.value
-    if isinstance(value, ast.Attribute):
-        return _qualified_name(value)
-    return ""
-
-
 def _qualified_name(expression: ast.expr) -> str:
     if isinstance(expression, ast.Name):
         return expression.id
@@ -478,14 +415,8 @@ def _qualified_name(expression: ast.expr) -> str:
     return ""
 
 
-def _open_mode(
-    node: ast.Call, binding_sources: dict[str, str] | None = None
-) -> str | None:
-    name = (
-        _resolved_name(node.func, binding_sources)
-        if binding_sources is not None
-        else _qualified_name(node.func)
-    )
+def _open_mode(node: ast.Call) -> str | None:
+    name = _qualified_name(node.func)
     if name in {"open", "builtins.open"}:
         positional_mode = node.args[1] if len(node.args) > 1 else None
     elif name.endswith(".open"):
@@ -503,38 +434,45 @@ def _open_mode(
     return "+"
 
 
-def _allowed_report_export_call(
+def _allowed_report_export_calls(
     relative_path: str, tree: ast.Module
-) -> ast.Call | None:
+) -> set[ast.Call]:
     if relative_path != "app.py":
-        return None
+        return set()
     functions = [
         node
         for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == "export_new_report"
     ]
     if len(functions) != 1:
-        return None
+        return set()
     function = functions[0]
     if [argument.arg for argument in function.args.args] != [
         "path",
         "content",
         "scanned_roots",
     ]:
-        return None
+        return set()
     calls = [node for node in ast.walk(function) if isinstance(node, ast.Call)]
     writes = [node for node in calls if _open_mode(node) == "x"]
-    if len(writes) != 1:
-        return None
+    stream_writes = [
+        node for node in calls if _qualified_name(node.func) == "stream.write"
+    ]
+    if len(writes) != 1 or len(stream_writes) != 1:
+        return set()
     write = writes[0]
+    stream_write = stream_writes[0]
     if (
         not write.args
         or not isinstance(write.args[0], ast.Name)
         or write.args[0].id != "final_target"
         or not _keyword_is(write, "encoding", "utf-8")
         or not _keyword_is(write, "newline", "\n")
+        or len(stream_write.args) != 1
+        or not isinstance(stream_write.args[0], ast.Name)
+        or stream_write.args[0].id != "content"
     ):
-        return None
+        return set()
     required_calls = {
         "_is_reparse",
         "_is_unc_path",
@@ -544,15 +482,15 @@ def _allowed_report_export_call(
         "write",
     }
     if not required_calls <= {_call_name(call.func) for call in calls}:
-        return None
+        return set()
     raises = {
         _call_name(node.exc.func)
         for node in ast.walk(function)
         if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call)
     }
     if not {"filenotfounderror", "oserror", "valueerror"} <= raises:
-        return None
-    return write
+        return set()
+    return {write, stream_write}
 
 
 def _allowed_state_store_write_calls(
@@ -632,22 +570,17 @@ def _allowed_state_store_write_calls(
         or stream_write.args[0].id != "ciphertext"
     ):
         return set()
-    return {opened, replaced, directory, unlinked}
+    return {opened, replaced, directory, unlinked, stream_write}
 
 
-def _is_user_data_write_call(
-    node: ast.Call, binding_sources: dict[str, str] | None = None
-) -> bool:
-    name = (
-        _resolved_name(node.func, binding_sources)
-        if binding_sources is not None
-        else _qualified_name(node.func)
-    )
+def _is_user_data_write_call(node: ast.Call) -> bool:
+    name = _qualified_name(node.func)
     return _is_user_data_write_name(name) or _call_name(node.func) in {
         "mkdir",
         "rmdir",
         "touch",
         "unlink",
+        "write",
     }
 
 
@@ -673,10 +606,38 @@ def _is_user_data_write_name(name: str) -> bool:
 def _is_user_data_write_reference(name: str) -> bool:
     return _is_user_data_write_name(name) or name in {
         "Path.open",
+        "__builtins__.open",
         "builtins.open",
         "open",
         "pathlib.Path.open",
     }
+
+
+def _capability_reference_finding(node: ast.AST) -> str:
+    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+        if node.id == "__import__":
+            return "DYNAMIC_EXECUTION"
+        if node.id == "open":
+            return "USER_DATA_WRITE"
+    if isinstance(node, ast.Attribute):
+        name = _qualified_name(node)
+        if name in {"__builtins__.__import__", "builtins.__import__"}:
+            return "DYNAMIC_EXECUTION"
+        if (
+            node.attr in {"mkdir", "open", "rmdir", "touch", "unlink", "write"}
+            or _is_user_data_write_reference(name)
+        ):
+            return "USER_DATA_WRITE"
+    if (
+        isinstance(node, ast.Subscript)
+        and _qualified_name(node.value) in {"__builtins__", "builtins"}
+        and isinstance(node.slice, ast.Constant)
+    ):
+        if node.slice.value == "__import__":
+            return "DYNAMIC_EXECUTION"
+        if node.slice.value == "open":
+            return "USER_DATA_WRITE"
+    return ""
 
 
 def _dynamic_attribute_name(node: ast.Call) -> str:

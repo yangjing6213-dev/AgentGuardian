@@ -142,7 +142,7 @@ Batch 3 本地实现和门禁已完成；验收仍待最终 SHA 的远程验证�
 
 2026-08-02 在当前工作树重新运行：
 
-- `rtk pytest -q -p no:cacheprovider`：`636 passed, 6 skipped`，0 failed。
+- `rtk pytest -q -p no:cacheprovider`：`648 passed, 6 skipped`，0 failed。
 - `rtk proxy python scripts/check_brand_assets.py`：退出码 0。
 - `rtk proxy python -m compileall -q src`：退出码 0。
 - `rtk git diff --check`：退出码 0，无输出。

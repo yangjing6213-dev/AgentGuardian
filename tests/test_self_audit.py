@@ -342,32 +342,97 @@ def test_static_scan_reports_direct_write_capabilities(
     assert static_capability_findings(package) == expected
 
 
-def test_static_scan_detects_path_moves_and_write_alias_chains(
-    tmp_path: Path,
-) -> None:
+def test_static_scan_detects_path_moves(tmp_path: Path) -> None:
     package = tmp_path / "agentguardian"
     package.mkdir()
     module = package / "synthetic.py"
     sources = (
         "from pathlib import Path\nPath('a').rename('b')\n",
         "from pathlib import Path\nPath('a').replace('b')\n",
-        "from pathlib import Path as P\nP('a').rename('b')\n",
-        "import pathlib as paths\npaths.Path('a').replace('b')\n",
-        "writer = open\n",
-        "first = open\nwriter = first\nwriter('report', 'w')\n",
-        "from pathlib import Path\nopener = Path.open\n",
-        (
-            "from pathlib import Path\n"
-            "opener = Path.open\nwriter = opener\n"
-            "writer(Path('report'), 'wb')\n"
-        ),
-        "import os as files\nmove = files.rename\nmove('a', 'b')\n",
-        "from os import replace as move\nalias = move\nalias('a', 'b')\n",
     )
 
     for source in sources:
         module.write_text(source, encoding="utf-8")
         assert "USER_DATA_WRITE" in static_capability_findings(package), source
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    (
+        (
+            "writer, marker = open, object()\nwriter('report', 'w')\n",
+            ("USER_DATA_WRITE",),
+        ),
+        (
+            "writers = [open]\nwriter = writers[0]\nwriter('report', 'w')\n",
+            ("USER_DATA_WRITE",),
+        ),
+        (
+            "writer = open if True else object()\nwriter('report', 'w')\n",
+            ("USER_DATA_WRITE",),
+        ),
+        (
+            "def save(writer=open):\n    writer('report', 'w')\n",
+            ("USER_DATA_WRITE",),
+        ),
+        (
+            "import os\n"
+            "writer, marker = os.replace, object()\n"
+            "writer('temporary', 'target')\n",
+            ("USER_DATA_WRITE",),
+        ),
+        (
+            "from pathlib import Path\n"
+            "Path.open.__call__(Path('report'), 'w')\n",
+            ("USER_DATA_WRITE",),
+        ),
+        (
+            "__builtins__['open']('report', 'w')\n",
+            ("USER_DATA_WRITE",),
+        ),
+        (
+            "from builtins import open as writer\nwriter('report', 'w')\n",
+            ("DYNAMIC_EXECUTION", "USER_DATA_WRITE"),
+        ),
+    ),
+)
+def test_static_scan_reports_write_capability_references(
+    tmp_path: Path, source: str, expected: tuple[str, ...]
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(source, encoding="utf-8")
+
+    assert static_capability_findings(package) == expected
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "loader = __import__ if True else object()\nloader('socket')\n",
+        "def load(loader=__import__):\n    return loader('socket')\n",
+        "from builtins import __import__ as loader\nloader('socket')\n",
+    ),
+)
+def test_static_scan_reports_dynamic_import_capability_references(
+    tmp_path: Path, source: str
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(source, encoding="utf-8")
+
+    assert static_capability_findings(package) == ("DYNAMIC_EXECUTION",)
+
+
+def test_static_scan_reports_unapproved_stream_write_reference(tmp_path: Path) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(
+        "def emit(stream):\n    stream.write('data')\n",
+        encoding="utf-8",
+    )
+
+    assert static_capability_findings(package) == ("USER_DATA_WRITE",)
 
 
 def test_static_scan_marks_ambiguous_write_api_as_policy_violation(
@@ -892,7 +957,7 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "第 8 节为已被第 9 至 10 节取代的历史交接记录",
         "Batch 2 历史远程证据",
         "Batch 3 当前本地证据",
-        "`636 passed, 6 skipped`，0 failed",
+        "`648 passed, 6 skipped`，0 failed",
         "`findings=[]`、`local_only=true`、`network_capability=not_detected`",
         "未经控制者验证，不声明当前或最终远程 CI",
         status,
