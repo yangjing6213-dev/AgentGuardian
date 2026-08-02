@@ -1,3 +1,4 @@
+import dataclasses
 import hashlib
 import json
 import re
@@ -7,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agentguardian import __version__, self_audit
+from agentguardian import __version__, domain, self_audit
 from agentguardian.self_audit import collect_self_audit, static_capability_findings
 
 PROJECT_ROOT = Path(__file__).parents[1]
@@ -716,6 +717,27 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         PROJECT_ROOT / "docs" / "superpowers" / "plans"
         / "2026-08-02-agentguardian-finding-dispositions.md"
     ).read_text(encoding="utf-8")
+    inventory_match = re.search(
+        r"<!-- domain-field-inventory -->\s*```json\s*(\{.*?\})\s*```",
+        architecture,
+        flags=re.DOTALL,
+    )
+    assert inventory_match is not None
+    documented_fields = json.loads(inventory_match.group(1))
+    domain_types = (
+        domain.Asset,
+        domain.Evidence,
+        domain.Finding,
+        domain.Score,
+        domain.RemediationPlan,
+        domain.VerificationResult,
+    )
+    actual_fields = {
+        contract.__name__: [item.name for item in dataclasses.fields(contract)]
+        for contract in domain_types
+    }
+    assert documented_fields == actual_fields
+
     status = "Batch 3 本地实现和门禁已完成；验收仍待最终 SHA 的远程验证。"
     pending = "Batches 4-6 仍待完成"
     premature = (
@@ -749,7 +771,13 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "## 未来目标（未实现）",
         "## 后续可信性要求（未实现门禁）",
         "当前实现不包含隔离扫描插件、限权修复代理、独立复审器、签名更新器或外部解释服务",
-        "`RemediationPlan` 和 `VerificationResult` 仅保留为数据契约",
+        "`disposition_ref` 是 `repr=False` 的本地处置引用，不进入导出报告",
+        "`RemediationPlan` 当前没有 `title` 字段",
+        "`RemediationPlan` 只承载人工指引",
+        "`mode` 固定为 `manual`",
+        "`VerificationResult.status` 固定为 `not_performed`",
+        "不表示通过/失败复审记录",
+        "路径、权限范围、动作 ID、前置条件、预览、批准、回滚和通过/失败复审字段均为未来未实现设想",
         "Findings --> Guidance",
         "规则 ID、按 Windows 词法规则规范化的源路径，以及 NFKC 规范化的原始匹配",
         "本地处置 HMAC 密钥与每次扫描随机生成的报告 HMAC 密钥彼此独立",

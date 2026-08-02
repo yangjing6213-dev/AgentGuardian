@@ -43,18 +43,51 @@ flowchart LR
 
 当前实现不包含隔离扫描插件、限权修复代理、独立复审器、签名更新器或外部解释服务。这些组件仅是后续目标，不属于 Founder Alpha 当前数据流，也不能用于声称当前已有更新、外发、自动修复或独立验证能力。动态 MCP 测试同样待后续隔离沙箱设计。
 
+路径、权限范围、动作 ID、前置条件、预览、批准、回滚和通过/失败复审字段均为未来未实现设想，不属于当前 `domain.py` 数据类。
+
 ## 组件契约
 
-组件之间使用可版本化的结构化对象传递数据：
+以下 JSON 是 `domain.py` 当前数据类的精确字段顺序，供文档测试与源码机械比对：
 
-- `Asset`：来源类型、产品标识、版本、路径、权限、发现时间和覆盖状态。
-- `Evidence`：证据位置、规则 ID、脱敏摘要、指纹、置信度、时间戳；不保存完整密钥和完整原文。
-- `Finding`：风险领域、严重程度、根因指纹、影响范围、修复建议和证据引用。
-- `Score`：领域分数、总分、覆盖率、置信度、封顶原因和限制项。
-- `RemediationPlan`：动作 ID、前置条件、预览、批准状态、回滚点和验证方式。
-- `VerificationResult`：复审时间、检查项、通过/失败、残留证据和下一步建议。
+<!-- domain-field-inventory -->
+```json
+{
+  "Asset": ["asset_id", "kind", "display_name"],
+  "Evidence": ["source", "fingerprint", "masked"],
+  "Finding": [
+    "rule_id",
+    "domain",
+    "severity",
+    "root_fingerprint",
+    "evidence",
+    "disposition_ref"
+  ],
+  "Score": [
+    "total",
+    "deductions",
+    "cap_reason",
+    "coverage",
+    "confidence",
+    "limits",
+    "incomplete"
+  ],
+  "RemediationPlan": [
+    "rule_id",
+    "asset_ref",
+    "mode",
+    "steps",
+    "verification_steps"
+  ],
+  "VerificationResult": ["status", "notes"]
+}
+```
 
-`RemediationPlan` 和 `VerificationResult` 仅保留为数据契约；当前产品不执行修复、回滚或独立复审。
+- `Asset` 只包含 `asset_id`、`kind`、`display_name`；`asset_id` 是不透明 HMAC 引用，`display_name` 是短显示名而非路径。
+- `Evidence` 只包含 `source`、`fingerprint`、`masked`；来源保持短显示名，指纹为 HMAC，证据文本必须脱敏。
+- `Finding` 只包含 `rule_id`、`domain`、`severity`、`root_fingerprint`、`evidence`、`disposition_ref`。`disposition_ref` 是 `repr=False` 的本地处置引用，不进入导出报告，只用于受保护状态中的跨扫描精确匹配。
+- `Score` 只包含 `total`、`deductions`、`cap_reason`、`coverage`、`confidence`、`limits`、`incomplete`。
+- `RemediationPlan` 只包含 `rule_id`、`asset_ref`、`mode`、`steps`、`verification_steps`。`RemediationPlan` 当前没有 `title` 字段；`mode` 固定为 `manual`，`RemediationPlan` 只承载人工指引，不执行动作。
+- `VerificationResult` 只包含 `status` 和 `notes`；`VerificationResult.status` 固定为 `not_performed`，不表示通过/失败复审记录。
 
 ## Windows MVP Batch 2 证据状态
 
