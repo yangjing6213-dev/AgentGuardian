@@ -1063,6 +1063,10 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "Batch 2 历史远程证据",
         "Batch 3 当前本地证据",
         "`676 passed, 6 skipped`，0 failed",
+        "复审对象 SHA：`537b3d9ba9829f1e85e5eec5671e90e1853c030e`",
+        "结论：`READY`",
+        "Critical：0；Important：0；Minor：1",
+        "canonical AST 证明可执行语法，不证明编码 cookie 或 BOM 的字节级身份",
         "`findings=[]`、`local_only=true`、`network_capability=not_detected`",
         "`source_policy.json`",
         "canonical AST SHA-256",
@@ -1095,7 +1099,7 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "Path matching follows Windows lexical rules through",
         "Do not Unicode-normalize the path; NFKC applies only to the raw match",
         "Acceptance pending final-SHA remote verification",
-        "Automated local gates complete; independent security re-review and final-SHA remote acceptance pending.",
+        "Automated local gates and independent security re-review complete at `537b3d9ba9829f1e85e5eec5671e90e1853c030e`; final-SHA remote acceptance pending.",
         pending,
         "production safety",
     ):
@@ -1111,13 +1115,11 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "Step 1: Add failing documentation assertions",
         "Step 2: Update status documents after implementation evidence exists",
         "Step 3: Run the complete local gate",
+        "Step 4: Run an independent read-only security review",
     ):
         assert f"- [x] **{completed_step}**" in task_seven
-    for pending_step in (
-        "Step 4: Run an independent read-only security review",
-        "Step 5: Commit, push, and verify remote evidence",
-    ):
-        assert f"- [ ] **{pending_step}**" in task_seven
+    assert "- [ ] **Step 5: Commit, push, and verify remote evidence**" in task_seven
+    assert "independent security re-review and final-SHA remote acceptance pending" not in task_seven
 
     for forbidden in premature:
         assert forbidden not in readme, f"README contains premature status: {forbidden}"

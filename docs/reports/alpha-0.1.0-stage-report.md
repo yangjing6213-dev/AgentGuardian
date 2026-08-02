@@ -153,6 +153,14 @@ Batch 3 本地实现和门禁已完成；验收仍待最终 SHA 的远程验证�
 - `rtk git diff --check`：退出码 0，无输出。
 - 使用 `PYTHONPATH=src` 调用 `collect_self_audit()`：`findings=[]`、`local_only=true`、`network_capability=not_detected`、`ordinary_user_mode=true`；范围仍为 `package_source_policy`，依赖和二进制未扫描。
 
-以上只证明当前本地 Batch 3 工作树的约定门禁。未经控制者验证，不声明当前或最终远程 CI。Batch 2 的历史远程运行不能替代 Batch 3 当前提交的远程验证。
+### Batch 3 独立安全复审证据
+
+- 复审对象 SHA：`537b3d9ba9829f1e85e5eec5671e90e1853c030e`。
+- 结论：`READY`。
+- 发现计数：Critical：0；Important：0；Minor：1。
+- 剩余 Minor：canonical AST 证明可执行语法，不证明编码 cookie 或 BOM 的字节级身份；注释、空白和其他生成相同 AST 的字节差异不在该清单的证明范围内。
+- 其他残余风险不变：清单未签名，同一用户可同时替换代码和清单；启发式不是语义证明；依赖和二进制未扫描；DPAPI 同用户、主机时钟、路径别名、文件移动、路径检查竞态和不可变 bytes 副本限制继续存在。
+
+独立安全复审已完成，但以上只证明复审 SHA 的本地 Batch 3 约定门禁。Step 5 最终 SHA 提交、推送和远程证据验证仍待完成；未经控制者验证，不声明当前或最终远程 CI。Batch 2 的历史远程运行不能替代 Batch 3 当前提交的远程验证。
 
 当前证据只支持 Batch 3 本地实现和门禁结论，不构成 Batch 3 验收。Batch 3 本地实现和门禁已完成；验收仍待最终 SHA 的远程验证。Batches 4-6 仍待完成；Founder Alpha 继续保持非生产、Windows MVP 不完整状态，不建立生产安全结论。
