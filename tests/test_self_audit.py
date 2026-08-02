@@ -388,7 +388,11 @@ def test_static_scan_detects_path_moves(tmp_path: Path) -> None:
         ),
         (
             "__builtins__['open']('report', 'w')\n",
-            ("USER_DATA_WRITE",),
+            (
+                "DYNAMIC_EXECUTION",
+                "SOURCE_POLICY_VIOLATION",
+                "USER_DATA_WRITE",
+            ),
         ),
         (
             "from builtins import open as writer\nwriter('report', 'w')\n",
@@ -435,6 +439,93 @@ def test_static_scan_reports_unapproved_stream_write_reference(tmp_path: Path) -
     assert static_capability_findings(package) == ("USER_DATA_WRITE",)
 
 
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import os\nescaped = os if True else object()\n",
+        "import os\ndef use(module=os):\n    return module\n",
+        "import os\nuse = lambda module=os: module\n",
+        "from pathlib import Path\nescaped = Path if True else object()\n",
+        "from pathlib import Path\ndef use(factory=Path):\n    return factory\n",
+        "from pathlib import Path\nuse = lambda factory=Path: factory\n",
+    ),
+)
+def test_static_scan_rejects_first_class_restricted_root_escapes(
+    tmp_path: Path, source: str
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(source, encoding="utf-8")
+
+    assert static_capability_findings(package) == ("SOURCE_POLICY_VIOLATION",)
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    (
+        (
+            "import os\nos.__getattribute__('replace')\n",
+            ("SOURCE_POLICY_VIOLATION", "USER_DATA_WRITE"),
+        ),
+        (
+            "import os\nobject.__getattribute__(os, 'replace')\n",
+            ("SOURCE_POLICY_VIOLATION", "USER_DATA_WRITE"),
+        ),
+        (
+            "from pathlib import Path\n"
+            "object.__getattribute__(Path('report'), 'open')\n",
+            ("SOURCE_POLICY_VIOLATION", "USER_DATA_WRITE"),
+        ),
+        (
+            "__builtins__.__dict__\n",
+            ("DYNAMIC_EXECUTION", "SOURCE_POLICY_VIOLATION"),
+        ),
+        (
+            "vars(__builtins__)\n",
+            ("DYNAMIC_EXECUTION", "SOURCE_POLICY_VIOLATION"),
+        ),
+        (
+            "getattr(__builtins__, '__import__')\n",
+            ("DYNAMIC_EXECUTION", "SOURCE_POLICY_VIOLATION"),
+        ),
+        (
+            "__builtins__.__dict__['__import__']\n",
+            ("DYNAMIC_EXECUTION", "SOURCE_POLICY_VIOLATION"),
+        ),
+        (
+            "def emit(stream):\n"
+            "    return stream.__getattribute__('write')\n",
+            ("SOURCE_POLICY_VIOLATION", "USER_DATA_WRITE"),
+        ),
+    ),
+)
+def test_static_scan_rejects_capability_extraction(
+    tmp_path: Path, source: str, expected: tuple[str, ...]
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(source, encoding="utf-8")
+
+    assert static_capability_findings(package) == expected
+
+
+def test_static_scan_allows_restricted_roots_only_in_bounded_uses(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "def inspect(path: Path) -> os.PathLike[str]:\n"
+        "    target = Path(path)\n"
+        "    return os.fspath(target)\n",
+        encoding="utf-8",
+    )
+
+    assert static_capability_findings(package) == ()
+
+
 def test_static_scan_marks_ambiguous_write_api_as_policy_violation(
     tmp_path: Path,
 ) -> None:
@@ -471,46 +562,22 @@ def test_dangerous_attribute_alias_stays_reported_after_rebinding(
     assert static_capability_findings(package) == ("SHELL_EXECUTION",)
 
 
-def test_function_parameter_shadows_outer_import(tmp_path: Path) -> None:
+def test_static_scan_fails_closed_for_restricted_root_shadowing(tmp_path: Path) -> None:
     package = tmp_path / "agentguardian"
     package.mkdir()
-    (package / "synthetic.py").write_text(
-        "import os\n"
-        "def use(os):\n"
-        "    return os.system()\n",
-        encoding="utf-8",
+    module = package / "synthetic.py"
+    sources = (
+        "import os\ndef use(os):\n    return os.system()\n",
+        "import os\ndef use(os=os.system('cmd')):\n    return os\n",
+        "import os\nclass Status:\n    before = os.system('cmd')\n    os = object()\n",
     )
 
-    assert static_capability_findings(package) == ("SOURCE_POLICY_VIOLATION",)
-
-
-def test_function_default_uses_outer_import_before_parameter_binding(
-    tmp_path: Path,
-) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    (package / "synthetic.py").write_text(
-        "import os\n"
-        "def use(os=os.system('cmd')):\n"
-        "    return os\n",
-        encoding="utf-8",
-    )
-
-    assert static_capability_findings(package) == ("SOURCE_POLICY_VIOLATION",)
-
-
-def test_class_body_uses_outer_import_before_rebinding(tmp_path: Path) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    (package / "synthetic.py").write_text(
-        "import os\n"
-        "class Status:\n"
-        "    before = os.system('cmd')\n"
-        "    os = object()\n",
-        encoding="utf-8",
-    )
-
-    assert static_capability_findings(package) == ("SOURCE_POLICY_VIOLATION",)
+    for source in sources:
+        module.write_text(source, encoding="utf-8")
+        assert static_capability_findings(package) == (
+            "SHELL_EXECUTION",
+            "SOURCE_POLICY_VIOLATION",
+        )
 
 
 @pytest.mark.parametrize(
@@ -526,25 +593,6 @@ def test_class_body_uses_outer_import_before_rebinding(tmp_path: Path) -> None:
     ),
 )
 def test_source_policy_fails_closed_for_ambiguous_capability_code(
-    tmp_path: Path, source: str
-) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    (package / "synthetic.py").write_text(source, encoding="utf-8")
-
-    assert static_capability_findings(package)
-
-
-@pytest.mark.parametrize(
-    "source",
-    (
-        "import os\nalias: object = os\nalias.system('cmd')\n",
-        "load: object = __import__\nload('socket')\n",
-        "import os\nif alias := os:\n    alias.system('cmd')\n",
-        "import os\nalias, marker = os, object()\n",
-    ),
-)
-def test_source_policy_covers_direct_alias_assignment_forms(
     tmp_path: Path, source: str
 ) -> None:
     package = tmp_path / "agentguardian"
@@ -716,7 +764,9 @@ def test_static_scan_allows_only_constrained_protected_state_write(
     )
     for mutated in mutations:
         module.write_text(mutated, encoding="utf-8")
-        assert static_capability_findings(package) == ("USER_DATA_WRITE",)
+        findings = static_capability_findings(package)
+        assert "USER_DATA_WRITE" in findings
+        assert set(findings) <= {"SOURCE_POLICY_VIOLATION", "USER_DATA_WRITE"}
 
 
 def test_nested_state_store_does_not_receive_write_exception(tmp_path: Path) -> None:
@@ -957,7 +1007,7 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "第 8 节为已被第 9 至 10 节取代的历史交接记录",
         "Batch 2 历史远程证据",
         "Batch 3 当前本地证据",
-        "`648 passed, 6 skipped`，0 failed",
+        "`657 passed, 6 skipped`，0 failed",
         "`findings=[]`、`local_only=true`、`network_capability=not_detected`",
         "未经控制者验证，不声明当前或最终远程 CI",
         status,
