@@ -99,6 +99,27 @@ def _state_snapshot(
     )
 
 
+def _decoded_v1_snapshot() -> EvidenceSnapshot:
+    return decode_snapshot(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "captured_at": "2026-08-02T08:00:00Z",
+                "product_version": "0.1.0",
+                "rule_version": "1.1.0",
+                "scan": {
+                    "coverage": 1.0,
+                    "confidence": 1.0,
+                    "incomplete": False,
+                    "limits": [],
+                },
+                "findings": [],
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+
+
 def _disposition(
     finding: Finding,
     status: DispositionStatus,
@@ -173,7 +194,7 @@ def test_window_loads_disposition_context_once_without_writing(
                 dispositions=(record,),
             )
         if state == "v1":
-            return _state_snapshot(1)
+            return _decoded_v1_snapshot()
         code = (
             "PROTECTED_STATE_UNAVAILABLE"
             if state == "missing"
@@ -324,6 +345,82 @@ def test_startup_revalidates_forged_exact_v2_state(
     assert context.key == fresh_key
     assert context.records == ()
     assert context.invalid_state is True
+    assert marker not in repr(context)
+
+
+@pytest.mark.parametrize(
+    ("schema_version", "field"),
+    (
+        (1, "disposition_key"),
+        (1, "dispositions"),
+        (2, "captured_at"),
+        (2, "product_version"),
+        (2, "rule_version"),
+        (2, "scan"),
+        (2, "findings"),
+    ),
+)
+def test_startup_rejects_forged_snapshot_invariants_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    schema_version: int,
+    field: str,
+) -> None:
+    marker = "synthetic-private-forged-snapshot-marker"
+    stored_key = b"s" * 32
+    fresh_key = b"f" * 32
+    record = DispositionRecord(
+        "a" * 64,
+        "OPENAI_API_KEY",
+        DispositionStatus.FALSE_POSITIVE,
+        "Synthetic false positive",
+        "Local reviewer",
+        "2026-08-02T08:00:00Z",
+        "2026-08-03T08:00:00Z",
+    )
+    snapshot = _state_snapshot(
+        schema_version,
+        disposition_key=stored_key if schema_version == 2 else None,
+        dispositions=(record,) if schema_version == 2 else (),
+    )
+    invalid_values = {
+        "disposition_key": marker.encode("ascii"),
+        "dispositions": (record,),
+        "captured_at": marker,
+        "product_version": f"{marker} value",
+        "rule_version": f"{marker} value",
+        "scan": SimpleNamespace(private=marker),
+        "findings": (SimpleNamespace(private=marker),),
+    }
+    object.__setattr__(snapshot, field, invalid_values[field])
+    load_calls = []
+    fresh_calls = []
+    save_calls = []
+
+    def load_state():
+        load_calls.append(None)
+        return snapshot
+
+    def fresh_key_value(length: int) -> bytes:
+        fresh_calls.append(length)
+        return fresh_key
+
+    monkeypatch.setattr(app_module, "load_protected_state", load_state)
+    monkeypatch.setattr(app_module, "save_protected_state", save_calls.append)
+    monkeypatch.setattr(app_module.secrets, "token_bytes", fresh_key_value)
+    before = tuple(tmp_path.rglob("*"))
+
+    context = app_module._load_disposition_context()
+
+    assert load_calls == [None]
+    assert fresh_calls == [32]
+    assert type(context.key) is bytes
+    assert len(context.key) == 32
+    assert context.key == fresh_key
+    assert context.records == ()
+    assert context.invalid_state is True
+    assert save_calls == []
+    assert tuple(tmp_path.rglob("*")) == before
     assert marker not in repr(context)
 
 

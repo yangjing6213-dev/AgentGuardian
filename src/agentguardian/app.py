@@ -157,6 +157,16 @@ def _load_disposition_context() -> _DispositionContext:
         try:
             if type(snapshot) is not EvidenceSnapshot:
                 raise ValueError
+            snapshot = EvidenceSnapshot(
+                schema_version=snapshot.schema_version,
+                captured_at=snapshot.captured_at,
+                product_version=snapshot.product_version,
+                rule_version=snapshot.rule_version,
+                scan=snapshot.scan,
+                findings=snapshot.findings,
+                disposition_key=snapshot.disposition_key,
+                dispositions=snapshot.dispositions,
+            )
             schema_version = snapshot.schema_version
             if type(schema_version) is not int:
                 raise ValueError
