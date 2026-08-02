@@ -531,6 +531,55 @@ def test_renderers_sort_identical_finding_keys_by_evidence() -> None:
 
 
 @pytest.mark.parametrize("renderer", (render_json, render_html))
+def test_renderers_stabilize_identical_findings_by_safe_disposition(
+    renderer: object,
+) -> None:
+    evidence = (Evidence("same.txt", "a" * 64, "same masked evidence"),)
+    false_positive = Finding(
+        "SAME_RULE",
+        RiskDomain.PRIVACY,
+        Severity.MEDIUM,
+        "f" * 64,
+        evidence,
+        "5" * 64,
+    )
+    open_finding = Finding(
+        "SAME_RULE",
+        RiskDomain.PRIVACY,
+        Severity.MEDIUM,
+        "f" * 64,
+        evidence,
+        "6" * 64,
+    )
+    record = DispositionRecord(
+        "5" * 64,
+        "SAME_RULE",
+        DispositionStatus.FALSE_POSITIVE,
+        "Synthetic duplicate review",
+        "Local reviewer",
+        "2026-08-02T08:00:00Z",
+        "2026-08-03T08:00:00Z",
+    )
+
+    forward = renderer(  # type: ignore[operator]
+        _score(),
+        (finding for finding in (false_positive, open_finding)),
+        rule_version="rules-1",
+        dispositions=(item for item in (record,)),
+        evaluated_at=EVALUATED_AT,
+    )
+    reverse = renderer(  # type: ignore[operator]
+        _score(),
+        (finding for finding in (open_finding, false_positive)),
+        rule_version="rules-1",
+        dispositions=(item for item in (record,)),
+        evaluated_at=EVALUATED_AT,
+    )
+
+    assert forward == reverse
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
 def test_renderers_accept_one_shot_finding_generators(renderer: object) -> None:
     findings = (
         finding
@@ -616,10 +665,11 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
         },
         "reporting.py": {
             "_disposition_data",
+            "_disposition_sort_key",
             "_finding_data",
             "_score_data",
             "_sorted_evidence",
-            "_sorted_findings",
+            "_sorted_finding_dispositions",
             "_text",
             "disposition_index",
             "escape",

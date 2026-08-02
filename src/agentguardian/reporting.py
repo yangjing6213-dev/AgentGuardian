@@ -28,6 +28,9 @@ def render_json(
     records = disposition_index(tuple(dispositions))
     now = evaluated_at if evaluated_at is not None else datetime.now(timezone.utc)
     reviewed_score = score if reviewed_score is None else reviewed_score
+    finding_dispositions = _sorted_finding_dispositions(
+        frozen_findings, records, now
+    )
     report = {
         "product": _PRODUCT,
         "version": __version__,
@@ -35,8 +38,8 @@ def render_json(
         "score": _score_data(score),
         "reviewed_score": _score_data(reviewed_score),
         "findings": [
-            _finding_data(finding, _disposition_data(finding, records, now))
-            for finding in _sorted_findings(frozen_findings)
+            _finding_data(finding, disposition)
+            for finding, disposition in finding_dispositions
         ],
     }
     return json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False)
@@ -55,6 +58,9 @@ def render_html(
     records = disposition_index(tuple(dispositions))
     now = evaluated_at if evaluated_at is not None else datetime.now(timezone.utc)
     reviewed_score = score if reviewed_score is None else reviewed_score
+    finding_dispositions = _sorted_finding_dispositions(
+        frozen_findings, records, now
+    )
     parts = [
         "<!doctype html>",
         '<html lang="en">',
@@ -104,8 +110,7 @@ def render_html(
         parts.append("</ul>")
     parts.append("<h2>Findings</h2>")
 
-    for finding in _sorted_findings(frozen_findings):
-        disposition = _disposition_data(finding, records, now)
+    for finding, disposition in finding_dispositions:
         parts.extend(
             (
                 "<section>",
@@ -210,20 +215,43 @@ def _finding_data(
     }
 
 
-def _sorted_findings(findings: Iterable[Finding]) -> tuple[Finding, ...]:
+def _sorted_finding_dispositions(
+    findings: Iterable[Finding],
+    records: dict[str, DispositionRecord],
+    evaluated_at: datetime,
+) -> tuple[tuple[Finding, dict[str, str]], ...]:
+    pairs = tuple(
+        (finding, _disposition_data(finding, records, evaluated_at))
+        for finding in findings
+    )
     return tuple(
         sorted(
-            findings,
-            key=lambda finding: (
-                finding.rule_id,
-                finding.domain.value,
-                finding.severity.value,
-                finding.root_fingerprint,
+            pairs,
+            key=lambda pair: (
+                pair[0].rule_id,
+                pair[0].domain.value,
+                pair[0].severity.value,
+                pair[0].root_fingerprint,
                 tuple(
                     (item.fingerprint, item.source, item.masked)
-                    for item in _sorted_evidence(finding.evidence)
+                    for item in _sorted_evidence(pair[0].evidence)
                 ),
+                _disposition_sort_key(pair[1]),
             ),
+        )
+    )
+
+
+def _disposition_sort_key(disposition: dict[str, str]) -> tuple[str, ...]:
+    return tuple(
+        disposition[field] if field in disposition else ""
+        for field in (
+            "status",
+            "last_status",
+            "reason",
+            "reviewer",
+            "created_at",
+            "expires_at",
         )
     )
 
