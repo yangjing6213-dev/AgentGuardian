@@ -25,12 +25,20 @@
 | 0 | Supply-chain baseline | GitHub Actions pinned to commit SHAs; Node.js 24 Action runtime; Windows Python dependencies hash-locked; CI green. Completed in `63b1327`, `3afe5e6`, and the Node runtime refresh `fb01c2a`. |
 | 1 | OpenAI local Provider hardening | Detect local OpenAI key and base-URL override evidence, cover the official Codex user config root, route OpenAI findings to manual OpenAI guidance, and retain zero network/LLM capability. |
 | 2 | [Protected local evidence state](2026-08-02-agentguardian-protected-evidence-state.md) | Completed in `6f87445`, `8780a4d`, and `e8e01f9`; local gate, independent review, push CI `30715647491`, and Draft PR CI `30715649117` passed. Persists only rule IDs, fixed rule-owned summaries, scan metadata, and HMAC references under Windows DPAPI; never raw matches or scan keys; corrupted state fails closed. |
-| 3 | [Finding disposition and exceptions](../specs/2026-08-02-agentguardian-finding-dispositions-design.md) | Add exact local cross-scan false-positive/accepted-risk states with reason, expiry, and reviewer metadata; expired exceptions reopen automatically; technical and reviewed scores remain auditable. [Implementation plan](2026-08-02-agentguardian-finding-dispositions.md) is ready for execution. |
-| 4 | Windows workflow and report hardening | Add explicit known-scope preview/consent, clearer incomplete-coverage states, filtered findings, and report comparison without adding automatic remediation. |
-| 5 | Packaging and release provenance | Produce a reproducible Windows package, SBOM, checksums, signature/provenance evidence, clean-machine install test, and uninstall residue check. |
-| 6 | Windows MVP release candidate | Run the full threat-model checklist, negative security tests, performance limits, independent read-only review, and release-candidate report. |
+| 3 | [Finding disposition and exceptions](../specs/2026-08-02-agentguardian-finding-dispositions-design.md) | Completed locally. Exact local cross-scan false-positive/accepted-risk states use mandatory expiry, preserve technical scoring, add reviewed scoring, and keep report and local HMAC purposes separate. Current/final remote CI remains controller verification work. |
+| 4 | Windows workflow and report hardening | Pending. Add explicit known-scope preview/consent, clearer incomplete-coverage states, filtered findings, and report comparison without adding automatic remediation. |
+| 5 | Packaging and release provenance | Pending. Produce a reproducible Windows package, SBOM, checksums, signature/provenance evidence, clean-machine install test, and uninstall residue check. |
+| 6 | Windows MVP release candidate | Pending. Run the full threat-model checklist, negative security tests, performance limits, independent read-only review, and release-candidate report. |
 
 Deferred beyond Windows MVP: default API calls, remote share verification, browser database or clipboard collection, runtime interception, automatic credential revocation, arbitrary command execution, dynamic plugins, macOS, enterprise control plane, and production-safety claims.
+
+## Completed Batch: Finding Dispositions and Expiring Exceptions
+
+Batch 3 已完成本地实现。跨扫描精确匹配使用规则 ID、按 Windows 词法规则规范化的源路径，以及 NFKC 规范化的原始匹配。路径不做 NFKC。本地处置 HMAC 密钥与每次扫描随机生成的报告 HMAC 密钥彼此独立，报告 HMAC 仍限定于单次扫描。处置有效期必须有限且不超过 366 天。有效误报只从复核分排除；接受风险仍计入复核分；技术分不受处置影响。
+
+schema v1 只读兼容，只有显式保存才迁移到 schema v2。损坏、不可解密或无效的受保护状态必须先获得明确确认，才允许替换。实现只支持本地静态操作和人工指引，不发起 API 调用，也不默认访问 OpenAI API。
+
+DPAPI 不能抵御已经控制同一 Windows 用户会话的程序；主机时钟、路径别名或文件移动可能重新打开发现，但不会扩大处置范围。路径检查与 `os.replace` 之间仍有同用户竞态窗口，Python 不能保证清除所有不可变 bytes 或字符串副本，静态自审计只覆盖有界源码策略，不是对依赖或二进制的语义证明。Batches 4-6 仍待完成，当前产品仍为非生产 Founder Alpha，Windows MVP 尚未完成。
 
 ## Completed Batch: OpenAI Local Provider Hardening
 

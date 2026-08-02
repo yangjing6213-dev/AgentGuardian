@@ -198,11 +198,12 @@ def make_disposition_ref(
         or not raw_match
     ):
         raise ValueError("DISPOSITION_INVALID")
-    normalized_path = os.path.normcase(os.path.normpath(os.path.abspath(source)))
+    path = ntpath.normcase(ntpath.abspath(source))
+    raw = unicodedata.normalize("NFKC", raw_match)
     parts = (
         rule_id.encode("utf-8"),
-        unicodedata.normalize("NFKC", normalized_path).encode("utf-8"),
-        unicodedata.normalize("NFKC", raw_match).encode("utf-8"),
+        path.encode("utf-8"),
+        raw.encode("utf-8"),
     )
     message = b"".join(len(part).to_bytes(4, "big") + part for part in parts)
     return hmac.new(key, message, sha256).hexdigest()
@@ -291,6 +292,8 @@ def validate_safe_annotation(name: str, value: object, max_length: int) -> str:
 ```
 
 `parse_utc()` accepts only `YYYY-MM-DDTHH:MM:SSZ` and returns an aware UTC `datetime`. `evaluate_disposition()` rejects a naive or non-UTC `now` with `DISPOSITION_INVALID`.
+
+Path matching follows Windows lexical rules through `ntpath.abspath`, `ntpath.normpath`, and `ntpath.normcase`. Do not Unicode-normalize the path; NFKC applies only to the raw match.
 
 - [ ] **Step 4: Add fixed-time evaluation, replacement, withdrawal, and score tests**
 
@@ -742,3 +745,5 @@ Review stable-reference privacy, canonical-message collision resistance, path no
 Commit the review fixes and synchronized evidence, push `agent/founder-alpha`, wait for both push and Draft PR workflows on the final SHA, inspect check-run annotations, and record exact run IDs and Windows test counts. Keep Batches 4-6 pending.
 
 Passing this plan proves only the documented Batch 3 gate. It does not complete the Windows MVP or establish production safety.
+
+**Local closure status (2026-08-02):** Batch 3 已完成本地实现和文档同步；当前精确本地门禁记录在阶段报告。Batches 4-6 仍待完成。未经控制者验证，不声明当前或最终远程 CI；不得用 Batch 2 历史远程证据替代 Batch 3 最终提交验证。

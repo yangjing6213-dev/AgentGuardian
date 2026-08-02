@@ -120,10 +120,32 @@ Batch 2 在 Founder Alpha 之上增加当前 Windows 用户范围 DPAPI 状态�
 - 当前规则 SHA-256：`83a14590d59f61a3c6aede084644fdbbd9f5cff6f55794b9af60e385e053ccba`。
 - 独立只读复审最初为 `Not Ready`，发现固定摘要边界、DPAPI 调用约束、写入调用约束、祖先 reparse/UNC 检查及 AST 别名旁路等 Important 问题。修复后复审者重放直接、下标、动态属性和别名探针，最终结论为 `Ready`，未发现剩余 Critical/Important；该结论只覆盖约定的静态 AST 策略，复审者未运行全量测试。
 
-功能提交 `e8e01f9415d3c2b6f21eb73d826eb36ea0655473` 的 GitHub 远程证据：
+以下为 Batch 2 历史远程证据，只覆盖功能提交 `e8e01f9415d3c2b6f21eb73d826eb36ea0655473`：
 
 - push CI run `30715647491`：success，Windows Server 2025、Python 3.12.10，`294 passed`，check-run 注解 0。
 - Draft PR CI run `30715649117`：success，同一提交，check-run 注解 0。
 - 远程测试无 skip，因此本机因创建权限跳过的真实祖先 symlink 用例已在托管 Windows runner 上执行通过。
 
-以上证明 Batch 2 当前约定门禁通过；状态同步提交自身的 CI 仍需在提交后独立验证。Batches 3-6 仍未实现。
+以上证明 Batch 2 当时的约定门禁通过；这些运行不覆盖后续 Batch 3 提交。状态同步提交自身的 CI 仍需在提交后独立验证。
+
+## 10. Windows MVP 硬化 Batch 3：发现处置与到期例外
+
+Batch 3 已完成本地实现。跨扫描精确匹配只使用规则 ID、按 Windows 词法规则规范化的源路径，以及 NFKC 规范化的原始匹配。路径使用 `ntpath.abspath`、`ntpath.normpath` 和 `ntpath.normcase`，不做 NFKC。规则、路径、原始匹配或本地密钥任一变化都会重新打开发现。本地处置 HMAC 密钥与每次扫描随机生成的报告 HMAC 密钥彼此独立；报告 HMAC 仍限定于单次扫描，且本地引用和密钥不导出。
+
+每项处置都需要安全的原因、复核人、创建时间和到期时间；处置有效期必须有限且不超过 366 天。有效误报只从复核分排除；接受风险仍计入复核分；技术分不受处置影响。过期记录保留审计上下文但重新打开发现。状态读取保持 schema v1 只读兼容，只有显式保存才迁移到 schema v2。损坏、不可解密或无效的受保护状态必须先获得明确确认，才允许替换。
+
+操作边界仍是本地静态检查、桌面处置和人工指引，不发起 API 调用，也不默认访问 OpenAI API。DPAPI 不能抵御已经控制同一 Windows 用户会话的程序。主机时钟、路径别名或文件移动可能重新打开发现，但不会扩大处置范围。路径检查与 `os.replace` 之间仍有同用户竞态窗口；Python 不能保证清除所有不可变 bytes 或字符串副本。静态自审计只覆盖有界源码策略，不是对依赖或二进制的语义证明。
+
+### Batch 3 当前本地证据
+
+2026-08-02 在当前工作树重新运行：
+
+- `rtk pytest -q -p no:cacheprovider`：`632 passed, 6 skipped`，0 failed。
+- `rtk proxy python scripts/check_brand_assets.py`：退出码 0。
+- `rtk proxy python -m compileall -q src`：退出码 0。
+- `rtk git diff --check`：退出码 0，无输出。
+- 使用 `PYTHONPATH=src` 调用 `collect_self_audit()`：`findings=[]`、`local_only=true`、`network_capability=not_detected`、`ordinary_user_mode=true`；范围仍为 `package_source_policy`，依赖和二进制未扫描。
+
+以上只证明当前本地 Batch 3 工作树的约定门禁。未经控制者验证，不声明当前或最终远程 CI。Batch 2 的历史远程运行不能替代 Batch 3 当前提交的远程验证。
+
+该结论只关闭 Batch 3。Batches 4-6 仍待完成；Founder Alpha 继续保持非生产、Windows MVP 不完整状态，不建立生产安全结论。

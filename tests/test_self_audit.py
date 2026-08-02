@@ -698,3 +698,57 @@ def test_docs_track_protected_evidence_state_boundaries() -> None:
         "不代表 Windows MVP 完成或生产安全",
     ):
         assert required in combined
+
+
+def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    architecture = (PROJECT_ROOT / "docs" / "architecture.md").read_text(
+        encoding="utf-8"
+    )
+    report = (
+        PROJECT_ROOT / "docs" / "reports" / "alpha-0.1.0-stage-report.md"
+    ).read_text(encoding="utf-8")
+    hardening_plan = (
+        PROJECT_ROOT / "docs" / "superpowers" / "plans"
+        / "2026-08-02-agentguardian-windows-mvp-hardening.md"
+    ).read_text(encoding="utf-8")
+    disposition_plan = (
+        PROJECT_ROOT / "docs" / "superpowers" / "plans"
+        / "2026-08-02-agentguardian-finding-dispositions.md"
+    ).read_text(encoding="utf-8")
+    combined = "\n".join(
+        (readme, architecture, report, hardening_plan, disposition_plan)
+    )
+
+    for required in (
+        "规则 ID、按 Windows 词法规则规范化的源路径，以及 NFKC 规范化的原始匹配",
+        "本地处置 HMAC 密钥与每次扫描随机生成的报告 HMAC 密钥彼此独立",
+        "报告 HMAC 仍限定于单次扫描",
+        "处置有效期必须有限且不超过 366 天",
+        "有效误报只从复核分排除；接受风险仍计入复核分；技术分不受处置影响",
+        "schema v1 只读兼容，只有显式保存才迁移到 schema v2",
+        "损坏、不可解密或无效的受保护状态必须先获得明确确认，才允许替换",
+        "不发起 API 调用，也不默认访问 OpenAI API",
+        "DPAPI 不能抵御已经控制同一 Windows 用户会话的程序",
+        "主机时钟、路径别名或文件移动可能重新打开发现，但不会扩大处置范围",
+        "路径检查与 `os.replace` 之间仍有同用户竞态窗口",
+        "Python 不能保证清除所有不可变 bytes 或字符串副本",
+        "静态自审计只覆盖有界源码策略，不是对依赖或二进制的语义证明",
+        "Batch 3 已完成",
+        "Batches 4-6 仍待完成",
+        "非生产",
+    ):
+        assert required in combined
+
+    assert "Batch 2 历史远程证据" in report
+    assert "Batch 3 当前本地证据" in report
+    assert "未经控制者验证，不声明当前或最终远程 CI" in report
+    assert "path = ntpath.normcase(ntpath.abspath(source))" in disposition_plan
+    assert 'raw = unicodedata.normalize("NFKC", raw_match)' in disposition_plan
+    assert (
+        "unicodedata.normalize(\"NFKC\", normalized_path)" not in disposition_plan
+    )
+    assert (
+        "os.path.normcase(os.path.normpath(os.path.abspath(source)))"
+        not in disposition_plan
+    )
