@@ -2,7 +2,7 @@
 
 报告日期：2026-08-01
 
-更新日期：2026-08-02
+更新日期：2026-08-03
 
 分支：`agent/founder-alpha`
 
@@ -136,15 +136,18 @@ Batch 3 本地实现和门禁已完成；验收仍待最终 SHA 的远程验证�
 
 每项处置都需要安全的原因、复核人、创建时间和到期时间；处置有效期必须有限且不超过 366 天。有效误报只从复核分排除；接受风险仍计入复核分；技术分不受处置影响。过期记录保留审计上下文但重新打开发现。状态读取保持 schema v1 只读兼容，只有显式保存才迁移到 schema v2。损坏、不可解密或无效的受保护状态必须先获得明确确认，才允许替换。
 
-操作边界仍是本地静态检查、桌面处置和人工指引，不发起 API 调用，也不默认访问 OpenAI API。DPAPI 不能抵御已经控制同一 Windows 用户会话的程序。主机时钟、路径别名或文件移动可能重新打开发现，但不会扩大处置范围。路径检查与 `os.replace` 之间仍有同用户竞态窗口；Python 不能保证清除所有不可变 bytes 或字符串副本。静态自审计只覆盖有界源码策略，不是对依赖或二进制的语义证明。
+操作边界仍是本地静态检查、桌面处置和人工指引，不发起 API 调用，也不默认访问 OpenAI API。DPAPI 不能抵御已经控制同一 Windows 用户会话的程序。主机时钟、路径别名或文件移动可能重新打开发现，但不会扩大处置范围。路径检查与 `os.replace` 之间仍有同用户竞态窗口；Python 不能保证清除所有不可变 bytes 或字符串副本。
+
+当前静态自审计严格加载随包分发的 `source_policy.json` schema 1，并要求精确模块集合以及每个已复核 `.py` 文件的 canonical AST SHA-256 完全匹配。新增、删除、无法解析或 AST 变化都会以 `SOURCE_POLICY_VIOLATION` 失败关闭；已复核包不再进入启发式。有限启发式仅对清单外的合成未知模块运行，检查代表性的网络导入、动态执行和用户数据写入能力，而不是 Python 表达式解释器。这不是语义、依赖或二进制证明。清单未签名，同一用户控制代码和清单时可以同时替换两者；生产来源和签名仍待 Batch 5。
 
 ### Batch 3 当前本地证据
 
-2026-08-02 在当前工作树重新运行：
+2026-08-03 在当前工作树重新运行：
 
-- `rtk pytest -q -p no:cacheprovider`：`719 passed, 6 skipped`，0 failed。
+- `rtk pytest -q -p no:cacheprovider`：`666 passed, 6 skipped`，0 failed。
 - `rtk proxy python scripts/check_brand_assets.py`：退出码 0。
 - `rtk proxy python -m compileall -q src`：退出码 0。
+- `rtk proxy python -m build --wheel --no-isolation`：退出码 0；wheel 包含 `agentguardian/source_policy.json`。
 - `rtk git diff --check`：退出码 0，无输出。
 - 使用 `PYTHONPATH=src` 调用 `collect_self_audit()`：`findings=[]`、`local_only=true`、`network_capability=not_detected`、`ordinary_user_mode=true`；范围仍为 `package_source_policy`，依赖和二进制未扫描。
 

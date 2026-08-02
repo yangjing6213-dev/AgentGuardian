@@ -5,6 +5,7 @@ import json
 import re
 import socket
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,36 @@ from agentguardian import __version__, domain, self_audit
 from agentguardian.self_audit import collect_self_audit, static_capability_findings
 
 PROJECT_ROOT = Path(__file__).parents[1]
+PACKAGE_ROOT = PROJECT_ROOT / "src" / "agentguardian"
+SOURCE_POLICY_PATH = PACKAGE_ROOT / "source_policy.json"
+
+
+def _canonical_ast_digest(path: Path) -> str:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    canonical = ast.dump(tree, annotate_fields=True, include_attributes=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _copy_reviewed_package(tmp_path: Path) -> Path:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    for source in sorted(PACKAGE_ROOT.rglob("*.py")):
+        target = package / source.relative_to(PACKAGE_ROOT)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
+    (package / SOURCE_POLICY_PATH.name).write_bytes(SOURCE_POLICY_PATH.read_bytes())
+    return package
+
+
+def _write_manifest(path: Path, modules: dict[str, str]) -> None:
+    path.write_text(
+        json.dumps(
+            {"schema": 1, "modules": modules},
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_collect_self_audit_is_transparent_and_keeps_environment_private(
@@ -58,6 +89,208 @@ def test_current_package_has_no_prohibited_static_capabilities() -> None:
     assert static_capability_findings() == ()
 
 
+def test_source_policy_manifest_exactly_matches_current_package() -> None:
+    assert SOURCE_POLICY_PATH.is_file()
+    policy = json.loads(SOURCE_POLICY_PATH.read_text(encoding="utf-8"))
+    modules = policy["modules"]
+    names = [
+        path.relative_to(PACKAGE_ROOT).as_posix()
+        for path in sorted(PACKAGE_ROOT.rglob("*.py"))
+    ]
+
+    assert list(policy) == ["schema", "modules"]
+    assert policy["schema"] == 1
+    assert list(modules) == names
+    assert modules == {
+        name: _canonical_ast_digest(PACKAGE_ROOT / name) for name in names
+    }
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    tuple(
+        path.relative_to(PACKAGE_ROOT).as_posix()
+        for path in sorted(PACKAGE_ROOT.rglob("*.py"))
+    ),
+)
+def test_source_policy_rejects_ast_change_in_every_reviewed_module(
+    tmp_path: Path, module_name: str
+) -> None:
+    package = _copy_reviewed_package(tmp_path)
+    module = package / module_name
+    module.write_text(
+        module.read_text(encoding="utf-8") + "\nreview_marker = 1\n",
+        encoding="utf-8",
+    )
+
+    assert "SOURCE_POLICY_VIOLATION" in static_capability_findings(package)
+
+
+def test_source_policy_rejects_unparseable_reviewed_module(tmp_path: Path) -> None:
+    package = _copy_reviewed_package(tmp_path)
+    (package / "guidance.py").write_text("def broken(:\n", encoding="utf-8")
+
+    assert static_capability_findings(package) == (
+        "SOURCE_POLICY_VIOLATION",
+        "SOURCE_SCAN_ERROR",
+    )
+
+
+def test_reviewed_module_mismatch_does_not_run_unknown_module_heuristic(
+    tmp_path: Path,
+) -> None:
+    package = _copy_reviewed_package(tmp_path)
+    module = package / "guidance.py"
+    module.write_text(
+        module.read_text(encoding="utf-8") + "\nimport socket\n",
+        encoding="utf-8",
+    )
+
+    assert static_capability_findings(package) == ("SOURCE_POLICY_VIOLATION",)
+
+
+@pytest.mark.parametrize("change", ("missing", "extra"))
+def test_source_policy_requires_exact_reviewed_module_set(
+    tmp_path: Path, change: str
+) -> None:
+    package = _copy_reviewed_package(tmp_path)
+    if change == "missing":
+        (package / "guidance.py").unlink()
+    else:
+        (package / "extra.py").write_text("value = 1\n", encoding="utf-8")
+
+    assert "SOURCE_POLICY_VIOLATION" in static_capability_findings(package)
+
+
+def test_source_policy_rejects_replacing_all_reviewed_modules(
+    tmp_path: Path,
+) -> None:
+    package = _copy_reviewed_package(tmp_path)
+    for module in package.glob("*.py"):
+        module.unlink()
+    (package / "synthetic.py").write_text("value = 1\n", encoding="utf-8")
+
+    assert "SOURCE_POLICY_VIOLATION" in static_capability_findings(package)
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "injection"),
+    (
+        ("app.py", "member = 'replace'\ngetattr(target, member)\n"),
+        ("app.py", "getattr(target, 're' + 'place')\n"),
+        ("app.py", "import sys\ngetattr(sys, 'modules')\n"),
+        ("app.py", "target.replace('a', 'b')\n"),
+        ("app.py", "from pathlib import Path\nPath('a').copy('b')\n"),
+        (
+            "state_store.py",
+            "writer, marker = open, object()\nwriter('x', 'w')\n",
+        ),
+        ("state_store.py", "import os\nos.fsync(1)\n"),
+        (
+            "state_store.py",
+            "import os\ngetattr(os, 'replace')('a', 'b')\n",
+        ),
+    ),
+)
+def test_reviewed_source_in_memory_injections_are_manifest_violations(
+    relative_path: str, injection: str
+) -> None:
+    source = (PACKAGE_ROOT / relative_path).read_text(encoding="utf-8")
+    findings: set[str] = set()
+
+    self_audit._scan_module(
+        relative_path,
+        ast.parse(source + "\n" + injection),
+        findings,
+    )
+
+    assert findings == {"SOURCE_POLICY_VIOLATION"}
+
+
+def test_source_policy_manifest_update_is_required_after_ast_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = _copy_reviewed_package(tmp_path)
+    module = package / "guidance.py"
+    module.write_text(
+        module.read_text(encoding="utf-8") + "\nreview_marker = 1\n",
+        encoding="utf-8",
+    )
+    assert "SOURCE_POLICY_VIOLATION" in static_capability_findings(package)
+
+    policy = json.loads(SOURCE_POLICY_PATH.read_text(encoding="utf-8"))
+    policy["modules"]["guidance.py"] = _canonical_ast_digest(module)
+    updated_manifest = tmp_path / "updated-source-policy.json"
+    _write_manifest(updated_manifest, policy["modules"])
+    monkeypatch.setattr(
+        self_audit, "SOURCE_POLICY_PATH", updated_manifest, raising=False
+    )
+
+    assert static_capability_findings(package) == ()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        b"{",
+        b'{"schema":1,"modules":{},"extra":true}',
+        b'{"modules":{},"schema":1}',
+        b'{"schema":true,"modules":{}}',
+        b'{"schema":1,"modules":{"Bad.py":"' + b"0" * 64 + b'"}}',
+        b'{"schema":1,"modules":{"b.py":"'
+        + b"0" * 64
+        + b'","a.py":"'
+        + b"0" * 64
+        + b'"}}',
+        b'{"schema":1,"modules":{"a.py":"' + b"A" * 64 + b'"}}',
+    ),
+)
+def test_source_policy_rejects_malformed_or_noncanonical_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: bytes,
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text("value = 1\n", encoding="utf-8")
+    manifest = tmp_path / "source_policy.json"
+    manifest.write_bytes(payload)
+    monkeypatch.setattr(self_audit, "SOURCE_POLICY_PATH", manifest, raising=False)
+
+    assert static_capability_findings(package) == (
+        "SOURCE_POLICY_MANIFEST_INVALID",
+        "SOURCE_SCAN_ERROR",
+    )
+
+
+@pytest.mark.parametrize("manifest_state", ("missing", "oversize"))
+def test_source_policy_rejects_missing_or_oversize_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    manifest_state: str,
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text("value = 1\n", encoding="utf-8")
+    manifest = tmp_path / "source_policy.json"
+    if manifest_state == "oversize":
+        manifest.write_bytes(b" " * 65_537)
+    monkeypatch.setattr(self_audit, "SOURCE_POLICY_PATH", manifest, raising=False)
+
+    assert static_capability_findings(package) == (
+        "SOURCE_POLICY_MANIFEST_INVALID",
+        "SOURCE_SCAN_ERROR",
+    )
+
+
+def test_source_policy_manifest_is_configured_as_package_data() -> None:
+    project = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text("utf-8"))
+
+    assert project["tool"]["setuptools"]["package-data"]["agentguardian"] == [
+        "source_policy.json"
+    ]
+
+
 @pytest.mark.parametrize(
     ("findings", "network_capability", "local_only"),
     (
@@ -66,6 +299,7 @@ def test_current_package_has_no_prohibited_static_capabilities() -> None:
         (("NETWORK_CAPABILITY",), "detected", False),
         (("DYNAMIC_EXECUTION",), "unverified", False),
         (("NATIVE_CAPABILITY",), "unverified", False),
+        (("SOURCE_POLICY_MANIFEST_INVALID",), "unverified", False),
         (("SOURCE_POLICY_VIOLATION",), "unverified", False),
         (("SOURCE_SCAN_ERROR",), "unverified", False),
     ),
@@ -365,26 +599,9 @@ def test_static_scan_detects_path_moves(tmp_path: Path) -> None:
             ("USER_DATA_WRITE",),
         ),
         (
-            "writers = [open]\nwriter = writers[0]\nwriter('report', 'w')\n",
-            ("USER_DATA_WRITE",),
-        ),
-        (
-            "writer = open if True else object()\nwriter('report', 'w')\n",
-            ("USER_DATA_WRITE",),
-        ),
-        (
-            "def save(writer=open):\n    writer('report', 'w')\n",
-            ("USER_DATA_WRITE",),
-        ),
-        (
             "import os\n"
             "writer, marker = os.replace, object()\n"
             "writer('temporary', 'target')\n",
-            ("USER_DATA_WRITE",),
-        ),
-        (
-            "from pathlib import Path\n"
-            "Path.open.__call__(Path('report'), 'w')\n",
             ("USER_DATA_WRITE",),
         ),
         (
@@ -394,10 +611,6 @@ def test_static_scan_detects_path_moves(tmp_path: Path) -> None:
                 "SOURCE_POLICY_VIOLATION",
                 "USER_DATA_WRITE",
             ),
-        ),
-        (
-            "from builtins import open as writer\nwriter('report', 'w')\n",
-            ("DYNAMIC_EXECUTION", "USER_DATA_WRITE"),
         ),
     ),
 )
@@ -440,214 +653,6 @@ def test_static_scan_reports_unapproved_stream_write_reference(tmp_path: Path) -
     assert static_capability_findings(package) == ("USER_DATA_WRITE",)
 
 
-@pytest.mark.parametrize(
-    "source",
-    (
-        "import os\nescaped = os if True else object()\n",
-        "import os\ndef use(module=os):\n    return module\n",
-        "import os\nuse = lambda module=os: module\n",
-        "from pathlib import Path\nescaped = Path if True else object()\n",
-        "from pathlib import Path\ndef use(factory=Path):\n    return factory\n",
-        "from pathlib import Path\nuse = lambda factory=Path: factory\n",
-    ),
-)
-def test_static_scan_rejects_first_class_restricted_root_escapes(
-    tmp_path: Path, source: str
-) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    (package / "synthetic.py").write_text(source, encoding="utf-8")
-
-    assert static_capability_findings(package) == ("SOURCE_POLICY_VIOLATION",)
-
-
-@pytest.mark.parametrize(
-    ("source", "expected"),
-    (
-        (
-            "import os\nos.__getattribute__('replace')\n",
-            ("SOURCE_POLICY_VIOLATION", "USER_DATA_WRITE"),
-        ),
-        (
-            "import os\nobject.__getattribute__(os, 'replace')\n",
-            ("SOURCE_POLICY_VIOLATION", "USER_DATA_WRITE"),
-        ),
-        (
-            "from pathlib import Path\n"
-            "object.__getattribute__(Path('report'), 'open')\n",
-            ("SOURCE_POLICY_VIOLATION", "USER_DATA_WRITE"),
-        ),
-        (
-            "__builtins__.__dict__\n",
-            ("DYNAMIC_EXECUTION", "SOURCE_POLICY_VIOLATION"),
-        ),
-        (
-            "vars(__builtins__)\n",
-            ("DYNAMIC_EXECUTION", "SOURCE_POLICY_VIOLATION"),
-        ),
-        (
-            "getattr(__builtins__, '__import__')\n",
-            ("DYNAMIC_EXECUTION", "SOURCE_POLICY_VIOLATION"),
-        ),
-        (
-            "__builtins__.__dict__['__import__']\n",
-            ("DYNAMIC_EXECUTION", "SOURCE_POLICY_VIOLATION"),
-        ),
-        (
-            "def emit(stream):\n"
-            "    return stream.__getattribute__('write')\n",
-            ("SOURCE_POLICY_VIOLATION", "USER_DATA_WRITE"),
-        ),
-    ),
-)
-def test_static_scan_rejects_capability_extraction(
-    tmp_path: Path, source: str, expected: tuple[str, ...]
-) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    (package / "synthetic.py").write_text(source, encoding="utf-8")
-
-    assert static_capability_findings(package) == expected
-
-
-def test_static_scan_allows_restricted_roots_only_in_bounded_uses(
-    tmp_path: Path,
-) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    (package / "synthetic.py").write_text(
-        "import os\n"
-        "from pathlib import Path\n"
-        "def inspect(path: Path) -> os.PathLike[str]:\n"
-        "    target = Path(path)\n"
-        "    return os.fspath(target)\n",
-        encoding="utf-8",
-    )
-
-    assert static_capability_findings(package) == ()
-
-
-@pytest.mark.parametrize(
-    ("source", "expected"),
-    (
-        (
-            "import os\nnamespace = globals()['os']\n",
-            ("SOURCE_POLICY_VIOLATION",),
-        ),
-        (
-            "import os\nnamespace = vars()['os']\n",
-            ("SOURCE_POLICY_VIOLATION",),
-        ),
-        (
-            "import sys\nnamespace = sys.modules['os']\n",
-            ("SOURCE_POLICY_VIOLATION",),
-        ),
-        ("locals()\n", ("SOURCE_POLICY_VIOLATION",)),
-        ("vars()\n", ("SOURCE_POLICY_VIOLATION",)),
-        (
-            "globals()['__builtins__']['open']('report', 'w')\n",
-            (
-                "DYNAMIC_EXECUTION",
-                "SOURCE_POLICY_VIOLATION",
-                "USER_DATA_WRITE",
-            ),
-        ),
-        (
-            "globals()['__builtins__']['__import__']('socket')\n",
-            ("DYNAMIC_EXECUTION", "SOURCE_POLICY_VIOLATION"),
-        ),
-        (
-            "import os\n"
-            "def f(value: (lambda: os)()):\n"
-            "    return value\n"
-            "f.__annotations__\n",
-            ("SOURCE_POLICY_VIOLATION",),
-        ),
-    ),
-)
-def test_static_scan_rejects_runtime_namespace_recovery(
-    tmp_path: Path, source: str, expected: tuple[str, ...]
-) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    (package / "synthetic.py").write_text(source, encoding="utf-8")
-
-    assert static_capability_findings(package) == expected
-
-
-def test_static_scan_rejects_executable_annotation_shapes(tmp_path: Path) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    module = package / "synthetic.py"
-    annotations = (
-        "factory()",
-        "lambda: int",
-        "[item for item in values]",
-        "(item for item in values)",
-        "(kind := int)",
-    )
-
-    for annotation in annotations:
-        module.write_text(
-            f"def f(value: {annotation}):\n    return value\n",
-            encoding="utf-8",
-        )
-        assert static_capability_findings(package) == (
-            "SOURCE_POLICY_VIOLATION",
-        ), annotation
-
-
-@pytest.mark.parametrize(
-    ("source", "expected"),
-    (
-        (
-            "member = 'replace'\ngetattr(target, member)\n",
-            ("SOURCE_POLICY_VIOLATION",),
-        ),
-        (
-            "getattr(target, 're' + 'place')\n",
-            ("SOURCE_POLICY_VIOLATION",),
-        ),
-        (
-            "import sys\ngetattr(sys, 'modules')\n",
-            ("SOURCE_POLICY_VIOLATION",),
-        ),
-        (
-            "getattr(target, 'replace')\n",
-            ("SOURCE_POLICY_VIOLATION", "USER_DATA_WRITE"),
-        ),
-        (
-            "getattr(target, '__import__')\n",
-            ("DYNAMIC_EXECUTION", "SOURCE_POLICY_VIOLATION"),
-        ),
-    ),
-)
-def test_static_scan_fails_closed_for_reflected_members(
-    tmp_path: Path, source: str, expected: tuple[str, ...]
-) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    (package / "synthetic.py").write_text(source, encoding="utf-8")
-
-    assert static_capability_findings(package) == expected
-
-
-def test_static_scan_allows_only_current_literal_getattr_uses(
-    tmp_path: Path,
-) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    (package / "synthetic.py").write_text(
-        "import stat\n"
-        "path_stat = object()\n"
-        "getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)\n"
-        "getattr(path_stat, 'st_file_attributes', 0)\n",
-        encoding="utf-8",
-    )
-
-    assert static_capability_findings(package) == ()
-
-
 def test_static_scan_allows_safe_direct_pathlib_import(tmp_path: Path) -> None:
     package = tmp_path / "agentguardian"
     package.mkdir()
@@ -659,277 +664,6 @@ def test_static_scan_allows_safe_direct_pathlib_import(tmp_path: Path) -> None:
     assert static_capability_findings(package) == ()
 
 
-@pytest.mark.parametrize(
-    "source",
-    (
-        "from pathlib import Path\np = Path('a')\np.rename('b')\n",
-        "from pathlib import Path\np = Path('a')\np.replace('b')\n",
-        "from pathlib import Path\np = Path('a')\np.chmod(0o600)\n",
-        "from pathlib import Path\np = Path('a')\np.lchmod(0o600)\n",
-        "from pathlib import Path\np = Path('a')\np.move('b')\n",
-        "from pathlib import Path\np = Path('a')\np.move_into('b')\n",
-        "from pathlib import Path\np = Path('a')\np.copy('b')\n",
-        "from pathlib import Path\np = Path('a')\np.copy_into('b')\n",
-        "from pathlib import Path\nPath('a').symlink_to('b')\n",
-        "from pathlib import Path\nPath('a').hardlink_to('b')\n",
-        "def mutate(stream):\n    stream.truncate()\n",
-        "def mutate(stream):\n    stream.writelines([])\n",
-        "def mutate(target):\n    target.link_to('other')\n",
-    ),
-)
-def test_static_scan_reports_receiver_independent_filesystem_mutators(
-    tmp_path: Path, source: str
-) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    (package / "synthetic.py").write_text(source, encoding="utf-8")
-
-    assert static_capability_findings(package) == ("USER_DATA_WRITE",)
-
-
-@pytest.mark.parametrize(
-    "source",
-    (
-        "import os\nos.chmod('a', 0o600)\n",
-        "import os\nos.fchmod(1, 0o600)\n",
-        "import os\nos.chown('a', 1, 1)\n",
-        "import os\nos.fchown(1, 1, 1)\n",
-        "import os\nos.lchown('a', 1, 1)\n",
-        "import os\nos.utime('a')\n",
-        "import os\nos.link('a', 'b')\n",
-        "import os\nos.symlink('a', 'b')\n",
-        "import os\nos.mkfifo('a')\n",
-        "import os\nos.mknod('a')\n",
-        "import os\nos.truncate('a', 0)\n",
-        "import os\nos.ftruncate(1, 0)\n",
-        "import os\nos.removedirs('a')\n",
-        "import os\nos.write(1, b'data')\n",
-        "import os\nos.pwrite(1, b'data', 0)\n",
-        "import os\nos.writev(1, [b'data'])\n",
-        "import os\nos.fsync(1)\n",
-    ),
-)
-def test_static_scan_rejects_direct_os_mutators(tmp_path: Path, source: str) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    (package / "synthetic.py").write_text(source, encoding="utf-8")
-
-    assert static_capability_findings(package) == (
-        "SOURCE_POLICY_VIOLATION",
-        "USER_DATA_WRITE",
-    )
-
-
-def test_static_scan_allows_current_read_only_os_calls(tmp_path: Path) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    (package / "synthetic.py").write_text(
-        "import os\n"
-        "os.fspath('a')\n"
-        "os.lstat('a')\n"
-        "os.scandir('a')\n"
-        "os.path.abspath('a')\n"
-        "os.path.normcase('a')\n"
-        "os.environ.get('NAME')\n",
-        encoding="utf-8",
-    )
-
-    assert static_capability_findings(package) == ()
-
-
-def test_static_scan_rejects_unapproved_direct_os_call(tmp_path: Path) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    (package / "synthetic.py").write_text(
-        "import os\nos.getcwd()\n",
-        encoding="utf-8",
-    )
-
-    assert static_capability_findings(package) == (
-        "SOURCE_POLICY_VIOLATION",
-        "USER_DATA_WRITE",
-    )
-
-
-@pytest.mark.parametrize(
-    "source",
-    (
-        "value = 'a'.replace('a', 'b')\n",
-        (
-            "from datetime import datetime, timezone\n"
-            "value = datetime.now().replace(tzinfo=timezone.utc)\n"
-        ),
-        (
-            "from datetime import datetime\n"
-            "value = datetime.now().replace(microsecond=0)\n"
-        ),
-    ),
-)
-def test_static_scan_rejects_replace_outside_exact_allowlist(
-    tmp_path: Path, source: str
-) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    (package / "synthetic.py").write_text(source, encoding="utf-8")
-
-    assert static_capability_findings(package) == ("USER_DATA_WRITE",)
-
-
-@pytest.mark.parametrize(
-    ("filename", "old", "new"),
-    (
-        ("app.py", ".replace(microsecond=0)", ".replace(microsecond=1)"),
-        ("app.py", "tzinfo=timezone.utc", "tzinfo=timezone.utc()"),
-        ("detectors.py", '.replace("\\\\", "/")', '.replace("/", "\\\\")'),
-        ("dispositions.py", "tzinfo=timezone.utc", "tzinfo=None"),
-        ("evidence_state.py", ".replace(microsecond=0)", ".replace(microsecond=1)"),
-        ("reporting.py", "tzinfo=timezone.utc", "tzinfo=None"),
-    ),
-)
-def test_static_scan_rejects_mutated_known_safe_replace_shape(
-    tmp_path: Path, filename: str, old: str, new: str
-) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    source = (PROJECT_ROOT / "src" / "agentguardian" / filename).read_text(
-        encoding="utf-8"
-    )
-    assert old in source
-    (package / filename).write_text(source.replace(old, new, 1), encoding="utf-8")
-
-    assert "USER_DATA_WRITE" in static_capability_findings(package)
-
-
-def test_known_safe_replace_calls_have_exact_owners_and_counts() -> None:
-    expected = {
-        "app.py": {
-            "_canonical_utc_seconds": 1,
-            "values": 1,
-            "_validated_evaluation_time": 1,
-        },
-        "detectors.py": {"_safe_filename": 1},
-        "dispositions.py": {"parse_utc": 1},
-        "evidence_state.py": {"_canonical_timestamp": 2},
-        "reporting.py": {"_validated_report_time": 1},
-    }
-
-    for filename, functions in expected.items():
-        source = (PROJECT_ROOT / "src" / "agentguardian" / filename).read_text(
-            encoding="utf-8"
-        )
-        tree = ast.parse(source)
-        actual = {}
-        for function in (
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef) and node.name in functions
-        ):
-            actual[function.name] = sum(
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "replace"
-                for node in ast.walk(function)
-            )
-        assert actual == functions, filename
-
-
-@pytest.mark.parametrize(
-    "source",
-    (
-        "value.replace(old, new)\n",
-        "value.replace('a', 'b', 1)\n",
-        "value.replace(day=1)\n",
-        "value.replace(tzinfo=None, day=1)\n",
-    ),
-)
-def test_static_scan_rejects_other_replace_calls(tmp_path: Path, source: str) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    (package / "synthetic.py").write_text(source, encoding="utf-8")
-
-    assert static_capability_findings(package) == ("USER_DATA_WRITE",)
-
-
-def test_static_scan_marks_ambiguous_write_api_as_policy_violation(
-    tmp_path: Path,
-) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    (package / "synthetic.py").write_text(
-        "class Status:\n"
-        "    def system(self):\n"
-        "        return 'memory only'\n"
-        "class Label:\n"
-        "    def write_text(self):\n"
-        "        return 'memory only'\n"
-        "Status().system()\n"
-        "Label().write_text()\n",
-        encoding="utf-8",
-    )
-
-    assert static_capability_findings(package) == (
-        "SOURCE_POLICY_VIOLATION",
-        "USER_DATA_WRITE",
-    )
-
-
-def test_dangerous_attribute_alias_stays_reported_after_rebinding(
-    tmp_path: Path,
-) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    (package / "synthetic.py").write_text(
-        "import os\n"
-        "run = os.system\n"
-        "run = lambda value: value\n"
-        "run('cmd')\n",
-        encoding="utf-8",
-    )
-
-    assert static_capability_findings(package) == ("SHELL_EXECUTION",)
-
-
-def test_static_scan_fails_closed_for_restricted_root_shadowing(tmp_path: Path) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    module = package / "synthetic.py"
-    sources = (
-        "import os\ndef use(os):\n    return os.system()\n",
-        "import os\ndef use(os=os.system('cmd')):\n    return os\n",
-        "import os\nclass Status:\n    before = os.system('cmd')\n    os = object()\n",
-    )
-
-    for source in sources:
-        module.write_text(source, encoding="utf-8")
-        assert static_capability_findings(package) == (
-            "SHELL_EXECUTION",
-            "SOURCE_POLICY_VIOLATION",
-            "USER_DATA_WRITE",
-        )
-
-
-@pytest.mark.parametrize(
-    "source",
-    (
-        "import os\nalias = os\nalias.system('cmd')\n",
-        "load = __import__\nload('socket')\n",
-        "from pathlib import Path\ntarget = Path('report')\ntarget.write_text('data')\n",
-        "import pathlib\npathlib.Path('report').write_text('data')\n",
-        "import os.path as osp\nosp.join('a', 'b')\n",
-        "import os\nclass Memory:\n    def system(self): return 'memory'\nos = Memory()\nos.system()\n",
-        "import os\ndef outer():\n    os.system('cmd')\n    def inner():\n        os = object()\n",
-    ),
-)
-def test_source_policy_fails_closed_for_ambiguous_capability_code(
-    tmp_path: Path, source: str
-) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    (package / "synthetic.py").write_text(source, encoding="utf-8")
-
-    assert static_capability_findings(package)
-
-
 def test_static_scan_rejects_top_level_exclusive_open_in_app(tmp_path: Path) -> None:
     package = tmp_path / "agentguardian"
     package.mkdir()
@@ -939,7 +673,9 @@ def test_static_scan_rejects_top_level_exclusive_open_in_app(tmp_path: Path) -> 
         encoding="utf-8",
     )
 
-    assert static_capability_findings(package) == ("USER_DATA_WRITE",)
+    assert static_capability_findings(package) == (
+        "SOURCE_POLICY_VIOLATION",
+    )
 
 
 def test_real_app_export_contract_is_the_only_allowed_write() -> None:
@@ -955,83 +691,6 @@ def test_static_scan_recurses_into_nested_package(tmp_path: Path) -> None:
     (nested / "capability.py").write_text("import socket\n", encoding="utf-8")
 
     assert static_capability_findings(package) == ("NETWORK_MODULE_IMPORT",)
-
-
-def test_static_scan_allows_only_exact_self_audit_admin_probe(tmp_path: Path) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    module = package / "self_audit.py"
-    module.write_text(
-        "import ctypes\nctypes.windll.shell32.IsUserAnAdmin()\n",
-        encoding="utf-8",
-    )
-
-    assert static_capability_findings(package) == ()
-
-    module.write_text(
-        "import ctypes\n"
-        "native = ctypes\n"
-        "ctypes.windll.shell32.IsUserAnAdmin()\n",
-        encoding="utf-8",
-    )
-    assert static_capability_findings(package) == ("NATIVE_CAPABILITY",)
-
-    module.write_text(
-        "import ctypes\n"
-        "native = ctypes.windll\n"
-        "ctypes.windll.shell32.IsUserAnAdmin()\n",
-        encoding="utf-8",
-    )
-    assert static_capability_findings(package) == ("NATIVE_CAPABILITY",)
-
-    module.write_text(
-        "import ctypes\n"
-        "ctypes.windll.shell32.IsUserAnAdmin()\n"
-        "ctypes.windll.shell32.IsUserAnAdmin()\n",
-        encoding="utf-8",
-    )
-    assert static_capability_findings(package) == ("NATIVE_CAPABILITY",)
-
-    module.write_text(
-        "import ctypes\nctypes.CDLL('synthetic-library')\n",
-        encoding="utf-8",
-    )
-    assert static_capability_findings(package) == ("NATIVE_CAPABILITY",)
-
-    module.write_text("import ctypes\n", encoding="utf-8")
-    assert static_capability_findings(package) == ("NATIVE_CAPABILITY",)
-
-
-def test_static_scan_allows_only_constrained_windows_dpapi_adapter(
-    tmp_path: Path,
-) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
-    module = package / "windows_dpapi.py"
-    source = (
-        PROJECT_ROOT / "src" / "agentguardian" / "windows_dpapi.py"
-    ).read_text(encoding="utf-8")
-
-    module.write_text(source, encoding="utf-8")
-    assert static_capability_findings(package) == ()
-
-    mutations = (
-        source.replace('"Crypt32.dll"', '"User32.dll"', 1),
-        source + '\ncrypt32.CreateFileW\n',
-        source + '\nnative = crypt32\nnative.CreateFileW()\n',
-        source + '\nidentity = lambda value: value\nidentity(crypt32).CreateFileW()\n',
-        source + '\n_libraries()[0].CreateFileW()\n',
-        source + '\nloader = _libraries\nloader()[0].CreateFileW()\n',
-        source + '\nnative = getattr(crypt32, "CreateFileW")\nnative()\n',
-        source + '\ncrypt32["CreateFileW"]()\n',
-        source + '\nctypes.WinDLL("User32.dll").CreateFileW()\n',
-        source + '\nctypes.CDLL("User32.dll")\n',
-        source + '\n__import__("ctypes")\n',
-        source + "\nnative = ctypes\n",
-    )
-    for mutated in mutations:
-        module.write_text(mutated, encoding="utf-8")
-        assert static_capability_findings(package)
 
 
 def test_nested_self_audit_does_not_receive_admin_probe_exception(
@@ -1064,38 +723,21 @@ def test_nested_app_does_not_receive_report_export_exception(tmp_path: Path) -> 
 def test_static_scan_allows_only_constrained_protected_state_write(
     tmp_path: Path,
 ) -> None:
-    package = tmp_path / "agentguardian"
-    package.mkdir()
+    package = _copy_reviewed_package(tmp_path)
     module = package / "state_store.py"
-    source = (PROJECT_ROOT / "src" / "agentguardian" / "state_store.py").read_text(
-        encoding="utf-8"
-    )
+    source = module.read_text(encoding="utf-8")
 
-    module.write_text(source, encoding="utf-8")
     assert static_capability_findings(package) == ()
 
     mutations = (
         source + '\nopen("extra.bin", "wb")\n',
         source + '\nos.replace("extra.tmp", "extra.bin")\n',
-        source + '\nos.fsync(1)\n',
-        source + '\nreplace = os.replace\nreplace("extra.tmp", "extra.bin")\n',
-        source + '\ngetattr(os, "replace")("extra.tmp", "extra.bin")\n',
-        source + '\nos.__dict__["replace"]("extra.tmp", "extra.bin")\n',
-        source + '\nvars(os)["replace"]("extra.tmp", "extra.bin")\n',
-        source + '\ngetattr(os, "__dict__")["replace"]("extra.tmp", "extra.bin")\n',
-        source + '\nlookup = vars\nlookup(os)["replace"]("extra.tmp", "extra.bin")\n',
-        source + '\nlookup = getattr\nlookup(os, "replace")("extra.tmp", "extra.bin")\n',
         source + '\nPath("extra.bin").open("wb").write(b"unsafe")\n',
-        source + '\ngetattr(Path("extra.bin"), "open")("wb").write(b"unsafe")\n',
-        source + '\nos.open("extra.bin", 1)\n',
         source + '\nPath("extra").mkdir()\n',
-        source + '\nPath("extra").unlink()\n',
     )
     for mutated in mutations:
         module.write_text(mutated, encoding="utf-8")
-        findings = static_capability_findings(package)
-        assert "USER_DATA_WRITE" in findings
-        assert set(findings) <= {"SOURCE_POLICY_VIOLATION", "USER_DATA_WRITE"}
+        assert static_capability_findings(package) == ("SOURCE_POLICY_VIOLATION",)
 
 
 def test_nested_state_store_does_not_receive_write_exception(tmp_path: Path) -> None:
@@ -1314,7 +956,14 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "主机时钟、路径别名或文件移动可能重新打开发现，但不会扩大处置范围",
         "路径检查与 `os.replace` 之间仍有同用户竞态窗口",
         "Python 不能保证清除所有不可变 bytes 或字符串副本",
-        "静态自审计只覆盖有界源码策略，不是对依赖或二进制的语义证明",
+        "静态自审计只覆盖已复核源码清单和有界启发式，不扫描依赖或二进制",
+        "`source_policy.json`",
+        "canonical AST SHA-256",
+        "有限启发式仅对清单外的合成未知模块运行",
+        "不是 Python 表达式解释器",
+        "清单未签名",
+        "同一用户控制",
+        "Batch 5",
         status,
         pending,
         "非生产",
@@ -1332,12 +981,19 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
 
     for required in (
         "报告日期：2026-08-01",
-        "更新日期：2026-08-02",
+        "更新日期：2026-08-03",
         "第 8 节为已被第 9 至 10 节取代的历史交接记录",
         "Batch 2 历史远程证据",
         "Batch 3 当前本地证据",
-        "`719 passed, 6 skipped`，0 failed",
+        "`666 passed, 6 skipped`，0 failed",
         "`findings=[]`、`local_only=true`、`network_capability=not_detected`",
+        "`source_policy.json`",
+        "canonical AST SHA-256",
+        "有限启发式仅对清单外的合成未知模块运行",
+        "不是 Python 表达式解释器",
+        "wheel 包含 `agentguardian/source_policy.json`",
+        "清单未签名",
+        "Batch 5",
         "未经控制者验证，不声明当前或最终远程 CI",
         status,
         pending,

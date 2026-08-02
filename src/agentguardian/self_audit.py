@@ -1,13 +1,17 @@
 import ast
 import ctypes
 import hashlib
+import json
 import sys
 from pathlib import Path
 
 from . import __version__
 
 DEFAULT_RULES_PATH = Path(__file__).resolve().parents[2] / "rules" / "default.json"
+SOURCE_POLICY_PATH = Path(__file__).with_name("source_policy.json")
 
+_MAX_MANIFEST_BYTES = 65_536
+_MANIFEST_ERROR = ("SOURCE_POLICY_MANIFEST_INVALID", "SOURCE_SCAN_ERROR")
 _NETWORK_MODULES = {
     "aiohttp",
     "ftplib",
@@ -80,12 +84,7 @@ _LLM_MODULES = {
     "mistralai",
     "openai",
 }
-_RESTRICTED_ROOTS = {
-    "Path",
-    "os",
-    "pathlib",
-}
-_FILESYSTEM_MUTATOR_MEMBERS = {
+_WRITE_MEMBERS = {
     "chmod",
     "copy",
     "copy_into",
@@ -110,55 +109,36 @@ _FILESYSTEM_MUTATOR_MEMBERS = {
     "write_text",
     "writelines",
 }
-_SAFE_DIRECT_OS_CALLS = {
-    "os.environ.get",
-    "os.fspath",
-    "os.lstat",
-    "os.path.abspath",
-    "os.path.normcase",
-    "os.scandir",
+_OS_WRITE_NAMES = {
+    "os.chmod",
+    "os.chown",
+    "os.fdopen",
+    "os.fchmod",
+    "os.fchown",
+    "os.ftruncate",
+    "os.link",
+    "os.lchown",
+    "os.makedirs",
+    "os.mkfifo",
+    "os.mknod",
+    "os.mkdir",
+    "os.open",
+    "os.pwrite",
+    "os.pwritev",
+    "os.remove",
+    "os.removedirs",
+    "os.renames",
+    "os.rename",
+    "os.replace",
+    "os.rmdir",
+    "os.symlink",
+    "os.truncate",
+    "os.unlink",
+    "os.utime",
+    "os.write",
+    "os.writev",
 }
-_SAFE_GETATTR_CALLS = {
-    ("path_stat", "st_file_attributes"),
-    ("stat", "FILE_ATTRIBUTE_REPARSE_POINT"),
-}
-_KNOWN_SAFE_REPLACE_SPECS = {
-    "app.py": {
-        "_canonical_utc_seconds": (("keyword", "microsecond", 0),),
-        "values": (("keyword", "tzinfo", "timezone.utc"),),
-        "_validated_evaluation_time": (
-            ("keyword", "tzinfo", "timezone.utc"),
-        ),
-    },
-    "detectors.py": {
-        "_safe_filename": (("strings", "\\", "/"),),
-    },
-    "dispositions.py": {
-        "parse_utc": (("keyword", "tzinfo", "timezone.utc"),),
-    },
-    "evidence_state.py": {
-        "_canonical_timestamp": (
-            ("keyword", "microsecond", 0),
-            ("strings", "+00:00", "Z"),
-        ),
-    },
-    "reporting.py": {
-        "_validated_report_time": (
-            ("keyword", "tzinfo", "timezone.utc"),
-        ),
-    },
-}
-_DECLARATIVE_ANNOTATION_NODES = (
-    ast.Attribute,
-    ast.BinOp,
-    ast.BitOr,
-    ast.Constant,
-    ast.List,
-    ast.Load,
-    ast.Name,
-    ast.Subscript,
-    ast.Tuple,
-)
+_SENSITIVE_DYNAMIC_MEMBERS = {"__dict__", "__getattribute__", "__import__"}
 
 
 def collect_self_audit() -> dict[str, object]:
@@ -209,22 +189,99 @@ def _rules_sha256() -> str:
 def static_capability_findings(
     package_root: str | Path | None = None,
 ) -> tuple[str, ...]:
+    policy = _load_source_policy()
+    if policy is None:
+        return _MANIFEST_ERROR
     root = _package_root(package_root)
     if not root.is_dir():
         return ("SOURCE_SCAN_ERROR",)
-    findings: set[str] = set()
     try:
         modules = sorted(root.rglob("*.py"), key=lambda path: _module_key(root, path))
     except OSError:
         return ("SOURCE_SCAN_ERROR",)
-    for module in modules:
+
+    findings: set[str] = set()
+    relative_paths = [module.relative_to(root).as_posix() for module in modules]
+    module_names = set(relative_paths)
+    reviewed_names = set(policy)
+    reviewed_package = (
+        package_root is None
+        or (root / SOURCE_POLICY_PATH.name).is_file()
+        or bool(module_names & reviewed_names)
+    )
+    if reviewed_package and module_names != reviewed_names:
+        findings.add("SOURCE_POLICY_VIOLATION")
+    for module, relative_path in zip(modules, relative_paths, strict=True):
         try:
             tree = ast.parse(module.read_text(encoding="utf-8"))
         except (OSError, SyntaxError, UnicodeError):
+            if reviewed_package:
+                findings.add("SOURCE_POLICY_VIOLATION")
             findings.add("SOURCE_SCAN_ERROR")
             continue
-        _scan_module(module.relative_to(root).as_posix(), tree, findings)
+        if reviewed_package:
+            expected = policy.get(relative_path)
+            if expected is None or _canonical_ast_sha256(tree) != expected:
+                findings.add("SOURCE_POLICY_VIOLATION")
+        else:
+            _scan_heuristic(tree, findings)
     return tuple(sorted(findings))
+
+
+def _load_source_policy() -> dict[str, str] | None:
+    try:
+        with SOURCE_POLICY_PATH.open("rb") as stream:
+            raw = stream.read(_MAX_MANIFEST_BYTES + 1)
+        if not raw or len(raw) > _MAX_MANIFEST_BYTES:
+            raise ValueError
+        data = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
+        if type(data) is not dict or list(data) != ["schema", "modules"]:
+            raise ValueError
+        if type(data["schema"]) is not int or data["schema"] != 1:
+            raise ValueError
+        modules = data["modules"]
+        if type(modules) is not dict or not modules:
+            raise ValueError
+        names = list(modules)
+        if names != sorted(names):
+            raise ValueError
+        for name, digest in modules.items():
+            if not _canonical_module_name(name) or not _canonical_digest(digest):
+                raise ValueError
+        return modules
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    if len({key for key, _ in pairs}) != len(pairs):
+        raise ValueError
+    return dict(pairs)
+
+
+def _canonical_module_name(value: object) -> bool:
+    if type(value) is not str or not value.endswith(".py") or "\\" in value:
+        return False
+    parts = value.split("/")
+    stems = [*parts[:-1], parts[-1][:-3]]
+    return bool(stems) and all(
+        stem
+        and all(character in "abcdefghijklmnopqrstuvwxyz0123456789_" for character in stem)
+        for stem in stems
+    )
+
+
+def _canonical_digest(value: object) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _canonical_ast_sha256(tree: ast.AST) -> str:
+    canonical = ast.dump(tree, annotate_fields=True, include_attributes=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _package_root(package_root: str | Path | None) -> Path:
@@ -243,16 +300,24 @@ def _module_key(root: Path, module: Path) -> tuple[str, str]:
     return relative.casefold(), relative
 
 
-def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> None:
-    allow_ctypes = _allowed_ctypes_usage(relative_path, tree)
-    allowed_user_data_calls = _allowed_state_store_write_calls(relative_path, tree)
-    allowed_user_data_calls.update(_allowed_report_export_calls(relative_path, tree))
-    allowed_user_data_calls.update(
-        _allowed_known_safe_replace_calls(relative_path, tree)
-    )
-    allowed_user_data_references = {
-        call.func for call in allowed_user_data_calls
-    }
+def _scan_module(
+    relative_path: str,
+    tree: ast.Module,
+    findings: set[str],
+    policy: dict[str, str] | None = None,
+) -> None:
+    reviewed = _load_source_policy() if policy is None else policy
+    if reviewed is None:
+        findings.update(_MANIFEST_ERROR)
+        return
+    expected = reviewed.get(relative_path)
+    if expected is None:
+        _scan_heuristic(tree, findings)
+    elif _canonical_ast_sha256(tree) != expected:
+        findings.add("SOURCE_POLICY_VIOLATION")
+
+
+def _scan_heuristic(tree: ast.Module, findings: set[str]) -> None:
     direct_calls = {
         node.func: node for node in ast.walk(tree) if isinstance(node, ast.Call)
     }
@@ -261,94 +326,131 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
         for parent in ast.walk(tree)
         for child in ast.iter_child_nodes(parent)
     }
-    annotation_nodes, invalid_annotation = _annotation_nodes(tree)
-    if invalid_annotation:
-        findings.add("SOURCE_POLICY_VIOLATION")
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 findings.update(_import_findings(alias.name))
-                root = alias.name.split(".", 1)[0]
-                if alias.asname and root in {"os", "pathlib"}:
+                if alias.asname and alias.name.split(".", 1)[0] in {"os", "pathlib"}:
                     findings.add("SOURCE_POLICY_VIOLATION")
-                if root == "ctypes" and not allow_ctypes:
-                    findings.add("NATIVE_CAPABILITY")
         elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
             for alias in node.names:
                 findings.update(_import_findings(node.module, alias.name))
-                if node.module == "builtins" and alias.name in {"getattr", "vars"}:
-                    findings.add("USER_DATA_WRITE")
-                if alias.asname and node.module.split(".", 1)[0] in {
-                    "os",
-                    "pathlib",
-                }:
+                if alias.asname and node.module.split(".", 1)[0] in {"os", "pathlib"}:
                     findings.add("SOURCE_POLICY_VIOLATION")
-                if node.module.split(".", 1)[0] == "ctypes" and not allow_ctypes:
-                    findings.add("NATIVE_CAPABILITY")
-
-    for node in ast.walk(tree):
-        reference_findings = _capability_reference_findings(
-            node, parents, annotation_nodes
-        )
-        direct_call = direct_calls.get(node)
-        direct_open_mode = _open_mode(direct_call) if direct_call else None
-        if (
-            reference_findings
-            and node not in allowed_user_data_references
-            and not (
-                direct_open_mode is not None
-                and not any(flag in direct_open_mode for flag in "wax+")
-            )
-        ):
-            findings.update(reference_findings)
-        if isinstance(node, ast.Attribute):
-            _classify_attribute(node, findings, allow_ctypes)
         elif isinstance(node, ast.Call):
-            name = _qualified_name(node.func)
-            if name in {"__import__", "compile", "eval", "exec"}:
-                findings.add("DYNAMIC_EXECUTION")
-            if name == "getattr" and not _is_allowed_getattr_call(node):
-                findings.add("SOURCE_POLICY_VIOLATION")
-            if (
-                name.startswith("os.")
-                and name not in _SAFE_DIRECT_OS_CALLS
-                and node not in allowed_user_data_calls
-            ):
-                findings.update(("SOURCE_POLICY_VIOLATION", "USER_DATA_WRITE"))
-            if (
-                _call_name(node.func) in {"getattr", "vars"}
-                and node.args
-                and _qualified_name(node.args[0]).split(".", 1)[0]
-                in {"os", "pathlib", "Path"}
-            ):
-                findings.add("USER_DATA_WRITE")
-            dynamic_attribute = _dynamic_attribute_name(node)
-            if dynamic_attribute:
-                member = dynamic_attribute.rsplit(".", 1)[-1]
-                if member in {"__dict__", "__getattribute__"}:
-                    findings.add("SOURCE_POLICY_VIOLATION")
-                if member == "__import__":
-                    findings.add("DYNAMIC_EXECUTION")
-                if (
-                    _is_user_data_write_name(dynamic_attribute)
-                    or member in _FILESYSTEM_MUTATOR_MEMBERS
-                ):
-                    findings.add("USER_DATA_WRITE")
-            mode = _open_mode(node)
-            if (
-                mode is not None
-                and any(flag in mode for flag in "wax+")
-                and node not in allowed_user_data_calls
-            ):
-                findings.add("USER_DATA_WRITE")
+            _scan_call(node, findings)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            _scan_name(node, findings, parents, direct_calls)
+        elif isinstance(node, ast.Attribute):
+            _scan_attribute(node, findings, direct_calls)
+        elif isinstance(node, ast.Subscript):
+            _scan_subscript(node, findings)
+
+
+def _scan_call(node: ast.Call, findings: set[str]) -> None:
+    name = _qualified_name(node.func)
+    member = _literal_getattr_member(node)
+    if name in {"__import__", "builtins.__import__", "compile", "eval", "exec"}:
+        findings.add("DYNAMIC_EXECUTION")
+    if _is_shell_name(name):
+        findings.add("SHELL_EXECUTION")
+    if name in {"globals", "locals"} or (name == "vars" and not node.args):
+        findings.add("SOURCE_POLICY_VIOLATION")
+    if name == "getattr":
+        if member is None or member in _SENSITIVE_DYNAMIC_MEMBERS or member in _WRITE_MEMBERS:
+            findings.add("SOURCE_POLICY_VIOLATION")
+        if member == "__import__":
+            findings.add("DYNAMIC_EXECUTION")
+        if member in _WRITE_MEMBERS:
+            findings.add("USER_DATA_WRITE")
+    mode = _open_mode(node)
+    if (
+        mode is not None
+        and any(flag in mode for flag in "wax+")
+    ):
+        findings.add("USER_DATA_WRITE")
+
+
+def _scan_name(
+    node: ast.Name,
+    findings: set[str],
+    parents: dict[ast.AST, ast.AST],
+    direct_calls: dict[ast.expr, ast.Call],
+) -> None:
+    if node.id == "__builtins__":
+        findings.update(("DYNAMIC_EXECUTION", "SOURCE_POLICY_VIOLATION"))
+    elif node.id == "__import__":
+        findings.add("DYNAMIC_EXECUTION")
+    elif node.id in {"globals", "locals", "vars"}:
+        findings.add("SOURCE_POLICY_VIOLATION")
+    elif node.id == "open":
+        direct = direct_calls.get(node)
+        mode = _open_mode(direct) if direct is not None else None
+        if mode is None or any(flag in mode for flag in "wax+"):
+            findings.add("USER_DATA_WRITE")
+    elif node.id in {"os", "pathlib", "Path"}:
+        parent = parents.get(node)
+        namespace = isinstance(parent, ast.Attribute) and parent.value is node
+        constructor = (
+            node.id == "Path" and isinstance(parent, ast.Call) and parent.func is node
+        )
+        if not namespace and not constructor:
+            findings.add("SOURCE_POLICY_VIOLATION")
+
+
+def _scan_attribute(
+    node: ast.Attribute,
+    findings: set[str],
+    direct_calls: dict[ast.expr, ast.Call],
+) -> None:
+    name = _qualified_name(node)
+    if _is_shell_name(name):
+        findings.add("SHELL_EXECUTION")
+    if name == "sys.modules" or node.attr in {
+        "__annotations__",
+        "__dict__",
+        "__getattribute__",
+    }:
+        findings.add("SOURCE_POLICY_VIOLATION")
+    if "clipboard_" in node.attr:
+        findings.add("CLIPBOARD_CAPABILITY")
+        if node.attr in {"clipboard_append", "clipboard_clear"}:
+            findings.add("USER_DATA_WRITE")
+    direct = direct_calls.get(node)
+    mode = _open_mode(direct) if direct is not None else None
+    if (
+        (node.attr in _WRITE_MEMBERS or name in _OS_WRITE_NAMES)
+        and not (mode is not None and not any(flag in mode for flag in "wax+"))
+    ):
+        findings.add("USER_DATA_WRITE")
+
+
+def _scan_subscript(node: ast.Subscript, findings: set[str]) -> None:
+    if not isinstance(node.slice, ast.Constant):
+        return
+    key = node.slice.value
+    target = _qualified_name(node.value)
+    if target in {"__builtins__", "builtins", "__builtins__.__dict__"}:
+        findings.update(("DYNAMIC_EXECUTION", "SOURCE_POLICY_VIOLATION"))
+        if key == "open":
+            findings.add("USER_DATA_WRITE")
+    if target == "sys.modules":
+        findings.add("SOURCE_POLICY_VIOLATION")
+
+
+def _literal_getattr_member(node: ast.Call) -> str | None:
+    if _qualified_name(node.func) != "getattr" or len(node.args) < 2:
+        return None
+    member = node.args[1]
+    if isinstance(member, ast.Constant) and isinstance(member.value, str):
+        return member.value
+    return None
 
 
 def _import_findings(module: str, member: str | None = None) -> set[str]:
     normalized = module.casefold()
-    qualified = (
-        f"{normalized}.{member.casefold()}" if member is not None else normalized
-    )
+    qualified = f"{normalized}.{member.casefold()}" if member else normalized
     root = normalized.split(".", 1)[0]
     findings: set[str] = set()
     if root in _NETWORK_MODULES or any(
@@ -373,64 +475,26 @@ def _import_findings(module: str, member: str | None = None) -> set[str]:
         findings.add("LLM_CAPABILITY")
     if root in {"builtins", "importlib", "runpy"}:
         findings.add("DYNAMIC_EXECUTION")
+    if root == "ctypes":
+        findings.add("NATIVE_CAPABILITY")
     if root == "webbrowser":
         findings.update(("EXTERNAL_CAPABILITY", "NETWORK_MODULE_IMPORT"))
     if root == "sqlite3":
         findings.add("DATABASE_CAPABILITY")
-    if root == "os" and member and _is_shell_member(member):
+    if root == "os" and member and _is_shell_name(f"os.{member}"):
         findings.add("SHELL_EXECUTION")
-    if root == "os" and member and _is_user_data_write_name(f"os.{member}"):
+    if root == "os" and member and f"os.{member}" in _OS_WRITE_NAMES:
         findings.add("USER_DATA_WRITE")
     if root == "builtins" and member == "open":
         findings.add("USER_DATA_WRITE")
-    safe_import = (
+    safe = (
         normalized in _SAFE_DIRECT_IMPORTS
         if member is None
         else normalized in _SAFE_FROM_IMPORTS
     )
-    if not findings and not safe_import:
+    if not findings and not safe:
         findings.add("SOURCE_POLICY_VIOLATION")
     return findings
-
-
-def _classify_attribute(
-    node: ast.Attribute,
-    findings: set[str],
-    allow_ctypes: bool,
-) -> None:
-    name = _qualified_name(node)
-    root = name.split(".", 1)[0]
-    if (
-        root == "os"
-        and (
-            name in {"os.popen", "os.startfile", "os.system"}
-            or name.startswith("os.spawn")
-        )
-    ):
-        findings.add("SHELL_EXECUTION")
-    if node.attr in {"write_bytes", "write_text"}:
-        findings.add(
-            "USER_DATA_WRITE"
-            if name.startswith(("Path.", "pathlib.Path."))
-            else "SOURCE_POLICY_VIOLATION"
-        )
-    if node.attr == "__dict__" and root in {"os", "pathlib", "Path"}:
-        findings.add("USER_DATA_WRITE")
-    if node.attr in {"__annotations__", "__dict__", "__getattribute__"}:
-        findings.add("SOURCE_POLICY_VIOLATION")
-    if name == "sys.modules":
-        findings.add("SOURCE_POLICY_VIOLATION")
-    if "clipboard_" in node.attr:
-        findings.add("CLIPBOARD_CAPABILITY")
-        if node.attr in {"clipboard_append", "clipboard_clear"}:
-            findings.add("USER_DATA_WRITE")
-    if name.startswith("ctypes.") and not allow_ctypes:
-        findings.add("NATIVE_CAPABILITY")
-
-
-def _is_shell_member(member: str) -> bool:
-    lowered = member.casefold()
-    return lowered in {"popen", "startfile", "system"} or lowered.startswith("spawn")
 
 
 def _qualified_name(expression: ast.expr) -> str:
@@ -439,12 +503,12 @@ def _qualified_name(expression: ast.expr) -> str:
     if isinstance(expression, ast.Attribute):
         parent = _qualified_name(expression.value)
         return f"{parent}.{expression.attr}" if parent else expression.attr
-    if isinstance(expression, ast.Call):
-        return _qualified_name(expression.func)
     return ""
 
 
-def _open_mode(node: ast.Call) -> str | None:
+def _open_mode(node: ast.Call | None) -> str | None:
+    if node is None:
+        return None
     name = _qualified_name(node.func)
     if name in {"open", "builtins.open"}:
         positional_mode = node.args[1] if len(node.args) > 1 else None
@@ -463,659 +527,8 @@ def _open_mode(node: ast.Call) -> str | None:
     return "+"
 
 
-def _allowed_report_export_calls(
-    relative_path: str, tree: ast.Module
-) -> set[ast.Call]:
-    if relative_path != "app.py":
-        return set()
-    functions = [
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "export_new_report"
-    ]
-    if len(functions) != 1:
-        return set()
-    function = functions[0]
-    if [argument.arg for argument in function.args.args] != [
-        "path",
-        "content",
-        "scanned_roots",
-    ]:
-        return set()
-    calls = [node for node in ast.walk(function) if isinstance(node, ast.Call)]
-    writes = [node for node in calls if _open_mode(node) == "x"]
-    stream_writes = [
-        node for node in calls if _qualified_name(node.func) == "stream.write"
-    ]
-    if len(writes) != 1 or len(stream_writes) != 1:
-        return set()
-    write = writes[0]
-    stream_write = stream_writes[0]
-    if (
-        not write.args
-        or not isinstance(write.args[0], ast.Name)
-        or write.args[0].id != "final_target"
-        or not _keyword_is(write, "encoding", "utf-8")
-        or not _keyword_is(write, "newline", "\n")
-        or len(stream_write.args) != 1
-        or not isinstance(stream_write.args[0], ast.Name)
-        or stream_write.args[0].id != "content"
-    ):
-        return set()
-    required_calls = {
-        "_is_reparse",
-        "_is_unc_path",
-        "is_dir",
-        "is_relative_to",
-        "resolve",
-        "write",
-    }
-    if not required_calls <= {_call_name(call.func) for call in calls}:
-        return set()
-    raises = {
-        _call_name(node.exc.func)
-        for node in ast.walk(function)
-        if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call)
-    }
-    if not {"filenotfounderror", "oserror", "valueerror"} <= raises:
-        return set()
-    return {write, stream_write}
-
-
-def _allowed_state_store_write_calls(
-    relative_path: str, tree: ast.Module
-) -> set[ast.Call]:
-    if relative_path != "state_store.py":
-        return set()
-    save_functions = [
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "save_protected_state"
-    ]
-    target_functions = [
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_target_path"
-    ]
-    if len(save_functions) != 1 or len(target_functions) != 1:
-        return set()
-    save_function = save_functions[0]
-    target_function = target_functions[0]
-    if (
-        [argument.arg for argument in save_function.args.args] != ["snapshot"]
-        or [argument.arg for argument in save_function.args.kwonlyargs]
-        != ["directory", "protect"]
-        or [argument.arg for argument in target_function.args.args] != ["directory"]
-        or [argument.arg for argument in target_function.args.kwonlyargs] != ["create"]
-    ):
-        return set()
-
-    save_calls = [
-        node for node in ast.walk(save_function) if isinstance(node, ast.Call)
-    ]
-    target_calls = [
-        node for node in ast.walk(target_function) if isinstance(node, ast.Call)
-    ]
-    opens = [node for node in save_calls if _open_mode(node) == "xb"]
-    replaces = [
-        node for node in save_calls if _qualified_name(node.func) == "os.replace"
-    ]
-    directories = [
-        node for node in target_calls if _qualified_name(node.func) == "parent.mkdir"
-    ]
-    unlinks = [
-        node for node in save_calls if _qualified_name(node.func) == "temporary.unlink"
-    ]
-    stream_writes = [
-        node for node in save_calls if _qualified_name(node.func) == "stream.write"
-    ]
-    syncs = [
-        node for node in save_calls if _qualified_name(node.func) == "os.fsync"
-    ]
-    if not all(
-        len(group) == 1
-        for group in (opens, replaces, directories, unlinks, stream_writes, syncs)
-    ):
-        return set()
-
-    opened = opens[0]
-    replaced = replaces[0]
-    directory = directories[0]
-    unlinked = unlinks[0]
-    stream_write = stream_writes[0]
-    sync = syncs[0]
-    if (
-        len(opened.args) != 2
-        or not isinstance(opened.args[0], ast.Name)
-        or opened.args[0].id != "temporary"
-        or not isinstance(opened.args[1], ast.Constant)
-        or opened.args[1].value != "xb"
-        or len(replaced.args) != 2
-        or not all(isinstance(argument, ast.Name) for argument in replaced.args)
-        or [argument.id for argument in replaced.args] != ["temporary", "target"]
-        or directory.args
-        or not _keyword_is(directory, "mode", 0o700)
-        or not _keyword_is(directory, "exist_ok", True)
-        or unlinked.args
-        or not _keyword_is(unlinked, "missing_ok", True)
-        or len(stream_write.args) != 1
-        or not isinstance(stream_write.args[0], ast.Name)
-        or stream_write.args[0].id != "ciphertext"
-        or len(sync.args) != 1
-        or sync.keywords
-        or not isinstance(sync.args[0], ast.Call)
-        or _qualified_name(sync.args[0].func) != "stream.fileno"
-        or sync.args[0].args
-        or sync.args[0].keywords
-    ):
-        return set()
-    return {opened, replaced, directory, unlinked, stream_write, sync}
-
-
-def _allowed_known_safe_replace_calls(
-    relative_path: str, tree: ast.Module
-) -> set[ast.Call]:
-    specs = _KNOWN_SAFE_REPLACE_SPECS.get(relative_path, {})
-    allowed: set[ast.Call] = set()
-    for function_name, expected in specs.items():
-        functions = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef) and node.name == function_name
-        ]
-        if len(functions) != 1:
-            continue
-        calls = [
-            node
-            for node in ast.walk(functions[0])
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "replace"
-        ]
-        signatures = tuple(
-            sorted((_replace_signature(call) for call in calls), key=repr)
-        )
-        if None not in signatures and signatures == tuple(sorted(expected, key=repr)):
-            allowed.update(calls)
-    return allowed
-
-
-def _replace_signature(node: ast.Call) -> tuple[object, ...] | None:
-    if not node.keywords:
-        if len(node.args) == 2 and all(
-            isinstance(argument, ast.Constant) and isinstance(argument.value, str)
-            for argument in node.args
-        ):
-            return "strings", node.args[0].value, node.args[1].value
-        return None
-    if node.args or len(node.keywords) != 1 or node.keywords[0].arg is None:
-        return None
-    keyword = node.keywords[0]
-    if isinstance(keyword.value, ast.Constant):
-        value: object = keyword.value.value
-    elif isinstance(keyword.value, (ast.Attribute, ast.Name)):
-        value = _qualified_name(keyword.value)
-    else:
-        return None
-    return "keyword", keyword.arg, value
-
-
-def _is_user_data_write_name(name: str) -> bool:
-    return name in {
-        "os.chmod",
-        "os.chown",
-        "os.fdopen",
-        "os.fchmod",
-        "os.fchown",
-        "os.ftruncate",
-        "os.link",
-        "os.lchown",
-        "os.makedirs",
-        "os.mkfifo",
-        "os.mknod",
-        "os.mkdir",
-        "os.open",
-        "os.pwrite",
-        "os.pwritev",
-        "os.remove",
-        "os.removedirs",
-        "os.renames",
-        "os.rename",
-        "os.replace",
-        "os.rmdir",
-        "os.symlink",
-        "os.truncate",
-        "os.unlink",
-        "os.utime",
-        "os.write",
-        "os.writev",
-    }
-
-
-def _capability_reference_findings(
-    node: ast.AST,
-    parents: dict[ast.AST, ast.AST],
-    annotation_nodes: set[ast.AST],
-) -> set[str]:
-    findings: set[str] = set()
-    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-        if node.id == "__builtins__":
-            findings.update(("DYNAMIC_EXECUTION", "SOURCE_POLICY_VIOLATION"))
-        elif node.id in {"__annotations__", "globals", "locals", "vars"}:
-            findings.add("SOURCE_POLICY_VIOLATION")
-        elif node.id in _RESTRICTED_ROOTS and not _allowed_restricted_root_reference(
-            node, parents, annotation_nodes
-        ):
-            findings.add("SOURCE_POLICY_VIOLATION")
-        if node.id == "__import__":
-            findings.add("DYNAMIC_EXECUTION")
-        if node.id == "open":
-            findings.add("USER_DATA_WRITE")
-        parent = parents.get(node)
-        if node.id in {"getattr", "vars"} and not (
-            isinstance(parent, ast.Call) and parent.func is node
-        ):
-            findings.add("USER_DATA_WRITE")
-    elif (
-        isinstance(node, ast.Name)
-        and isinstance(node.ctx, ast.Store)
-        and node.id in _RESTRICTED_ROOTS
-    ) or (isinstance(node, ast.arg) and node.arg in _RESTRICTED_ROOTS):
-        findings.add("SOURCE_POLICY_VIOLATION")
-    elif isinstance(node, ast.Attribute):
-        name = _qualified_name(node)
-        if name in {"__builtins__.__import__", "builtins.__import__"}:
-            findings.add("DYNAMIC_EXECUTION")
-        if (
-            node.attr in _FILESYSTEM_MUTATOR_MEMBERS
-            or _is_user_data_write_name(name)
-        ):
-            findings.add("USER_DATA_WRITE")
-    elif isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
-        if _is_runtime_namespace(node.value):
-            findings.add("SOURCE_POLICY_VIOLATION")
-            if node.slice.value == "__builtins__":
-                findings.add("DYNAMIC_EXECUTION")
-            if node.slice.value == "__import__":
-                findings.add("DYNAMIC_EXECUTION")
-            if node.slice.value == "open":
-                findings.add("USER_DATA_WRITE")
-        elif _qualified_name(node.value) in {"__builtins__", "builtins"}:
-            if node.slice.value == "__import__":
-                findings.add("DYNAMIC_EXECUTION")
-            if node.slice.value == "open":
-                findings.add("USER_DATA_WRITE")
-    return findings
-
-
-def _allowed_restricted_root_reference(
-    node: ast.Name,
-    parents: dict[ast.AST, ast.AST],
-    annotation_nodes: set[ast.AST],
-) -> bool:
-    if node in annotation_nodes:
-        return True
-    parent = parents.get(node)
-    return (
-        isinstance(parent, ast.Attribute) and parent.value is node
-    ) or (
-        node.id == "Path"
-        and isinstance(parent, ast.Call)
-        and parent.func is node
-    )
-
-
-def _annotation_nodes(tree: ast.Module) -> tuple[set[ast.AST], bool]:
-    roots: list[ast.expr] = []
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.AnnAssign, ast.arg)) and node.annotation is not None:
-            roots.append(node.annotation)
-        elif isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
-            if node.returns is not None:
-                roots.append(node.returns)
-    allowed: set[ast.AST] = set()
-    invalid = False
-    for root in roots:
-        nodes = set(ast.walk(root))
-        if all(isinstance(node, _DECLARATIVE_ANNOTATION_NODES) for node in nodes):
-            allowed.update(nodes)
-        else:
-            invalid = True
-    return allowed, invalid
-
-
-def _is_runtime_namespace(node: ast.expr) -> bool:
-    if isinstance(node, ast.Call):
-        name = _qualified_name(node.func)
-        return name in {"globals", "locals"} or (
-            name == "vars" and not node.args and not node.keywords
-        )
-    if isinstance(node, ast.Attribute):
-        return _qualified_name(node) in {"__builtins__.__dict__", "sys.modules"}
-    if isinstance(node, ast.Subscript):
-        return _is_runtime_namespace(node.value)
-    return False
-
-
-def _is_allowed_getattr_call(node: ast.Call) -> bool:
-    if _qualified_name(node.func) != "getattr" or len(node.args) != 3 or node.keywords:
-        return False
-    target, member, default = node.args
-    return (
-        isinstance(member, ast.Constant)
-        and isinstance(member.value, str)
-        and (_qualified_name(target), member.value) in _SAFE_GETATTR_CALLS
-        and isinstance(default, ast.Constant)
-        and default.value == 0
-    )
-
-
-def _dynamic_attribute_name(node: ast.Call) -> str:
-    target: ast.expr | None = None
-    member: ast.expr | None = None
-    if _qualified_name(node.func) == "getattr" and len(node.args) >= 2:
-        target, member = node.args[:2]
-    elif isinstance(node.func, ast.Attribute) and node.func.attr == "__getattribute__":
-        if _qualified_name(node.func.value) == "object" and len(node.args) >= 2:
-            target, member = node.args[:2]
-        elif node.args:
-            target, member = node.func.value, node.args[0]
-    if isinstance(member, ast.Constant) and isinstance(member.value, str):
-        root = _qualified_name(target) if target is not None else ""
-        if root:
-            return f"{root}.{member.value}"
-    return ""
-
-
-def _keyword_is(node: ast.Call, name: str, value: object) -> bool:
-    return any(
-        keyword.arg == name
-        and isinstance(keyword.value, ast.Constant)
-        and keyword.value.value == value
-        for keyword in node.keywords
-    )
-
-
-def _call_name(function: ast.expr) -> str:
-    if isinstance(function, ast.Name):
-        return function.id.casefold()
-    if isinstance(function, ast.Attribute):
-        return function.attr.casefold()
-    return ""
-
-
-def _exact_ctypes_import(node: ast.AST) -> bool:
-    return (
-        isinstance(node, ast.Import)
-        and len(node.names) == 1
-        and node.names[0].name == "ctypes"
-        and node.names[0].asname is None
-    )
-
-
-def _allowed_ctypes_usage(relative_path: str, tree: ast.AST) -> bool:
-    if relative_path == "self_audit.py":
-        return _allowed_admin_probe(tree)
-    if relative_path == "windows_dpapi.py":
-        return _allowed_windows_dpapi(tree)
-    return False
-
-
-def _allowed_admin_probe(tree: ast.AST) -> bool:
-    nodes = tuple(ast.walk(tree))
-    imports = tuple(node for node in nodes if _exact_ctypes_import(node))
-    calls = tuple(
-        node
-        for node in nodes
-        if isinstance(node, ast.Call) and _exact_admin_probe(node)
-    )
-    if len(imports) != 1 or len(calls) != 1:
-        return False
-    references = {
-        node for node in nodes if isinstance(node, ast.Name) and node.id == "ctypes"
-    }
-    allowed_references = {
-        node
-        for node in ast.walk(calls[0].func)
-        if isinstance(node, ast.Name) and node.id == "ctypes"
-    }
-    return references == allowed_references and len(allowed_references) == 1
-
-
-def _allowed_windows_dpapi(tree: ast.AST) -> bool:
-    nodes = tuple(ast.walk(tree))
-    imports = tuple(node for node in nodes if _exact_ctypes_import(node))
-    from_imports = tuple(
-        node
-        for node in nodes
-        if isinstance(node, ast.ImportFrom) and node.module == "ctypes"
-    )
-    if (
-        len(imports) != 1
-        or len(from_imports) != 1
-        or len(from_imports[0].names) != 1
-        or from_imports[0].names[0].name != "wintypes"
-        or from_imports[0].names[0].asname is not None
-    ):
-        return False
-
-    allowed_ctypes = {
-        "ctypes.POINTER",
-        "ctypes.Structure",
-        "ctypes.WinDLL",
-        "ctypes.byref",
-        "ctypes.c_ubyte",
-        "ctypes.cast",
-        "ctypes.string_at",
-    }
-    ctypes_attributes = tuple(
-        node
-        for node in nodes
-        if isinstance(node, ast.Attribute)
-        and _qualified_name(node).startswith("ctypes.")
-    )
-    if {
-        _qualified_name(node) for node in ctypes_attributes
-    } - allowed_ctypes:
-        return False
-    ctypes_references = {
-        node for node in nodes if isinstance(node, ast.Name) and node.id == "ctypes"
-    }
-    allowed_ctypes_references = {
-        child
-        for node in ctypes_attributes
-        for child in ast.walk(node)
-        if isinstance(child, ast.Name) and child.id == "ctypes"
-    }
-    if ctypes_references != allowed_ctypes_references:
-        return False
-
-    allowed_wintypes = {
-        "wintypes.BOOL",
-        "wintypes.DWORD",
-        "wintypes.LPCWSTR",
-        "wintypes.LPVOID",
-        "wintypes.LPWSTR",
-    }
-    wintypes_attributes = tuple(
-        node
-        for node in nodes
-        if isinstance(node, ast.Attribute)
-        and _qualified_name(node).startswith("wintypes.")
-    )
-    if {
-        _qualified_name(node) for node in wintypes_attributes
-    } - allowed_wintypes:
-        return False
-    wintypes_references = {
-        node for node in nodes if isinstance(node, ast.Name) and node.id == "wintypes"
-    }
-    allowed_wintypes_references = {
-        child
-        for node in wintypes_attributes
-        for child in ast.walk(node)
-        if isinstance(child, ast.Name) and child.id == "wintypes"
-    }
-    if wintypes_references != allowed_wintypes_references:
-        return False
-
-    libraries: dict[str, str] = {}
-    for node in nodes:
-        if (
-            isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-            and isinstance(node.value, ast.Call)
-            and _qualified_name(node.value.func) == "ctypes.WinDLL"
-            and len(node.value.args) == 1
-            and isinstance(node.value.args[0], ast.Constant)
-            and isinstance(node.value.args[0].value, str)
-            and len(node.value.keywords) == 1
-            and node.value.keywords[0].arg == "use_last_error"
-            and isinstance(node.value.keywords[0].value, ast.Constant)
-            and node.value.keywords[0].value.value is True
-        ):
-            libraries[node.targets[0].id] = node.value.args[0].value
-    if libraries != {"crypt32": "Crypt32.dll", "kernel32": "Kernel32.dll"}:
-        return False
-    if any(
-        isinstance(node, ast.Subscript)
-        and any(
-            isinstance(child, ast.Name) and child.id in libraries
-            for child in ast.walk(node)
-        )
-        for node in nodes
-    ):
-        return False
-    if any(
-        isinstance(node, ast.Call)
-        and _qualified_name(node.func) in {"getattr", "setattr", "vars"}
-        for node in nodes
-    ):
-        return False
-
-    allowed_native_attributes = {
-        "crypt32.CryptProtectData",
-        "crypt32.CryptUnprotectData",
-        "kernel32.LocalFree",
-    }
-    native_attribute_nodes = tuple(
-        node
-        for node in nodes
-        if isinstance(node, ast.Attribute)
-        and _qualified_name(node).split(".", 1)[0] in libraries
-    )
-    native_attributes = tuple(
-        _qualified_name(node) for node in native_attribute_nodes
-    )
-    library_bindings = tuple(
-        node
-        for node in nodes
-        if isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance(node.targets[0], ast.Tuple)
-        and [
-            item.id if isinstance(item, ast.Name) else ""
-            for item in node.targets[0].elts
-        ]
-        == ["crypt32", "kernel32"]
-        and isinstance(node.value, ast.Call)
-        and _qualified_name(node.value.func) == "_libraries"
-        and not node.value.args
-        and not node.value.keywords
-    )
-    library_calls = tuple(
-        node
-        for node in nodes
-        if isinstance(node, ast.Call) and _qualified_name(node.func) == "_libraries"
-    )
-    library_factory_references = {
-        node
-        for node in nodes
-        if isinstance(node, ast.Name) and node.id == "_libraries"
-    }
-    allowed_library_factory_references = {
-        node.func
-        for node in library_calls
-        if isinstance(node.func, ast.Name)
-    }
-    library_functions = tuple(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_libraries"
-    )
-    dpapi_calls = tuple(
-        node
-        for node in nodes
-        if isinstance(node, ast.Call) and _qualified_name(node.func) == "_call"
-    )
-    if (
-        len(library_bindings) != 2
-        or set(library_calls) != {node.value for node in library_bindings}
-        or library_factory_references != allowed_library_factory_references
-        or len(library_functions) != 1
-        or len(dpapi_calls) != 2
-        or any(
-            len(node.args) < 3
-            or not isinstance(node.args[2], ast.Name)
-            or node.args[2].id != "kernel32"
-            for node in dpapi_calls
-        )
-    ):
-        return False
-    library_returns = tuple(
-        node
-        for node in ast.walk(library_functions[0])
-        if isinstance(node, ast.Return)
-    )
-    if (
-        len(library_returns) != 1
-        or not isinstance(library_returns[0].value, ast.Tuple)
-        or [
-            item.id if isinstance(item, ast.Name) else ""
-            for item in library_returns[0].value.elts
-        ]
-        != ["crypt32", "kernel32"]
-    ):
-        return False
-    library_references = {
-        node
-        for node in nodes
-        if isinstance(node, ast.Name) and node.id in libraries
-    }
-    allowed_library_references = {
-        child
-        for node in native_attribute_nodes
-        for child in ast.walk(node)
-        if isinstance(child, ast.Name) and child.id in libraries
-    }
-    allowed_library_references.update(
-        node.targets[0]
-        for node in nodes
-        if isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance(node.targets[0], ast.Name)
-        and node.targets[0].id in libraries
-        and isinstance(node.value, ast.Call)
-        and _qualified_name(node.value.func) == "ctypes.WinDLL"
-    )
-    allowed_library_references.update(
-        item for node in library_bindings for item in node.targets[0].elts
-    )
-    allowed_library_references.update(library_returns[0].value.elts)
-    allowed_library_references.update(node.args[2] for node in dpapi_calls)
-    return (
-        set(native_attributes) == allowed_native_attributes
-        and native_attributes.count("crypt32.CryptProtectData") == 1
-        and native_attributes.count("crypt32.CryptUnprotectData") == 1
-        and native_attributes.count("kernel32.LocalFree") == 2
-        and library_references == allowed_library_references
-    )
-
-
-def _exact_admin_probe(node: ast.Call) -> bool:
-    return (
-        _qualified_name(node.func) == "ctypes.windll.shell32.IsUserAnAdmin"
-        and not node.args
-        and not node.keywords
+def _is_shell_name(name: str) -> bool:
+    lowered = name.casefold()
+    return lowered in {"os.popen", "os.startfile", "os.system"} or lowered.startswith(
+        "os.spawn"
     )
