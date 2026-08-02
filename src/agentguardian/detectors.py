@@ -135,7 +135,7 @@ def _detect_text(
     source_identity: str,
 ) -> tuple[tuple[Finding, ...], bool]:
     key = _validated_key(scan_key)
-    source_name = _display_name(source)
+    source_name = _safe_filename(source)
     findings: list[Finding] = []
     occupied: list[tuple[int, int]] = []
     for rule in load_rules().rules:
@@ -232,7 +232,7 @@ def detect_mcp_config(
                     Severity.HIGH,
                     server_name,
                     "mcp",
-                    _display_name(source),
+                    _safe_filename(source),
                     key,
                     disposition_key=local_key,
                     source_identity=source,
@@ -372,7 +372,7 @@ def _validated_keywords(keywords: Sequence[str]) -> tuple[str, ...]:
     return tuple(validated)
 
 
-def _display_name(source: str) -> str:
+def _safe_filename(source: str) -> str:
     if not isinstance(source, str):
         raise TypeError("source must be a string")
     name = source.replace("\\", "/").rsplit("/", 1)[-1]

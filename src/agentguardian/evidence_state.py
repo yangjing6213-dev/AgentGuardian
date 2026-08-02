@@ -150,6 +150,15 @@ class EvidenceSnapshot:
             raise _invalid() from None
 
 
+def _canonical_timestamp(captured_at: datetime) -> str:
+    return (
+        captured_at.astimezone(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
 def build_snapshot(
     findings: Iterable[Finding],
     score: Score,
@@ -169,12 +178,7 @@ def build_snapshot(
             raise _invalid()
         if captured_at.tzinfo is None or captured_at.utcoffset() is None:
             raise _invalid()
-        timestamp = (
-            captured_at.astimezone(timezone.utc)
-            .replace(microsecond=0)
-            .isoformat()
-            .replace("+00:00", "Z")
-        )
+        timestamp = _canonical_timestamp(captured_at)
         finding_items = tuple(islice(findings, MAX_STATE_FINDINGS + 1))
         if len(finding_items) > MAX_STATE_FINDINGS:
             raise _invalid()

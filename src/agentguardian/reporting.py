@@ -198,7 +198,7 @@ def _prepare_report(
     )
     if type(rule_version) is not str:
         raise ValueError(_ERROR)
-    now = _validated_time(evaluated_at)
+    now = _validated_report_time(evaluated_at)
     records = disposition_index(
         _validated_dispositions(_bounded_items(dispositions))
     )
@@ -284,7 +284,7 @@ def _validated_score_data(score: Score) -> dict[str, object]:
     }
 
 
-def _validated_time(evaluated_at: datetime | None) -> datetime:
+def _validated_report_time(evaluated_at: datetime | None) -> datetime:
     now = (
         datetime.now(timezone.utc)
         if evaluated_at is None

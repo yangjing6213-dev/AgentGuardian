@@ -1254,7 +1254,7 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
             "_validated_finding",
             "_validated_dispositions",
             "_validated_score_data",
-            "_validated_time",
+            "_validated_report_time",
             "disposition_index",
             "escape",
             "evaluate_disposition",

@@ -86,10 +86,16 @@ _RESTRICTED_ROOTS = {
     "pathlib",
 }
 _FILESYSTEM_MUTATOR_MEMBERS = {
+    "chmod",
+    "copy",
+    "copy_into",
     "hardlink_to",
+    "lchmod",
     "link",
     "link_to",
     "mkdir",
+    "move",
+    "move_into",
     "open",
     "rename",
     "replace",
@@ -103,6 +109,44 @@ _FILESYSTEM_MUTATOR_MEMBERS = {
     "write_bytes",
     "write_text",
     "writelines",
+}
+_SAFE_DIRECT_OS_CALLS = {
+    "os.environ.get",
+    "os.fspath",
+    "os.lstat",
+    "os.path.abspath",
+    "os.path.normcase",
+    "os.scandir",
+}
+_SAFE_GETATTR_CALLS = {
+    ("path_stat", "st_file_attributes"),
+    ("stat", "FILE_ATTRIBUTE_REPARSE_POINT"),
+}
+_KNOWN_SAFE_REPLACE_SPECS = {
+    "app.py": {
+        "_canonical_utc_seconds": (("keyword", "microsecond", 0),),
+        "values": (("keyword", "tzinfo", "timezone.utc"),),
+        "_validated_evaluation_time": (
+            ("keyword", "tzinfo", "timezone.utc"),
+        ),
+    },
+    "detectors.py": {
+        "_safe_filename": (("strings", "\\", "/"),),
+    },
+    "dispositions.py": {
+        "parse_utc": (("keyword", "tzinfo", "timezone.utc"),),
+    },
+    "evidence_state.py": {
+        "_canonical_timestamp": (
+            ("keyword", "microsecond", 0),
+            ("strings", "+00:00", "Z"),
+        ),
+    },
+    "reporting.py": {
+        "_validated_report_time": (
+            ("keyword", "tzinfo", "timezone.utc"),
+        ),
+    },
 }
 _DECLARATIVE_ANNOTATION_NODES = (
     ast.Attribute,
@@ -203,6 +247,9 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
     allow_ctypes = _allowed_ctypes_usage(relative_path, tree)
     allowed_user_data_calls = _allowed_state_store_write_calls(relative_path, tree)
     allowed_user_data_calls.update(_allowed_report_export_calls(relative_path, tree))
+    allowed_user_data_calls.update(
+        _allowed_known_safe_replace_calls(relative_path, tree)
+    )
     allowed_user_data_references = {
         call.func for call in allowed_user_data_calls
     }
@@ -246,16 +293,9 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
         )
         direct_call = direct_calls.get(node)
         direct_open_mode = _open_mode(direct_call) if direct_call else None
-        safe_replace = bool(
-            direct_call
-            and isinstance(node, ast.Attribute)
-            and node.attr == "replace"
-            and _is_safe_replace_call(direct_call)
-        )
         if (
             reference_findings
             and node not in allowed_user_data_references
-            and not safe_replace
             and not (
                 direct_open_mode is not None
                 and not any(flag in direct_open_mode for flag in "wax+")
@@ -268,6 +308,14 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
             name = _qualified_name(node.func)
             if name in {"__import__", "compile", "eval", "exec"}:
                 findings.add("DYNAMIC_EXECUTION")
+            if name == "getattr" and not _is_allowed_getattr_call(node):
+                findings.add("SOURCE_POLICY_VIOLATION")
+            if (
+                name.startswith("os.")
+                and name not in _SAFE_DIRECT_OS_CALLS
+                and node not in allowed_user_data_calls
+            ):
+                findings.update(("SOURCE_POLICY_VIOLATION", "USER_DATA_WRITE"))
             if (
                 _call_name(node.func) in {"getattr", "vars"}
                 and node.args
@@ -292,15 +340,6 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
                 mode is not None
                 and any(flag in mode for flag in "wax+")
                 and node not in allowed_user_data_calls
-            ):
-                findings.add("USER_DATA_WRITE")
-            if (
-                _is_user_data_write_call(node)
-                and node not in allowed_user_data_calls
-                and not _is_safe_replace_call(node)
-                and not (
-                    mode is not None and not any(flag in mode for flag in "wax+")
-                )
             ):
                 findings.add("USER_DATA_WRITE")
 
@@ -530,9 +569,12 @@ def _allowed_state_store_write_calls(
     stream_writes = [
         node for node in save_calls if _qualified_name(node.func) == "stream.write"
     ]
+    syncs = [
+        node for node in save_calls if _qualified_name(node.func) == "os.fsync"
+    ]
     if not all(
         len(group) == 1
-        for group in (opens, replaces, directories, unlinks, stream_writes)
+        for group in (opens, replaces, directories, unlinks, stream_writes, syncs)
     ):
         return set()
 
@@ -541,6 +583,7 @@ def _allowed_state_store_write_calls(
     directory = directories[0]
     unlinked = unlinks[0]
     stream_write = stream_writes[0]
+    sync = syncs[0]
     if (
         len(opened.args) != 2
         or not isinstance(opened.args[0], ast.Name)
@@ -558,31 +601,94 @@ def _allowed_state_store_write_calls(
         or len(stream_write.args) != 1
         or not isinstance(stream_write.args[0], ast.Name)
         or stream_write.args[0].id != "ciphertext"
+        or len(sync.args) != 1
+        or sync.keywords
+        or not isinstance(sync.args[0], ast.Call)
+        or _qualified_name(sync.args[0].func) != "stream.fileno"
+        or sync.args[0].args
+        or sync.args[0].keywords
     ):
         return set()
-    return {opened, replaced, directory, unlinked, stream_write}
+    return {opened, replaced, directory, unlinked, stream_write, sync}
 
 
-def _is_user_data_write_call(node: ast.Call) -> bool:
-    name = _qualified_name(node.func)
-    return (
-        _is_user_data_write_name(name)
-        or _call_name(node.func) in _FILESYSTEM_MUTATOR_MEMBERS
-    )
+def _allowed_known_safe_replace_calls(
+    relative_path: str, tree: ast.Module
+) -> set[ast.Call]:
+    specs = _KNOWN_SAFE_REPLACE_SPECS.get(relative_path, {})
+    allowed: set[ast.Call] = set()
+    for function_name, expected in specs.items():
+        functions = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == function_name
+        ]
+        if len(functions) != 1:
+            continue
+        calls = [
+            node
+            for node in ast.walk(functions[0])
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "replace"
+        ]
+        signatures = tuple(
+            sorted((_replace_signature(call) for call in calls), key=repr)
+        )
+        if None not in signatures and signatures == tuple(sorted(expected, key=repr)):
+            allowed.update(calls)
+    return allowed
+
+
+def _replace_signature(node: ast.Call) -> tuple[object, ...] | None:
+    if not node.keywords:
+        if len(node.args) == 2 and all(
+            isinstance(argument, ast.Constant) and isinstance(argument.value, str)
+            for argument in node.args
+        ):
+            return "strings", node.args[0].value, node.args[1].value
+        return None
+    if node.args or len(node.keywords) != 1 or node.keywords[0].arg is None:
+        return None
+    keyword = node.keywords[0]
+    if isinstance(keyword.value, ast.Constant):
+        value: object = keyword.value.value
+    elif isinstance(keyword.value, (ast.Attribute, ast.Name)):
+        value = _qualified_name(keyword.value)
+    else:
+        return None
+    return "keyword", keyword.arg, value
 
 
 def _is_user_data_write_name(name: str) -> bool:
     return name in {
+        "os.chmod",
+        "os.chown",
         "os.fdopen",
+        "os.fchmod",
+        "os.fchown",
+        "os.ftruncate",
+        "os.link",
+        "os.lchown",
         "os.makedirs",
+        "os.mkfifo",
+        "os.mknod",
         "os.mkdir",
         "os.open",
+        "os.pwrite",
+        "os.pwritev",
         "os.remove",
+        "os.removedirs",
         "os.renames",
         "os.rename",
         "os.replace",
         "os.rmdir",
+        "os.symlink",
+        "os.truncate",
         "os.unlink",
+        "os.utime",
+        "os.write",
+        "os.writev",
     }
 
 
@@ -691,16 +797,16 @@ def _is_runtime_namespace(node: ast.expr) -> bool:
     return False
 
 
-def _is_safe_replace_call(node: ast.Call) -> bool:
-    if _call_name(node.func) != "replace" or _qualified_name(node.func) == "os.replace":
+def _is_allowed_getattr_call(node: ast.Call) -> bool:
+    if _qualified_name(node.func) != "getattr" or len(node.args) != 3 or node.keywords:
         return False
-    if not node.keywords:
-        return len(node.args) == 2 and all(
-            isinstance(argument, ast.Constant) and isinstance(argument.value, str)
-            for argument in node.args
-        )
-    return not node.args and all(
-        keyword.arg in {"microsecond", "tzinfo"} for keyword in node.keywords
+    target, member, default = node.args
+    return (
+        isinstance(member, ast.Constant)
+        and isinstance(member.value, str)
+        and (_qualified_name(target), member.value) in _SAFE_GETATTR_CALLS
+        and isinstance(default, ast.Constant)
+        and default.value == 0
     )
 
 
