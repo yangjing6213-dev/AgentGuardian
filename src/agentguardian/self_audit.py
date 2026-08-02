@@ -60,12 +60,13 @@ _WRITE_ATTRIBUTE_MEMBERS = {
 
 def collect_self_audit() -> dict[str, object]:
     findings = static_capability_findings()
+    network_capability = _network_capability(findings)
     return {
         "version": __version__,
         "executable_path": sys.executable,
         "rules_sha256": _rules_sha256(),
-        "local_only": False,
-        "network_capability": _network_capability(findings),
+        "local_only": network_capability == "not_detected" and not findings,
+        "network_capability": network_capability,
         "ordinary_user_mode": _ordinary_user_mode(),
         "alpha_status": "Founder Alpha",
         "findings": list(findings),

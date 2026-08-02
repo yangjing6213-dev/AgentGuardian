@@ -35,7 +35,7 @@ def test_collect_self_audit_is_transparent_and_keeps_environment_private(
         "rules_sha256": hashlib.sha256(
             (PROJECT_ROOT / "rules" / "default.json").read_bytes()
         ).hexdigest(),
-        "local_only": False,
+        "local_only": True,
         "network_capability": "not_detected",
         "ordinary_user_mode": True,
         "alpha_status": "Founder Alpha",
@@ -59,7 +59,7 @@ def test_current_package_has_no_prohibited_static_capabilities() -> None:
 @pytest.mark.parametrize(
     ("findings", "network_capability", "local_only"),
     (
-        ((), "not_detected", False),
+        ((), "not_detected", True),
         (("NETWORK_MODULE_IMPORT",), "detected", False),
         (("NETWORK_CAPABILITY",), "detected", False),
         (("DYNAMIC_EXECUTION",), "unverified", False),
