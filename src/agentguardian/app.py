@@ -35,7 +35,16 @@ from .detectors import MAX_FILE_BYTES, detect_file, detect_mcp_config, load_rule
 from .discovery import discover_files
 from .dispositions import DispositionRecord, disposition_index, reviewed_findings
 from .domain import Finding, Score, Severity
-from .evidence_state import EvidenceSnapshot, EvidenceStateError, build_snapshot
+from .evidence_state import (
+    MAX_STATE_EVIDENCE,
+    MAX_STATE_FINDINGS,
+    EvidenceReference,
+    EvidenceSnapshot,
+    EvidenceStateError,
+    FindingReference,
+    ScanMetadata,
+    build_snapshot,
+)
 from .guidance import guidance_for
 from .reporting import render_html, render_json
 from .scoring import score
@@ -146,6 +155,79 @@ def _validated_evaluation_time(value: datetime | None) -> datetime:
     raise ValueError(_CONTEXT_ERROR) from None
 
 
+def _deeply_revalidated_snapshot(snapshot: object) -> EvidenceSnapshot:
+    try:
+        if type(snapshot) is not EvidenceSnapshot:
+            raise ValueError
+        schema_version = snapshot.schema_version
+        captured_at = snapshot.captured_at
+        product_version = snapshot.product_version
+        rule_version = snapshot.rule_version
+        scan = snapshot.scan
+        findings_source = snapshot.findings
+        disposition_key = snapshot.disposition_key
+        dispositions = snapshot.dispositions
+        if type(scan) is not ScanMetadata:
+            raise ValueError
+        scan_fields = (
+            scan.coverage,
+            scan.confidence,
+            scan.incomplete,
+            scan.limits,
+        )
+        findings = tuple(islice(findings_source, MAX_STATE_FINDINGS + 1))
+        if len(findings) > MAX_STATE_FINDINGS:
+            raise ValueError
+        captured_findings = []
+        evidence_count = 0
+        for finding in findings:
+            if type(finding) is not FindingReference:
+                raise ValueError
+            rule_id = finding.rule_id
+            root_fingerprint = finding.root_hmac_fingerprint
+            remaining = MAX_STATE_EVIDENCE - evidence_count
+            evidence = tuple(islice(finding.evidence, remaining + 1))
+            if len(evidence) > remaining:
+                raise ValueError
+            evidence_fields = []
+            for item in evidence:
+                if type(item) is not EvidenceReference:
+                    raise ValueError
+                evidence_fields.append((item.hmac_fingerprint, item.masked))
+            evidence_count += len(evidence_fields)
+            captured_findings.append(
+                (rule_id, root_fingerprint, tuple(evidence_fields))
+            )
+        rebuilt_finding_fields = []
+        for rule_id, root_fingerprint, evidence_fields in captured_findings:
+            rebuilt_finding_fields.append(
+                (
+                    rule_id,
+                    root_fingerprint,
+                    tuple(
+                        EvidenceReference(*fields) for fields in evidence_fields
+                    ),
+                )
+            )
+        rebuilt_findings = tuple(
+            FindingReference(*fields) for fields in rebuilt_finding_fields
+        )
+        rebuilt_scan = ScanMetadata(*scan_fields)
+        return EvidenceSnapshot(
+            schema_version=schema_version,
+            captured_at=captured_at,
+            product_version=product_version,
+            rule_version=rule_version,
+            scan=rebuilt_scan,
+            findings=rebuilt_findings,
+            disposition_key=disposition_key,
+            dispositions=dispositions,
+        )
+    except Exception:
+        pass
+    raise ValueError(_CONTEXT_ERROR) from None
+
+
 def _load_disposition_context() -> _DispositionContext:
     try:
         snapshot = load_protected_state()
@@ -155,18 +237,7 @@ def _load_disposition_context() -> _DispositionContext:
         invalid_state = True
     else:
         try:
-            if type(snapshot) is not EvidenceSnapshot:
-                raise ValueError
-            snapshot = EvidenceSnapshot(
-                schema_version=snapshot.schema_version,
-                captured_at=snapshot.captured_at,
-                product_version=snapshot.product_version,
-                rule_version=snapshot.rule_version,
-                scan=snapshot.scan,
-                findings=snapshot.findings,
-                disposition_key=snapshot.disposition_key,
-                dispositions=snapshot.dispositions,
-            )
+            snapshot = _deeply_revalidated_snapshot(snapshot)
             schema_version = snapshot.schema_version
             if type(schema_version) is not int:
                 raise ValueError

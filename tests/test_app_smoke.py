@@ -21,7 +21,9 @@ from agentguardian.discovery import DiscoveryResult
 from agentguardian.dispositions import DispositionRecord, DispositionStatus
 from agentguardian.domain import Evidence, Finding, RiskDomain, Severity
 from agentguardian.evidence_state import (
+    EvidenceReference,
     EvidenceSnapshot,
+    FindingReference,
     ScanMetadata,
     decode_snapshot,
     encode_snapshot,
@@ -84,6 +86,7 @@ def _synthetic_finding(index: int, evidence_count: int = 1) -> Finding:
 def _state_snapshot(
     schema_version: int,
     *,
+    findings: tuple[FindingReference, ...] = (),
     disposition_key: bytes | None = None,
     dispositions: tuple[DispositionRecord, ...] = (),
 ) -> EvidenceSnapshot:
@@ -93,7 +96,7 @@ def _state_snapshot(
         product_version="0.1.0",
         rule_version="1.1.0",
         scan=ScanMetadata(1.0, 1.0, False, ()),
-        findings=(),
+        findings=findings,
         disposition_key=disposition_key,
         dispositions=dispositions,
     )
@@ -422,6 +425,84 @@ def test_startup_rejects_forged_snapshot_invariants_without_writing(
     assert save_calls == []
     assert tuple(tmp_path.rglob("*")) == before
     assert marker not in repr(context)
+
+
+@pytest.mark.parametrize(
+    ("schema_version", "forgery"),
+    (
+        (2, "scan_coverage"),
+        (2, "scan_limits"),
+        (2, "finding_root"),
+        (2, "finding_rule"),
+        (2, "finding_order"),
+        (2, "evidence_fingerprint"),
+        (2, "evidence_masked"),
+        (1, "evidence_masked"),
+    ),
+)
+def test_startup_rejects_forged_nested_snapshot_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    schema_version: int,
+    forgery: str,
+) -> None:
+    marker = "synthetic-private-forged-nested-marker"
+    stored_key = b"s" * 32
+    fresh_key = b"f" * 32
+    evidence = (
+        EvidenceReference("a" * 64, "OpenAI API key detected"),
+        EvidenceReference("b" * 64, "OpenAI API key detected"),
+    )
+    finding = FindingReference(
+        "OPENAI_API_KEY",
+        "c" * 64,
+        evidence,
+    )
+    snapshot = _state_snapshot(
+        schema_version,
+        findings=(finding,),
+        disposition_key=stored_key if schema_version == 2 else None,
+    )
+    target, field, invalid_value = {
+        "scan_coverage": (snapshot.scan, "coverage", 2.0),
+        "scan_limits": (snapshot.scan, "limits", (marker,)),
+        "finding_root": (finding, "root_hmac_fingerprint", marker),
+        "finding_rule": (finding, "rule_id", marker),
+        "finding_order": (finding, "evidence", tuple(reversed(evidence))),
+        "evidence_fingerprint": (evidence[0], "hmac_fingerprint", marker),
+        "evidence_masked": (evidence[0], "masked", f"C:\\{marker}"),
+    }[forgery]
+    object.__setattr__(target, field, invalid_value)
+    load_calls = []
+    fresh_calls = []
+    save_calls = []
+
+    def load_state():
+        load_calls.append(None)
+        return snapshot
+
+    def fresh_key_value(length: int) -> bytes:
+        fresh_calls.append(length)
+        return fresh_key
+
+    monkeypatch.setattr(app_module, "load_protected_state", load_state)
+    monkeypatch.setattr(app_module, "save_protected_state", save_calls.append)
+    monkeypatch.setattr(app_module.secrets, "token_bytes", fresh_key_value)
+    before = tuple(tmp_path.rglob("*"))
+
+    context = app_module._load_disposition_context()
+
+    assert load_calls == [None]
+    assert fresh_calls == [32]
+    assert type(context.key) is bytes
+    assert len(context.key) == 32
+    assert context.key == fresh_key
+    assert context.records == ()
+    assert context.invalid_state is True
+    assert save_calls == []
+    assert tuple(tmp_path.rglob("*")) == before
+    assert marker not in repr(context)
+    assert "b" * 64 not in repr(context)
 
 
 def test_window_navigation_trust_strip_and_approved_theme(qapp):
