@@ -1,6 +1,6 @@
 import ast
 from dataclasses import FrozenInstanceError
-from datetime import datetime, timezone, tzinfo
+from datetime import datetime, timedelta, timezone, tzinfo
 import json
 import os
 import time
@@ -10,15 +10,26 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QPoint, QRect
+from PySide6.QtCore import QDateTime, QPoint, QRect, Qt
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QMessageBox,
+)
 
 import agentguardian.app as app_module
 from agentguardian.app import COLOR_TOKENS, create_window, export_new_report
 from agentguardian.detectors import FileDetectionResult
 from agentguardian.discovery import DiscoveryResult
-from agentguardian.dispositions import DispositionRecord, DispositionStatus
+from agentguardian.dispositions import (
+    DispositionRecord,
+    DispositionStatus,
+    disposition_index,
+    reviewed_findings,
+)
 from agentguardian.domain import Evidence, Finding, RiskDomain, Severity
 from agentguardian.evidence_state import (
     EvidenceReference,
@@ -29,6 +40,8 @@ from agentguardian.evidence_state import (
     encode_snapshot,
 )
 from agentguardian.state_store import StateStoreError
+from agentguardian.reporting import render_html, render_json
+from agentguardian.scoring import score
 
 
 EVALUATED_AT = datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
@@ -139,6 +152,84 @@ def _disposition(
         "Local reviewer",
         created_at,
         expires_at,
+    )
+
+
+def _disposition_finding(index: int = 1) -> Finding:
+    return Finding(
+        rule_id="GENERIC_API_KEY",
+        domain=RiskDomain.CREDENTIALS,
+        severity=Severity.HIGH,
+        root_fingerprint=f"{index:064x}",
+        evidence=(Evidence(f"file-{index}.txt", f"{index + 1:064x}", "masked"),),
+        disposition_ref=f"{index + 2:064x}",
+    )
+
+
+def _audit_outcome(
+    findings: tuple[Finding, ...],
+    records: tuple[DispositionRecord, ...] = (),
+    *,
+    evaluated_at: datetime = EVALUATED_AT,
+) -> app_module.AuditOutcome:
+    technical = score(
+        findings,
+        coverage=0.75,
+        confidence=0.8,
+        limits=("synthetic_limit",),
+    )
+    reviewed = score(
+        reviewed_findings(
+            findings,
+            disposition_index(records),
+            now=evaluated_at,
+        ),
+        coverage=technical.coverage,
+        confidence=technical.confidence,
+        limits=technical.limits,
+    )
+    return app_module.AuditOutcome(
+        findings=findings,
+        score=technical,
+        reviewed_score=reviewed,
+        evaluated_at=evaluated_at,
+        rule_version="1.1.0",
+        report_json=render_json(
+            technical,
+            findings,
+            rule_version="1.1.0",
+            reviewed_score=reviewed,
+            dispositions=records,
+            evaluated_at=evaluated_at,
+        ),
+        report_html=render_html(
+            technical,
+            findings,
+            rule_version="1.1.0",
+            reviewed_score=reviewed,
+            dispositions=records,
+            evaluated_at=evaluated_at,
+        ),
+        scanned_roots=(Path(r"C:\private\audit-root"),),
+    )
+
+
+def _window_transaction_state(window) -> tuple[object, ...]:
+    return (
+        window._dispositions,
+        window._protected_state_invalid,
+        window._audit_outcome,
+        window.report_json,
+        window.report_html,
+        window.report_browser.toPlainText(),
+        window.findings_table.currentRow(),
+        tuple(
+            tuple(
+                window.findings_table.item(row, column).text()
+                for column in range(window.findings_table.columnCount())
+            )
+            for row in range(window.findings_table.rowCount())
+        ),
     )
 
 
@@ -564,6 +655,464 @@ def test_window_navigation_trust_strip_and_approved_theme(qapp):
     )
     assert not _global_rect(window.trust_strip).intersects(_global_rect(window.stack))
 
+    window.close()
+
+
+def test_finding_disposition_controls_are_stable_private_and_selection_driven(qapp):
+    finding = _disposition_finding()
+    outcome = _audit_outcome((finding,))
+    private_values = (
+        finding.disposition_ref,
+        DISPOSITION_KEY.hex(),
+        r"C:\private\audit-root",
+        "synthetic-raw-secret-marker",
+    )
+    window = create_window()
+    window.resize(window.minimumSize())
+    window._scan_completed(outcome)
+    window._switch_view(1)
+    window.show()
+    qapp.processEvents()
+
+    assert window.findings_table.columnCount() == 5
+    assert [
+        window.findings_table.horizontalHeaderItem(index).text()
+        for index in range(5)
+    ] == ["Severity", "Rule", "Source", "Masked evidence", "Disposition"]
+    assert window.findings_table.item(0, 4).text() == "Open"
+    assert not window.false_positive_button.isEnabled()
+    assert not window.accepted_risk_button.isEnabled()
+    assert not window.withdraw_button.isEnabled()
+    for button in (
+        window.false_positive_button,
+        window.accepted_risk_button,
+        window.withdraw_button,
+    ):
+        assert not button.icon().isNull()
+        assert button.toolTip()
+
+    window.findings_table.selectRow(0)
+    qapp.processEvents()
+
+    assert window.false_positive_button.isEnabled()
+    assert window.accepted_risk_button.isEnabled()
+    assert not window.withdraw_button.isEnabled()
+    actions = (
+        window.false_positive_button,
+        window.accepted_risk_button,
+        window.withdraw_button,
+    )
+    for left, right in zip(actions, actions[1:]):
+        assert not _global_rect(left).intersects(_global_rect(right))
+    assert not _global_rect(actions[0]).intersects(_global_rect(window.findings_table))
+    status_item = window.findings_table.item(0, 4)
+    assert (
+        window.findings_table.fontMetrics().horizontalAdvance(status_item.text())
+        < window.findings_table.columnWidth(4)
+    )
+    visible = " ".join(
+        window.findings_table.item(0, column).text()
+        for column in range(window.findings_table.columnCount())
+    )
+    combined = " ".join(
+        (visible, *(button.toolTip() for button in actions), repr(outcome))
+    )
+    assert all(value not in combined for value in private_values)
+
+    window._dispositions = (
+        _disposition(finding, DispositionStatus.FALSE_POSITIVE),
+    )
+    window._refresh_disposition_ui(EVALUATED_AT)
+    assert window.findings_table.item(0, 4).text() == "False positive"
+    assert window.withdraw_button.isEnabled()
+
+    window.findings_table.clearSelection()
+    qapp.processEvents()
+    assert not window.false_positive_button.isEnabled()
+    assert not window.accepted_risk_button.isEnabled()
+    assert not window.withdraw_button.isEnabled()
+    window.close()
+
+
+def test_disposition_dialog_validates_form_and_converts_local_expiry_to_utc(qapp):
+    dialog = app_module._DispositionDialog(
+        None,
+        DispositionStatus.FALSE_POSITIVE,
+        EVALUATED_AT,
+    )
+    ok_button = dialog.button_box.button(QDialogButtonBox.StandardButton.Ok)
+
+    assert dialog.status_combo.count() == 2
+    assert dialog.status_combo.currentText() == "False positive"
+    assert not ok_button.isEnabled()
+
+    dialog.reason_edit.setText("Synthetic review reason")
+    dialog.reviewer_edit.setText("Local reviewer")
+    dialog.expiry_edit.setDateTime(
+        QDateTime.fromString(
+            "2026-08-03T20:34:56+08:00",
+            Qt.DateFormat.ISODate,
+        )
+    )
+    qapp.processEvents()
+
+    assert ok_button.isEnabled()
+    assert dialog.values() == (
+        DispositionStatus.FALSE_POSITIVE,
+        "Synthetic review reason",
+        "Local reviewer",
+        "2026-08-03T12:34:56Z",
+    )
+
+    dialog.status_combo.setCurrentText("Accepted risk")
+    assert dialog.values()[0] is DispositionStatus.ACCEPTED_RISK
+    dialog.reason_edit.setText(r"C:\private\secret.txt")
+    qapp.processEvents()
+    assert not ok_button.isEnabled()
+    dialog.reason_edit.setText("Synthetic review reason")
+    dialog.expiry_edit.setDateTime(
+        QDateTime.fromString(
+            "2027-08-04T12:00:01Z",
+            Qt.DateFormat.ISODate,
+        )
+    )
+    qapp.processEvents()
+    assert not ok_button.isEnabled()
+    dialog.close()
+
+
+def test_disposition_dialog_cancel_has_zero_write_or_state_change(
+    qapp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finding = _disposition_finding()
+    saved = []
+
+    class CancelDialog:
+        def __init__(self, parent, status, now):
+            self.status = status
+
+        def exec(self):
+            return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(app_module, "_DispositionDialog", CancelDialog)
+    monkeypatch.setattr(app_module, "save_protected_state", saved.append)
+    window = create_window()
+    window._scan_completed(_audit_outcome((finding,)))
+    window.findings_table.selectRow(0)
+    before = _window_transaction_state(window)
+
+    window.false_positive_button.click()
+
+    assert saved == []
+    assert _window_transaction_state(window) == before
+    window.close()
+
+
+def test_disposition_create_replace_and_withdraw_save_candidate_before_commit(
+    qapp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finding = _disposition_finding()
+    requested_statuses = []
+    saved = []
+    observed_before_save = []
+    warnings = []
+
+    class AcceptDialog:
+        def __init__(self, parent, status, now):
+            requested_statuses.append(status)
+            self.status = status
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def values(self):
+            return (
+                self.status,
+                "Synthetic audit review",
+                "Local reviewer",
+                "2026-08-03T12:00:00Z",
+            )
+
+    monkeypatch.setattr(app_module, "_DispositionDialog", AcceptDialog)
+    monkeypatch.setattr(app_module, "_utc_now", lambda: EVALUATED_AT)
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: None)
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda parent, title, message: warnings.append((title, message)),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+    window = create_window()
+    original = _audit_outcome((finding,))
+    window._scan_completed(original)
+    window.findings_table.selectRow(0)
+
+    def save_candidate(snapshot):
+        observed_before_save.append(
+            (
+                window._dispositions,
+                window._audit_outcome,
+                window.report_json,
+                window.findings_table.item(0, 4).text(),
+                window.findings_table.currentRow(),
+            )
+        )
+        saved.append(snapshot)
+
+    monkeypatch.setattr(app_module, "save_protected_state", save_candidate)
+
+    window.false_positive_button.click()
+
+    assert warnings == []
+    assert requested_statuses == [DispositionStatus.FALSE_POSITIVE]
+    assert observed_before_save[0] == ((), original, original.report_json, "Open", 0)
+    assert len(saved) == 1
+    assert saved[0].dispositions[0].status is DispositionStatus.FALSE_POSITIVE
+    assert window._dispositions == saved[0].dispositions
+    assert window._audit_outcome.findings is original.findings
+    assert window._audit_outcome.score is original.score
+    assert window._audit_outcome.score.total == 93
+    assert window._audit_outcome.reviewed_score.total == 100
+    assert window.findings_table.item(0, 4).text() == "False positive"
+    assert window.findings_table.currentRow() == 0
+    payload = json.loads(window.report_json)
+    assert payload["score"]["total"] == 93
+    assert payload["reviewed_score"]["total"] == 100
+    assert payload["findings"][0]["disposition"]["status"] == "false_positive"
+
+    previous = window._audit_outcome
+    window.accepted_risk_button.click()
+
+    assert requested_statuses[-1] is DispositionStatus.ACCEPTED_RISK
+    assert observed_before_save[1][0][0].status is DispositionStatus.FALSE_POSITIVE
+    assert observed_before_save[1][1] is previous
+    assert saved[1].dispositions[0].status is DispositionStatus.ACCEPTED_RISK
+    assert window._audit_outcome.score is original.score
+    assert window._audit_outcome.reviewed_score == original.score
+    assert window.findings_table.item(0, 4).text() == "Accepted risk"
+    assert json.loads(window.report_json)["findings"][0]["disposition"][
+        "status"
+    ] == "accepted_risk"
+
+    window.withdraw_button.click()
+
+    assert saved[2].dispositions == ()
+    assert window._dispositions == ()
+    assert window._audit_outcome.score is original.score
+    assert window._audit_outcome.reviewed_score == original.score
+    assert window.findings_table.item(0, 4).text() == "Open"
+    assert window.findings_table.currentRow() == 0
+    assert not window.withdraw_button.isEnabled()
+    window.close()
+
+
+def test_disposition_save_failure_rolls_back_every_visible_and_internal_value(
+    qapp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finding = _disposition_finding()
+    old_record = _disposition(finding, DispositionStatus.FALSE_POSITIVE)
+    marker = "synthetic-private-save-marker"
+    warnings = []
+
+    class AcceptDialog:
+        def __init__(self, parent, status, now):
+            self.status = status
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def values(self):
+            return (
+                self.status,
+                "Replacement audit review",
+                "Replacement reviewer",
+                "2026-08-04T12:00:00Z",
+            )
+
+    monkeypatch.setattr(app_module, "_DispositionDialog", AcceptDialog)
+    monkeypatch.setattr(app_module, "_utc_now", lambda: EVALUATED_AT)
+    monkeypatch.setattr(
+        app_module,
+        "save_protected_state",
+        lambda snapshot: (_ for _ in ()).throw(StateStoreError(marker)),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda parent, title, message: warnings.append((title, message)),
+    )
+    window = create_window()
+    window._dispositions = (old_record,)
+    window._protected_state_invalid = True
+    window._scan_completed(_audit_outcome((finding,), (old_record,)))
+    window.findings_table.selectRow(0)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+    before = _window_transaction_state(window)
+
+    window.accepted_risk_button.click()
+
+    assert warnings == [("Save failed", "Unable to save encrypted state.")]
+    assert marker not in repr(warnings)
+    assert _window_transaction_state(window) == before
+    window.close()
+
+
+def test_invalid_state_replacement_requires_yes_for_disposition_and_explicit_save(
+    qapp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finding = _disposition_finding()
+    answers = iter(
+        (
+            QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+            QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+    )
+    saves = []
+    flags_during_save = []
+    warnings = []
+
+    class AcceptDialog:
+        def __init__(self, parent, status, now):
+            self.status = status
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def values(self):
+            return (
+                self.status,
+                "Synthetic audit review",
+                "Local reviewer",
+                "2026-08-03T12:00:00Z",
+            )
+
+    monkeypatch.setattr(app_module, "_DispositionDialog", AcceptDialog)
+    monkeypatch.setattr(app_module, "_utc_now", lambda: EVALUATED_AT)
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: None)
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda parent, title, message: warnings.append((title, message)),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: next(answers),
+    )
+    window = create_window()
+    window._protected_state_invalid = True
+    window._scan_completed(_audit_outcome((finding,)))
+    window.findings_table.selectRow(0)
+
+    def save_candidate(snapshot):
+        flags_during_save.append(window._protected_state_invalid)
+        saves.append(snapshot)
+
+    monkeypatch.setattr(app_module, "save_protected_state", save_candidate)
+    before = _window_transaction_state(window)
+
+    window.false_positive_button.click()
+    assert warnings == []
+    assert saves == []
+    assert _window_transaction_state(window) == before
+
+    window.false_positive_button.click()
+    assert len(saves) == 1
+    assert flags_during_save == [True]
+    assert not window._protected_state_invalid
+
+    explicit = create_window()
+    explicit._protected_state_invalid = True
+    explicit._scan_completed(_audit_outcome((finding,)))
+    explicit_before = _window_transaction_state(explicit)
+
+    def save_explicit(snapshot):
+        flags_during_save.append(explicit._protected_state_invalid)
+        saves.append(snapshot)
+
+    monkeypatch.setattr(app_module, "save_protected_state", save_explicit)
+
+    explicit.protected_state_button.click()
+    assert len(saves) == 1
+    assert _window_transaction_state(explicit) == explicit_before
+
+    explicit.protected_state_button.click()
+    assert len(saves) == 2
+    assert flags_during_save == [True, True]
+    assert not explicit._protected_state_invalid
+    explicit.close()
+    window.close()
+
+
+def test_expiry_timer_refreshes_scores_reports_and_status_without_writing(
+    qapp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finding = _disposition_finding()
+    active = _disposition(
+        finding,
+        DispositionStatus.FALSE_POSITIVE,
+        expires_at="2026-08-02T12:00:02Z",
+    )
+    clock = [EVALUATED_AT]
+    saves = []
+    monkeypatch.setattr(app_module, "_utc_now", lambda: clock[0])
+    monkeypatch.setattr(app_module, "save_protected_state", saves.append)
+    window = create_window()
+    window._dispositions = (active,)
+    window._scan_completed(_audit_outcome((finding,), (active,)))
+    window.findings_table.selectRow(0)
+
+    assert window._expiry_timer.isSingleShot()
+    assert window._expiry_timer.isActive()
+    assert 1 <= window._expiry_timer.interval() <= 2000
+    assert window.findings_table.item(0, 4).text() == "False positive"
+    assert window._audit_outcome.reviewed_score.total == 100
+
+    clock[0] = EVALUATED_AT + timedelta(seconds=2)
+    window._handle_expiry_timeout()
+
+    assert window._dispositions == (active,)
+    assert window.findings_table.item(0, 4).text() == "Expired"
+    assert window._audit_outcome.reviewed_score == window._audit_outcome.score
+    assert json.loads(window.report_json)["findings"][0]["disposition"][
+        "status"
+    ] == "expired"
+    assert not window._expiry_timer.isActive()
+    assert saves == []
+
+    accepted = _disposition(
+        finding,
+        DispositionStatus.ACCEPTED_RISK,
+        created_at="2026-08-02T12:00:02Z",
+        expires_at="2027-02-18T12:00:02Z",
+    )
+    window._dispositions = (accepted,)
+    window._commit_disposition_state((accepted,), now=clock[0])
+
+    assert window.findings_table.item(0, 4).text() == "Accepted risk"
+    assert window._audit_outcome.reviewed_score == window._audit_outcome.score
+    assert window._expiry_timer.isActive()
+    assert window._expiry_timer.interval() == 86_400_000
+
+    clock[0] += timedelta(days=1)
+    window._handle_expiry_timeout()
+    assert window._expiry_timer.isActive()
+    assert window._expiry_timer.interval() == 86_400_000
+    assert window._dispositions == (accepted,)
+    assert saves == []
+
+    window._invalidate_report()
+    assert not window._expiry_timer.isActive()
     window.close()
 
 

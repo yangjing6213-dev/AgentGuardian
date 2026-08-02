@@ -7,18 +7,24 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from itertools import islice
+from math import ceil
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
+from PySide6.QtCore import QDateTime, QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDateTimeEdit,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -33,8 +39,17 @@ from PySide6.QtWidgets import (
 
 from .detectors import MAX_FILE_BYTES, detect_file, detect_mcp_config, load_rules
 from .discovery import discover_files
-from .dispositions import DispositionRecord, disposition_index, reviewed_findings
-from .domain import Finding, Score, Severity
+from .dispositions import (
+    DispositionRecord,
+    DispositionStatus,
+    disposition_index,
+    evaluate_disposition,
+    parse_utc,
+    reviewed_findings,
+    upsert_disposition,
+    withdraw_disposition,
+)
+from .domain import Finding, Score, Severity, validate_safe_annotation
 from .evidence_state import (
     MAX_STATE_EVIDENCE,
     MAX_STATE_FINDINGS,
@@ -77,6 +92,15 @@ MAX_AUDIT_ENTRIES = 50_000
 MAX_AUDIT_BYTES = 512 * 1024 * 1024
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
 _CONTEXT_ERROR = "invalid disposition context"
+_SAVE_FAILURE_TITLE = "Save failed"
+_SAVE_FAILURE_MESSAGE = "Unable to save encrypted state."
+_EXPIRY_TIMER_CAP_MS = 86_400_000
+_STATUS_LABELS = {
+    "open": "Open",
+    "false_positive": "False positive",
+    "accepted_risk": "Accepted risk",
+    "expired": "Expired",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,7 +119,93 @@ class AuditOutcome:
     rule_version: str
     report_json: str
     report_html: str
-    scanned_roots: tuple[Path, ...]
+    scanned_roots: tuple[Path, ...] = field(repr=False)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _canonical_utc_seconds(value: datetime) -> str:
+    normalized = _validated_evaluation_time(value).replace(microsecond=0)
+    return normalized.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class _DispositionDialog(QDialog):
+    def __init__(
+        self,
+        parent: QWidget | None,
+        status: DispositionStatus,
+        now: datetime,
+    ) -> None:
+        super().__init__(parent)
+        self._now = _validated_evaluation_time(now)
+        self.setWindowTitle("Finding disposition")
+        self.setModal(True)
+        self.setMinimumWidth(420)
+
+        layout = QFormLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(10)
+        self.status_combo = QComboBox()
+        self.status_combo.addItem(
+            "False positive", DispositionStatus.FALSE_POSITIVE.value
+        )
+        self.status_combo.addItem(
+            "Accepted risk", DispositionStatus.ACCEPTED_RISK.value
+        )
+        self.status_combo.setCurrentIndex(
+            0 if status is DispositionStatus.FALSE_POSITIVE else 1
+        )
+        self.reason_edit = QLineEdit()
+        self.reason_edit.setMaxLength(240)
+        self.reviewer_edit = QLineEdit()
+        self.reviewer_edit.setMaxLength(80)
+        self.expiry_edit = QDateTimeEdit()
+        self.expiry_edit.setCalendarPopup(True)
+        self.expiry_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss t")
+        self.expiry_edit.setDateTime(
+            QDateTime(self._now.astimezone() + timedelta(days=30))
+        )
+        layout.addRow("Status", self.status_combo)
+        layout.addRow("Reason", self.reason_edit)
+        layout.addRow("Reviewer", self.reviewer_edit)
+        layout.addRow("Local expiry", self.expiry_edit)
+
+        self.button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        layout.addRow(self.button_box)
+        self.reason_edit.textChanged.connect(self._update_validity)
+        self.reviewer_edit.textChanged.connect(self._update_validity)
+        self.status_combo.currentIndexChanged.connect(self._update_validity)
+        self.expiry_edit.dateTimeChanged.connect(self._update_validity)
+        self._update_validity()
+
+    def values(self) -> tuple[DispositionStatus, str, str, str]:
+        status = DispositionStatus(self.status_combo.currentData())
+        reason = validate_safe_annotation("reason", self.reason_edit.text(), 240)
+        reviewer = validate_safe_annotation(
+            "reviewer", self.reviewer_edit.text(), 80
+        )
+        expiry = self.expiry_edit.dateTime().toUTC().toPython()
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        expiry = _validated_evaluation_time(expiry)
+        if not self._now < expiry or expiry - self._now > timedelta(days=366):
+            raise ValueError("DISPOSITION_INVALID")
+        return status, reason, reviewer, _canonical_utc_seconds(expiry)
+
+    def _update_validity(self, *_args: object) -> None:
+        try:
+            self.values()
+            valid = True
+        except (TypeError, ValueError):
+            valid = False
+        self.button_box.button(QDialogButtonBox.StandardButton.Ok).setEnabled(valid)
 
 
 def _generate_key() -> bytes:
@@ -527,6 +637,9 @@ class AgentGuardianWindow(QMainWindow):
         self.is_scanning = False
         self.report_json = ""
         self.report_html = ""
+        self._expiry_timer = QTimer(self)
+        self._expiry_timer.setSingleShot(True)
+        self._expiry_timer.timeout.connect(self._handle_expiry_timeout)
         self._build_ui()
         self.setStyleSheet(_stylesheet())
 
@@ -643,9 +756,9 @@ class AgentGuardianWindow(QMainWindow):
         layout.setContentsMargins(24, 22, 24, 22)
         layout.setSpacing(10)
         layout.addWidget(_heading("风险发现"))
-        self.findings_table = QTableWidget(0, 4)
+        self.findings_table = QTableWidget(0, 5)
         self.findings_table.setHorizontalHeaderLabels(
-            ["严重性", "规则", "来源", "已掩码证据"]
+            ["Severity", "Rule", "Source", "Masked evidence", "Disposition"]
         )
         self.findings_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.findings_table.setSelectionBehavior(
@@ -658,8 +771,50 @@ class AgentGuardianWindow(QMainWindow):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.findings_table.itemSelectionChanged.connect(self._show_guidance)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.findings_table.setColumnWidth(4, 112)
+        self.findings_table.itemSelectionChanged.connect(self._selection_changed)
         layout.addWidget(self.findings_table, 1)
+
+        disposition_actions = QHBoxLayout()
+        disposition_actions.setSpacing(8)
+        self.false_positive_button = QPushButton("False positive")
+        self.false_positive_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogDiscardButton)
+        )
+        self.false_positive_button.setToolTip(
+            "Create or replace a false-positive disposition"
+        )
+        self.false_positive_button.clicked.connect(
+            lambda: self._set_disposition(DispositionStatus.FALSE_POSITIVE)
+        )
+        self.accepted_risk_button = QPushButton("Accepted risk")
+        self.accepted_risk_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
+        )
+        self.accepted_risk_button.setToolTip(
+            "Create or replace an accepted-risk disposition"
+        )
+        self.accepted_risk_button.clicked.connect(
+            lambda: self._set_disposition(DispositionStatus.ACCEPTED_RISK)
+        )
+        self.withdraw_button = QPushButton("Withdraw")
+        self.withdraw_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogResetButton)
+        )
+        self.withdraw_button.setToolTip("Withdraw this finding's disposition")
+        self.withdraw_button.clicked.connect(self._withdraw_disposition)
+        for button in (
+            self.false_positive_button,
+            self.accepted_risk_button,
+            self.withdraw_button,
+        ):
+            button.setMinimumWidth(132)
+            button.setFixedHeight(32)
+            button.setEnabled(False)
+            disposition_actions.addWidget(button)
+        disposition_actions.addStretch()
+        layout.addLayout(disposition_actions)
         layout.addWidget(QLabel("人工修复步骤"))
         self.guidance_browser = QTextBrowser()
         self.guidance_browser.setMinimumHeight(120)
@@ -763,8 +918,9 @@ class AgentGuardianWindow(QMainWindow):
         self.report_json = outcome.report_json
         self.report_html = outcome.report_html
         self._report_roots = outcome.scanned_roots
-        self._populate_findings(outcome.findings)
+        self._populate_findings(outcome.findings, now=outcome.evaluated_at)
         self._refresh_report()
+        self._schedule_expiry_timer(outcome.evaluated_at)
         self.save_button.setEnabled(True)
         self.protected_state_button.setEnabled(True)
         if outcome.score.incomplete:
@@ -791,6 +947,7 @@ class AgentGuardianWindow(QMainWindow):
         self.guidance_browser.setPlainText("无法生成修复步骤。")
 
     def _invalidate_report(self) -> None:
+        self._expiry_timer.stop()
         self._audit_outcome = None
         self.report_json = ""
         self.report_html = ""
@@ -800,6 +957,7 @@ class AgentGuardianWindow(QMainWindow):
         self.guidance_browser.setPlainText("选择一项风险以查看人工步骤。")
         self.save_button.setEnabled(False)
         self.protected_state_button.setEnabled(False)
+        self._update_disposition_commands()
         self._refresh_report()
 
     @Slot()
@@ -811,7 +969,12 @@ class AgentGuardianWindow(QMainWindow):
         self._thread = None
         self._worker = None
 
-    def _populate_findings(self, findings: tuple[Finding, ...]) -> None:
+    def _populate_findings(
+        self,
+        findings: tuple[Finding, ...],
+        *,
+        now: datetime | None = None,
+    ) -> None:
         rows = sum(len(finding.evidence) for finding in findings)
         self.findings_table.setRowCount(rows)
         self._row_findings.clear()
@@ -823,6 +986,7 @@ class AgentGuardianWindow(QMainWindow):
                     finding.rule_id,
                     evidence.source,
                     evidence.masked,
+                    "",
                 )
                 for column, value in enumerate(values):
                     item = QTableWidgetItem(value)
@@ -833,6 +997,58 @@ class AgentGuardianWindow(QMainWindow):
                     self.findings_table.setItem(row, column, item)
                 self._row_findings.append(finding)
                 row += 1
+        evaluation_time = (
+            now
+            if now is not None
+            else (
+                self._audit_outcome.evaluated_at
+                if self._audit_outcome is not None
+                else _utc_now()
+            )
+        )
+        self._refresh_disposition_ui(evaluation_time)
+
+    def _selection_changed(self) -> None:
+        self._show_guidance()
+        self._update_disposition_commands()
+
+    def _selected_finding(self) -> Finding | None:
+        if not self.findings_table.selectionModel().hasSelection():
+            return None
+        row = self.findings_table.currentRow()
+        if not 0 <= row < len(self._row_findings):
+            return None
+        finding = self._row_findings[row]
+        return finding if finding.disposition_ref is not None else None
+
+    def _update_disposition_commands(self) -> None:
+        finding = self._selected_finding()
+        selectable = finding is not None and self._audit_outcome is not None
+        self.false_positive_button.setEnabled(selectable)
+        self.accepted_risk_button.setEnabled(selectable)
+        matching = False
+        if selectable:
+            record = disposition_index(self._dispositions).get(
+                finding.disposition_ref
+            )
+            matching = record is not None and record.rule_id == finding.rule_id
+        self.withdraw_button.setEnabled(matching)
+
+    def _refresh_disposition_ui(self, now: datetime) -> None:
+        evaluation_time = _validated_evaluation_time(now)
+        records = disposition_index(self._dispositions)
+        for row, finding in enumerate(self._row_findings):
+            state = evaluate_disposition(
+                finding,
+                records,
+                now=evaluation_time,
+            ).state
+            item = self.findings_table.item(row, 4)
+            if item is None:
+                item = QTableWidgetItem()
+                self.findings_table.setItem(row, 4, item)
+            item.setText(_STATUS_LABELS[state])
+        self._update_disposition_commands()
 
     def _show_guidance(self) -> None:
         row = self.findings_table.currentRow()
@@ -865,6 +1081,209 @@ class AgentGuardianWindow(QMainWindow):
         self.findings_table.setFocus(Qt.FocusReason.OtherFocusReason)
         self._show_guidance()
 
+    def _set_disposition(self, preselected: DispositionStatus) -> None:
+        finding = self._selected_finding()
+        if finding is None or self._audit_outcome is None:
+            return
+        now = _validated_evaluation_time(_utc_now())
+        dialog = _DispositionDialog(self, preselected, now)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            status, reason, reviewer, expires_at = dialog.values()
+            record = DispositionRecord(
+                disposition_ref=finding.disposition_ref,
+                rule_id=finding.rule_id,
+                status=status,
+                reason=reason,
+                reviewer=reviewer,
+                created_at=_canonical_utc_seconds(now),
+                expires_at=expires_at,
+            )
+            candidate = upsert_disposition(self._dispositions, record)
+        except (TypeError, ValueError):
+            self._show_save_failure()
+            return
+        if self._save_disposition_candidate(candidate, now):
+            self._commit_disposition_state(candidate, now=now)
+
+    def _withdraw_disposition(self) -> None:
+        finding = self._selected_finding()
+        if finding is None or self._audit_outcome is None:
+            return
+        record = disposition_index(self._dispositions).get(finding.disposition_ref)
+        if record is None or record.rule_id != finding.rule_id:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Withdraw disposition",
+            "Withdraw the disposition for this finding?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        now = _validated_evaluation_time(_utc_now())
+        try:
+            candidate = withdraw_disposition(
+                self._dispositions,
+                finding.disposition_ref,
+            )
+        except (TypeError, ValueError):
+            self._show_save_failure()
+            return
+        if self._save_disposition_candidate(candidate, now):
+            self._commit_disposition_state(candidate, now=now)
+
+    def _save_disposition_candidate(
+        self,
+        candidate: tuple[DispositionRecord, ...],
+        now: datetime,
+    ) -> bool:
+        outcome = self._audit_outcome
+        if outcome is None or not self._confirm_invalid_state_replacement():
+            return False
+        try:
+            snapshot = build_snapshot(
+                outcome.findings,
+                outcome.score,
+                rule_version=outcome.rule_version,
+                captured_at=now,
+                disposition_key=self._disposition_key,
+                dispositions=candidate,
+            )
+            save_protected_state(snapshot)
+        except Exception:  # noqa: BLE001 - fixed transactional failure boundary
+            self._show_save_failure()
+            return False
+        return True
+
+    def _confirm_invalid_state_replacement(self) -> bool:
+        if not self._protected_state_invalid:
+            return True
+        answer = QMessageBox.question(
+            self,
+            "Replace invalid state",
+            "Replace the invalid encrypted state with the current audit state?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _show_save_failure(self) -> None:
+        QMessageBox.warning(self, _SAVE_FAILURE_TITLE, _SAVE_FAILURE_MESSAGE)
+
+    def _reviewed_outcome(
+        self,
+        records: tuple[DispositionRecord, ...],
+        now: datetime,
+    ) -> AuditOutcome:
+        outcome = self._audit_outcome
+        if outcome is None:
+            raise ValueError(_CONTEXT_ERROR)
+        evaluation_time = _validated_evaluation_time(now)
+        reviewed_score = score(
+            reviewed_findings(
+                outcome.findings,
+                disposition_index(records),
+                now=evaluation_time,
+            ),
+            coverage=outcome.score.coverage,
+            confidence=outcome.score.confidence,
+            limits=outcome.score.limits,
+        )
+        report_json = render_json(
+            outcome.score,
+            outcome.findings,
+            rule_version=outcome.rule_version,
+            reviewed_score=reviewed_score,
+            dispositions=records,
+            evaluated_at=evaluation_time,
+        )
+        report_html = render_html(
+            outcome.score,
+            outcome.findings,
+            rule_version=outcome.rule_version,
+            reviewed_score=reviewed_score,
+            dispositions=records,
+            evaluated_at=evaluation_time,
+        )
+        return AuditOutcome(
+            findings=outcome.findings,
+            score=outcome.score,
+            reviewed_score=reviewed_score,
+            evaluated_at=evaluation_time,
+            rule_version=outcome.rule_version,
+            report_json=report_json,
+            report_html=report_html,
+            scanned_roots=outcome.scanned_roots,
+        )
+
+    def _commit_disposition_state(
+        self,
+        records: tuple[DispositionRecord, ...],
+        *,
+        now: datetime,
+    ) -> None:
+        selected_row = self.findings_table.currentRow()
+        outcome = self._reviewed_outcome(records, now)
+        self._dispositions = records
+        self._protected_state_invalid = False
+        self._apply_reviewed_outcome(outcome, selected_row)
+
+    def _apply_reviewed_outcome(
+        self,
+        outcome: AuditOutcome,
+        selected_row: int,
+    ) -> None:
+        self._audit_outcome = outcome
+        self.report_json = outcome.report_json
+        self.report_html = outcome.report_html
+        self._refresh_disposition_ui(outcome.evaluated_at)
+        self._refresh_report()
+        if 0 <= selected_row < self.findings_table.rowCount():
+            self.findings_table.selectRow(selected_row)
+        self._schedule_expiry_timer(outcome.evaluated_at)
+
+    def _schedule_expiry_timer(self, now: datetime | None = None) -> None:
+        self._expiry_timer.stop()
+        if self._audit_outcome is None:
+            return
+        evaluation_time = _validated_evaluation_time(
+            _utc_now() if now is None else now
+        )
+        records = disposition_index(self._dispositions)
+        expiries = []
+        for finding in self._audit_outcome.findings:
+            evaluation = evaluate_disposition(
+                finding,
+                records,
+                now=evaluation_time,
+            )
+            if evaluation.state in {
+                DispositionStatus.FALSE_POSITIVE.value,
+                DispositionStatus.ACCEPTED_RISK.value,
+            }:
+                expiries.append(parse_utc(evaluation.record.expires_at))
+        if not expiries:
+            return
+        remaining_ms = ceil(
+            (min(expiries) - evaluation_time).total_seconds() * 1000
+        )
+        self._expiry_timer.start(
+            max(1, min(remaining_ms, _EXPIRY_TIMER_CAP_MS))
+        )
+
+    @Slot()
+    def _handle_expiry_timeout(self) -> None:
+        if self._audit_outcome is None:
+            self._expiry_timer.stop()
+            return
+        now = _validated_evaluation_time(_utc_now())
+        selected_row = self.findings_table.currentRow()
+        outcome = self._reviewed_outcome(self._dispositions, now)
+        self._apply_reviewed_outcome(outcome, selected_row)
+
     def _refresh_report(self) -> None:
         if self.report_mode_combo.currentText() == "JSON":
             self.report_browser.setPlainText(self.report_json or "尚无审计报告。")
@@ -893,12 +1312,14 @@ class AgentGuardianWindow(QMainWindow):
     def _save_protected_state(self) -> None:
         if self._audit_outcome is None:
             return
+        if not self._confirm_invalid_state_replacement():
+            return
         try:
             snapshot = build_snapshot(
                 self._audit_outcome.findings,
                 self._audit_outcome.score,
                 rule_version=self._audit_outcome.rule_version,
-                captured_at=datetime.now(timezone.utc),
+                captured_at=_utc_now(),
                 disposition_key=self._disposition_key,
                 dispositions=self._dispositions,
             )
@@ -906,6 +1327,7 @@ class AgentGuardianWindow(QMainWindow):
         except (EvidenceStateError, StateStoreError, TypeError, ValueError):
             QMessageBox.warning(self, "保存失败", "无法保存加密状态。")
             return
+        self._protected_state_invalid = False
         QMessageBox.information(
             self,
             "保存完成",
@@ -917,6 +1339,7 @@ class AgentGuardianWindow(QMainWindow):
             self.status_label.setText("审计仍在进行，请等待完成。")
             event.ignore()
             return
+        self._expiry_timer.stop()
         super().closeEvent(event)
 
 
@@ -985,7 +1408,7 @@ def _stylesheet() -> str:
             color: {COLOR_TOKENS["muted"]};
             padding: 8px 10px;
         }}
-        QTableWidget, QTextBrowser, QComboBox {{
+        QTableWidget, QTextBrowser, QComboBox, QLineEdit, QDateTimeEdit {{
             background: {COLOR_TOKENS["surface"]};
             border: 1px solid {COLOR_TOKENS["border"]};
             border-radius: 4px;
