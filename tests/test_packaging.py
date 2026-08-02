@@ -1,3 +1,5 @@
+import base64
+import binascii
 import csv
 import hashlib
 import io
@@ -8,8 +10,48 @@ import subprocess
 import sys
 import zipfile
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).parents[1]
+
+
+def _assert_record_member(row: list[str], member: bytes) -> None:
+    assert len(row) == 3
+    algorithm, separator, encoded_digest = row[1].partition("=")
+    assert algorithm == "sha256" and separator and encoded_digest
+    try:
+        padding = "=" * (-len(encoded_digest) % 4)
+        recorded_digest = base64.b64decode(
+            encoded_digest + padding, altchars=b"-_", validate=True
+        )
+        recorded_size = int(row[2])
+    except (binascii.Error, UnicodeError, ValueError) as error:
+        raise AssertionError from error
+    assert recorded_digest == hashlib.sha256(member).digest()
+    assert recorded_size == len(member)
+
+
+def test_record_member_validation_rejects_malformed_digest_and_size() -> None:
+    member = b"reviewed resource"
+    digest = base64.urlsafe_b64encode(hashlib.sha256(member).digest()).rstrip(b"=")
+    wrong_digest = base64.urlsafe_b64encode(
+        hashlib.sha256(member + b" changed").digest()
+    ).rstrip(b"=")
+    rows = (
+        ["resource.json", "sha256=not!base64", str(len(member))],
+        [
+            "resource.json",
+            f"sha256={wrong_digest.decode('ascii')}",
+            str(len(member)),
+        ],
+        ["resource.json", f"sha256={digest.decode('ascii')}", "not-a-size"],
+        ["resource.json", f"sha256={digest.decode('ascii')}", str(len(member) + 1)],
+    )
+
+    for row in rows:
+        with pytest.raises(AssertionError):
+            _assert_record_member(row, member)
 
 
 def test_wheel_extracts_with_self_audit_resources_offline(tmp_path: Path) -> None:
@@ -43,16 +85,19 @@ def test_wheel_extracts_with_self_audit_resources_offline(tmp_path: Path) -> Non
         record_name = next(
             name for name in archive.namelist() if name.endswith(".dist-info/RECORD")
         )
-        record_paths = {
-            row[0]
+        record_rows = {
+            row[0]: row
             for row in csv.reader(
                 io.StringIO(archive.read(record_name).decode("utf-8"))
             )
         }
-        assert {
+        resources = {
             "agentguardian/rules/default.json",
             "agentguardian/source_policy.json",
-        } <= record_paths
+        }
+        assert resources <= record_rows.keys()
+        for resource in resources:
+            _assert_record_member(record_rows[resource], archive.read(resource))
         assert archive.read("agentguardian/rules/default.json") == (
             PROJECT_ROOT / "rules" / "default.json"
         ).read_bytes()

@@ -153,12 +153,12 @@ Batch 3 本地实现的自动门禁已重新通过；独立安全复审和最终
 
 2026-08-03 在当前工作树重新运行：
 
-- `py -3.12 -m pytest -q`：`680 passed, 6 skipped`，0 failed；按不安装要求，通过 `PYTHONPATH` 使用机器上既有的测试依赖。
-- `py -3.14 -m pytest -q -p no:cacheprovider`：`680 passed, 6 skipped`，0 failed。
+- `py -3.12 -m pytest -q`：`681 passed, 6 skipped`，0 failed；按不安装要求，通过 `PYTHONPATH` 使用机器上既有的测试依赖。
+- `py -3.14 -m pytest -q -p no:cacheprovider`：`681 passed, 6 skipped`，0 failed。
 - Python 3.12 与 3.14 对全部包模块产生相同 canonical source 清单；LF 与 CRLF/CR 的 digest 相同，编码 cookie 或解码后源码变化的 digest 不同。
 - `rtk proxy python scripts/check_brand_assets.py`：退出码 0。
 - `rtk proxy python -m compileall -q src`：退出码 0。
-- 打包测试复制最小源码树后直接调用已锁定的 `setuptools.build_meta.build_wheel`，不调用打包或安装前端；wheel `RECORD` 包含 `agentguardian/source_policy.json` 和 byte-identical 的 `agentguardian/rules/default.json`。由 `zipfile` 直接解压后，隔离探针中的 `load_rules()`、`static_capability_findings()` 和 `collect_self_audit()` 均成功，原工作树不承载构建输出。
+- 打包测试复制最小源码树后直接调用已锁定的 `setuptools.build_meta.build_wheel`，不调用打包或安装前端；wheel `RECORD` 包含 `agentguardian/source_policy.json` 和 byte-identical 的 `agentguardian/rules/default.json`，并对两项资源逐一解码、比较 URL-safe base64 SHA-256 与记录的字节大小。由 `zipfile` 直接解压后，隔离探针中的 `load_rules()`、`static_capability_findings()` 和 `collect_self_audit()` 均成功，原工作树不承载构建输出。
 - `rtk git diff --check`：退出码 0，无输出。
 - 使用 `PYTHONPATH=src` 调用 `collect_self_audit()`：`findings=[]`、`local_only=true`、`network_capability=not_detected`、`ordinary_user_mode=true`；范围仍为 `package_source_policy`，依赖和二进制未扫描。
 
