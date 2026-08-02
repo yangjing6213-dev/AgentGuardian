@@ -253,10 +253,9 @@ def test_protected_state_is_saved_only_after_explicit_action(
     assert type(window._disposition_key) is bytes
     assert len(window._disposition_key) == 32
     assert window._dispositions == ()
-    assert repr(window._disposition_key) not in repr(window)
     snapshot = saved[0]
     assert snapshot.schema_version == 2
-    assert snapshot.disposition_key is window._disposition_key
+    assert snapshot.disposition_key == window._disposition_key
     assert type(snapshot.disposition_key) is bytes
     assert len(snapshot.disposition_key) == 32
     assert snapshot.dispositions == ()

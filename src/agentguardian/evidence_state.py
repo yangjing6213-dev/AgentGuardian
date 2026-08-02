@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from itertools import islice
 import json
 import math
 import re
@@ -174,12 +175,19 @@ def build_snapshot(
             .isoformat()
             .replace("+00:00", "Z")
         )
-        references = tuple(
-            sorted((_finding_reference(item) for item in findings), key=_finding_key)
-        )
-        records = tuple(disposition_index(dispositions).values())
-        if len(records) > MAX_STATE_FINDINGS:
+        finding_items = tuple(islice(findings, MAX_STATE_FINDINGS + 1))
+        if len(finding_items) > MAX_STATE_FINDINGS:
             raise _invalid()
+        references = tuple(
+            sorted(
+                (_finding_reference(item) for item in finding_items),
+                key=_finding_key,
+            )
+        )
+        disposition_items = tuple(islice(dispositions, MAX_STATE_FINDINGS + 1))
+        if len(disposition_items) > MAX_STATE_FINDINGS:
+            raise _invalid()
+        records = tuple(disposition_index(disposition_items).values())
         snapshot = EvidenceSnapshot(
             schema_version=SCHEMA_VERSION,
             captured_at=timestamp,
@@ -198,10 +206,10 @@ def build_snapshot(
         if len(encode_snapshot(snapshot)) > MAX_STATE_BYTES:
             raise _invalid()
         return snapshot
-    except EvidenceStateError:
-        raise
     except Exception:
-        raise _invalid() from None
+        pass
+    # Raising after the handler clears caller-owned exception context.
+    raise _invalid() from None
 
 
 def encode_snapshot(snapshot: EvidenceSnapshot) -> bytes:

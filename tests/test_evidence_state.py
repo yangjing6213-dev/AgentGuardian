@@ -488,6 +488,92 @@ def test_build_snapshot_rejects_dispositions_above_state_limit() -> None:
         )
 
 
+def test_build_snapshot_replaces_caller_evidence_state_error_and_chain() -> None:
+    marker = "private-evidence-state-marker"
+
+    class AdversarialFindings:
+        def __iter__(self):
+            try:
+                raise RuntimeError(r"C:\private\finding.txt")
+            except RuntimeError as error:
+                raise EvidenceStateError(marker) from error
+
+    with pytest.raises(EvidenceStateError) as raised:
+        build_snapshot(
+            AdversarialFindings(),
+            _score(),
+            rule_version="1.1.0",
+            captured_at=CAPTURED_AT,
+            disposition_key=DISPOSITION_KEY,
+            dispositions=(),
+        )
+
+    assert str(raised.value) == "PROTECTED_STATE_INVALID"
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert marker not in str(raised.value)
+
+
+def test_build_snapshot_bounds_findings_before_transforming() -> None:
+    class CountingFindings:
+        def __init__(self) -> None:
+            self.consumed = 0
+
+        def __iter__(self):
+            while True:
+                self.consumed += 1
+                if self.consumed > MAX_STATE_FINDINGS + 1:
+                    raise AssertionError("private findings over-consumed")
+                yield _finding()
+
+    findings = CountingFindings()
+
+    with pytest.raises(EvidenceStateError) as raised:
+        build_snapshot(
+            findings,
+            _score(),
+            rule_version="1.1.0",
+            captured_at=CAPTURED_AT,
+            disposition_key=DISPOSITION_KEY,
+            dispositions=(),
+        )
+
+    assert findings.consumed == MAX_STATE_FINDINGS + 1
+    assert str(raised.value) == "PROTECTED_STATE_INVALID"
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
+
+def test_build_snapshot_bounds_dispositions_before_indexing() -> None:
+    class CountingDispositions:
+        def __init__(self) -> None:
+            self.consumed = 0
+
+        def __iter__(self):
+            while True:
+                self.consumed += 1
+                if self.consumed > MAX_STATE_FINDINGS + 1:
+                    raise AssertionError("private dispositions over-consumed")
+                yield _record(f"{self.consumed:064x}")
+
+    dispositions = CountingDispositions()
+
+    with pytest.raises(EvidenceStateError) as raised:
+        build_snapshot(
+            (),
+            _score(),
+            rule_version="1.1.0",
+            captured_at=CAPTURED_AT,
+            disposition_key=DISPOSITION_KEY,
+            dispositions=dispositions,
+        )
+
+    assert dispositions.consumed == MAX_STATE_FINDINGS + 1
+    assert str(raised.value) == "PROTECTED_STATE_INVALID"
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
+
 @pytest.mark.parametrize(
     "mutate",
     (
