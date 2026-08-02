@@ -277,6 +277,8 @@ class AgentGuardianWindow(QMainWindow):
         self._worker: AuditWorker | None = None
         self._row_findings: list[Finding] = []
         self._audit_outcome: AuditOutcome | None = None
+        self._disposition_key = secrets.token_bytes(32)
+        self._dispositions = ()
         self.is_scanning = False
         self.report_json = ""
         self.report_html = ""
@@ -648,6 +650,8 @@ class AgentGuardianWindow(QMainWindow):
                 self._audit_outcome.score,
                 rule_version=self._audit_outcome.rule_version,
                 captured_at=datetime.now(timezone.utc),
+                disposition_key=self._disposition_key,
+                dispositions=self._dispositions,
             )
             save_protected_state(snapshot)
         except (EvidenceStateError, StateStoreError, TypeError, ValueError):

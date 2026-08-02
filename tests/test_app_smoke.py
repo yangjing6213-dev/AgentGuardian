@@ -17,7 +17,7 @@ from agentguardian.app import COLOR_TOKENS, create_window, export_new_report
 from agentguardian.detectors import FileDetectionResult
 from agentguardian.discovery import DiscoveryResult
 from agentguardian.domain import Evidence, Finding, RiskDomain, Severity
-from agentguardian.evidence_state import encode_snapshot
+from agentguardian.evidence_state import decode_snapshot, encode_snapshot
 from agentguardian.state_store import StateStoreError
 
 
@@ -220,6 +220,7 @@ def test_protected_state_is_saved_only_after_explicit_action(
     )
     saved = []
     messages = []
+    warnings = []
     monkeypatch.setattr(
         app_module,
         "save_protected_state",
@@ -229,6 +230,11 @@ def test_protected_state_is_saved_only_after_explicit_action(
         QMessageBox,
         "information",
         lambda parent, title, message: messages.append((title, message)),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda parent, title, message: warnings.append((title, message)),
     )
     window = create_window()
 
@@ -244,10 +250,23 @@ def test_protected_state_is_saved_only_after_explicit_action(
     window.protected_state_button.click()
 
     assert len(saved) == 1
-    encoded = encode_snapshot(saved[0])
+    assert type(window._disposition_key) is bytes
+    assert len(window._disposition_key) == 32
+    assert window._dispositions == ()
+    assert repr(window._disposition_key) not in repr(window)
+    snapshot = saved[0]
+    assert snapshot.schema_version == 2
+    assert snapshot.disposition_key is window._disposition_key
+    assert type(snapshot.disposition_key) is bytes
+    assert len(snapshot.disposition_key) == 32
+    assert snapshot.dispositions == ()
+    assert repr(snapshot.disposition_key) not in repr(snapshot)
+    encoded = encode_snapshot(snapshot)
+    assert decode_snapshot(encoded) == snapshot
     assert marker.encode() not in encoded
     assert b"private.env" not in encoded
     assert str(tmp_path).encode() not in encoded
+    assert warnings == []
     assert messages == [("保存完成", "加密状态已保存到当前 Windows 用户。")]
     window.close()
 
