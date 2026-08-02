@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -20,11 +21,9 @@ def _assert_record_member(row: list[str], member: bytes) -> None:
     assert len(row) == 3
     algorithm, separator, encoded_digest = row[1].partition("=")
     assert algorithm == "sha256" and separator and encoded_digest
+    assert re.fullmatch(r"[A-Za-z0-9_-]{43}", encoded_digest) is not None
     try:
-        padding = "=" * (-len(encoded_digest) % 4)
-        recorded_digest = base64.b64decode(
-            encoded_digest + padding, altchars=b"-_", validate=True
-        )
+        recorded_digest = base64.urlsafe_b64decode(encoded_digest + "=")
         recorded_size = int(row[2])
     except (binascii.Error, UnicodeError, ValueError) as error:
         raise AssertionError from error
@@ -34,7 +33,10 @@ def _assert_record_member(row: list[str], member: bytes) -> None:
 
 def test_record_member_validation_rejects_malformed_digest_and_size() -> None:
     member = b"reviewed resource"
-    digest = base64.urlsafe_b64encode(hashlib.sha256(member).digest()).rstrip(b"=")
+    member_digest = hashlib.sha256(member).digest()
+    digest = base64.urlsafe_b64encode(member_digest).rstrip(b"=")
+    standard_digest = base64.b64encode(member_digest).rstrip(b"=")
+    assert standard_digest != digest
     wrong_digest = base64.urlsafe_b64encode(
         hashlib.sha256(member + b" changed").digest()
     ).rstrip(b"=")
@@ -45,6 +47,12 @@ def test_record_member_validation_rejects_malformed_digest_and_size() -> None:
             f"sha256={wrong_digest.decode('ascii')}",
             str(len(member)),
         ],
+        [
+            "resource.json",
+            f"sha256={standard_digest.decode('ascii')}",
+            str(len(member)),
+        ],
+        ["resource.json", f"sha256={digest.decode('ascii')}=", str(len(member))],
         ["resource.json", f"sha256={digest.decode('ascii')}", "not-a-size"],
         ["resource.json", f"sha256={digest.decode('ascii')}", str(len(member) + 1)],
     )
