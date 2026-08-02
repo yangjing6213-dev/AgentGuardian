@@ -526,6 +526,152 @@ def test_static_scan_allows_restricted_roots_only_in_bounded_uses(
     assert static_capability_findings(package) == ()
 
 
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    (
+        (
+            "import os\nnamespace = globals()['os']\n",
+            ("SOURCE_POLICY_VIOLATION",),
+        ),
+        (
+            "import os\nnamespace = vars()['os']\n",
+            ("SOURCE_POLICY_VIOLATION",),
+        ),
+        (
+            "import sys\nnamespace = sys.modules['os']\n",
+            ("SOURCE_POLICY_VIOLATION",),
+        ),
+        ("locals()\n", ("SOURCE_POLICY_VIOLATION",)),
+        ("vars()\n", ("SOURCE_POLICY_VIOLATION",)),
+        (
+            "globals()['__builtins__']['open']('report', 'w')\n",
+            (
+                "DYNAMIC_EXECUTION",
+                "SOURCE_POLICY_VIOLATION",
+                "USER_DATA_WRITE",
+            ),
+        ),
+        (
+            "globals()['__builtins__']['__import__']('socket')\n",
+            ("DYNAMIC_EXECUTION", "SOURCE_POLICY_VIOLATION"),
+        ),
+        (
+            "import os\n"
+            "def f(value: (lambda: os)()):\n"
+            "    return value\n"
+            "f.__annotations__\n",
+            ("SOURCE_POLICY_VIOLATION",),
+        ),
+    ),
+)
+def test_static_scan_rejects_runtime_namespace_recovery(
+    tmp_path: Path, source: str, expected: tuple[str, ...]
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(source, encoding="utf-8")
+
+    assert static_capability_findings(package) == expected
+
+
+def test_static_scan_rejects_executable_annotation_shapes(tmp_path: Path) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    module = package / "synthetic.py"
+    annotations = (
+        "factory()",
+        "lambda: int",
+        "[item for item in values]",
+        "(item for item in values)",
+        "(kind := int)",
+    )
+
+    for annotation in annotations:
+        module.write_text(
+            f"def f(value: {annotation}):\n    return value\n",
+            encoding="utf-8",
+        )
+        assert static_capability_findings(package) == (
+            "SOURCE_POLICY_VIOLATION",
+        ), annotation
+
+
+def test_static_scan_allows_safe_direct_pathlib_import(tmp_path: Path) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(
+        "import pathlib\npathlib.PurePath('x')\n",
+        encoding="utf-8",
+    )
+
+    assert static_capability_findings(package) == ()
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "from pathlib import Path\np = Path('a')\np.rename('b')\n",
+        "from pathlib import Path\np = Path('a')\np.replace('b')\n",
+        "from pathlib import Path\nPath('a').symlink_to('b')\n",
+        "from pathlib import Path\nPath('a').hardlink_to('b')\n",
+        "import os\nos.symlink('a', 'b')\n",
+        "import os\nos.link('a', 'b')\n",
+        "def mutate(stream):\n    stream.truncate()\n",
+        "def mutate(stream):\n    stream.writelines([])\n",
+        "def mutate(target):\n    target.link_to('other')\n",
+    ),
+)
+def test_static_scan_reports_receiver_independent_filesystem_mutators(
+    tmp_path: Path, source: str
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(source, encoding="utf-8")
+
+    assert static_capability_findings(package) == ("USER_DATA_WRITE",)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "value = 'a'.replace('a', 'b')\n",
+        (
+            "from datetime import datetime, timezone\n"
+            "value = datetime.now().replace(tzinfo=timezone.utc)\n"
+        ),
+        (
+            "from datetime import datetime\n"
+            "value = datetime.now().replace(microsecond=0)\n"
+        ),
+    ),
+)
+def test_static_scan_allows_structurally_safe_replace_calls(
+    tmp_path: Path, source: str
+) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(source, encoding="utf-8")
+
+    assert static_capability_findings(package) == ()
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "value.replace(old, new)\n",
+        "value.replace('a', 'b', 1)\n",
+        "value.replace(day=1)\n",
+        "value.replace(tzinfo=None, day=1)\n",
+    ),
+)
+def test_static_scan_rejects_other_replace_calls(tmp_path: Path, source: str) -> None:
+    package = tmp_path / "agentguardian"
+    package.mkdir()
+    (package / "synthetic.py").write_text(source, encoding="utf-8")
+
+    assert static_capability_findings(package) == ("USER_DATA_WRITE",)
+
+
 def test_static_scan_marks_ambiguous_write_api_as_policy_violation(
     tmp_path: Path,
 ) -> None:
@@ -543,7 +689,10 @@ def test_static_scan_marks_ambiguous_write_api_as_policy_violation(
         encoding="utf-8",
     )
 
-    assert static_capability_findings(package) == ("SOURCE_POLICY_VIOLATION",)
+    assert static_capability_findings(package) == (
+        "SOURCE_POLICY_VIOLATION",
+        "USER_DATA_WRITE",
+    )
 
 
 def test_dangerous_attribute_alias_stays_reported_after_rebinding(
@@ -1007,7 +1156,7 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "第 8 节为已被第 9 至 10 节取代的历史交接记录",
         "Batch 2 历史远程证据",
         "Batch 3 当前本地证据",
-        "`657 passed, 6 skipped`，0 failed",
+        "`683 passed, 6 skipped`，0 failed",
         "`findings=[]`、`local_only=true`、`network_capability=not_detected`",
         "未经控制者验证，不声明当前或最终远程 CI",
         status,

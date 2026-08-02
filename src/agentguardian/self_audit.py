@@ -40,6 +40,7 @@ _SAFE_DIRECT_IMPORTS = {
     "math",
     "ntpath",
     "os",
+    "pathlib",
     "re",
     "secrets",
     "stat",
@@ -84,18 +85,36 @@ _RESTRICTED_ROOTS = {
     "os",
     "pathlib",
 }
-_WRITE_ATTRIBUTE_MEMBERS = {
+_FILESYSTEM_MUTATOR_MEMBERS = {
+    "hardlink_to",
+    "link",
+    "link_to",
     "mkdir",
     "open",
     "rename",
     "replace",
     "rmdir",
+    "symlink",
+    "symlink_to",
     "touch",
+    "truncate",
     "unlink",
     "write",
     "write_bytes",
     "write_text",
+    "writelines",
 }
+_DECLARATIVE_ANNOTATION_NODES = (
+    ast.Attribute,
+    ast.BinOp,
+    ast.BitOr,
+    ast.Constant,
+    ast.List,
+    ast.Load,
+    ast.Name,
+    ast.Subscript,
+    ast.Tuple,
+)
 
 
 def collect_self_audit() -> dict[str, object]:
@@ -195,7 +214,9 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
         for parent in ast.walk(tree)
         for child in ast.iter_child_nodes(parent)
     }
-    annotation_nodes = _annotation_nodes(tree)
+    annotation_nodes, invalid_annotation = _annotation_nodes(tree)
+    if invalid_annotation:
+        findings.add("SOURCE_POLICY_VIOLATION")
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -219,30 +240,22 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
                 if node.module.split(".", 1)[0] == "ctypes" and not allow_ctypes:
                     findings.add("NATIVE_CAPABILITY")
 
-    dynamic_lookup_references = {
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and node.id in {"getattr", "vars"}
-    }
-    allowed_dynamic_lookup_references = {
-        node.func
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id in {"getattr", "vars"}
-    }
-    if dynamic_lookup_references != allowed_dynamic_lookup_references:
-        findings.add("USER_DATA_WRITE")
-
     for node in ast.walk(tree):
         reference_findings = _capability_reference_findings(
             node, parents, annotation_nodes
         )
         direct_call = direct_calls.get(node)
         direct_open_mode = _open_mode(direct_call) if direct_call else None
+        safe_replace = bool(
+            direct_call
+            and isinstance(node, ast.Attribute)
+            and node.attr == "replace"
+            and _is_safe_replace_call(direct_call)
+        )
         if (
             reference_findings
             and node not in allowed_user_data_references
+            and not safe_replace
             and not (
                 direct_open_mode is not None
                 and not any(flag in direct_open_mode for flag in "wax+")
@@ -271,7 +284,7 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
                     findings.add("DYNAMIC_EXECUTION")
                 if (
                     _is_user_data_write_name(dynamic_attribute)
-                    or member in _WRITE_ATTRIBUTE_MEMBERS
+                    or member in _FILESYSTEM_MUTATOR_MEMBERS
                 ):
                     findings.add("USER_DATA_WRITE")
             mode = _open_mode(node)
@@ -284,6 +297,10 @@ def _scan_module(relative_path: str, tree: ast.Module, findings: set[str]) -> No
             if (
                 _is_user_data_write_call(node)
                 and node not in allowed_user_data_calls
+                and not _is_safe_replace_call(node)
+                and not (
+                    mode is not None and not any(flag in mode for flag in "wax+")
+                )
             ):
                 findings.add("USER_DATA_WRITE")
 
@@ -360,7 +377,9 @@ def _classify_attribute(
         )
     if node.attr == "__dict__" and root in {"os", "pathlib", "Path"}:
         findings.add("USER_DATA_WRITE")
-    if node.attr in {"__dict__", "__getattribute__"}:
+    if node.attr in {"__annotations__", "__dict__", "__getattribute__"}:
+        findings.add("SOURCE_POLICY_VIOLATION")
+    if name == "sys.modules":
         findings.add("SOURCE_POLICY_VIOLATION")
     if "clipboard_" in node.attr:
         findings.add("CLIPBOARD_CAPABILITY")
@@ -546,19 +565,14 @@ def _allowed_state_store_write_calls(
 
 def _is_user_data_write_call(node: ast.Call) -> bool:
     name = _qualified_name(node.func)
-    return _is_user_data_write_name(name) or _call_name(node.func) in {
-        "mkdir",
-        "rmdir",
-        "touch",
-        "unlink",
-        "write",
-    }
+    return (
+        _is_user_data_write_name(name)
+        or _call_name(node.func) in _FILESYSTEM_MUTATOR_MEMBERS
+    )
 
 
 def _is_user_data_write_name(name: str) -> bool:
     return name in {
-        "Path.rename",
-        "Path.replace",
         "os.fdopen",
         "os.makedirs",
         "os.mkdir",
@@ -569,18 +583,6 @@ def _is_user_data_write_name(name: str) -> bool:
         "os.replace",
         "os.rmdir",
         "os.unlink",
-        "pathlib.Path.rename",
-        "pathlib.Path.replace",
-    }
-
-
-def _is_user_data_write_reference(name: str) -> bool:
-    return _is_user_data_write_name(name) or name in {
-        "Path.open",
-        "__builtins__.open",
-        "builtins.open",
-        "open",
-        "pathlib.Path.open",
     }
 
 
@@ -593,6 +595,8 @@ def _capability_reference_findings(
     if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
         if node.id == "__builtins__":
             findings.update(("DYNAMIC_EXECUTION", "SOURCE_POLICY_VIOLATION"))
+        elif node.id in {"__annotations__", "globals", "locals", "vars"}:
+            findings.add("SOURCE_POLICY_VIOLATION")
         elif node.id in _RESTRICTED_ROOTS and not _allowed_restricted_root_reference(
             node, parents, annotation_nodes
         ):
@@ -600,6 +604,11 @@ def _capability_reference_findings(
         if node.id == "__import__":
             findings.add("DYNAMIC_EXECUTION")
         if node.id == "open":
+            findings.add("USER_DATA_WRITE")
+        parent = parents.get(node)
+        if node.id in {"getattr", "vars"} and not (
+            isinstance(parent, ast.Call) and parent.func is node
+        ):
             findings.add("USER_DATA_WRITE")
     elif (
         isinstance(node, ast.Name)
@@ -612,19 +621,24 @@ def _capability_reference_findings(
         if name in {"__builtins__.__import__", "builtins.__import__"}:
             findings.add("DYNAMIC_EXECUTION")
         if (
-            node.attr in {"mkdir", "open", "rmdir", "touch", "unlink", "write"}
-            or _is_user_data_write_reference(name)
+            node.attr in _FILESYSTEM_MUTATOR_MEMBERS
+            or _is_user_data_write_name(name)
         ):
             findings.add("USER_DATA_WRITE")
-    elif (
-        isinstance(node, ast.Subscript)
-        and _qualified_name(node.value) in {"__builtins__", "builtins"}
-        and isinstance(node.slice, ast.Constant)
-    ):
-        if node.slice.value == "__import__":
-            findings.add("DYNAMIC_EXECUTION")
-        if node.slice.value == "open":
-            findings.add("USER_DATA_WRITE")
+    elif isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+        if _is_runtime_namespace(node.value):
+            findings.add("SOURCE_POLICY_VIOLATION")
+            if node.slice.value == "__builtins__":
+                findings.add("DYNAMIC_EXECUTION")
+            if node.slice.value == "__import__":
+                findings.add("DYNAMIC_EXECUTION")
+            if node.slice.value == "open":
+                findings.add("USER_DATA_WRITE")
+        elif _qualified_name(node.value) in {"__builtins__", "builtins"}:
+            if node.slice.value == "__import__":
+                findings.add("DYNAMIC_EXECUTION")
+            if node.slice.value == "open":
+                findings.add("USER_DATA_WRITE")
     return findings
 
 
@@ -645,7 +659,7 @@ def _allowed_restricted_root_reference(
     )
 
 
-def _annotation_nodes(tree: ast.Module) -> set[ast.AST]:
+def _annotation_nodes(tree: ast.Module) -> tuple[set[ast.AST], bool]:
     roots: list[ast.expr] = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.AnnAssign, ast.arg)) and node.annotation is not None:
@@ -653,7 +667,41 @@ def _annotation_nodes(tree: ast.Module) -> set[ast.AST]:
         elif isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
             if node.returns is not None:
                 roots.append(node.returns)
-    return {child for root in roots for child in ast.walk(root)}
+    allowed: set[ast.AST] = set()
+    invalid = False
+    for root in roots:
+        nodes = set(ast.walk(root))
+        if all(isinstance(node, _DECLARATIVE_ANNOTATION_NODES) for node in nodes):
+            allowed.update(nodes)
+        else:
+            invalid = True
+    return allowed, invalid
+
+
+def _is_runtime_namespace(node: ast.expr) -> bool:
+    if isinstance(node, ast.Call):
+        name = _qualified_name(node.func)
+        return name in {"globals", "locals"} or (
+            name == "vars" and not node.args and not node.keywords
+        )
+    if isinstance(node, ast.Attribute):
+        return _qualified_name(node) in {"__builtins__.__dict__", "sys.modules"}
+    if isinstance(node, ast.Subscript):
+        return _is_runtime_namespace(node.value)
+    return False
+
+
+def _is_safe_replace_call(node: ast.Call) -> bool:
+    if _call_name(node.func) != "replace" or _qualified_name(node.func) == "os.replace":
+        return False
+    if not node.keywords:
+        return len(node.args) == 2 and all(
+            isinstance(argument, ast.Constant) and isinstance(argument.value, str)
+            for argument in node.args
+        )
+    return not node.args and all(
+        keyword.arg in {"microsecond", "tzinfo"} for keyword in node.keywords
+    )
 
 
 def _dynamic_attribute_name(node: ast.Call) -> str:
