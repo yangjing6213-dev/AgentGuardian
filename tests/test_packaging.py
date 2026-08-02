@@ -27,6 +27,10 @@ def _assert_record_member(row: list[str], member: bytes) -> None:
         recorded_size = int(row[2])
     except (binascii.Error, UnicodeError, ValueError) as error:
         raise AssertionError from error
+    assert (
+        base64.urlsafe_b64encode(recorded_digest).rstrip(b"=").decode("ascii")
+        == encoded_digest
+    )
     assert recorded_digest == hashlib.sha256(member).digest()
     assert recorded_size == len(member)
 
@@ -35,6 +39,11 @@ def test_record_member_validation_rejects_malformed_digest_and_size() -> None:
     member = b"reviewed resource"
     member_digest = hashlib.sha256(member).digest()
     digest = base64.urlsafe_b64encode(member_digest).rstrip(b"=")
+    alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    final_index = alphabet.index(digest[-1])
+    assert final_index % 4 == 0
+    alternate_digest = digest[:-1] + alphabet[final_index + 1 : final_index + 2]
+    assert base64.urlsafe_b64decode(alternate_digest + b"=") == member_digest
     standard_digest = base64.b64encode(member_digest).rstrip(b"=")
     assert standard_digest != digest
     wrong_digest = base64.urlsafe_b64encode(
@@ -45,6 +54,11 @@ def test_record_member_validation_rejects_malformed_digest_and_size() -> None:
         [
             "resource.json",
             f"sha256={wrong_digest.decode('ascii')}",
+            str(len(member)),
+        ],
+        [
+            "resource.json",
+            f"sha256={alternate_digest.decode('ascii')}",
             str(len(member)),
         ],
         [
