@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 import re
 
@@ -90,11 +90,22 @@ class Finding:
     severity: Severity
     root_fingerprint: str
     evidence: tuple[Evidence, ...]
+    disposition_ref: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         _require_tuple("evidence", self.evidence)
         if _SHA256_HEX.fullmatch(self.root_fingerprint) is None:
             raise ValueError("root_fingerprint must be a 64-character lowercase HMAC digest")
+        if (
+            self.disposition_ref is not None
+            and (
+                not isinstance(self.disposition_ref, str)
+                or _SHA256_HEX.fullmatch(self.disposition_ref) is None
+            )
+        ):
+            raise ValueError(
+                "disposition_ref must be a 64-character lowercase HMAC digest"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +172,23 @@ def _looks_like_seed_phrase(value: str) -> bool:
         and len(set(words)) >= 8
         and all(word.isascii() and word.isalpha() and word.islower() for word in words)
     )
+
+
+def validate_safe_annotation(name: str, value: object, max_length: int) -> str:
+    if type(value) is not str or type(max_length) is not int or max_length < 1:
+        raise ValueError(f"{name} contains unsafe content")
+    trimmed = value.strip()
+    if (
+        not trimmed
+        or len(trimmed) > max_length
+        or any(not character.isprintable() for character in trimmed)
+        or any(pattern.search(trimmed) for pattern in _UNMASKED_SECRET_PATTERNS)
+        or _URL.search(trimmed)
+        or _looks_like_path(trimmed)
+        or _looks_like_seed_phrase(trimmed)
+    ):
+        raise ValueError(f"{name} contains unsafe content")
+    return trimmed
 
 
 def _require_tuple(name: str, value: object) -> None:

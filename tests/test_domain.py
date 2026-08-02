@@ -13,6 +13,7 @@ from agentguardian.domain import (
     Severity,
     VerificationResult,
     VerificationStatus,
+    validate_safe_annotation,
 )
 
 
@@ -97,6 +98,57 @@ def test_finding_keeps_domain_and_severity() -> None:
 
     assert finding.domain is RiskDomain.CREDENTIALS
     assert finding.severity is Severity.HIGH
+    assert finding.disposition_ref is None
+
+
+def test_finding_accepts_hidden_disposition_reference_at_end() -> None:
+    reference = "d" * 64
+    finding = Finding(
+        "R-1",
+        RiskDomain.CREDENTIALS,
+        Severity.HIGH,
+        "b" * 64,
+        (),
+        reference,
+    )
+
+    assert finding.disposition_ref == reference
+    assert reference not in repr(finding)
+
+
+@pytest.mark.parametrize("reference", ("D" * 64, "d" * 63, "not-a-reference", 1))
+def test_finding_rejects_invalid_disposition_reference(reference: object) -> None:
+    with pytest.raises(ValueError, match="disposition_ref"):
+        Finding(
+            "R-1",
+            RiskDomain.CREDENTIALS,
+            Severity.HIGH,
+            "b" * 64,
+            (),
+            reference,  # type: ignore[arg-type]
+        )
+
+
+def test_safe_annotation_trims_and_rejects_private_content() -> None:
+    assert validate_safe_annotation("reason", "  Synthetic fixture  ", 240) == (
+        "Synthetic fixture"
+    )
+    for unsafe in (
+        r"C:\private\secret.txt",
+        "https://example.invalid/private",
+        "ghp_" + "a" * 32,
+        "abandon ability able about above absent absorb abstract absurd abuse access accident",
+        "line\nbreak",
+    ):
+        with pytest.raises(ValueError) as raised:
+            validate_safe_annotation("reason", unsafe, 240)
+        assert unsafe not in str(raised.value)
+
+
+@pytest.mark.parametrize("max_length", (0, -1, 1.5, True))
+def test_safe_annotation_requires_positive_integer_limit(max_length: object) -> None:
+    with pytest.raises(ValueError, match="unsafe content"):
+        validate_safe_annotation("reason", "A", max_length)  # type: ignore[arg-type]
 
 
 def test_shared_alpha_contracts_are_immutable_and_manual_only() -> None:

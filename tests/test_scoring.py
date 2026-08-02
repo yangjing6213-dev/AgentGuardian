@@ -1,10 +1,20 @@
 import math
+from datetime import datetime, timezone
 from itertools import permutations
 
 import pytest
 
+from agentguardian.dispositions import (
+    DispositionRecord,
+    DispositionStatus,
+    disposition_index,
+    reviewed_findings,
+)
 from agentguardian.domain import Finding, RiskDomain, Severity
 from agentguardian.scoring import score
+
+
+NOW = datetime(2026, 8, 2, 9, 0, tzinfo=timezone.utc)
 
 
 def _finding(
@@ -152,3 +162,62 @@ def test_score_rejects_out_of_range_boundaries(name: str, value: float) -> None:
 def test_score_rejects_mutable_limits() -> None:
     with pytest.raises(TypeError, match="limits"):
         score((), coverage=1.0, limits=["mutable"])  # type: ignore[arg-type]
+
+
+def test_accepted_risk_does_not_improve_reviewed_score() -> None:
+    finding = Finding(
+        "HIGH",
+        RiskDomain.CREDENTIALS,
+        Severity.HIGH,
+        "a" * 64,
+        (),
+        "d" * 64,
+    )
+    record = DispositionRecord(
+        "d" * 64,
+        "HIGH",
+        DispositionStatus.ACCEPTED_RISK,
+        "Synthetic accepted risk",
+        "Local reviewer",
+        "2026-08-02T08:00:00Z",
+        "2026-08-03T08:00:00Z",
+    )
+
+    technical = score((finding,), coverage=1.0)
+    reviewed = score(
+        reviewed_findings((finding,), disposition_index((record,)), now=NOW),
+        coverage=1.0,
+    )
+
+    assert reviewed == technical
+    assert reviewed.total == 93
+
+
+def test_expired_false_positive_reenters_deductions_and_caps() -> None:
+    finding = Finding(
+        "PUBLIC_ACTIVE_CREDENTIAL",
+        RiskDomain.CREDENTIALS,
+        Severity.HIGH,
+        "a" * 64,
+        (),
+        "e" * 64,
+    )
+    record = DispositionRecord(
+        "e" * 64,
+        "PUBLIC_ACTIVE_CREDENTIAL",
+        DispositionStatus.FALSE_POSITIVE,
+        "Synthetic expired fixture",
+        "Local reviewer",
+        "2026-08-01T08:00:00Z",
+        "2026-08-02T09:00:00Z",
+    )
+
+    technical = score((finding,), coverage=1.0)
+    reviewed = score(
+        reviewed_findings((finding,), disposition_index((record,)), now=NOW),
+        coverage=1.0,
+    )
+
+    assert reviewed == technical
+    assert reviewed.total == 39
+    assert reviewed.cap_reason == "public_active_credential"
