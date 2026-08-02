@@ -105,11 +105,11 @@ Batch 3 为每个 finding 计算一个不导出的 `disposition_ref`。精确跨
 
 保护状态 schema v1 只读兼容，只有显式保存才迁移到 schema v2；启动不会重写。损坏、不可解密或无效的受保护状态必须先获得明确确认，才允许替换。处置创建、替换和撤回都先原子保存候选状态，再更新内存分数、表格和报告；保存失败保留原状态。
 
-静态自审计先严格读取随包分发的 `source_policy.json` schema 1 清单，并要求包内 `.py` 模块集合与清单完全相等；每个已复核模块必须匹配基于 `ast.dump(..., annotate_fields=True, include_attributes=False)` 的 canonical AST SHA-256。源码以原始 bytes 交给 `ast.parse(..., filename=...)`，因此与 Python 运行时一致地处理 PEP 263 编码声明；未知编码、语法错误、模块增加、删除或 AST 变化都会以固定 finding 失败关闭并令 `local_only` 为 false。已复核包不会再由启发式解释。有限启发式仅对清单外的合成未知模块运行，用于识别代表性的网络导入、动态执行和用户数据写入能力；它不是 Python 表达式解释器，也不构成语义证明。
+静态自审计先严格读取随包分发的 `source_policy.json` schema 1 清单，并要求包内 `.py` 模块集合与清单完全相等。每个模块先以 `tokenize.detect_encoding` 按 PEP 263 编码声明解码，再将 CRLF 和 CR 确定性规范化为 LF，并对规范化 Unicode 的 UTF-8 表示计算 canonical source SHA-256；因此注释和编码 cookie 也在证明范围内。换行表示被有意忽略，UTF-8 BOM 按解码语义被消费，所以该清单不是原始字节身份的证明。原始 bytes 还会独立交给 `ast.parse(..., filename=...)`，保证按 Python 将执行的语法失败关闭并让 UTF-7 等编码中的运行时语法对扫描可见。未知编码、语法错误、模块增加、删除或 canonical source 变化都会产生固定 finding 并令 `local_only` 为 false。已复核包不会再由启发式解释。有限启发式仅对清单外的合成未知模块运行，用于识别代表性的网络导入、动态执行和用户数据写入能力；它不是 Python 表达式解释器，也不构成语义证明。
 
 仓库顶层 `rules/default.json` 是规则权威来源；`src/agentguardian/rules/default.json` 是仅供安装包运行的逐字节副本。测试要求两者 byte-identical，wheel `RECORD` 必须同时包含该规则副本和 `agentguardian/source_policy.json`，并通过无网络临时安装验证，避免已安装应用依赖仓库目录布局。
 
-该批次仅增加本地静态操作和人工指引，不发起 API 调用，也不默认访问 OpenAI API。DPAPI 不能抵御已经控制同一 Windows 用户会话的程序。主机时钟、路径别名或文件移动可能重新打开发现，但不会扩大处置范围。路径检查与 `os.replace` 之间仍有同用户竞态窗口，且没有句柄级目录绑定。Python 不能保证清除所有不可变 bytes 或字符串副本。静态自审计只覆盖已复核源码清单和有界启发式，不扫描依赖或二进制。清单未签名；同一用户控制代码和清单时可以同时替换两者，因此生产构建来源、签名和发布物证明仍属于 Batch 5。Batch 3 本地实现和门禁已完成；验收仍待最终 SHA 的远程验证。Batches 4-6 仍待完成，当前 Founder Alpha 仍是非生产状态。
+该批次仅增加本地静态操作和人工指引，不发起 API 调用，也不默认访问 OpenAI API。DPAPI 不能抵御已经控制同一 Windows 用户会话的程序。主机时钟、路径别名或文件移动可能重新打开发现，但不会扩大处置范围。路径检查与 `os.replace` 之间仍有同用户竞态窗口，且没有句柄级目录绑定。Python 不能保证清除所有不可变 bytes 或字符串副本。静态自审计只覆盖已复核源码清单和有界启发式，不扫描依赖或二进制。清单未签名；同一用户控制代码和清单时可以同时替换两者，因此生产构建来源、签名和发布物证明仍属于 Batch 5。Batch 3 本地实现的自动门禁已重新通过；独立安全复审和最终 SHA 远程验收仍待完成。Batches 4-6 仍待完成，当前 Founder Alpha 仍是非生产状态。
 
 ## 后续可信性要求（未实现门禁）
 

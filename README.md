@@ -41,7 +41,7 @@
 
 DPAPI 不能抵御已经控制同一 Windows 用户会话的程序，状态也不能跨用户或跨设备恢复。路径检查与最终 `os.replace` 之间仍存在同用户可利用的竞态窗口；当前批次通过祖先 reparse/UNC 重查缩小风险，但未实现句柄级目录约束。该功能不发起 API 调用、不增加云同步或自动修复，当前 Founder Alpha 仍不代表 Windows MVP 完成或生产安全。
 
-**发现处置与到期例外 Batch 3 状态。** Batch 3 本地实现和门禁已完成；验收仍待最终 SHA 的远程验证。跨扫描精确匹配只使用规则 ID、按 Windows 词法规则规范化的源路径，以及 NFKC 规范化的原始匹配。Windows 路径按 `ntpath.abspath`、`ntpath.normpath`、`ntpath.normcase` 处理，不做 Unicode 规范化。本地处置 HMAC 密钥与每次扫描随机生成的报告 HMAC 密钥彼此独立；报告 HMAC 仍限定于单次扫描，本地引用和密钥不导出。
+**发现处置与到期例外 Batch 3 状态。** Batch 3 本地实现的自动门禁已重新通过；独立安全复审和最终 SHA 远程验收仍待完成。跨扫描精确匹配只使用规则 ID、按 Windows 词法规则规范化的源路径，以及 NFKC 规范化的原始匹配。Windows 路径按 `ntpath.abspath`、`ntpath.normpath`、`ntpath.normcase` 处理，不做 Unicode 规范化。本地处置 HMAC 密钥与每次扫描随机生成的报告 HMAC 密钥彼此独立；报告 HMAC 仍限定于单次扫描，本地引用和密钥不导出。
 
 每项处置都需要原因、复核人和到期时间，处置有效期必须有限且不超过 366 天。有效误报只从复核分排除；接受风险仍计入复核分；技术分不受处置影响。受保护状态保持 schema v1 只读兼容，只有显式保存才迁移到 schema v2。损坏、不可解密或无效的受保护状态必须先获得明确确认，才允许替换。
 

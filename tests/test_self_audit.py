@@ -1,10 +1,13 @@
 import ast
 import dataclasses
 import hashlib
+import io
 import json
 import re
 import socket
+import subprocess
 import sys
+import tokenize
 import tomllib
 from pathlib import Path
 
@@ -18,10 +21,13 @@ PACKAGE_ROOT = PROJECT_ROOT / "src" / "agentguardian"
 SOURCE_POLICY_PATH = PACKAGE_ROOT / "source_policy.json"
 
 
-def _canonical_ast_digest(path: Path) -> str:
-    tree = ast.parse(path.read_bytes(), filename=str(path))
-    canonical = ast.dump(tree, annotate_fields=True, include_attributes=False)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+def _canonical_source_digest(path: Path) -> str:
+    raw = path.read_bytes()
+    encoding, _ = tokenize.detect_encoding(io.BytesIO(raw).readline)
+    normalized = (
+        raw.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")
+    )
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _copy_reviewed_package(tmp_path: Path) -> Path:
@@ -102,7 +108,7 @@ def test_source_policy_manifest_exactly_matches_current_package() -> None:
     assert policy["schema"] == 1
     assert list(modules) == names
     assert modules == {
-        name: _canonical_ast_digest(PACKAGE_ROOT / name) for name in names
+        name: _canonical_source_digest(PACKAGE_ROOT / name) for name in names
     }
 
 
@@ -113,7 +119,7 @@ def test_source_policy_manifest_exactly_matches_current_package() -> None:
         for path in sorted(PACKAGE_ROOT.rglob("*.py"))
     ),
 )
-def test_source_policy_rejects_ast_change_in_every_reviewed_module(
+def test_source_policy_rejects_source_change_in_every_reviewed_module(
     tmp_path: Path, module_name: str
 ) -> None:
     package = _copy_reviewed_package(tmp_path)
@@ -140,7 +146,7 @@ def test_source_policy_rejects_unparseable_reviewed_module(tmp_path: Path) -> No
     ("encoding", "marker"),
     (("utf-7", "\u20ac"), ("latin-1", "\xe9")),
 )
-def test_source_policy_uses_runtime_pep263_byte_parsing(
+def test_source_policy_uses_pep263_decoded_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     encoding: str,
@@ -158,7 +164,7 @@ def test_source_policy_uses_runtime_pep263_byte_parsing(
 
     policy = json.loads(SOURCE_POLICY_PATH.read_text(encoding="utf-8"))
     policy["modules"] = {
-        path.relative_to(package).as_posix(): _canonical_ast_digest(path)
+        path.relative_to(package).as_posix(): _canonical_source_digest(path)
         for path in sorted(package.rglob("*.py"))
     }
     updated_manifest = tmp_path / f"{encoding}-source-policy.json"
@@ -166,6 +172,87 @@ def test_source_policy_uses_runtime_pep263_byte_parsing(
     monkeypatch.setattr(self_audit, "SOURCE_POLICY_PATH", updated_manifest)
 
     assert static_capability_findings(package) == ()
+
+
+def test_canonical_source_digest_normalizes_newlines_but_attests_text() -> None:
+    source = b"# coding: latin-1\nvalue = 'caf\xe9'\n"
+    crlf_source = source.replace(b"\n", b"\r\n")
+    changed_cookie = source.replace(b"latin-1", b"iso-8859-1")
+    changed_comment = source + b"# reviewed\n"
+    changed_source = source.replace(b"caf\xe9", b"cafe")
+
+    assert self_audit._canonical_source_sha256(source) == (
+        self_audit._canonical_source_sha256(crlf_source)
+    )
+    assert self_audit._canonical_source_sha256(source) != (
+        self_audit._canonical_source_sha256(changed_cookie)
+    )
+    assert self_audit._canonical_source_sha256(source) != (
+        self_audit._canonical_source_sha256(changed_comment)
+    )
+    assert self_audit._canonical_source_sha256(source) != (
+        self_audit._canonical_source_sha256(changed_source)
+    )
+
+
+def test_utf7_runtime_injection_is_scanned_from_raw_bytes(tmp_path: Path) -> None:
+    package = tmp_path / "synthetic"
+    package.mkdir()
+    source = b"# coding: utf-7\nvalue = 1+AAo-import socket\n"
+    module = package / "injected.py"
+    module.write_bytes(source)
+
+    tree = ast.parse(source, filename=str(module))
+    assert any(isinstance(node, ast.Import) for node in ast.walk(tree))
+    assert static_capability_findings(package) == ("NETWORK_MODULE_IMPORT",)
+
+
+def test_canonical_source_manifest_matches_python_312_and_314() -> None:
+    script = """
+import json
+import pathlib
+import sys
+
+source_root = pathlib.Path(sys.argv[1])
+sys.path.insert(0, str(source_root))
+from agentguardian.self_audit import _canonical_source_sha256
+
+package_root = source_root / "agentguardian"
+print(json.dumps({
+    path.relative_to(package_root).as_posix(): _canonical_source_sha256(path.read_bytes())
+    for path in sorted(package_root.rglob("*.py"))
+}, sort_keys=True))
+"""
+    policy = json.loads(SOURCE_POLICY_PATH.read_text(encoding="utf-8"))
+    manifests: list[dict[str, str]] = []
+    unavailable: list[str] = []
+    for version in ("3.12", "3.14"):
+        probe = subprocess.run(
+            ["py", f"-{version}", "-c", "pass"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if probe.returncode:
+            unavailable.append(version)
+            continue
+        result = subprocess.run(
+            ["py", f"-{version}", "-c", script, str(PROJECT_ROOT / "src")],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        manifest = json.loads(result.stdout)
+        assert manifest == policy["modules"]
+        manifests.append(manifest)
+
+    if unavailable:
+        pytest.skip(f"Python launchers unavailable: {', '.join(unavailable)}")
+
+    assert manifests[0] == manifests[1]
 
 
 @pytest.mark.parametrize(
@@ -253,7 +340,7 @@ def test_reviewed_source_injections_are_manifest_violations(
     assert static_capability_findings(package) == ("SOURCE_POLICY_VIOLATION",)
 
 
-def test_source_policy_manifest_update_is_required_after_ast_change(
+def test_source_policy_manifest_update_is_required_after_source_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     package = _copy_reviewed_package(tmp_path)
@@ -265,7 +352,7 @@ def test_source_policy_manifest_update_is_required_after_ast_change(
     assert "SOURCE_POLICY_VIOLATION" in static_capability_findings(package)
 
     policy = json.loads(SOURCE_POLICY_PATH.read_text(encoding="utf-8"))
-    policy["modules"]["guidance.py"] = _canonical_ast_digest(module)
+    policy["modules"]["guidance.py"] = _canonical_source_digest(module)
     updated_manifest = tmp_path / "updated-source-policy.json"
     _write_manifest(updated_manifest, policy["modules"])
     monkeypatch.setattr(
@@ -982,7 +1069,7 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
     }
     assert documented_fields == actual_fields
 
-    status = "Batch 3 本地实现和门禁已完成；验收仍待最终 SHA 的远程验证。"
+    status = "Batch 3 本地实现的自动门禁已重新通过；独立安全复审和最终 SHA 远程验收仍待完成。"
     pending = "Batches 4-6 仍待完成"
     premature = (
         "Batch 3 已完成。",
@@ -1031,8 +1118,10 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "Python 不能保证清除所有不可变 bytes 或字符串副本",
         "静态自审计只覆盖已复核源码清单和有界启发式，不扫描依赖或二进制",
         "`source_policy.json`",
-        "canonical AST SHA-256",
+        "canonical source SHA-256",
         "PEP 263 编码声明",
+        "CRLF 和 CR 确定性规范化为 LF",
+        "注释和编码 cookie",
         "`src/agentguardian/rules/default.json`",
         "byte-identical",
         "wheel `RECORD`",
@@ -1062,19 +1151,25 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "第 8 节为已被第 9 至 10 节取代的历史交接记录",
         "Batch 2 历史远程证据",
         "Batch 3 当前本地证据",
-        "`676 passed, 6 skipped`，0 failed",
-        "复审对象 SHA：`537b3d9ba9829f1e85e5eec5671e90e1853c030e`",
-        "结论：`READY`",
-        "Critical：0；Important：0；Minor：1",
-        "canonical AST 证明可执行语法，不证明编码 cookie 或 BOM 的字节级身份",
+        "`py -3.12 -m pytest -q`：`679 passed, 6 skipped`",
+        "`py -3.14 -m pytest -q -p no:cacheprovider`：`679 passed, 6 skipped`",
+        "`d719e0fb79eae9132fabc713e23f5256d0c1f70c`",
+        "`30759350802`",
+        "`30759352079`",
+        "Python 3.12 与本地 Python 3.14 的 `ast.dump` 输出不同",
+        "`build` 不在哈希锁定的 CI 开发依赖中",
+        "当前独立安全复审：待完成",
+        "当前新 SHA 不声明 `READY`",
         "`findings=[]`、`local_only=true`、`network_capability=not_detected`",
         "`source_policy.json`",
-        "canonical AST SHA-256",
+        "canonical source SHA-256",
         "PEP 263 编码声明",
+        "CRLF 和 CR 确定性规范化为 LF",
         "有限启发式仅对清单外的合成未知模块运行",
         "不是 Python 表达式解释器",
         "wheel `RECORD` 包含 `agentguardian/source_policy.json`",
         "`agentguardian/rules/default.json`",
+        "`pip wheel --no-deps --no-build-isolation`",
         "`pip --no-index --no-deps`",
         "清单未签名",
         "Batch 5",
@@ -1088,7 +1183,7 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
 
     for required in (
         "## Batch 3 Local Implementation and Gate Status",
-        "Acceptance pending final-SHA remote verification",
+        "Acceptance pending independent security re-review and final-SHA remote verification",
         status,
         pending,
         "非生产",
@@ -1098,8 +1193,8 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
     for required in (
         "Path matching follows Windows lexical rules through",
         "Do not Unicode-normalize the path; NFKC applies only to the raw match",
-        "Acceptance pending final-SHA remote verification",
-        "Automated local gates and independent security re-review complete at `537b3d9ba9829f1e85e5eec5671e90e1853c030e`; final-SHA remote acceptance pending.",
+        "Acceptance pending independent security re-review and final-SHA remote verification",
+        "Automated local gates complete; independent security re-review and final-SHA remote acceptance pending.",
         pending,
         "production safety",
     ):
@@ -1115,11 +1210,11 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "Step 1: Add failing documentation assertions",
         "Step 2: Update status documents after implementation evidence exists",
         "Step 3: Run the complete local gate",
-        "Step 4: Run an independent read-only security review",
     ):
         assert f"- [x] **{completed_step}**" in task_seven
+    assert "- [ ] **Step 4: Run an independent read-only security review**" in task_seven
     assert "- [ ] **Step 5: Commit, push, and verify remote evidence**" in task_seven
-    assert "independent security re-review and final-SHA remote acceptance pending" not in task_seven
+    assert "independent security re-review and final-SHA remote acceptance pending" in task_seven
 
     for forbidden in premature:
         assert forbidden not in readme, f"README contains premature status: {forbidden}"

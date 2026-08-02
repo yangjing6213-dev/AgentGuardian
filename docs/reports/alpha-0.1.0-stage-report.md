@@ -132,35 +132,41 @@ Batch 2 在 Founder Alpha 之上增加当前 Windows 用户范围 DPAPI 状态�
 
 ## 10. Windows MVP 硬化 Batch 3：发现处置与到期例外
 
-Batch 3 本地实现和门禁已完成；验收仍待最终 SHA 的远程验证。跨扫描精确匹配只使用规则 ID、按 Windows 词法规则规范化的源路径，以及 NFKC 规范化的原始匹配。路径使用 `ntpath.abspath`、`ntpath.normpath` 和 `ntpath.normcase`，不做 NFKC。规则、路径、原始匹配或本地密钥任一变化都会重新打开发现。本地处置 HMAC 密钥与每次扫描随机生成的报告 HMAC 密钥彼此独立；报告 HMAC 仍限定于单次扫描，且本地引用和密钥不导出。
+Batch 3 本地实现的自动门禁已重新通过；独立安全复审和最终 SHA 远程验收仍待完成。跨扫描精确匹配只使用规则 ID、按 Windows 词法规则规范化的源路径，以及 NFKC 规范化的原始匹配。路径使用 `ntpath.abspath`、`ntpath.normpath` 和 `ntpath.normcase`，不做 NFKC。规则、路径、原始匹配或本地密钥任一变化都会重新打开发现。本地处置 HMAC 密钥与每次扫描随机生成的报告 HMAC 密钥彼此独立；报告 HMAC 仍限定于单次扫描，且本地引用和密钥不导出。
 
 每项处置都需要安全的原因、复核人、创建时间和到期时间；处置有效期必须有限且不超过 366 天。有效误报只从复核分排除；接受风险仍计入复核分；技术分不受处置影响。过期记录保留审计上下文但重新打开发现。状态读取保持 schema v1 只读兼容，只有显式保存才迁移到 schema v2。损坏、不可解密或无效的受保护状态必须先获得明确确认，才允许替换。
 
 操作边界仍是本地静态检查、桌面处置和人工指引，不发起 API 调用，也不默认访问 OpenAI API。DPAPI 不能抵御已经控制同一 Windows 用户会话的程序。主机时钟、路径别名或文件移动可能重新打开发现，但不会扩大处置范围。路径检查与 `os.replace` 之间仍有同用户竞态窗口；Python 不能保证清除所有不可变 bytes 或字符串副本。
 
-当前静态自审计严格加载随包分发的 `source_policy.json` schema 1，并要求精确模块集合以及每个已复核 `.py` 文件的 canonical AST SHA-256 完全匹配。源码以原始 bytes 交给 `ast.parse(..., filename=...)`，与 Python 运行时一致地处理 PEP 263 编码声明。新增、删除、未知编码、语法错误或 AST 变化都会以固定 finding 失败关闭；已复核包不再进入启发式。有限启发式仅对清单外的合成未知模块运行，检查代表性的网络导入、动态执行和用户数据写入能力，而不是 Python 表达式解释器。这不是语义、依赖或二进制证明。清单未签名，同一用户控制代码和清单时可以同时替换两者；生产来源和签名仍待 Batch 5。
+当前静态自审计严格加载随包分发的 `source_policy.json` schema 1，并要求精确模块集合以及每个已复核 `.py` 文件的 canonical source SHA-256 完全匹配。源码先通过 `tokenize.detect_encoding` 按 PEP 263 编码声明解码，将 CRLF 和 CR 确定性规范化为 LF，再对规范化 Unicode 的 UTF-8 表示取哈希；注释和编码 cookie 因而被证明。换行表示被有意忽略，UTF-8 BOM 按解码语义被消费，所以该清单不是原始字节身份的证明。原始 bytes 还独立交给 `ast.parse(..., filename=...)`，保证 Python 实际执行的语法通过检查，UTF-7 编码中的运行时注入也会对扫描可见。新增、删除、未知编码、语法错误或 canonical source 变化都会以固定 finding 失败关闭；已复核包不再进入启发式。有限启发式仅对清单外的合成未知模块运行，检查代表性的网络导入、动态执行和用户数据写入能力，而不是 Python 表达式解释器。这不是语义、依赖或二进制证明。清单未签名，同一用户控制代码和清单时可以同时替换两者；生产来源和签名仍待 Batch 5。
 
 仓库顶层 `rules/default.json` 仍是权威规则来源；wheel 使用 byte-identical 的 `agentguardian/rules/default.json` 副本，并由包数据、`RECORD` 和无网络临时安装测试约束其来源与可用性。
+
+### Batch 3 最终 SHA 远程失败证据
+
+- 失败提交：`d719e0fb79eae9132fabc713e23f5256d0c1f70c`。
+- push workflow `30759350802` 和 Draft PR workflow `30759352079` 均失败，不能作为 Batch 3 远程验收证据。
+- 源码策略失败根因：Python 3.12 与本地 Python 3.14 的 `ast.dump` 输出不同，所有模块的 canonical AST digest 均不一致，触发 `SOURCE_POLICY_VIOLATION` 和 6 项测试失败。
+- 打包失败根因：测试使用 `python -m build`，但 `build` 不在哈希锁定的 CI 开发依赖中。
 
 ### Batch 3 当前本地证据
 
 2026-08-03 在当前工作树重新运行：
 
-- `rtk pytest -q -p no:cacheprovider`：`676 passed, 6 skipped`，0 failed。
+- `py -3.12 -m pytest -q`：`679 passed, 6 skipped`，0 failed；按不安装要求，通过 `PYTHONPATH` 使用机器上既有的测试依赖。
+- `py -3.14 -m pytest -q -p no:cacheprovider`：`679 passed, 6 skipped`，0 failed。
+- Python 3.12 与 3.14 对全部包模块产生相同 canonical source 清单；LF 与 CRLF/CR 的 digest 相同，编码 cookie 或解码后源码变化的 digest 不同。
 - `rtk proxy python scripts/check_brand_assets.py`：退出码 0。
 - `rtk proxy python -m compileall -q src`：退出码 0。
-- `rtk proxy python -m build --wheel --no-isolation`：退出码 0；wheel `RECORD` 包含 `agentguardian/source_policy.json` 和 byte-identical 的 `agentguardian/rules/default.json`。使用 `pip --no-index --no-deps` 临时安装后，`load_rules()`、`static_capability_findings()` 和 `collect_self_audit()` 均成功。
+- 打包测试改用 `pip wheel --no-deps --no-build-isolation`；wheel `RECORD` 包含 `agentguardian/source_policy.json` 和 byte-identical 的 `agentguardian/rules/default.json`。使用 `pip --no-index --no-deps` 临时安装后，`load_rules()`、`static_capability_findings()` 和 `collect_self_audit()` 均成功。
 - `rtk git diff --check`：退出码 0，无输出。
 - 使用 `PYTHONPATH=src` 调用 `collect_self_audit()`：`findings=[]`、`local_only=true`、`network_capability=not_detected`、`ordinary_user_mode=true`；范围仍为 `package_source_policy`，依赖和二进制未扫描。
 
-### Batch 3 独立安全复审证据
+### Batch 3 当前独立安全复审状态
 
-- 复审对象 SHA：`537b3d9ba9829f1e85e5eec5671e90e1853c030e`。
-- 结论：`READY`。
-- 发现计数：Critical：0；Important：0；Minor：1。
-- 剩余 Minor：canonical AST 证明可执行语法，不证明编码 cookie 或 BOM 的字节级身份；注释、空白和其他生成相同 AST 的字节差异不在该清单的证明范围内。
-- 其他残余风险不变：清单未签名，同一用户可同时替换代码和清单；启发式不是语义证明；依赖和二进制未扫描；DPAPI 同用户、主机时钟、路径别名、文件移动、路径检查竞态和不可变 bytes 副本限制继续存在。
+- 历史复审对象 `537b3d9ba9829f1e85e5eec5671e90e1853c030e` 在 canonical AST 模型下曾得到 `READY`，发现计数为 Critical 0、Important 0、Minor 1；该结果不适用于变更后的 canonical source 模型。
+- canonical source 现在证明规范化后的解码源码，包括注释和编码 cookie；它有意不区分 LF、CRLF 和 CR，也不等同于原始字节、依赖、二进制或完整语义证明。
+- 当前独立安全复审：待完成。当前新 SHA 不声明 `READY`，也不沿用历史发现计数。
+- 其他残余风险不变：清单未签名，同一用户可同时替换代码和清单；有限启发式不是语义证明；依赖和二进制未扫描；DPAPI 同用户、主机时钟、路径别名、文件移动、路径检查竞态和不可变 bytes 副本限制继续存在。
 
-独立安全复审已完成，但以上只证明复审 SHA 的本地 Batch 3 约定门禁。Step 5 最终 SHA 提交、推送和远程证据验证仍待完成；未经控制者验证，不声明当前或最终远程 CI。Batch 2 的历史远程运行不能替代 Batch 3 当前提交的远程验证。
-
-当前证据只支持 Batch 3 本地实现和门禁结论，不构成 Batch 3 验收。Batch 3 本地实现和门禁已完成；验收仍待最终 SHA 的远程验证。Batches 4-6 仍待完成；Founder Alpha 继续保持非生产、Windows MVP 不完整状态，不建立生产安全结论。
+当前证据只支持 Batch 3 本地实现和自动门禁结论，不构成 Batch 3 验收。独立安全复审和最终 SHA 远程验证仍待完成；未经控制者验证，不声明当前或最终远程 CI。Batches 4-6 仍待完成；Founder Alpha 继续保持非生产、Windows MVP 不完整状态，不建立生产安全结论。

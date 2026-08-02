@@ -1,8 +1,10 @@
 import ast
 import ctypes
 import hashlib
+import io
 import json
 import sys
+import tokenize
 from pathlib import Path
 
 from . import __version__
@@ -213,7 +215,9 @@ def static_capability_findings(
         findings.add("SOURCE_POLICY_VIOLATION")
     for module, relative_path in zip(modules, relative_paths, strict=True):
         try:
-            tree = ast.parse(module.read_bytes(), filename=str(module))
+            source = module.read_bytes()
+            tree = ast.parse(source, filename=str(module))
+            digest = _canonical_source_sha256(source)
         except (OSError, SyntaxError, UnicodeError):
             if reviewed_package:
                 findings.add("SOURCE_POLICY_VIOLATION")
@@ -221,7 +225,7 @@ def static_capability_findings(
             continue
         if reviewed_package:
             expected = policy.get(relative_path)
-            if expected is None or _canonical_ast_sha256(tree) != expected:
+            if expected is None or digest != expected:
                 findings.add("SOURCE_POLICY_VIOLATION")
         else:
             _scan_heuristic(tree, findings)
@@ -279,9 +283,11 @@ def _canonical_digest(value: object) -> bool:
     )
 
 
-def _canonical_ast_sha256(tree: ast.AST) -> str:
-    canonical = ast.dump(tree, annotate_fields=True, include_attributes=False)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+def _canonical_source_sha256(source: bytes) -> str:
+    encoding, _ = tokenize.detect_encoding(io.BytesIO(source).readline)
+    decoded = source.decode(encoding)
+    normalized = decoded.replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _package_root(package_root: str | Path | None) -> Path:
