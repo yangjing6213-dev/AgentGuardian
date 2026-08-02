@@ -744,8 +744,10 @@ Review result: `APPROVED / READY` at `ef7808975879bea153172c09e647e04d0bf48e9b`;
 
 - [x] **Step 5: Commit, push, and verify remote evidence**
 
-Final remote acceptance complete at `50b74e6cc50dd7a4681a26b3084e7f312c096c47`. [Push run `30762254791` / job `91534776936`](https://github.com/hqwzhu/AgentGuardian/actions/runs/30762254791/job/91534776936) and [PR run `30762256518` / job `91534781660`](https://github.com/hqwzhu/AgentGuardian/actions/runs/30762256518/job/91534781660) both succeeded with `687 passed`, all five named workflow steps passed, and annotations were 0/0. [Draft PR #1](https://github.com/hqwzhu/AgentGuardian/pull/1) remains open and draft at the accepted SHA. Keep Batches 4-6 pending.
+The remotely accepted Batch 3 implementation/evidence baseline is `50b74e6cc50dd7a4681a26b3084e7f312c096c47`. [Push run `30762254791` / job `91534776936`](https://github.com/hqwzhu/AgentGuardian/actions/runs/30762254791/job/91534776936) and [PR run `30762256518` / job `91534781660`](https://github.com/hqwzhu/AgentGuardian/actions/runs/30762256518/job/91534781660) both succeeded with `687 passed`, all five named workflow steps passed, and annotations were 0/0. At evidence-capture time, Draft PR #1 was `OPEN / DRAFT` at that SHA; [PR link](https://github.com/hqwzhu/AgentGuardian/pull/1). Keep Batches 4-6 pending.
+
+`a38910b340631b2e78c33c9d7595cf98aa2f52b9` is a docs/tests-only evidence-sync commit that changes no runtime or package source. It was not covered by the two cited CI runs for `50b74e6cc50dd7a4681a26b3084e7f312c096c47` and is not claimed as remotely verified.
 
 Passing this plan completes only the documented Batch 3 acceptance. It does not complete the Windows MVP or establish production safety.
 
-**Batch 3 acceptance status (2026-08-03):** Local gates and independent security review are complete; final remote acceptance complete at `50b74e6cc50dd7a4681a26b3084e7f312c096c47`. 当前精确本地门禁、复审和远程验收记录在阶段报告；Batches 4-6 仍待完成。Batch 3 验收不表示 Windows MVP 完成或生产安全。
+**Batch 3 acceptance status (2026-08-03):** Local gates and independent security review are complete; remote acceptance is evidenced at the implementation/evidence baseline `50b74e6cc50dd7a4681a26b3084e7f312c096c47`. 当前精确本地门禁、复审和远程验收记录在阶段报告；Batches 4-6 仍待完成。Batch 3 验收不表示 Windows MVP 完成或生产安全。

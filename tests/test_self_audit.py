@@ -1171,7 +1171,7 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "`30759352079`",
         "Python 3.12 与本地 Python 3.14 的 `ast.dump` 输出不同",
         "`build` 不在哈希锁定的 CI 开发依赖中",
-        "最终验收 SHA：`50b74e6cc50dd7a4681a26b3084e7f312c096c47`",
+        "Batch 3 远程验收的实现与证据基线 SHA：`50b74e6cc50dd7a4681a26b3084e7f312c096c47`",
         "push run `30762254791` / job `91534776936`：`SUCCESS`",
         "PR run `30762256518` / job `91534781660`：`SUCCESS`",
         "https://github.com/hqwzhu/AgentGuardian/actions/runs/30762254791/job/91534776936",
@@ -1179,7 +1179,11 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "Windows Full test suite：`687 passed`",
         "Install、Full test suite、Brand validator、Compile source、Verify clean tree 均通过",
         "annotations：0/0",
-        "Draft PR #1 保持 `OPEN / DRAFT`",
+        "证据采集时，Draft PR #1 在该 SHA 上为 `OPEN / DRAFT`",
+        "`a38910b340631b2e78c33c9d7595cf98aa2f52b9` 是仅修改文档与文档断言测试的证据同步提交",
+        "不更改运行时或包源码",
+        "未被上述两次针对 `50b74e6cc50dd7a4681a26b3084e7f312c096c47` 的 CI 运行覆盖",
+        "不声明 `a38910b340631b2e78c33c9d7595cf98aa2f52b9` 已远程验证",
         "https://github.com/hqwzhu/AgentGuardian/pull/1",
         "复审对象 SHA：`ef7808975879bea153172c09e647e04d0bf48e9b`",
         "结论：`APPROVED / READY`",
@@ -1208,26 +1212,42 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
     ):
         assert required in report
     assert "下一批为 DPAPI 保护的本地证据状态，目前尚未实现" not in report
+    assert "最终验收 SHA：" not in report
+    assert "Draft PR #1 保持 `OPEN / DRAFT`" not in report
 
     for required in (
         "## Batch 3 Local Implementation and Gate Status",
-        "Batch 3 accepted at final SHA `50b74e6cc50dd7a4681a26b3084e7f312c096c47`",
+        "Remotely accepted Batch 3 implementation/evidence baseline: `50b74e6cc50dd7a4681a26b3084e7f312c096c47`",
+        "At evidence-capture time, Draft PR #1 was `OPEN / DRAFT` at that SHA",
+        "`a38910b340631b2e78c33c9d7595cf98aa2f52b9` is a docs/tests-only evidence-sync commit",
+        "changes no runtime or package source",
+        "was not covered by the two cited CI runs for `50b74e6cc50dd7a4681a26b3084e7f312c096c47`",
+        "is not claimed as remotely verified",
         status,
         pending,
         "非生产",
     ):
         assert required in hardening_plan
+    assert "Accepted at final SHA" not in hardening_plan
+    assert "Batch 3 accepted at final SHA" not in hardening_plan
 
     for required in (
         "Path matching follows Windows lexical rules through",
         "Do not Unicode-normalize the path; NFKC applies only to the raw match",
-        "Final remote acceptance complete at `50b74e6cc50dd7a4681a26b3084e7f312c096c47`",
+        "The remotely accepted Batch 3 implementation/evidence baseline is `50b74e6cc50dd7a4681a26b3084e7f312c096c47`",
+        "At evidence-capture time, Draft PR #1 was `OPEN / DRAFT` at that SHA",
+        "`a38910b340631b2e78c33c9d7595cf98aa2f52b9` is a docs/tests-only evidence-sync commit",
+        "changes no runtime or package source",
+        "was not covered by the two cited CI runs for `50b74e6cc50dd7a4681a26b3084e7f312c096c47`",
+        "is not claimed as remotely verified",
         "https://github.com/hqwzhu/AgentGuardian/actions/runs/30762254791/job/91534776936",
         "https://github.com/hqwzhu/AgentGuardian/actions/runs/30762256518/job/91534781660",
         pending,
         "production safety",
     ):
         assert required in disposition_plan
+    assert "Final remote acceptance complete at" not in disposition_plan
+    assert "remains open and draft at the accepted SHA" not in disposition_plan
 
     tasks_one_to_six, task_seven = disposition_plan.split(
         "## Task 7: Synchronize Local Evidence Before Batch 3 Acceptance",
@@ -1244,7 +1264,7 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
     ):
         assert f"- [x] **{completed_step}**" in task_seven
     assert "- [ ] **Step" not in task_seven
-    assert "Final remote acceptance complete" in task_seven
+    assert "remotely accepted Batch 3 implementation/evidence baseline" in task_seven
 
     for forbidden in premature:
         assert forbidden not in readme, f"README contains premature status: {forbidden}"

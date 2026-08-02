@@ -164,11 +164,12 @@ Batch 3 本地实现、自动门禁、独立安全复审和最终 SHA 远程验�
 
 ### Batch 3 最终 SHA 远程验收证据
 
-- 最终验收 SHA：`50b74e6cc50dd7a4681a26b3084e7f312c096c47`。
+- Batch 3 远程验收的实现与证据基线 SHA：`50b74e6cc50dd7a4681a26b3084e7f312c096c47`。
 - push run `30762254791` / job `91534776936`：`SUCCESS`；Windows Full test suite：`687 passed`；[运行与 job](https://github.com/hqwzhu/AgentGuardian/actions/runs/30762254791/job/91534776936)。
 - PR run `30762256518` / job `91534781660`：`SUCCESS`；Windows Full test suite：`687 passed`；[运行与 job](https://github.com/hqwzhu/AgentGuardian/actions/runs/30762256518/job/91534781660)。
 - 两次运行的 Install、Full test suite、Brand validator、Compile source、Verify clean tree 均通过；annotations：0/0。
-- Draft PR #1 保持 `OPEN / DRAFT`，head 指向最终验收 SHA；[PR 链接](https://github.com/hqwzhu/AgentGuardian/pull/1)。
+- 证据采集时，Draft PR #1 在该 SHA 上为 `OPEN / DRAFT`，head 指向该 SHA；[PR 链接](https://github.com/hqwzhu/AgentGuardian/pull/1)。
+- `a38910b340631b2e78c33c9d7595cf98aa2f52b9` 是仅修改文档与文档断言测试的证据同步提交，不更改运行时或包源码；该提交未被上述两次针对 `50b74e6cc50dd7a4681a26b3084e7f312c096c47` 的 CI 运行覆盖，因此不声明 `a38910b340631b2e78c33c9d7595cf98aa2f52b9` 已远程验证。
 
 ### Batch 3 当前独立安全复审状态
 
