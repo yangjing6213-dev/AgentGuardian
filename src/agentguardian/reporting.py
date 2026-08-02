@@ -199,7 +199,9 @@ def _prepare_report(
     if type(rule_version) is not str:
         raise ValueError(_ERROR)
     now = _validated_time(evaluated_at)
-    records = disposition_index(_bounded_items(dispositions))
+    records = disposition_index(
+        _validated_dispositions(_bounded_items(dispositions))
+    )
     prepared: list[_PreparedFinding] = []
     for candidate in _bounded_items(findings):
         validated_finding, canonical = _validated_finding(candidate)
@@ -296,15 +298,37 @@ def _validated_time(evaluated_at: datetime | None) -> datetime:
     return now.replace(tzinfo=timezone.utc)
 
 
-def _bounded_items(values: Iterable[object]) -> tuple[object, ...]:
-    items: list[object] = []
+def _bounded_items(values: Iterable[object]) -> Iterable[object]:
     count = 0
     for item in values:
         if count >= _MAX_REPORT_ITEMS:
             raise ValueError(_ERROR)
-        items.append(item)
         count += 1
-    return tuple(items)
+        yield item
+
+
+def _validated_dispositions(
+    records: Iterable[object],
+) -> Iterable[DispositionRecord]:
+    for record in records:
+        if type(record) is not DispositionRecord:
+            raise ValueError(_ERROR)
+        disposition_ref = record.disposition_ref
+        rule_id = record.rule_id
+        status = record.status
+        reason = record.reason
+        reviewer = record.reviewer
+        created_at = record.created_at
+        expires_at = record.expires_at
+        yield DispositionRecord(
+            disposition_ref,
+            rule_id,
+            status,
+            reason,
+            reviewer,
+            created_at,
+            expires_at,
+        )
 
 
 def _validated_finding(

@@ -21,6 +21,7 @@ from agentguardian.scoring import score as calculate_score
 
 EVALUATED_AT = datetime(2026, 8, 2, 12, tzinfo=timezone.utc)
 REPORT_MARKER = r"C:\Synthetic\private\report-marker.txt"
+SECRET_MARKER = "sk-proj-abcdefghijklmnopqrstuv"
 REPORT_LIMIT = 2_000
 
 
@@ -50,6 +51,10 @@ class _ScoreSubclass(Score):
     pass
 
 
+class _DispositionSubclass(DispositionRecord):
+    pass
+
+
 class _NoHintIterator:
     def __init__(self, value: object) -> None:
         self.value = value
@@ -71,6 +76,34 @@ class _NoHintIterator:
         raise RuntimeError(REPORT_MARKER)
 
 
+class _NoHintDispositionIterator:
+    def __init__(self) -> None:
+        self.consumed = 0
+
+    def __iter__(self) -> "_NoHintDispositionIterator":
+        return self
+
+    def __next__(self) -> DispositionRecord:
+        if self.consumed == REPORT_LIMIT + 2:
+            raise StopIteration
+        self.consumed += 1
+        return DispositionRecord(
+            f"{self.consumed:064x}",
+            "SAME_RULE",
+            DispositionStatus.FALSE_POSITIVE,
+            "Synthetic duplicate review",
+            "Local reviewer",
+            "2026-08-02T08:00:00Z",
+            "2026-08-03T08:00:00Z",
+        )
+
+    def __len__(self) -> int:
+        raise RuntimeError(REPORT_MARKER)
+
+    def __length_hint__(self) -> int:
+        raise RuntimeError(REPORT_MARKER)
+
+
 class _ExplodingIterator:
     def __init__(self, value: object) -> None:
         self.value = value
@@ -84,6 +117,21 @@ class _ExplodingIterator:
         if self.consumed > 1:
             raise RuntimeError(REPORT_MARKER)
         return self.value
+
+
+class _InvalidThenExploding:
+    def __init__(self, invalid: object) -> None:
+        self.invalid = invalid
+        self.consumed = 0
+
+    def __iter__(self) -> "_InvalidThenExploding":
+        return self
+
+    def __next__(self) -> object:
+        self.consumed += 1
+        if self.consumed == 1:
+            return self.invalid
+        raise RuntimeError(REPORT_MARKER)
 
 
 class _ExplodingMapping(dict[str, DispositionRecord]):
@@ -161,6 +209,8 @@ def _assert_report_invalid(
     assert caught.value.__context__ is None
     assert REPORT_MARKER not in str(caught.value)
     assert REPORT_MARKER not in repr(caught.value)
+    assert SECRET_MARKER not in str(caught.value)
+    assert SECRET_MARKER not in repr(caught.value)
 
 
 def _unchecked_score(**overrides: object) -> Score:
@@ -443,6 +493,92 @@ def test_renderers_reject_noncanonical_finding_and_evidence_fields(
 
 
 @pytest.mark.parametrize("renderer", (render_json, render_html))
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("reason", REPORT_MARKER),
+        ("reviewer", SECRET_MARKER),
+        ("disposition_ref", "not-a-reference"),
+        ("rule_id", "bad rule"),
+        ("status", "false_positive"),
+        ("created_at", "not-a-time"),
+        ("expires_at", "2026-08-02T07:00:00Z"),
+    ),
+    ids=(
+        "path-reason",
+        "secret-reviewer",
+        "malformed-reference",
+        "malformed-rule",
+        "malformed-status",
+        "malformed-created-at",
+        "invalid-expiry-order",
+    ),
+)
+def test_renderers_revalidate_forged_exact_disposition_records(
+    renderer: object,
+    field: str,
+    value: object,
+) -> None:
+    record = _disposition_record()
+    object.__setattr__(record, field, value)
+    finding = Finding(
+        "SAME_RULE",
+        RiskDomain.PRIVACY,
+        Severity.MEDIUM,
+        "a" * 64,
+        (),
+        "5" * 64,
+    )
+
+    _assert_report_invalid(
+        renderer,
+        _score(),
+        (finding,),
+        dispositions=(record,),
+        evaluated_at=EVALUATED_AT,
+    )
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
+def test_renderers_require_exact_disposition_record_type(
+    renderer: object,
+) -> None:
+    record = _DispositionSubclass(
+        "5" * 64,
+        "SAME_RULE",
+        DispositionStatus.FALSE_POSITIVE,
+        "Synthetic duplicate review",
+        "Local reviewer",
+        "2026-08-02T08:00:00Z",
+        "2026-08-03T08:00:00Z",
+    )
+
+    _assert_report_invalid(
+        renderer,
+        _score(),
+        (),
+        dispositions=(record,),
+        evaluated_at=EVALUATED_AT,
+    )
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
+def test_renderers_stop_after_first_invalid_finding(
+    renderer: object,
+) -> None:
+    findings = _InvalidThenExploding(_unchecked_finding(domain="privacy"))
+
+    _assert_report_invalid(
+        renderer,
+        _score(),
+        findings,
+        evaluated_at=EVALUATED_AT,
+    )
+
+    assert findings.consumed == 1
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
 @pytest.mark.parametrize("target", ("findings", "dispositions"))
 def test_renderers_bound_one_pass_inputs_without_length_hints(
     renderer: object,
@@ -455,8 +591,11 @@ def test_renderers_bound_one_pass_inputs_without_length_hints(
         "a" * 64,
         (),
     )
-    value: object = finding if target == "findings" else _disposition_record()
-    probe = _NoHintIterator(value)
+    probe = (
+        _NoHintIterator(finding)
+        if target == "findings"
+        else _NoHintDispositionIterator()
+    )
     findings: object = probe if target == "findings" else ()
     dispositions: object = probe if target == "dispositions" else ()
 
@@ -1102,6 +1241,7 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
             "tuple",
         },
         "reporting.py": {
+            "DispositionRecord",
             "Evidence",
             "Finding",
             "ValueError",
@@ -1112,6 +1252,7 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
             "_prepare_report",
             "_text",
             "_validated_finding",
+            "_validated_dispositions",
             "_validated_score_data",
             "_validated_time",
             "disposition_index",
