@@ -2,6 +2,7 @@ import ast
 import hashlib
 import hmac
 import json
+import os
 from pathlib import Path
 import unicodedata
 
@@ -23,10 +24,28 @@ from agentguardian.domain import RiskDomain, Severity
 
 SCAN_KEY = b"k" * 32
 DISPOSITION_KEY = b"d" * 32
+PRIVATE_INPUT_MARKER = r"C:\Private\detector-input-marker.txt"
 
 
 class _BytesSubclass(bytes):
     pass
+
+
+class _ExplodingString(str):
+    def __bool__(self) -> bool:
+        raise RuntimeError(PRIVATE_INPUT_MARKER)
+
+    def __str__(self) -> str:
+        raise RuntimeError(PRIVATE_INPUT_MARKER)
+
+    def encode(self, *args: object, **kwargs: object) -> bytes:
+        raise RuntimeError(PRIVATE_INPUT_MARKER)
+
+    def find(self, *args: object, **kwargs: object) -> int:
+        raise RuntimeError(PRIVATE_INPUT_MARKER)
+
+    def replace(self, *args: object, **kwargs: object) -> str:
+        raise RuntimeError(PRIVATE_INPUT_MARKER)
 
 
 def _track_finding_calls(monkeypatch: pytest.MonkeyPatch) -> list[int]:
@@ -331,6 +350,62 @@ def test_public_detectors_reject_invalid_disposition_key_before_zero_findings(
             assert private_value not in exception_text
 
 
+@pytest.mark.parametrize(
+    "boundary",
+    ("text", "source", "keyword", "file_keyword", "mcp_source"),
+)
+def test_public_detectors_reject_string_subclasses_before_method_dispatch(
+    tmp_path: Path,
+    boundary: str,
+) -> None:
+    value = _ExplodingString("synthetic")
+    if boundary == "text":
+        call = lambda: detect_text(value, "sample.txt", scan_key=SCAN_KEY)
+    elif boundary == "source":
+        call = lambda: detect_text("safe", value, scan_key=SCAN_KEY)
+    elif boundary == "keyword":
+        call = lambda: detect_text(
+            "safe",
+            "sample.txt",
+            scan_key=SCAN_KEY,
+            keywords=(value,),
+        )
+    elif boundary == "file_keyword":
+        call = lambda: detect_file(
+            tmp_path / "missing.txt",
+            scan_key=SCAN_KEY,
+            keywords=(value,),
+        )
+    else:
+        call = lambda: detect_mcp_config({}, value, scan_key=SCAN_KEY)
+
+    with pytest.raises(ValueError) as captured:
+        call()
+
+    error = captured.value
+    assert str(error) == "DETECTOR_INPUT_INVALID"
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert PRIVATE_INPUT_MARKER not in repr(error)
+
+
+def test_custom_keyword_type_is_validated_before_rule_detection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "sk-" + "proj-" + "synthetic-early-validation"
+    calls = _track_finding_calls(monkeypatch)
+
+    with pytest.raises(ValueError, match="^DETECTOR_INPUT_INVALID$"):
+        detect_text(
+            secret,
+            "sample.env",
+            scan_key=SCAN_KEY,
+            keywords=(_ExplodingString("synthetic"),),
+        )
+
+    assert calls == [0]
+
+
 def test_omitted_disposition_key_preserves_none_reference() -> None:
     secret = "sk-" + "proj-" + "synthetic-backward-compatible"
 
@@ -601,6 +676,27 @@ def test_custom_keyword_and_mcp_findings_receive_local_references() -> None:
     assert server_name not in repr(mcp_finding)
 
 
+def test_mcp_detector_ignores_string_subclass_server_names() -> None:
+    config = {
+        "mcpServers": {
+            _ExplodingString("synthetic-server"): {
+                "capabilities": {
+                    "process": True,
+                    "filesystem": {"write": True},
+                    "network": True,
+                }
+            }
+        }
+    }
+
+    assert detect_mcp_config(
+        config,
+        "mcp.json",
+        scan_key=SCAN_KEY,
+        disposition_key=DISPOSITION_KEY,
+    ) == ()
+
+
 def test_mcp_detector_rejects_non_object_json() -> None:
     with pytest.raises(ValueError, match="JSON object"):
         detect_mcp_config("[]", "mcp.json", scan_key=SCAN_KEY)
@@ -714,6 +810,51 @@ def test_detect_file_uses_full_path_only_for_disposition_identity(
     assert str(second_path) not in repr(second)
     assert first_path.parent.name not in repr(first)
     assert second_path.parent.name not in repr(second)
+
+
+def test_detect_file_anchors_relative_identity_before_cwd_changes_during_io(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_directory = tmp_path / "first"
+    second_directory = tmp_path / "second"
+    first_directory.mkdir()
+    second_directory.mkdir()
+    first_path = first_directory / "config.env"
+    second_path = second_directory / "config.env"
+    secret = "sk-" + "proj-" + "synthetic-opened-file"
+    first_path.write_text(secret, encoding="utf-8")
+    second_path.write_text("safe", encoding="utf-8")
+    original_open = open
+    opened_paths: list[Path] = []
+
+    def open_then_change_cwd(path: str | Path, *args: object, **kwargs: object):
+        opened_paths.append(Path(path).absolute())
+        stream = original_open(path, *args, **kwargs)
+        os.chdir(second_directory)
+        return stream
+
+    monkeypatch.setattr("builtins.open", open_then_change_cwd)
+    starting_directory = Path.cwd()
+    try:
+        os.chdir(first_directory)
+        result = detect_file(
+            "config.env",
+            scan_key=SCAN_KEY,
+            disposition_key=DISPOSITION_KEY,
+        )
+    finally:
+        os.chdir(starting_directory)
+
+    finding = result.findings[0]
+    assert opened_paths == [first_path]
+    assert finding.evidence[0].source == "config.env"
+    assert finding.disposition_ref == make_disposition_ref(
+        DISPOSITION_KEY,
+        rule_id="OPENAI_API_KEY",
+        source=str(opened_paths[0]),
+        raw_match=secret,
+    )
 
 
 def test_detect_file_reports_oversize_without_scanning(tmp_path: Path) -> None:

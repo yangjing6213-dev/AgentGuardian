@@ -14,6 +14,7 @@ from .domain import Evidence, Finding, RiskDomain, Severity
 DEFAULT_RULES_PATH = Path(__file__).resolve().parents[2] / "rules" / "default.json"
 MAX_FILE_BYTES = 10 * 1024 * 1024
 MAX_FINDINGS = 1000
+_INPUT_ERROR = "DETECTOR_INPUT_INVALID"
 
 
 class DetectionLimitError(RuntimeError):
@@ -106,13 +107,16 @@ def detect_text(
     keywords: Sequence[str] = (),
     disposition_key: bytes | None = None,
 ) -> tuple[Finding, ...]:
+    text = _validated_string(text)
+    source = _validated_string(source)
+    validated_keywords = _validated_keywords(keywords)
     key = _validated_key(scan_key)
     local_key = _validated_disposition_key(disposition_key)
     findings, limit_reached = _detect_text(
         text,
         source,
         key,
-        keywords,
+        validated_keywords,
         disposition_key=local_key,
         source_identity=source,
     )
@@ -158,8 +162,6 @@ def _detect_text(
             occupied.append(span)
 
     for keyword in keywords:
-        if not isinstance(keyword, str) or not keyword:
-            raise ValueError("keywords must contain non-empty strings")
         start = 0
         while (index := text.find(keyword, start)) >= 0:
             if len(findings) >= MAX_FINDINGS:
@@ -188,6 +190,7 @@ def detect_mcp_config(
     scan_key: bytes,
     disposition_key: bytes | None = None,
 ) -> tuple[Finding, ...]:
+    source = _validated_string(source)
     key = _validated_key(scan_key)
     local_key = _validated_disposition_key(disposition_key)
     if isinstance(config, str):
@@ -202,7 +205,7 @@ def detect_mcp_config(
 
     findings: list[Finding] = []
     for server_name, server in servers.items():
-        if not isinstance(server_name, str) or not isinstance(server, Mapping):
+        if type(server_name) is not str or not isinstance(server, Mapping):
             continue
         paths = tuple(_active_capability_paths(server))
         joined = ("_".join(path) for path in paths)
@@ -245,9 +248,10 @@ def detect_file(
     keywords: Sequence[str] = (),
     disposition_key: bytes | None = None,
 ) -> FileDetectionResult:
+    validated_keywords = _validated_keywords(keywords)
     key = _validated_key(scan_key)
     local_key = _validated_disposition_key(disposition_key)
-    file_path = Path(path)
+    file_path = Path(path).absolute()
     try:
         if file_path.stat().st_size > MAX_FILE_BYTES:
             return FileDetectionResult((), False, ("file_too_large",))
@@ -264,9 +268,9 @@ def detect_file(
         text,
         file_path.name,
         key,
-        keywords,
+        validated_keywords,
         disposition_key=local_key,
-        source_identity=str(file_path.absolute()),
+        source_identity=str(file_path),
     )
     if limit_reached:
         return FileDetectionResult(findings, False, ("finding_limit_reached",))
@@ -349,6 +353,23 @@ def _validated_disposition_key(disposition_key: bytes | None) -> bytes | None:
     ):
         raise ValueError("DISPOSITION_INVALID")
     return disposition_key
+
+
+def _validated_string(value: object) -> str:
+    if type(value) is not str:
+        raise ValueError(_INPUT_ERROR)
+    return value
+
+
+def _validated_keywords(keywords: Sequence[str]) -> tuple[str, ...]:
+    validated: list[str] = []
+    for keyword in keywords:
+        if type(keyword) is not str:
+            raise ValueError(_INPUT_ERROR)
+        if not keyword:
+            raise ValueError("keywords must contain non-empty strings")
+        validated.append(keyword)
+    return tuple(validated)
 
 
 def _display_name(source: str) -> str:
