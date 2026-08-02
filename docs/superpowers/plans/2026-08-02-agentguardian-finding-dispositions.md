@@ -704,7 +704,7 @@ Expected: all focused tests pass.
 
 Commit: `Add transactional finding dispositions`
 
-## Task 7: Synchronize Evidence and Close Batch 3
+## Task 7: Synchronize Local Evidence Before Batch 3 Acceptance
 
 **Files:**
 - Modify: `README.md`
@@ -746,4 +746,4 @@ Commit the review fixes and synchronized evidence, push `agent/founder-alpha`, w
 
 Passing this plan proves only the documented Batch 3 gate. It does not complete the Windows MVP or establish production safety.
 
-**Local closure status (2026-08-02):** Batch 3 已完成本地实现和文档同步；当前精确本地门禁记录在阶段报告。Batches 4-6 仍待完成。未经控制者验证，不声明当前或最终远程 CI；不得用 Batch 2 历史远程证据替代 Batch 3 最终提交验证。
+**Local evidence status (2026-08-02):** Batch 3 本地实现和门禁已完成；验收仍待最终 SHA 的远程验证。Acceptance pending final-SHA remote verification. 当前精确本地门禁记录在阶段报告；Batches 4-6 仍待完成。未经控制者验证，不声明当前或最终远程 CI；不得用 Batch 2 历史远程证据替代 Batch 3 最终提交验证。

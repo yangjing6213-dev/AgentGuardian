@@ -2,6 +2,8 @@
 
 报告日期：2026-08-01
 
+更新日期：2026-08-02
+
 分支：`agent/founder-alpha`
 
 状态：Founder Alpha 发布门禁通过（内部 Alpha）
@@ -82,7 +84,7 @@ Founder Alpha 不访问浏览器数据库、浏览器历史或剪贴板，不联
 
 ## 8. Windows MVP 硬化续接
 
-本报告第 1 至 7 节记录 Founder Alpha 历史门禁；其中测试计数、规则 SHA 和 CI 结果不自动代表后续提交已重新验证。Windows MVP 硬化从 2026-08-02 起按独立批次继续：供应链基线与 OpenAI Provider 本地适配、检测和人工指引批次已完成。下一批为 DPAPI 保护的本地证据状态，目前尚未实现。
+本报告第 1 至 7 节记录 Founder Alpha 历史门禁；其中测试计数、规则 SHA 和 CI 结果不自动代表后续提交已重新验证。第 8 节为已被第 9 至 10 节取代的历史交接记录：它只描述进入 Windows MVP 硬化时的状态，不代表当前批次进度。供应链基线与 OpenAI Provider 本地适配、检测和人工指引在该历史时点已完成，当时尚未进入受保护证据状态实施。
 
 当前增量覆盖 `%USERPROFILE%\.codex`、`.env` 和 `.toml`，识别 `OPENAI_API_KEY` 与 `OPENAI_BASE_URL`/`openai_base_url` 覆盖配置。端点覆盖发现只表示配置需要人工复核，不证明端点属于恶意第三方。实现不导入 OpenAI SDK 或网络客户端，不发起 API 调用或联网验证端点，不读取或输出真实密钥，不自动修改 Provider 或凭据。
 
@@ -130,7 +132,7 @@ Batch 2 在 Founder Alpha 之上增加当前 Windows 用户范围 DPAPI 状态�
 
 ## 10. Windows MVP 硬化 Batch 3：发现处置与到期例外
 
-Batch 3 已完成本地实现。跨扫描精确匹配只使用规则 ID、按 Windows 词法规则规范化的源路径，以及 NFKC 规范化的原始匹配。路径使用 `ntpath.abspath`、`ntpath.normpath` 和 `ntpath.normcase`，不做 NFKC。规则、路径、原始匹配或本地密钥任一变化都会重新打开发现。本地处置 HMAC 密钥与每次扫描随机生成的报告 HMAC 密钥彼此独立；报告 HMAC 仍限定于单次扫描，且本地引用和密钥不导出。
+Batch 3 本地实现和门禁已完成；验收仍待最终 SHA 的远程验证。跨扫描精确匹配只使用规则 ID、按 Windows 词法规则规范化的源路径，以及 NFKC 规范化的原始匹配。路径使用 `ntpath.abspath`、`ntpath.normpath` 和 `ntpath.normcase`，不做 NFKC。规则、路径、原始匹配或本地密钥任一变化都会重新打开发现。本地处置 HMAC 密钥与每次扫描随机生成的报告 HMAC 密钥彼此独立；报告 HMAC 仍限定于单次扫描，且本地引用和密钥不导出。
 
 每项处置都需要安全的原因、复核人、创建时间和到期时间；处置有效期必须有限且不超过 366 天。有效误报只从复核分排除；接受风险仍计入复核分；技术分不受处置影响。过期记录保留审计上下文但重新打开发现。状态读取保持 schema v1 只读兼容，只有显式保存才迁移到 schema v2。损坏、不可解密或无效的受保护状态必须先获得明确确认，才允许替换。
 
@@ -148,4 +150,4 @@ Batch 3 已完成本地实现。跨扫描精确匹配只使用规则 ID、按 Wi
 
 以上只证明当前本地 Batch 3 工作树的约定门禁。未经控制者验证，不声明当前或最终远程 CI。Batch 2 的历史远程运行不能替代 Batch 3 当前提交的远程验证。
 
-该结论只关闭 Batch 3。Batches 4-6 仍待完成；Founder Alpha 继续保持非生产、Windows MVP 不完整状态，不建立生产安全结论。
+当前证据只支持 Batch 3 本地实现和门禁结论，不构成 Batch 3 验收。Batch 3 本地实现和门禁已完成；验收仍待最终 SHA 的远程验证。Batches 4-6 仍待完成；Founder Alpha 继续保持非生产、Windows MVP 不完整状态，不建立生产安全结论。

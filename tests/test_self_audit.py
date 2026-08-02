@@ -716,8 +716,17 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         PROJECT_ROOT / "docs" / "superpowers" / "plans"
         / "2026-08-02-agentguardian-finding-dispositions.md"
     ).read_text(encoding="utf-8")
-    combined = "\n".join(
-        (readme, architecture, report, hardening_plan, disposition_plan)
+    status = "Batch 3 本地实现和门禁已完成；验收仍待最终 SHA 的远程验证。"
+    pending = "Batches 4-6 仍待完成"
+    premature = (
+        "Batch 3 已完成。",
+        "Batch 3 已完成；",
+        "Batch 3 已完成本地实现",
+        "只关闭 Batch 3",
+        "Completed locally",
+        "## Completed Batch: Finding Dispositions",
+        "Local closure status",
+        "Close Batch 3",
     )
 
     for required in (
@@ -729,26 +738,87 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "schema v1 只读兼容，只有显式保存才迁移到 schema v2",
         "损坏、不可解密或无效的受保护状态必须先获得明确确认，才允许替换",
         "不发起 API 调用，也不默认访问 OpenAI API",
+        status,
+        pending,
+        "非生产",
+    ):
+        assert required in readme
+
+    for required in (
+        "## 当前 Founder Alpha 已实现数据流",
+        "## 未来目标（未实现）",
+        "## 后续可信性要求（未实现门禁）",
+        "当前实现不包含隔离扫描插件、限权修复代理、独立复审器、签名更新器或外部解释服务",
+        "`RemediationPlan` 和 `VerificationResult` 仅保留为数据契约",
+        "Findings --> Guidance",
+        "规则 ID、按 Windows 词法规则规范化的源路径，以及 NFKC 规范化的原始匹配",
+        "本地处置 HMAC 密钥与每次扫描随机生成的报告 HMAC 密钥彼此独立",
         "DPAPI 不能抵御已经控制同一 Windows 用户会话的程序",
         "主机时钟、路径别名或文件移动可能重新打开发现，但不会扩大处置范围",
         "路径检查与 `os.replace` 之间仍有同用户竞态窗口",
         "Python 不能保证清除所有不可变 bytes 或字符串副本",
         "静态自审计只覆盖有界源码策略，不是对依赖或二进制的语义证明",
-        "Batch 3 已完成",
-        "Batches 4-6 仍待完成",
+        status,
+        pending,
         "非生产",
     ):
-        assert required in combined
+        assert required in architecture
+    for forbidden_node in (
+        "Runner[隔离扫描插件",
+        "Broker[限权修复代理",
+        "Verify[独立复审器",
+        "Update[签名规则与版本更新]",
+        "Optional[用户选择的脱敏解释",
+        "Report --> Guidance",
+    ):
+        assert forbidden_node not in architecture
 
-    assert "Batch 2 历史远程证据" in report
-    assert "Batch 3 当前本地证据" in report
-    assert "未经控制者验证，不声明当前或最终远程 CI" in report
-    assert "path = ntpath.normcase(ntpath.abspath(source))" in disposition_plan
-    assert 'raw = unicodedata.normalize("NFKC", raw_match)' in disposition_plan
-    assert (
-        "unicodedata.normalize(\"NFKC\", normalized_path)" not in disposition_plan
-    )
-    assert (
-        "os.path.normcase(os.path.normpath(os.path.abspath(source)))"
-        not in disposition_plan
-    )
+    for required in (
+        "报告日期：2026-08-01",
+        "更新日期：2026-08-02",
+        "第 8 节为已被第 9 至 10 节取代的历史交接记录",
+        "Batch 2 历史远程证据",
+        "Batch 3 当前本地证据",
+        "`632 passed, 6 skipped`，0 failed",
+        "`findings=[]`、`local_only=true`、`network_capability=not_detected`",
+        "未经控制者验证，不声明当前或最终远程 CI",
+        status,
+        pending,
+        "非生产",
+    ):
+        assert required in report
+    assert "下一批为 DPAPI 保护的本地证据状态，目前尚未实现" not in report
+
+    for required in (
+        "## Batch 3 Local Implementation and Gate Status",
+        "Acceptance pending final-SHA remote verification",
+        status,
+        pending,
+        "非生产",
+    ):
+        assert required in hardening_plan
+
+    for required in (
+        "Path matching follows Windows lexical rules through",
+        "Do not Unicode-normalize the path; NFKC applies only to the raw match",
+        "Acceptance pending final-SHA remote verification",
+        status,
+        pending,
+        "production safety",
+    ):
+        assert required in disposition_plan
+
+    for forbidden in premature:
+        assert forbidden not in readme, f"README contains premature status: {forbidden}"
+        assert forbidden not in architecture, (
+            f"architecture contains premature status: {forbidden}"
+        )
+        assert forbidden not in report, (
+            f"stage report contains premature status: {forbidden}"
+        )
+        assert forbidden not in hardening_plan, (
+            f"hardening plan contains premature status: {forbidden}"
+        )
+        assert forbidden not in disposition_plan, (
+            f"disposition plan contains premature status: {forbidden}"
+        )
