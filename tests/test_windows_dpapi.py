@@ -2,24 +2,79 @@ from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
+from datetime import datetime, timezone
 import sys
 from types import SimpleNamespace
 
 import pytest
 
-from agentguardian.evidence_state import MAX_STATE_BYTES
+from agentguardian.dispositions import DispositionRecord, DispositionStatus
+from agentguardian.domain import Evidence, Finding, RiskDomain, Score, Severity
+from agentguardian.evidence_state import MAX_STATE_BYTES, build_snapshot, encode_snapshot
 from agentguardian.windows_dpapi import DpapiError, protect_bytes, unprotect_bytes
+
+
+DISPOSITION_KEY = b"w" * 32
+DISPOSITION_REF = "e" * 64
+
+
+def _v2_plaintext() -> bytes:
+    finding = Finding(
+        "OPENAI_API_KEY",
+        RiskDomain.CREDENTIALS,
+        Severity.HIGH,
+        "a" * 64,
+        (Evidence("native-private.env", "b" * 64, "native-raw-marker"),),
+        DISPOSITION_REF,
+    )
+    score = Score(
+        total=88,
+        deductions=((RiskDomain.CREDENTIALS, 12),),
+        cap_reason=None,
+        coverage=1.0,
+        confidence=1.0,
+        limits=(),
+        incomplete=False,
+    )
+    snapshot = build_snapshot(
+        (finding,),
+        score,
+        rule_version="1.1.0",
+        captured_at=datetime(2026, 8, 2, tzinfo=timezone.utc),
+        disposition_key=DISPOSITION_KEY,
+        dispositions=(
+            DispositionRecord(
+                disposition_ref=DISPOSITION_REF,
+                rule_id="OPENAI_API_KEY",
+                status=DispositionStatus.FALSE_POSITIVE,
+                reason="Synthetic native reason",
+                reviewer="Local native reviewer",
+                created_at="2026-08-02T00:00:00Z",
+                expires_at="2026-08-31T00:00:00Z",
+            ),
+        ),
+    )
+    return encode_snapshot(snapshot)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows DPAPI integration")
 def test_dpapi_round_trip_keeps_plaintext_out_of_ciphertext() -> None:
-    plaintext = b'{"synthetic":"protected-state-marker"}'
+    plaintext = _v2_plaintext()
 
     ciphertext = protect_bytes(plaintext)
 
     assert ciphertext != plaintext
     assert plaintext not in ciphertext
-    assert b"protected-state-marker" not in ciphertext
+    for private in (
+        b"native-private.env",
+        b"native-raw-marker",
+        DISPOSITION_KEY,
+        DISPOSITION_KEY.hex().encode(),
+        DISPOSITION_REF.encode(),
+        b"Synthetic native reason",
+        b"Local native reviewer",
+    ):
+        assert private not in ciphertext
     assert unprotect_bytes(ciphertext) == plaintext
 
 

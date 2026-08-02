@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 import math
 import re
 
 from . import __version__
+from .dispositions import (
+    DispositionRecord,
+    DispositionStatus,
+    disposition_index,
+)
 from .domain import Evidence, Finding, Score
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_STATE_BYTES = 1024 * 1024
 MAX_STATE_FINDINGS = 2000
 MAX_STATE_EVIDENCE = 4000
@@ -102,22 +107,46 @@ class EvidenceSnapshot:
     rule_version: str
     scan: ScanMetadata
     findings: tuple[FindingReference, ...]
+    disposition_key: bytes | None = field(default=None, repr=False)
+    dispositions: tuple[DispositionRecord, ...] = ()
 
     def __post_init__(self) -> None:
-        if (
-            type(self.schema_version) is not int
-            or self.schema_version != SCHEMA_VERSION
-            or not _is_captured_at(self.captured_at)
-            or not _is_version(self.product_version)
-            or not _is_version(self.rule_version)
-            or not isinstance(self.scan, ScanMetadata)
-            or not isinstance(self.findings, tuple)
-            or len(self.findings) > MAX_STATE_FINDINGS
-            or any(not isinstance(item, FindingReference) for item in self.findings)
-            or tuple(sorted(self.findings, key=_finding_key)) != self.findings
-            or sum(len(item.evidence) for item in self.findings) > MAX_STATE_EVIDENCE
-        ):
-            raise _invalid()
+        try:
+            if (
+                type(self.schema_version) is not int
+                or self.schema_version not in {1, SCHEMA_VERSION}
+                or not _is_captured_at(self.captured_at)
+                or not _is_version(self.product_version)
+                or not _is_version(self.rule_version)
+                or not isinstance(self.scan, ScanMetadata)
+                or not isinstance(self.findings, tuple)
+                or len(self.findings) > MAX_STATE_FINDINGS
+                or any(
+                    not isinstance(item, FindingReference)
+                    for item in self.findings
+                )
+                or tuple(sorted(self.findings, key=_finding_key)) != self.findings
+                or sum(len(item.evidence) for item in self.findings)
+                > MAX_STATE_EVIDENCE
+                or type(self.dispositions) is not tuple
+            ):
+                raise _invalid()
+            if self.schema_version == 1:
+                if self.disposition_key is not None or self.dispositions != ():
+                    raise _invalid()
+                return
+            if (
+                type(self.disposition_key) is not bytes
+                or len(self.disposition_key) != 32
+                or len(self.dispositions) > MAX_STATE_FINDINGS
+                or tuple(disposition_index(self.dispositions).values())
+                != self.dispositions
+            ):
+                raise _invalid()
+        except EvidenceStateError:
+            raise
+        except Exception:
+            raise _invalid() from None
 
 
 def build_snapshot(
@@ -126,9 +155,16 @@ def build_snapshot(
     *,
     rule_version: str,
     captured_at: datetime,
+    disposition_key: bytes,
+    dispositions: Iterable[DispositionRecord],
 ) -> EvidenceSnapshot:
     try:
-        if not isinstance(score, Score) or not isinstance(captured_at, datetime):
+        if (
+            not isinstance(score, Score)
+            or not isinstance(captured_at, datetime)
+            or type(disposition_key) is not bytes
+            or len(disposition_key) != 32
+        ):
             raise _invalid()
         if captured_at.tzinfo is None or captured_at.utcoffset() is None:
             raise _invalid()
@@ -141,6 +177,9 @@ def build_snapshot(
         references = tuple(
             sorted((_finding_reference(item) for item in findings), key=_finding_key)
         )
+        records = tuple(disposition_index(dispositions).values())
+        if len(records) > MAX_STATE_FINDINGS:
+            raise _invalid()
         snapshot = EvidenceSnapshot(
             schema_version=SCHEMA_VERSION,
             captured_at=timestamp,
@@ -153,19 +192,24 @@ def build_snapshot(
                 limits=tuple(sorted(set(score.limits))),
             ),
             findings=references,
+            disposition_key=disposition_key,
+            dispositions=records,
         )
         if len(encode_snapshot(snapshot)) > MAX_STATE_BYTES:
             raise _invalid()
         return snapshot
     except EvidenceStateError:
         raise
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
         raise _invalid() from None
 
 
 def encode_snapshot(snapshot: EvidenceSnapshot) -> bytes:
     try:
-        if not isinstance(snapshot, EvidenceSnapshot):
+        if (
+            not isinstance(snapshot, EvidenceSnapshot)
+            or snapshot.schema_version != SCHEMA_VERSION
+        ):
             raise _invalid()
         encoded = json.dumps(
             _snapshot_data(snapshot),
@@ -178,7 +222,7 @@ def encode_snapshot(snapshot: EvidenceSnapshot) -> bytes:
         return encoded
     except EvidenceStateError:
         raise
-    except (TypeError, ValueError, OverflowError, UnicodeError):
+    except Exception:
         raise _invalid() from None
 
 
@@ -191,17 +235,72 @@ def decode_snapshot(data: bytes) -> EvidenceSnapshot:
             parse_constant=lambda _: _raise_invalid(),
             object_pairs_hook=_strict_object,
         )
-        root = _exact_object(
-            payload,
-            {
-                "schema_version",
-                "captured_at",
-                "product_version",
-                "rule_version",
-                "scan",
-                "findings",
-            },
-        )
+        if type(payload) is not dict:
+            raise _invalid()
+        schema_version = _integer(payload["schema_version"])
+        if schema_version == 1:
+            root = _exact_object(
+                payload,
+                {
+                    "schema_version",
+                    "captured_at",
+                    "product_version",
+                    "rule_version",
+                    "scan",
+                    "findings",
+                },
+            )
+            disposition_key = None
+            dispositions: tuple[DispositionRecord, ...] = ()
+        elif schema_version == SCHEMA_VERSION:
+            root = _exact_object(
+                payload,
+                {
+                    "schema_version",
+                    "captured_at",
+                    "product_version",
+                    "rule_version",
+                    "scan",
+                    "findings",
+                    "disposition_hmac_key",
+                    "dispositions",
+                },
+            )
+            key_text = _string(root["disposition_hmac_key"])
+            if not _is_hmac(key_text):
+                raise _invalid()
+            disposition_key = bytes.fromhex(key_text)
+            disposition_data = _list(root["dispositions"])
+            if len(disposition_data) > MAX_STATE_FINDINGS:
+                raise _invalid()
+            parsed_dispositions: list[DispositionRecord] = []
+            for item in disposition_data:
+                record = _exact_object(
+                    item,
+                    {
+                        "disposition_ref",
+                        "rule_id",
+                        "status",
+                        "reason",
+                        "reviewer",
+                        "created_at",
+                        "expires_at",
+                    },
+                )
+                parsed_dispositions.append(
+                    DispositionRecord(
+                        disposition_ref=_string(record["disposition_ref"]),
+                        rule_id=_string(record["rule_id"]),
+                        status=DispositionStatus(_string(record["status"])),
+                        reason=_string(record["reason"]),
+                        reviewer=_string(record["reviewer"]),
+                        created_at=_string(record["created_at"]),
+                        expires_at=_string(record["expires_at"]),
+                    )
+                )
+            dispositions = tuple(parsed_dispositions)
+        else:
+            raise _invalid()
         scan_data = _exact_object(
             root["scan"],
             {"coverage", "confidence", "incomplete", "limits"},
@@ -248,7 +347,7 @@ def decode_snapshot(data: bytes) -> EvidenceSnapshot:
             )
 
         return EvidenceSnapshot(
-            schema_version=_integer(root["schema_version"]),
+            schema_version=schema_version,
             captured_at=_string(root["captured_at"]),
             product_version=_string(root["product_version"]),
             rule_version=_string(root["rule_version"]),
@@ -259,10 +358,12 @@ def decode_snapshot(data: bytes) -> EvidenceSnapshot:
                 limits=tuple(_string(limit) for limit in limits_data),
             ),
             findings=tuple(references),
+            disposition_key=disposition_key,
+            dispositions=dispositions,
         )
     except EvidenceStateError:
         raise
-    except (KeyError, TypeError, ValueError, OverflowError, UnicodeError):
+    except Exception:
         raise _invalid() from None
 
 
@@ -314,6 +415,19 @@ def _snapshot_data(snapshot: EvidenceSnapshot) -> dict[str, object]:
                 ],
             }
             for finding in snapshot.findings
+        ],
+        "disposition_hmac_key": snapshot.disposition_key.hex(),
+        "dispositions": [
+            {
+                "disposition_ref": record.disposition_ref,
+                "rule_id": record.rule_id,
+                "status": record.status.value,
+                "reason": record.reason,
+                "reviewer": record.reviewer,
+                "created_at": record.created_at,
+                "expires_at": record.expires_at,
+            }
+            for record in snapshot.dispositions
         ],
     }
 

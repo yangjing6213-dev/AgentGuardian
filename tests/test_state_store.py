@@ -6,6 +6,7 @@ import sys
 
 import pytest
 
+from agentguardian.dispositions import DispositionRecord, DispositionStatus
 from agentguardian.domain import Evidence, Finding, RiskDomain, Score, Severity
 from agentguardian.evidence_state import MAX_STATE_BYTES, build_snapshot
 from agentguardian.state_store import (
@@ -18,6 +19,10 @@ from agentguardian.state_store import (
 from agentguardian.windows_dpapi import DpapiError
 
 
+DISPOSITION_KEY = b"s" * 32
+DISPOSITION_REF = "d" * 64
+
+
 def _snapshot(masked: str = "masked-value"):
     finding = Finding(
         "EMAIL_ADDRESS",
@@ -25,6 +30,7 @@ def _snapshot(masked: str = "masked-value"):
         Severity.LOW,
         "a" * 64,
         (Evidence("private.env", "b" * 64, masked),),
+        DISPOSITION_REF,
     )
     score = Score(
         total=97,
@@ -40,6 +46,18 @@ def _snapshot(masked: str = "masked-value"):
         score,
         rule_version="1.1.0",
         captured_at=datetime(2026, 8, 2, tzinfo=timezone.utc),
+        disposition_key=DISPOSITION_KEY,
+        dispositions=(
+            DispositionRecord(
+                disposition_ref=DISPOSITION_REF,
+                rule_id="EMAIL_ADDRESS",
+                status=DispositionStatus.ACCEPTED_RISK,
+                reason="Synthetic state reason",
+                reviewer="Local state reviewer",
+                created_at="2026-08-02T00:00:00Z",
+                expires_at="2026-08-31T00:00:00Z",
+            ),
+        ),
     )
 
 
@@ -61,8 +79,16 @@ def test_store_round_trip_writes_only_ciphertext(tmp_path: Path) -> None:
     target = tmp_path / STATE_FILENAME
     ciphertext = target.read_bytes()
     assert target.is_file()
-    assert b"private-marker" not in ciphertext
-    assert b"private.env" not in ciphertext
+    for private in (
+        b"private-marker",
+        b"private.env",
+        DISPOSITION_KEY,
+        DISPOSITION_KEY.hex().encode(),
+        DISPOSITION_REF.encode(),
+        b"Synthetic state reason",
+        b"Local state reviewer",
+    ):
+        assert private not in ciphertext
     assert load_protected_state(directory=tmp_path, unprotect=_unprotect) == snapshot
     assert [path.name for path in tmp_path.iterdir()] == [STATE_FILENAME]
 
@@ -73,8 +99,39 @@ def test_store_round_trip_uses_real_dpapi_on_windows(tmp_path: Path) -> None:
 
     save_protected_state(snapshot, directory=tmp_path)
 
-    assert b"real-dpapi-marker" not in (tmp_path / STATE_FILENAME).read_bytes()
+    ciphertext = (tmp_path / STATE_FILENAME).read_bytes()
+    for private in (
+        b"real-dpapi-marker",
+        b"private.env",
+        DISPOSITION_KEY,
+        DISPOSITION_KEY.hex().encode(),
+        DISPOSITION_REF.encode(),
+        b"Synthetic state reason",
+        b"Local state reviewer",
+    ):
+        assert private not in ciphertext
     assert load_protected_state(directory=tmp_path) == snapshot
+
+
+def test_loads_legacy_schema_without_rewriting_file(tmp_path: Path) -> None:
+    import agentguardian.state_store as state_store
+
+    legacy = (
+        b'{"schema_version":1,"captured_at":"2026-08-02T00:00:00Z",'
+        b'"product_version":"0.1.0","rule_version":"1.1.0",'
+        b'"scan":{"coverage":1.0,"confidence":1.0,"incomplete":false,'
+        b'"limits":[]},"findings":[]}'
+    )
+    target = tmp_path / STATE_FILENAME
+    target.write_bytes(_protect(state_store._seal_payload(legacy)))
+    before = target.read_bytes()
+
+    snapshot = load_protected_state(directory=tmp_path, unprotect=_unprotect)
+
+    assert snapshot.schema_version == 1
+    assert snapshot.disposition_key is None
+    assert snapshot.dispositions == ()
+    assert target.read_bytes() == before
 
 
 def test_failed_atomic_replace_preserves_previous_state(
