@@ -462,7 +462,11 @@ def _run_audit(
     frozen_roots = tuple(Path(os.path.abspath(root)) for root in roots)
     if any(_is_unc_path(root) for root in frozen_roots):
         raise ValueError("UNC scan roots are not allowed")
-    evaluation_time = _validated_evaluation_time(evaluated_at)
+    evaluation_time = (
+        _validated_evaluation_time(evaluated_at)
+        if evaluated_at is not None
+        else None
+    )
     disposition_context = _validated_disposition_context(
         disposition_key,
         dispositions,
@@ -537,6 +541,9 @@ def _run_audit(
                 limits.append("finding_limit_reached")
                 break
         scanned += 1
+
+    if evaluation_time is None:
+        evaluation_time = _validated_evaluation_time(_utc_now())
 
     coverage_denominator = len(files) + bool(discovery.limits)
     if coverage_denominator:
@@ -772,7 +779,7 @@ class AgentGuardianWindow(QMainWindow):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        self.findings_table.setColumnWidth(4, 112)
+        self.findings_table.setColumnWidth(4, 200)
         self.findings_table.itemSelectionChanged.connect(self._selection_changed)
         layout.addWidget(self.findings_table, 1)
 
@@ -1085,27 +1092,40 @@ class AgentGuardianWindow(QMainWindow):
         finding = self._selected_finding()
         if finding is None or self._audit_outcome is None:
             return
-        now = _validated_evaluation_time(_utc_now())
-        dialog = _DispositionDialog(self, preselected, now)
+        dialog_opened_at = _validated_evaluation_time(_utc_now())
+        dialog = _DispositionDialog(self, preselected, dialog_opened_at)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
             status, reason, reviewer, expires_at = dialog.values()
+        except (TypeError, ValueError):
+            self._show_save_failure()
+            return
+        if not self._confirm_invalid_state_replacement():
+            return
+        try:
+            commit_now = _validated_evaluation_time(_utc_now())
+            expiry = parse_utc(expires_at)
+            if (
+                not commit_now < expiry
+                or expiry - commit_now > timedelta(days=366)
+            ):
+                raise ValueError
             record = DispositionRecord(
                 disposition_ref=finding.disposition_ref,
                 rule_id=finding.rule_id,
                 status=status,
                 reason=reason,
                 reviewer=reviewer,
-                created_at=_canonical_utc_seconds(now),
+                created_at=_canonical_utc_seconds(commit_now),
                 expires_at=expires_at,
             )
             candidate = upsert_disposition(self._dispositions, record)
         except (TypeError, ValueError):
             self._show_save_failure()
             return
-        if self._save_disposition_candidate(candidate, now):
-            self._commit_disposition_state(candidate, now=now)
+        if self._save_disposition_candidate(candidate, commit_now):
+            self._commit_disposition_state(candidate, now=commit_now)
 
     def _withdraw_disposition(self) -> None:
         finding = self._selected_finding()
@@ -1123,8 +1143,10 @@ class AgentGuardianWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        now = _validated_evaluation_time(_utc_now())
+        if not self._confirm_invalid_state_replacement():
+            return
         try:
+            commit_now = _validated_evaluation_time(_utc_now())
             candidate = withdraw_disposition(
                 self._dispositions,
                 finding.disposition_ref,
@@ -1132,8 +1154,8 @@ class AgentGuardianWindow(QMainWindow):
         except (TypeError, ValueError):
             self._show_save_failure()
             return
-        if self._save_disposition_candidate(candidate, now):
-            self._commit_disposition_state(candidate, now=now)
+        if self._save_disposition_candidate(candidate, commit_now):
+            self._commit_disposition_state(candidate, now=commit_now)
 
     def _save_disposition_candidate(
         self,
@@ -1141,7 +1163,7 @@ class AgentGuardianWindow(QMainWindow):
         now: datetime,
     ) -> bool:
         outcome = self._audit_outcome
-        if outcome is None or not self._confirm_invalid_state_replacement():
+        if outcome is None:
             return False
         try:
             snapshot = build_snapshot(
@@ -1315,11 +1337,12 @@ class AgentGuardianWindow(QMainWindow):
         if not self._confirm_invalid_state_replacement():
             return
         try:
+            commit_now = _validated_evaluation_time(_utc_now())
             snapshot = build_snapshot(
                 self._audit_outcome.findings,
                 self._audit_outcome.score,
                 rule_version=self._audit_outcome.rule_version,
-                captured_at=_utc_now(),
+                captured_at=commit_now,
                 disposition_key=self._disposition_key,
                 dispositions=self._dispositions,
             )
