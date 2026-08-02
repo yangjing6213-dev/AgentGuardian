@@ -1,4 +1,6 @@
 import ast
+from dataclasses import FrozenInstanceError
+from datetime import datetime, timezone
 import json
 import os
 import time
@@ -16,15 +18,29 @@ import agentguardian.app as app_module
 from agentguardian.app import COLOR_TOKENS, create_window, export_new_report
 from agentguardian.detectors import FileDetectionResult
 from agentguardian.discovery import DiscoveryResult
+from agentguardian.dispositions import DispositionRecord, DispositionStatus
 from agentguardian.domain import Evidence, Finding, RiskDomain, Severity
-from agentguardian.evidence_state import decode_snapshot, encode_snapshot
+from agentguardian.evidence_state import (
+    EvidenceSnapshot,
+    ScanMetadata,
+    decode_snapshot,
+    encode_snapshot,
+)
 from agentguardian.state_store import StateStoreError
+
+
+EVALUATED_AT = datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture(scope="session")
 def qapp():
     application = QApplication.instance() or QApplication([])
     yield application
+
+
+@pytest.fixture(autouse=True)
+def isolate_local_app_data(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
 
 
 def _wait_for_scan(window, application, timeout: float = 5.0) -> None:
@@ -64,6 +80,43 @@ def _synthetic_finding(index: int, evidence_count: int = 1) -> Finding:
     )
 
 
+def _state_snapshot(
+    schema_version: int,
+    *,
+    disposition_key: bytes | None = None,
+    dispositions: tuple[DispositionRecord, ...] = (),
+) -> EvidenceSnapshot:
+    return EvidenceSnapshot(
+        schema_version=schema_version,
+        captured_at="2026-08-02T08:00:00Z",
+        product_version="0.1.0",
+        rule_version="1.1.0",
+        scan=ScanMetadata(1.0, 1.0, False, ()),
+        findings=(),
+        disposition_key=disposition_key,
+        dispositions=dispositions,
+    )
+
+
+def _disposition(
+    finding: Finding,
+    status: DispositionStatus,
+    *,
+    created_at: str = "2026-08-02T08:00:00Z",
+    expires_at: str = "2026-08-03T08:00:00Z",
+) -> DispositionRecord:
+    assert finding.disposition_ref is not None
+    return DispositionRecord(
+        finding.disposition_ref,
+        finding.rule_id,
+        status,
+        "Synthetic audit review",
+        "Local reviewer",
+        created_at,
+        expires_at,
+    )
+
+
 def test_discovery_limit_marks_audit_incomplete(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -84,6 +137,114 @@ def test_discovery_limit_marks_audit_incomplete(
     assert outcome.score.coverage == 0.5
     assert outcome.score.incomplete is True
     assert "directory_read_limited" in outcome.score.limits
+
+
+@pytest.mark.parametrize("state", ("v2", "v1", "missing", "invalid"))
+def test_window_loads_disposition_context_once_without_writing(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    state: str,
+) -> None:
+    stored_key = b"s" * 32
+    fresh_key = b"f" * 32
+    record = DispositionRecord(
+        "a" * 64,
+        "OPENAI_API_KEY",
+        DispositionStatus.ACCEPTED_RISK,
+        "Synthetic accepted risk",
+        "Local reviewer",
+        "2026-08-02T08:00:00Z",
+        "2026-08-03T08:00:00Z",
+    )
+    load_calls = []
+    fresh_calls = []
+    save_calls = []
+
+    def fake_load():
+        load_calls.append(None)
+        if state == "v2":
+            return _state_snapshot(
+                2,
+                disposition_key=stored_key,
+                dispositions=(record,),
+            )
+        if state == "v1":
+            return _state_snapshot(1)
+        code = (
+            "PROTECTED_STATE_UNAVAILABLE"
+            if state == "missing"
+            else "PROTECTED_STATE_INVALID"
+        )
+        raise StateStoreError(code)
+
+    def fake_token_bytes(length: int) -> bytes:
+        fresh_calls.append(length)
+        return fresh_key
+
+    monkeypatch.setattr(app_module, "load_protected_state", fake_load)
+    monkeypatch.setattr(app_module, "save_protected_state", save_calls.append)
+    monkeypatch.setattr(app_module.secrets, "token_bytes", fake_token_bytes)
+    before = tuple(tmp_path.rglob("*"))
+
+    window = create_window()
+
+    assert load_calls == [None]
+    assert save_calls == []
+    assert tuple(tmp_path.rglob("*")) == before
+    if state == "v2":
+        assert window._disposition_key == stored_key
+        assert window._dispositions == (record,)
+        assert window._protected_state_invalid is False
+        assert fresh_calls == []
+    else:
+        assert window._disposition_key == fresh_key
+        assert window._dispositions == ()
+        assert window._protected_state_invalid is (state == "invalid")
+        assert fresh_calls == [32]
+    assert repr(window._disposition_key) not in repr(window)
+    assert "PROTECTED_STATE" not in window.status_label.text()
+    window.close()
+
+
+def test_disposition_context_is_frozen_slotted_and_hides_key() -> None:
+    key = b"h" * 32
+    context = app_module._DispositionContext(key, (), False)
+
+    assert not hasattr(context, "__dict__")
+    assert repr(key) not in repr(context)
+    with pytest.raises(FrozenInstanceError):
+        context.invalid_state = True
+
+
+@pytest.mark.parametrize("failure", ("malformed", "unexpected"))
+def test_malformed_disposition_state_fails_closed_without_leaking(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    marker = "synthetic-private-state-marker"
+    calls = []
+
+    def fake_load():
+        calls.append(None)
+        if failure == "malformed":
+            return SimpleNamespace(
+                schema_version=2,
+                disposition_key=b"short",
+                dispositions=(marker,),
+            )
+        raise RuntimeError(marker)
+
+    monkeypatch.setattr(app_module, "load_protected_state", fake_load)
+    monkeypatch.setattr(app_module.secrets, "token_bytes", lambda length: b"n" * length)
+
+    context = app_module._load_disposition_context()
+
+    assert calls == [None]
+    assert context.key == b"n" * 32
+    assert context.records == ()
+    assert context.invalid_state is True
+    assert marker not in repr(context)
 
 
 def test_window_navigation_trust_strip_and_approved_theme(qapp):
@@ -190,6 +351,170 @@ def test_openai_env_override_is_masked_end_to_end(qapp, tmp_path: Path) -> None:
     window.close()
 
 
+def test_cross_scan_dispositions_keep_identity_and_reviewed_score_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    root = Path("first")
+    root.mkdir()
+    config_path = root / "mcp.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "synthetic": {
+                        "capabilities": {
+                            "shell": True,
+                            "filesystem_write": True,
+                            "network": True,
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    disposition_key = b"d" * 32
+    scan_keys = iter(bytes([index]) * 32 for index in range(1, 6))
+    file_calls = []
+    mcp_calls = []
+    real_detect_file = app_module.detect_file
+    real_detect_mcp_config = app_module.detect_mcp_config
+    monkeypatch.setattr(app_module.secrets, "token_bytes", lambda length: next(scan_keys))
+
+    def capture_file(path, *, scan_key, disposition_key):
+        file_calls.append((path, scan_key, disposition_key))
+        return real_detect_file(
+            path,
+            scan_key=scan_key,
+            disposition_key=disposition_key,
+        )
+
+    def capture_mcp(config, source, *, scan_key, disposition_key):
+        mcp_calls.append((source, scan_key, disposition_key))
+        return real_detect_mcp_config(
+            config,
+            source,
+            scan_key=scan_key,
+            disposition_key=disposition_key,
+        )
+
+    monkeypatch.setattr(app_module, "detect_file", capture_file)
+    monkeypatch.setattr(app_module, "detect_mcp_config", capture_mcp)
+
+    first = app_module._run_audit(
+        (root,),
+        disposition_key=disposition_key,
+        evaluated_at=EVALUATED_AT,
+    )
+    first_finding = next(
+        finding
+        for finding in first.findings
+        if finding.rule_id == "MCP_DANGEROUS_COMBINATION"
+    )
+    saved_record = _disposition(
+        first_finding,
+        DispositionStatus.FALSE_POSITIVE,
+    )
+    saved_state = _state_snapshot(
+        2,
+        disposition_key=disposition_key,
+        dispositions=(saved_record,),
+    )
+    second = app_module._run_audit(
+        (root,),
+        disposition_key=saved_state.disposition_key,
+        dispositions=saved_state.dispositions,
+        evaluated_at=EVALUATED_AT,
+    )
+    second_finding = next(
+        finding
+        for finding in second.findings
+        if finding.rule_id == "MCP_DANGEROUS_COMBINATION"
+    )
+    first_payload = json.loads(first.report_json)
+    second_payload = json.loads(second.report_json)
+
+    assert first_finding.root_fingerprint != second_finding.root_fingerprint
+    assert (
+        first_payload["findings"][0]["root_hmac_fingerprint"]
+        != second_payload["findings"][0]["root_hmac_fingerprint"]
+    )
+    assert first_finding.disposition_ref == second_finding.disposition_ref
+    assert first_finding.evidence[0].source == config_path.name
+    assert second.score == first.score
+    assert second.score.total == 59
+    assert second.score.cap_reason == "mcp_dangerous_combination"
+    assert second.reviewed_score.total == 100
+    assert second.reviewed_score.cap_reason is None
+    assert second_payload["score"]["total"] == second.score.total
+    assert second_payload["reviewed_score"]["total"] == second.reviewed_score.total
+    assert second_payload["findings"][0]["disposition"]["status"] == "false_positive"
+    assert "Disposition status: false_positive" in second.report_html
+    assert second.evaluated_at == EVALUATED_AT
+    assert not hasattr(second, "__dict__")
+    with pytest.raises(FrozenInstanceError):
+        second.evaluated_at = datetime.now(timezone.utc)
+
+    accepted = app_module._run_audit(
+        (root,),
+        disposition_key=disposition_key,
+        dispositions=(
+            _disposition(first_finding, DispositionStatus.ACCEPTED_RISK),
+        ),
+        evaluated_at=EVALUATED_AT,
+    )
+    expired = app_module._run_audit(
+        (root,),
+        disposition_key=disposition_key,
+        dispositions=(
+            _disposition(
+                first_finding,
+                DispositionStatus.FALSE_POSITIVE,
+                created_at="2026-08-01T08:00:00Z",
+                expires_at="2026-08-02T11:00:00Z",
+            ),
+        ),
+        evaluated_at=EVALUATED_AT,
+    )
+    assert accepted.reviewed_score == accepted.score
+    assert json.loads(accepted.report_json)["findings"][0]["disposition"]["status"] == "accepted_risk"
+    assert expired.reviewed_score == expired.score
+    assert json.loads(expired.report_json)["findings"][0]["disposition"]["status"] == "expired"
+
+    moved_root = Path("moved")
+    moved_root.mkdir()
+    moved_path = moved_root / config_path.name
+    config_path.replace(moved_path)
+    moved = app_module._run_audit(
+        (moved_root,),
+        disposition_key=disposition_key,
+        dispositions=(saved_record,),
+        evaluated_at=EVALUATED_AT,
+    )
+    moved_finding = next(
+        finding
+        for finding in moved.findings
+        if finding.rule_id == "MCP_DANGEROUS_COMBINATION"
+    )
+
+    assert moved_finding.disposition_ref != first_finding.disposition_ref
+    assert moved.reviewed_score == moved.score
+    assert json.loads(moved.report_json)["findings"][0]["disposition"]["status"] == "open"
+    assert len({scan_key for _, scan_key, _ in file_calls}) == 5
+    assert all(key == disposition_key for _, _, key in file_calls)
+    assert all(key == disposition_key for _, _, key in mcp_calls)
+    assert [source for source, _, _ in mcp_calls[:4]] == [
+        str(config_path.absolute())
+    ] * 4
+    assert mcp_calls[4][0] == str(moved_path.absolute())
+    for report in (second.report_json, second.report_html):
+        assert disposition_key.hex() not in report
+        assert repr(disposition_key) not in report
+        assert first_finding.disposition_ref not in report
+
+
 def test_openai_finding_uses_openai_manual_guidance(qapp) -> None:
     finding = Finding(
         rule_id="OPENAI_API_KEY",
@@ -267,6 +592,68 @@ def test_protected_state_is_saved_only_after_explicit_action(
     assert str(tmp_path).encode() not in encoded
     assert warnings == []
     assert messages == [("保存完成", "加密状态已保存到当前 Windows 用户。")]
+    window.close()
+
+
+def test_normal_audit_lifecycle_never_saves_protected_state(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "audit-root"
+    root.mkdir()
+    (root / "safe.txt").write_text("safe", encoding="utf-8")
+    local_app_data = Path(os.environ["LOCALAPPDATA"])
+    protected_saves = []
+    worker_context = {}
+    real_worker = app_module.AuditWorker
+
+    class CapturingWorker(real_worker):
+        def __init__(self, roots, disposition_key, dispositions):
+            super().__init__(roots, disposition_key, dispositions)
+            worker_context.update(
+                roots=self._roots,
+                disposition_key=self._disposition_key,
+                dispositions=self._dispositions,
+                representation=repr(self),
+            )
+
+    monkeypatch.setattr(app_module, "AuditWorker", CapturingWorker)
+    monkeypatch.setattr(app_module, "save_protected_state", protected_saves.append)
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: str(root),
+    )
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: (str(tmp_path / "report.json"), "JSON (*.json)"),
+    )
+    monkeypatch.setattr(app_module, "export_new_report", lambda *args: None)
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: None)
+
+    window = create_window()
+    assert protected_saves == []
+    assert not local_app_data.exists()
+
+    window.folder_button.click()
+    assert protected_saves == []
+    window.scan_button.click()
+    assert worker_context["roots"] == (root,)
+    assert worker_context["disposition_key"] == window._disposition_key
+    assert type(worker_context["dispositions"]) is tuple
+    assert repr(window._disposition_key) not in worker_context["representation"]
+    assert protected_saves == []
+
+    _wait_for_scan(window, qapp)
+    assert protected_saves == []
+    window.report_mode_combo.setCurrentText("JSON")
+    window._refresh_report()
+    assert protected_saves == []
+    window.save_button.click()
+    assert protected_saves == []
+    assert not local_app_data.exists()
     window.close()
 
 
@@ -558,7 +945,7 @@ def test_audit_finding_cap_stops_remaining_files_and_uses_complete_coverage(
         lambda roots, suffixes, *, max_files, max_entries: _discovery_result(files),
     )
 
-    def fake_detect_file(path, *, scan_key):
+    def fake_detect_file(path, *, scan_key, disposition_key):
         calls.append(path)
         return FileDetectionResult(batches[path], True, ())
 
@@ -598,7 +985,7 @@ def test_audit_evidence_cap_rejects_partial_finding_batch(monkeypatch, tmp_path)
         lambda roots, suffixes, *, max_files, max_entries: _discovery_result(files),
     )
 
-    def fake_detect_file(path, *, scan_key):
+    def fake_detect_file(path, *, scan_key, disposition_key):
         calls.append(path)
         return FileDetectionResult(batches[path], True, ())
 
@@ -624,7 +1011,7 @@ def test_discovery_file_sentinel_marks_scan_incomplete(monkeypatch, tmp_path):
         assert max_files == 2
         return _discovery_result(files[:2], ("file_limit_reached",))
 
-    def fake_detect_file(path, *, scan_key):
+    def fake_detect_file(path, *, scan_key, disposition_key):
         calls.append(path)
         return FileDetectionResult((), True, ())
 
@@ -652,7 +1039,7 @@ def test_total_byte_limit_stops_before_over_budget_file(monkeypatch, tmp_path):
         lambda roots, suffixes, *, max_files, max_entries: _discovery_result(files),
     )
 
-    def fake_detect_file(path, *, scan_key):
+    def fake_detect_file(path, *, scan_key, disposition_key):
         calls.append(path)
         return FileDetectionResult((), True, ())
 
@@ -687,7 +1074,9 @@ def test_duplicate_findings_are_aggregated_once(monkeypatch, tmp_path):
     monkeypatch.setattr(
         app_module,
         "detect_file",
-        lambda path, *, scan_key: FileDetectionResult((finding, finding), True, ()),
+        lambda path, *, scan_key, disposition_key: FileDetectionResult(
+            (finding, finding), True, ()
+        ),
     )
 
     outcome = app_module._run_audit((tmp_path,))

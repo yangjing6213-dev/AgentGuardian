@@ -4,7 +4,7 @@ import secrets
 import stat
 import sys
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,12 +32,13 @@ from PySide6.QtWidgets import (
 
 from .detectors import MAX_FILE_BYTES, detect_file, detect_mcp_config, load_rules
 from .discovery import discover_files
+from .dispositions import DispositionRecord, disposition_index, reviewed_findings
 from .domain import Finding, Score, Severity
-from .evidence_state import EvidenceStateError, build_snapshot
+from .evidence_state import EvidenceSnapshot, EvidenceStateError, build_snapshot
 from .guidance import guidance_for
 from .reporting import render_html, render_json
 from .scoring import score
-from .state_store import StateStoreError, save_protected_state
+from .state_store import StateStoreError, load_protected_state, save_protected_state
 
 COLOR_TOKENS = {
     "obsidian": "#0F1215",
@@ -68,13 +69,51 @@ _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
 
 
 @dataclass(frozen=True, slots=True)
+class _DispositionContext:
+    key: bytes = field(repr=False)
+    records: tuple[DispositionRecord, ...]
+    invalid_state: bool
+
+
+@dataclass(frozen=True, slots=True)
 class AuditOutcome:
     findings: tuple[Finding, ...]
     score: Score
+    reviewed_score: Score
+    evaluated_at: datetime
     rule_version: str
     report_json: str
     report_html: str
     scanned_roots: tuple[Path, ...]
+
+
+def _load_disposition_context() -> _DispositionContext:
+    try:
+        snapshot = load_protected_state()
+        if type(snapshot) is not EvidenceSnapshot:
+            raise ValueError
+        if snapshot.schema_version == 1:
+            return _DispositionContext(secrets.token_bytes(32), (), False)
+        if (
+            snapshot.schema_version != 2
+            or type(snapshot.disposition_key) is not bytes
+            or len(snapshot.disposition_key) != 32
+            or type(snapshot.dispositions) is not tuple
+        ):
+            raise ValueError
+        return _DispositionContext(
+            snapshot.disposition_key,
+            snapshot.dispositions,
+            False,
+        )
+    except StateStoreError as error:
+        return _DispositionContext(
+            secrets.token_bytes(32),
+            (),
+            error.args != ("PROTECTED_STATE_UNAVAILABLE",),
+        )
+    except Exception:  # noqa: BLE001 - protected state must fail closed
+        return _DispositionContext(secrets.token_bytes(32), (), True)
 
 
 def _is_unc_path(path: str | Path) -> bool:
@@ -167,9 +206,25 @@ def _append_finding_batch(
     return evidence_count, True
 
 
-def _run_audit(roots: tuple[Path, ...]) -> AuditOutcome:
+def _run_audit(
+    roots: tuple[Path, ...],
+    *,
+    disposition_key: bytes | None = None,
+    dispositions: Iterable[DispositionRecord] = (),
+    evaluated_at: datetime | None = None,
+) -> AuditOutcome:
     if any(_is_unc_path(root) for root in roots):
         raise ValueError("UNC scan roots are not allowed")
+    local_disposition_key = (
+        secrets.token_bytes(32) if disposition_key is None else disposition_key
+    )
+    if type(local_disposition_key) is not bytes or len(local_disposition_key) != 32:
+        raise ValueError("invalid disposition context")
+    frozen_dispositions = tuple(dispositions)
+    disposition_records = disposition_index(frozen_dispositions)
+    evaluation_time = (
+        datetime.now(timezone.utc) if evaluated_at is None else evaluated_at
+    )
     scan_key = secrets.token_bytes(32)
     discovery = discover_files(
         list(roots),
@@ -196,7 +251,11 @@ def _run_audit(roots: tuple[Path, ...]) -> AuditOutcome:
             break
         scanned_bytes += file_bytes
         try:
-            result = detect_file(path, scan_key=scan_key)
+            result = detect_file(
+                path,
+                scan_key=scan_key,
+                disposition_key=local_disposition_key,
+            )
         except Exception:  # noqa: BLE001 - never expose scan exception text
             limits.append("file_scan_limited")
             continue
@@ -214,7 +273,12 @@ def _run_audit(roots: tuple[Path, ...]) -> AuditOutcome:
         if path.suffix.lower() == ".json" and result.scanned:
             try:
                 config = _read_limited_json(path)
-                mcp_findings = detect_mcp_config(config, path.name, scan_key=scan_key)
+                mcp_findings = detect_mcp_config(
+                    config,
+                    str(path.absolute()),
+                    scan_key=scan_key,
+                    disposition_key=local_disposition_key,
+                )
             except Exception:  # noqa: BLE001 - never expose parser exception text
                 limits.append("mcp_config_scan_limited")
                 continue
@@ -233,18 +297,46 @@ def _run_audit(roots: tuple[Path, ...]) -> AuditOutcome:
         coverage = 0.0
         limits.append("no_supported_files")
     unique_limits = tuple(dict.fromkeys(limits))
-    audit_score = score(findings, coverage=coverage, limits=unique_limits)
-    rule_version = load_rules().version
     frozen_findings = tuple(findings)
+    confidence = 1.0
+    audit_score = score(
+        frozen_findings,
+        coverage=coverage,
+        confidence=confidence,
+        limits=unique_limits,
+    )
+    rule_version = load_rules().version
+    reviewed_score = score(
+        reviewed_findings(
+            frozen_findings,
+            disposition_records,
+            now=evaluation_time,
+        ),
+        coverage=coverage,
+        confidence=confidence,
+        limits=unique_limits,
+    )
     return AuditOutcome(
         findings=frozen_findings,
         score=audit_score,
+        reviewed_score=reviewed_score,
+        evaluated_at=evaluation_time,
         rule_version=rule_version,
         report_json=render_json(
-            audit_score, frozen_findings, rule_version=rule_version
+            audit_score,
+            frozen_findings,
+            rule_version=rule_version,
+            reviewed_score=reviewed_score,
+            dispositions=frozen_dispositions,
+            evaluated_at=evaluation_time,
         ),
         report_html=render_html(
-            audit_score, frozen_findings, rule_version=rule_version
+            audit_score,
+            frozen_findings,
+            rule_version=rule_version,
+            reviewed_score=reviewed_score,
+            dispositions=frozen_dispositions,
+            evaluated_at=evaluation_time,
         ),
         scanned_roots=roots,
     )
@@ -254,14 +346,27 @@ class AuditWorker(QObject):
     completed = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, roots: tuple[Path, ...]) -> None:
+    def __init__(
+        self,
+        roots: tuple[Path, ...],
+        disposition_key: bytes,
+        dispositions: Iterable[DispositionRecord],
+    ) -> None:
         super().__init__()
-        self._roots = roots
+        self._roots = tuple(roots)
+        self._disposition_key = disposition_key
+        self._dispositions = tuple(dispositions)
 
     @Slot()
     def run(self) -> None:
         try:
-            self.completed.emit(_run_audit(self._roots))
+            self.completed.emit(
+                _run_audit(
+                    self._roots,
+                    disposition_key=self._disposition_key,
+                    dispositions=self._dispositions,
+                )
+            )
         except Exception:  # noqa: BLE001 - fixed worker failure boundary
             self.failed.emit("scan_failed")
 
@@ -269,6 +374,7 @@ class AuditWorker(QObject):
 class AgentGuardianWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        disposition_context = _load_disposition_context()
         self.setWindowTitle("AgentGuardian")
         self.setMinimumSize(960, 640)
         self._roots: tuple[Path, ...] = ()
@@ -277,8 +383,9 @@ class AgentGuardianWindow(QMainWindow):
         self._worker: AuditWorker | None = None
         self._row_findings: list[Finding] = []
         self._audit_outcome: AuditOutcome | None = None
-        self._disposition_key = secrets.token_bytes(32)
-        self._dispositions = ()
+        self._disposition_key = disposition_context.key
+        self._dispositions = disposition_context.records
+        self._protected_state_invalid = disposition_context.invalid_state
         self.is_scanning = False
         self.report_json = ""
         self.report_html = ""
@@ -495,7 +602,11 @@ class AgentGuardianWindow(QMainWindow):
         self.guidance_browser.setPlainText("等待审计结果。")
 
         self._thread = QThread(self)
-        self._worker = AuditWorker(self._roots)
+        self._worker = AuditWorker(
+            self._roots,
+            self._disposition_key,
+            self._dispositions,
+        )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.completed.connect(self._scan_completed)
