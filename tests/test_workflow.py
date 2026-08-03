@@ -526,6 +526,7 @@ def test_coverage_classifier_rejects_forged_malformed_score_fields(
 
 FILTER_NOW = datetime(2026, 8, 3, 10, tzinfo=timezone.utc)
 FILTER_PRIVATE_MARKER = r"C:\private\RAW_MATCH_REVIEW_SECRET.txt"
+FILTER_RAW_SECRET = "sk-proj-PRIVATE_RAW_SECRET_MARKER"
 
 
 class _FilterDatetimeSubclass(datetime):
@@ -585,6 +586,19 @@ def _filter_evidence(index: int) -> Evidence:
     )
 
 
+def _forged_filter_evidence(**overrides: object) -> Evidence:
+    fields: dict[str, object] = {
+        "source": "synthetic.env",
+        "fingerprint": "f" * 64,
+        "masked": "masked synthetic value",
+    }
+    fields.update(overrides)
+    evidence = object.__new__(Evidence)
+    for field_name, value in fields.items():
+        object.__setattr__(evidence, field_name, value)
+    return evidence
+
+
 def _filter_finding(
     index: int,
     domain: RiskDomain,
@@ -603,6 +617,22 @@ def _filter_finding(
     )
 
 
+def _forged_filter_finding(**overrides: object) -> Finding:
+    fields: dict[str, object] = {
+        "rule_id": "RULE_9",
+        "domain": RiskDomain.EXPOSURE,
+        "severity": Severity.LOW,
+        "root_fingerprint": "9" * 64,
+        "evidence": (_forged_filter_evidence(),),
+        "disposition_ref": None,
+    }
+    fields.update(overrides)
+    finding = object.__new__(Finding)
+    for field_name, value in fields.items():
+        object.__setattr__(finding, field_name, value)
+    return finding
+
+
 def _filter_record(
     disposition_ref: str,
     rule_id: str,
@@ -619,6 +649,23 @@ def _filter_record(
         "2026-08-03T09:00:00Z",
         expires_at,
     )
+
+
+def _forged_filter_record(**overrides: object) -> DispositionRecord:
+    fields: dict[str, object] = {
+        "disposition_ref": "e" * 64,
+        "rule_id": "RULE_8",
+        "status": DispositionStatus.FALSE_POSITIVE,
+        "reason": "Synthetic reason",
+        "reviewer": "Synthetic reviewer",
+        "created_at": "2026-08-03T09:00:00Z",
+        "expires_at": "2026-08-03T11:00:00Z",
+    }
+    fields.update(overrides)
+    record = object.__new__(DispositionRecord)
+    for field_name, value in fields.items():
+        object.__setattr__(record, field_name, value)
+    return record
 
 
 def _filter_fixture() -> tuple[tuple[Finding, ...], tuple[DispositionRecord, ...]]:
@@ -670,7 +717,9 @@ def _assert_finding_filter_invalid(call: Callable[[], object]) -> None:
         call()
 
     assert str(raised.value) == "FINDING_FILTER_INVALID"
-    assert FILTER_PRIVATE_MARKER not in str(raised.value)
+    for marker in (FILTER_PRIVATE_MARKER, FILTER_RAW_SECRET):
+        assert marker not in str(raised.value)
+        assert marker not in repr(raised.value)
     assert raised.value.__cause__ is None
 
 
@@ -770,6 +819,66 @@ def test_filter_findings_applies_exact_criteria_per_finding_in_original_order(
     )
     assert finding_input == list(findings)
     assert disposition_input == list(dispositions)
+
+
+@pytest.mark.parametrize(
+    ("filters", "expected_indexes"),
+    (
+        (
+            FindingFilters(severity=Severity.HIGH, domain=RiskDomain.PRIVACY),
+            (1,),
+        ),
+        (
+            FindingFilters(severity=Severity.HIGH, domain=RiskDomain.RETENTION),
+            (),
+        ),
+        (
+            FindingFilters(
+                severity=Severity.HIGH,
+                disposition_state="false_positive",
+            ),
+            (1,),
+        ),
+        (
+            FindingFilters(
+                severity=Severity.LOW,
+                disposition_state="accepted_risk",
+            ),
+            (),
+        ),
+        (
+            FindingFilters(
+                domain=RiskDomain.PERMISSIONS,
+                disposition_state="expired",
+            ),
+            (3,),
+        ),
+        (
+            FindingFilters(
+                domain=RiskDomain.EXPOSURE,
+                disposition_state="expired",
+            ),
+            (),
+        ),
+    ),
+    ids=(
+        "severity-domain-positive",
+        "severity-domain-negative",
+        "severity-disposition-positive",
+        "severity-disposition-negative",
+        "domain-disposition-positive",
+        "domain-disposition-negative",
+    ),
+)
+def test_filter_findings_applies_pairwise_criteria(
+    filters: FindingFilters,
+    expected_indexes: tuple[int, ...],
+) -> None:
+    findings, dispositions = _filter_fixture()
+
+    visible = filter_findings(findings, dispositions, filters, now=FILTER_NOW)
+
+    assert visible == tuple(findings[index] for index in expected_indexes)
 
 
 def test_filter_findings_counts_findings_not_evidence_rows() -> None:
@@ -923,6 +1032,58 @@ def test_filter_findings_rejects_forged_mutable_finding_fields() -> None:
 
 
 @pytest.mark.parametrize(
+    "case",
+    (
+        "evidence_source_path",
+        "evidence_fingerprint",
+        "evidence_masked_secret",
+        "root_fingerprint",
+        "rule_type",
+        "domain_type",
+        "severity_type",
+        "evidence_container",
+        "evidence_item",
+        "disposition_ref",
+    ),
+)
+def test_filter_findings_revalidates_forged_finding_and_evidence_invariants(
+    case: str,
+) -> None:
+    if case == "evidence_source_path":
+        finding = _forged_filter_finding(
+            evidence=(_forged_filter_evidence(source=FILTER_PRIVATE_MARKER),)
+        )
+    elif case == "evidence_fingerprint":
+        finding = _forged_filter_finding(
+            evidence=(_forged_filter_evidence(fingerprint="f" * 63),)
+        )
+    elif case == "evidence_masked_secret":
+        finding = _forged_filter_finding(
+            evidence=(_forged_filter_evidence(masked=FILTER_RAW_SECRET),)
+        )
+    elif case == "root_fingerprint":
+        finding = _forged_filter_finding(root_fingerprint="9" * 63)
+    elif case == "rule_type":
+        finding = _forged_filter_finding(rule_id=["RULE_9"])
+    elif case == "domain_type":
+        finding = _forged_filter_finding(domain="exposure")
+    elif case == "severity_type":
+        finding = _forged_filter_finding(severity="low")
+    elif case == "evidence_container":
+        finding = _forged_filter_finding(evidence=[_forged_filter_evidence()])
+    elif case == "evidence_item":
+        finding = _forged_filter_finding(evidence=(object(),))
+    else:
+        finding = _forged_filter_finding(disposition_ref=FILTER_PRIVATE_MARKER)
+
+    _assert_finding_filter_invalid(
+        lambda: filter_findings((finding,), (), FindingFilters(), now=FILTER_NOW)
+    )
+    assert FILTER_PRIVATE_MARKER not in repr(FindingFilters())
+    assert FILTER_RAW_SECRET not in repr(FindingFilters())
+
+
+@pytest.mark.parametrize(
     ("field_name", "invalid_value"),
     (
         ("status", "false_positive"),
@@ -942,6 +1103,50 @@ def test_filter_findings_rejects_forged_disposition_fields(
 
 
 @pytest.mark.parametrize(
+    "overrides",
+    (
+        {"disposition_ref": FILTER_PRIVATE_MARKER},
+        {"rule_id": FILTER_PRIVATE_MARKER},
+        {"status": "false_positive"},
+        {"reason": FILTER_PRIVATE_MARKER},
+        {"reviewer": FILTER_PRIVATE_MARKER},
+        {"created_at": "2026-13-03T09:00:00Z"},
+        {"expires_at": "2026-08-03T99:00:00Z"},
+        {"expires_at": "2026-08-03T09:00:00Z"},
+        {"expires_at": "2026-08-03T08:59:59Z"},
+        {"expires_at": "2027-08-05T09:00:00Z"},
+    ),
+)
+def test_filter_findings_revalidates_forged_disposition_constructor_invariants(
+    overrides: dict[str, object],
+) -> None:
+    record = _forged_filter_record(**overrides)
+
+    _assert_finding_filter_invalid(
+        lambda: filter_findings((), (record,), FindingFilters(), now=FILTER_NOW)
+    )
+    assert FILTER_PRIVATE_MARKER not in repr(FindingFilters())
+
+
+def test_filter_findings_indexes_original_valid_disposition_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = _filter_record("e" * 64, "RULE_8")
+    indexed: list[DispositionRecord] = []
+    original_index = workflow_module.disposition_index
+
+    def capture_index(records: object) -> dict[str, DispositionRecord]:
+        indexed.extend(records)  # type: ignore[arg-type]
+        return original_index(indexed)
+
+    monkeypatch.setattr(workflow_module, "disposition_index", capture_index)
+
+    assert filter_findings((), (record,), FindingFilters(), now=FILTER_NOW) == ()
+    assert indexed == [record]
+    assert indexed[0] is record
+
+
+@pytest.mark.parametrize(
     "now",
     (
         datetime(2026, 8, 3, 10),
@@ -956,12 +1161,33 @@ def test_filter_findings_requires_exact_timezone_aware_utc_time(now: datetime) -
     )
 
 
-def test_filter_findings_validates_evaluation_time_once() -> None:
+def test_filter_findings_validates_evaluation_time_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     findings, dispositions = _filter_fixture()
     counting_utc = _FilterCountingUtc()
     now = datetime(2026, 8, 3, 10, tzinfo=counting_utc)
+    evaluated_times: list[datetime] = []
+    original_evaluate = workflow_module.evaluate_disposition
+
+    def capture_time(
+        finding: Finding,
+        records: object,
+        *,
+        now: datetime,
+    ) -> object:
+        evaluated_times.append(now)
+        return original_evaluate(finding, records, now=now)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(workflow_module, "evaluate_disposition", capture_time)
 
     assert filter_findings(findings, dispositions, FindingFilters(), now=now) == findings
+    assert len(evaluated_times) == len(findings)
+    validated_time = evaluated_times[0]
+    assert validated_time == FILTER_NOW
+    assert validated_time.tzinfo is timezone.utc
+    assert validated_time is not now
+    assert all(value is validated_time for value in evaluated_times)
     assert counting_utc.calls == 1
 
 

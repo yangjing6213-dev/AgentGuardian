@@ -302,17 +302,37 @@ def _validated_filter_dispositions(
     records: Iterable[object],
 ) -> Iterable[DispositionRecord]:
     for record in records:
-        if type(record) is not DispositionRecord or any(
+        if type(record) is not DispositionRecord:
+            raise ValueError
+        disposition_ref = record.disposition_ref
+        rule_id = record.rule_id
+        status = record.status
+        reason = record.reason
+        reviewer = record.reviewer
+        created_at = record.created_at
+        expires_at = record.expires_at
+        if any(
             (
-                type(record.disposition_ref) is not str,
-                type(record.rule_id) is not str,
-                type(record.status) is not DispositionStatus,
-                type(record.reason) is not str,
-                type(record.reviewer) is not str,
-                type(record.created_at) is not str,
-                type(record.expires_at) is not str,
+                type(disposition_ref) is not str,
+                type(rule_id) is not str,
+                type(status) is not DispositionStatus,
+                type(reason) is not str,
+                type(reviewer) is not str,
+                type(created_at) is not str,
+                type(expires_at) is not str,
             )
         ):
+            raise ValueError
+        validated = DispositionRecord(
+            disposition_ref,
+            rule_id,
+            status,
+            reason,
+            reviewer,
+            created_at,
+            expires_at,
+        )
+        if validated != record:
             raise ValueError
         yield record
 
@@ -320,27 +340,53 @@ def _validated_filter_dispositions(
 def _validated_filter_finding(finding: object) -> Finding:
     if type(finding) is not Finding:
         raise ValueError
+    rule_id = finding.rule_id
+    domain = finding.domain
+    severity = finding.severity
+    root_fingerprint = finding.root_fingerprint
+    evidence_items = finding.evidence
+    disposition_ref = finding.disposition_ref
     if (
-        type(finding.rule_id) is not str
-        or type(finding.domain) is not RiskDomain
-        or type(finding.severity) is not Severity
-        or type(finding.root_fingerprint) is not str
-        or type(finding.evidence) is not tuple
+        type(rule_id) is not str
+        or type(domain) is not RiskDomain
+        or type(severity) is not Severity
+        or type(root_fingerprint) is not str
+        or type(evidence_items) is not tuple
         or (
-            finding.disposition_ref is not None
-            and type(finding.disposition_ref) is not str
+            disposition_ref is not None
+            and type(disposition_ref) is not str
         )
     ):
         raise ValueError
-    for evidence in finding.evidence:
-        if type(evidence) is not Evidence or any(
+    validated_evidence: list[Evidence] = []
+    for evidence in evidence_items:
+        if type(evidence) is not Evidence:
+            raise ValueError
+        source = evidence.source
+        fingerprint = evidence.fingerprint
+        masked = evidence.masked
+        if any(
             (
-                type(evidence.source) is not str,
-                type(evidence.fingerprint) is not str,
-                type(evidence.masked) is not str,
+                type(source) is not str,
+                type(fingerprint) is not str,
+                type(masked) is not str,
             )
         ):
             raise ValueError
+        validated = Evidence(source, fingerprint, masked)
+        if validated != evidence:
+            raise ValueError
+        validated_evidence.append(validated)
+    validated_finding = Finding(
+        rule_id,
+        domain,
+        severity,
+        root_fingerprint,
+        tuple(validated_evidence),
+        disposition_ref,
+    )
+    if validated_finding != finding:
+        raise ValueError
     return finding
 
 
