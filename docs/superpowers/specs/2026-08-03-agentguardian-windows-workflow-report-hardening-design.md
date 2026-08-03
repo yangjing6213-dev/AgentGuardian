@@ -1,6 +1,6 @@
 # AgentGuardian Windows Workflow and Report Hardening Design
 
-**Status:** Design approved in conversation on 2026-08-03; written specification pending user review.
+**Status:** Approved for implementation planning on 2026-08-03.
 
 ## Purpose
 
