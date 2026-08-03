@@ -12,6 +12,11 @@ from .domain import RiskDomain, Score
 SCOPE_PREVIEW_CONTRACT_VERSION = 1
 _PATH_TYPE = type(Path())
 _COVERAGE_ERROR = "COVERAGE_INVALID"
+_WINDOWS_RESERVED_DEVICE_NAMES = frozenset(
+    {"con", "nul", "prn", "aux", "conin$", "conout$"}
+    | {f"com{number}" for number in range(1, 10)}
+    | {f"lpt{number}" for number in range(1, 10)}
+)
 
 
 class CoverageState(str, Enum):
@@ -134,7 +139,7 @@ def scope_consent_matches(consent: object, preview: object) -> bool:
             consent.contract_version == preview.contract_version
             and consent._root_identity == root_identity
         )
-    except (AttributeError, TypeError, ValueError):
+    except Exception:
         return False
 
 
@@ -199,6 +204,7 @@ def _validate_scope_preview(preview: ScopePreview) -> None:
         type(preview.root_count) is not int
         or preview.root_count != len(preview._roots)
         or type(preview.root_names) is not tuple
+        or any(type(name) is not str for name in preview.root_names)
         or preview.root_names != root_names
         or preview.selectors != _validated_selectors(preview.selectors)
         or len(set(normalized_roots)) != len(normalized_roots)
@@ -252,12 +258,15 @@ def _validated_roots(roots: object) -> tuple[tuple[str, ...], tuple[str, ...]]:
         windows_path = PureWindowsPath(os.fspath(root))
         if windows_path.drive.startswith("\\\\"):
             raise ValueError("UNC roots are not allowed")
+        if not windows_path.is_absolute() or not windows_path.drive:
+            raise ValueError("roots must be absolute drive-qualified paths")
         if windows_path.root and windows_path == PureWindowsPath(windows_path.anchor):
             raise ValueError("Windows root paths are not allowed")
+        _validate_windows_path_components(windows_path)
         name = windows_path.name
         _validate_short_name(name)
         normalized.append(
-            ntpath.normcase(ntpath.abspath(ntpath.normpath(os.fspath(root))))
+            ntpath.normcase(ntpath.normpath(os.fspath(root)))
         )
         names.append(name)
     return tuple(normalized), tuple(names)
@@ -276,14 +285,24 @@ def _validated_selectors(selectors: object) -> tuple[str, ...]:
 
 
 def _validate_short_name(value: str) -> None:
-    if (
+    if len(value) > 80 or _is_unsafe_windows_component(value):
+        raise ValueError("unsafe short name")
+
+
+def _validate_windows_path_components(path: PureWindowsPath) -> None:
+    if any(_is_unsafe_windows_component(component) for component in path.parts[1:]):
+        raise ValueError("unsafe Windows path component")
+
+
+def _is_unsafe_windows_component(value: str) -> bool:
+    device_name = value.partition(".")[0].rstrip(" .").casefold()
+    return (
         not value
-        or value in (".", "..")
-        or len(value) > 80
+        or value.endswith((" ", "."))
         or any(character in value for character in '/\\:*?"<>|')
         or any(not character.isprintable() for character in value)
-    ):
-        raise ValueError("unsafe short name")
+        or device_name in _WINDOWS_RESERVED_DEVICE_NAMES
+    )
 
 
 def _positive_int(name: str, value: object) -> int:

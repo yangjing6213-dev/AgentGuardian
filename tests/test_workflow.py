@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import agentguardian.workflow as workflow_module
 from agentguardian.domain import RiskDomain, Score
 from agentguardian.workflow import (
     COVERAGE_LIMIT_LABELS,
@@ -28,6 +29,28 @@ CAPS = {
     "max_findings": 2_000,
     "max_evidence": 4_000,
 }
+WINDOWS_RESERVED_COMPONENTS = tuple(
+    variant
+    for name in (
+        "CON",
+        "NUL",
+        "PRN",
+        "AUX",
+        *(f"COM{number}" for number in range(1, 10)),
+        *(f"LPT{number}" for number in range(1, 10)),
+        "CONIN$",
+        "CONOUT$",
+    )
+    for variant in (name, f"{name.lower()}.txt")
+)
+
+
+class ExplosiveEquality:
+    def __init__(self, marker: str) -> None:
+        self.marker = marker
+
+    def __eq__(self, _other: object) -> bool:
+        raise RuntimeError(self.marker)
 
 
 def _assert_full_paths_not_in_repr(value: object, roots: tuple[Path, ...]) -> None:
@@ -137,6 +160,32 @@ def test_scope_preview_rejects_drive_unc_and_unsafe_names(root: Path) -> None:
         _build_preview((root,))
 
 
+@pytest.mark.parametrize(
+    "root",
+    (
+        Path(r"relative\root"),
+        Path(r"C:drive-relative"),
+        Path(r"\rooted\root"),
+        Path("/rooted/root"),
+    ),
+)
+def test_scope_root_anchor_rejects_unqualified_windows_roots(root: Path) -> None:
+    with pytest.raises(ValueError):
+        _build_preview((root,))
+
+
+def test_scope_root_anchor_keeps_consent_stable_after_chdir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    preview = _build_preview()
+    consent = bind_scope_consent(preview)
+
+    monkeypatch.chdir(tmp_path)
+
+    assert bind_scope_consent(preview) == consent
+    assert scope_consent_matches(consent, preview) is True
+
+
 @pytest.mark.parametrize("value", (0, -1, True, 1.0))
 @pytest.mark.parametrize("cap_name", tuple(CAPS))
 def test_scope_preview_requires_exact_positive_integer_caps(
@@ -173,6 +222,38 @@ def test_scope_preview_rejects_windows_unsafe_short_name_characters(
     else:
         with pytest.raises(ValueError):
             _build_preview(selectors=(f".env{unsafe_character}",))
+
+
+@pytest.mark.parametrize(
+    "component",
+    (
+        "src.",
+        "src ",
+        *WINDOWS_RESERVED_COMPONENTS,
+        *(f"unsafe{character}name" for character in '*?"<>|'),
+    ),
+)
+@pytest.mark.parametrize("position", ("intermediate", "final"))
+def test_scope_preview_rejects_all_windows_unsafe_path_components_before_identity(
+    monkeypatch: pytest.MonkeyPatch, component: str, position: str
+) -> None:
+    parts = ("C:/Synthetic", component)
+    if position == "intermediate":
+        parts += ("selected-root",)
+    root = Path("/".join(parts))
+
+    identity_calls: list[str] = []
+    original_normpath = workflow_module.ntpath.normpath
+
+    def record_identity(value: str) -> str:
+        identity_calls.append(value)
+        return original_normpath(value)
+
+    monkeypatch.setattr(workflow_module.ntpath, "normpath", record_identity)
+
+    with pytest.raises(ValueError):
+        _build_preview((root,))
+    assert identity_calls == []
 
 
 def test_consent_binds_to_normalized_roots_without_path_repr() -> None:
@@ -272,6 +353,36 @@ def test_consent_match_rejects_non_contract_values() -> None:
 
     assert scope_consent_matches(object(), preview) is False
     assert scope_consent_matches(bind_scope_consent(preview), object()) is False
+
+
+@pytest.mark.parametrize("target", ("preview", "consent"))
+def test_hostile_match_rejects_explosive_exact_contract_fields(target: str) -> None:
+    marker = "PRIVATE_EQUALITY_SECRET_MARKER"
+    preview = _build_preview()
+    consent = bind_scope_consent(preview)
+    explosive = ExplosiveEquality(marker)
+    if target == "preview":
+        object.__setattr__(preview, "root_names", (explosive,))
+    else:
+        object.__setattr__(consent, "_root_identity", (explosive,))
+
+    assert scope_consent_matches(consent, preview) is False
+
+
+def test_hostile_match_contains_ordinary_equality_exceptions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = "PRIVATE_BOUNDARY_SECRET_MARKER"
+    explosive = ExplosiveEquality(marker)
+    preview = _build_preview()
+    consent = bind_scope_consent(preview)
+
+    def fail_validation(_value: object) -> None:
+        explosive == object()
+
+    monkeypatch.setattr(workflow_module, "_validate_scope_consent", fail_validation)
+
+    assert scope_consent_matches(consent, preview) is False
 
 
 def _score(
