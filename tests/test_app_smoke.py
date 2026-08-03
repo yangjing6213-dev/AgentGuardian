@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QTableWidget,
+    QWidget,
 )
 
 import agentguardian.app as app_module
@@ -77,6 +78,12 @@ def _wait_for_scan(window, application, timeout: float = 5.0) -> None:
         time.sleep(0.01)
     application.processEvents()
     assert not window.is_scanning
+
+
+def _approve_current_scope(window) -> None:
+    window.scope_consent_checkbox.setChecked(True)
+    assert window.scope_consent_checkbox.isChecked()
+    assert window.scan_button.isEnabled()
 
 
 def _global_rect(widget) -> QRect:
@@ -2935,6 +2942,7 @@ def test_normal_audit_lifecycle_never_saves_protected_state(
 
     window.folder_button.click()
     assert protected_saves == []
+    _approve_current_scope(window)
     window.scan_button.click()
     assert worker_context["roots"] == (root,)
     assert worker_context["disposition_key"] == window._disposition_key
@@ -3018,7 +3026,124 @@ def test_folder_selection_shows_only_short_name(qapp, monkeypatch, tmp_path):
 
     assert window.root_display_label.text() == "selected-root"
     assert str(selected) not in window.root_display_label.text()
-    assert window.scan_button.isEnabled()
+    assert window._scope_preview.root_count == 1
+    assert window._scope_preview.root_names == ("selected-root",)
+    assert not window.scope_consent_checkbox.isChecked()
+    assert window._scope_consent is None
+    assert not window.scan_button.isEnabled()
+
+    preview_text = " ".join(
+        label.text()
+        for label in (
+            window.scope_roots_label,
+            window.scope_selectors_label,
+            window.scope_limits_label,
+            window.scope_exclusions_label,
+            window.scope_mode_label,
+        )
+    )
+    assert "selected-root" in preview_text
+    assert "支持后缀" in preview_text
+    assert "精确文件名" in preview_text
+    assert ".json" in preview_text
+    assert ".env" in preview_text
+    assert "10,000" in preview_text
+    assert "50,000" in preview_text
+    assert "536,870,912" in preview_text
+    assert "2,000" in preview_text
+    assert "4,000" in preview_text
+    assert "UNC" in preview_text
+    assert "驱动器根目录" in preview_text
+    assert "重解析" in preview_text
+    assert "本地" in preview_text
+    assert "只读" in preview_text
+    assert "人工指引" in preview_text
+    assert "API" in preview_text
+
+    selected_text = str(selected).casefold()
+    for widget in window.findChildren(QWidget):
+        surfaces = [
+            widget.toolTip(),
+            widget.accessibleName(),
+            widget.accessibleDescription(),
+            repr(widget),
+        ]
+        text_method = getattr(widget, "text", None)
+        if callable(text_method):
+            surfaces.append(text_method())
+        assert all(selected_text not in surface.casefold() for surface in surfaces)
+
+    _approve_current_scope(window)
+    assert str(selected).casefold() not in repr(window._scope_preview).casefold()
+    assert str(selected).casefold() not in repr(window._scope_consent).casefold()
+
+    window.resize(960, 640)
+    window.show()
+    qapp.processEvents()
+    preview_widgets = (
+        window.scope_roots_label,
+        window.scope_selectors_label,
+        window.scope_limits_label,
+        window.scope_exclusions_label,
+        window.scope_mode_label,
+        window.scope_consent_checkbox,
+    )
+    assert all(widget.isVisible() for widget in preview_widgets)
+    for upper, lower in zip(preview_widgets, preview_widgets[1:]):
+        assert not _global_rect(upper).intersects(_global_rect(lower))
+    assert not _global_rect(window.scope_consent_checkbox).intersects(
+        _global_rect(window.scan_button)
+    )
+    window.close()
+
+
+def test_scope_change_and_rejected_selection_revoke_consent_and_results(
+    qapp, monkeypatch, tmp_path
+):
+    first = tmp_path / "first-root"
+    second = tmp_path / "second-root"
+    first.mkdir()
+    second.mkdir()
+    selections = iter((str(first), str(second), ""))
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: next(selections),
+    )
+    window = create_window()
+
+    window.folder_button.click()
+    _approve_current_scope(window)
+    window.report_json = "old json"
+    window.report_html = "old html"
+    window.findings_table.setRowCount(1)
+    window._comparison_state = object()
+
+    window.folder_button.click()
+
+    assert window._roots == (second,)
+    assert window.root_display_label.text() == "second-root"
+    assert not window.scope_consent_checkbox.isChecked()
+    assert window._scope_consent is None
+    assert not window.scan_button.isEnabled()
+    assert window.report_json == ""
+    assert window.report_html == ""
+    assert window.findings_table.rowCount() == 0
+    assert window._comparison_state is None
+
+    _approve_current_scope(window)
+    window.report_json = "new old json"
+    window._comparison_state = object()
+    window.folder_button.click()
+
+    assert window._roots == ()
+    assert window.root_display_label.text() == "尚未选择"
+    assert not window.scope_consent_checkbox.isChecked()
+    assert window._scope_consent is None
+    assert not window.scan_button.isEnabled()
+    assert window.report_json == ""
+    assert window._comparison_state is None
+    assert window.status_label.text() == "未选择有效的审计范围。"
     window.close()
 
 
@@ -3045,6 +3170,7 @@ def test_unc_paths_are_rejected_before_filesystem_access(monkeypatch):
 
 def test_folder_selection_rejects_unc_root(qapp, monkeypatch):
     window = create_window()
+    window._comparison_state = object()
     monkeypatch.setattr(
         QFileDialog,
         "getExistingDirectory",
@@ -3057,6 +3183,106 @@ def test_folder_selection_rejects_unc_root(qapp, monkeypatch):
     assert not window.scan_button.isEnabled()
     assert "UNC" in window.status_label.text()
     assert "映射网络盘" in window.status_label.text()
+    assert window._comparison_state is None
+    window.close()
+
+
+@pytest.mark.parametrize("consent_kind", ("missing", "stale", "forged"))
+def test_start_scan_rejects_missing_stale_or_forged_consent_before_side_effects(
+    qapp,
+    monkeypatch,
+    tmp_path,
+    consent_kind,
+):
+    root = tmp_path / "current-root"
+    other = tmp_path / "other-root"
+    root.mkdir()
+    other.mkdir()
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: str(root),
+    )
+    window = create_window()
+    window.folder_button.click()
+    current_preview = window._scope_preview
+
+    window.scope_consent_checkbox.blockSignals(True)
+    window.scope_consent_checkbox.setChecked(True)
+    window.scope_consent_checkbox.blockSignals(False)
+    if consent_kind == "missing":
+        window._scope_consent = None
+    elif consent_kind == "stale":
+        window._scope_consent = app_module.bind_scope_consent(current_preview)
+        window._roots = (other,)
+        window._update_scan_enabled()
+        assert not window.scan_button.isEnabled()
+    else:
+        window._scope_consent = object()
+        window._scope_preview = object()
+
+    callbacks = []
+
+    def forbidden(name):
+        def callback(*args, **kwargs):
+            callbacks.append(name)
+            raise AssertionError(name)
+
+        return callback
+
+    monkeypatch.setattr(app_module, "QThread", forbidden("thread"))
+    monkeypatch.setattr(app_module, "AuditWorker", forbidden("worker"))
+    monkeypatch.setattr(app_module, "discover_files", forbidden("discovery"))
+    monkeypatch.setattr(app_module.secrets, "token_bytes", forbidden("randomness"))
+
+    window._start_scan()
+
+    assert callbacks == []
+    assert not window.is_scanning
+    assert not window.scan_button.isEnabled()
+    assert window.status_label.text() == "请重新核对并同意当前审计范围。"
+    window.close()
+
+
+def test_start_scan_consumes_valid_consent_before_worker_construction(
+    qapp, monkeypatch, tmp_path
+):
+    marker = "synthetic-private-worker-marker"
+    root = tmp_path / "current-root"
+    root.mkdir()
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: str(root),
+    )
+    observed = []
+    window = create_window()
+    window.folder_button.click()
+    _approve_current_scope(window)
+    window._comparison_state = object()
+
+    def exploding_worker(*args, **kwargs):
+        observed.append(
+            (
+                window._scope_consent,
+                window.scope_consent_checkbox.isChecked(),
+                window.scan_button.isEnabled(),
+                window._comparison_state,
+            )
+        )
+        raise RuntimeError(marker)
+
+    monkeypatch.setattr(app_module, "AuditWorker", exploding_worker)
+
+    window._start_scan()
+
+    assert observed == [(None, False, False, None)]
+    assert not window.is_scanning
+    assert window._thread is None
+    assert window._worker is None
+    assert not window.scan_button.isEnabled()
+    assert marker not in window.status_label.text()
+    assert window.status_label.text() == "审计失败。"
     window.close()
 
 
@@ -3155,6 +3381,7 @@ def test_threaded_worker_scans_synthetic_root_without_leaking_raw_data(
     )
 
     window.folder_button.click()
+    _approve_current_scope(window)
     window.scan_button.click()
     assert window.is_scanning
     assert not window.scan_button.isEnabled()
@@ -3179,7 +3406,9 @@ def test_threaded_worker_scans_synthetic_root_without_leaking_raw_data(
         assert raw_secret not in " ".join(cells)
         assert str(root) not in " ".join(cells)
 
-    assert window.scan_button.isEnabled()
+    assert not window.scope_consent_checkbox.isChecked()
+    assert window._scope_consent is None
+    assert not window.scan_button.isEnabled()
     assert window.scan_button.text() == "开始审计"
     assert "完成" in window.status_label.text()
     assert window.findings_table.rowCount() >= 2
@@ -3194,6 +3423,8 @@ def test_threaded_worker_scans_synthetic_root_without_leaking_raw_data(
     window.report_mode_combo.setCurrentText("JSON")
     assert '"product": "AgentGuardian"' in window.report_browser.toPlainText()
     assert not window.save_button.icon().isNull()
+    _approve_current_scope(window)
+    assert window.scan_button.isEnabled()
     window.close()
 
 
@@ -3211,6 +3442,7 @@ def test_no_supported_files_produces_incomplete_zero_coverage(
     )
 
     window.folder_button.click()
+    _approve_current_scope(window)
     window.scan_button.click()
     _wait_for_scan(window, qapp)
 
@@ -3222,6 +3454,112 @@ def test_no_supported_files_produces_incomplete_zero_coverage(
     assert "审计未完整" in window.status_label.text()
     assert "覆盖率 0%" in window.status_label.text()
     assert "不能判定为安全" in window.status_label.text()
+    window.close()
+
+
+@pytest.mark.parametrize(
+    ("coverage", "limits", "state_label", "reason", "completion"),
+    (
+        (1.0, (), "已完成", None, "已完成配置范围扫描。"),
+        (
+            0.5,
+            ("file_scan_limited",),
+            "覆盖受限",
+            "文件扫描受限",
+            "本次结果不能证明系统、账户、提供商或端点安全。",
+        ),
+        (
+            0.0,
+            ("no_supported_files",),
+            "无支持文件",
+            "未发现支持的文件",
+            "本次结果不能证明系统、账户、提供商或端点安全。",
+        ),
+    ),
+)
+def test_coverage_ui_uses_canonical_state_percentage_reasons_and_disclaimer(
+    qapp,
+    monkeypatch,
+    coverage,
+    limits,
+    state_label,
+    reason,
+    completion,
+):
+    audit_score = score((), coverage=coverage, confidence=1.0, limits=limits)
+    outcome = app_module.AuditOutcome(
+        findings=(),
+        score=audit_score,
+        reviewed_score=audit_score,
+        evaluated_at=EVALUATED_AT,
+        rule_version="1.1.0",
+        report_json=render_json(audit_score, (), rule_version="1.1.0"),
+        report_html=render_html(audit_score, (), rule_version="1.1.0"),
+        scanned_roots=(Path(r"C:\synthetic\scope"),),
+    )
+    real_classifier = app_module.classify_coverage
+    classifier_calls = []
+
+    def classify(candidate):
+        classifier_calls.append(candidate)
+        return real_classifier(candidate)
+
+    monkeypatch.setattr(app_module, "classify_coverage", classify)
+    window = create_window()
+
+    window._scan_completed(outcome)
+
+    text = window.coverage_status_label.text()
+    assert classifier_calls == [audit_score]
+    assert state_label in text
+    assert f"覆盖率 {coverage:.0%}" in text
+    assert completion in text
+    if reason is None:
+        assert "原因：" not in text
+        assert "系统安全" not in text
+        assert "账户安全" not in text
+        assert "提供商安全" not in text
+        assert "端点安全" not in text
+    else:
+        assert f"原因：{reason}" in text
+    window.close()
+
+
+@pytest.mark.parametrize("invalid_kind", ("unknown_limit", "contradictory"))
+def test_coverage_ui_rejects_invalid_score_with_fixed_private_failure(
+    qapp, invalid_kind
+):
+    marker = "synthetic-private-coverage-marker"
+    audit_score = score((), coverage=1.0, confidence=1.0)
+    if invalid_kind == "unknown_limit":
+        object.__setattr__(audit_score, "limits", (marker,))
+        object.__setattr__(audit_score, "incomplete", True)
+    else:
+        object.__setattr__(audit_score, "coverage", 0.5)
+    outcome = app_module.AuditOutcome(
+        findings=(),
+        score=audit_score,
+        reviewed_score=audit_score,
+        evaluated_at=EVALUATED_AT,
+        rule_version="1.1.0",
+        report_json=marker,
+        report_html=marker,
+        scanned_roots=(Path(rf"C:\{marker}\scope"),),
+    )
+    window = create_window()
+
+    window._scan_completed(outcome)
+
+    assert window._audit_outcome is None
+    assert window.report_json == ""
+    assert window.report_html == ""
+    assert window.status_label.text() == "审计失败。"
+    assert window.coverage_status_label.text() == "覆盖状态：尚无结果。"
+    visible = " ".join(
+        widget.text()
+        for widget in window.findChildren(QLabel)
+    )
+    assert marker not in visible
     window.close()
 
 

@@ -23,6 +23,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDateTimeEdit,
     QDialog,
@@ -72,6 +73,17 @@ from .guidance import guidance_for
 from .reporting import render_html, render_json
 from .scoring import score
 from .state_store import StateStoreError, load_protected_state, save_protected_state
+from .workflow import (
+    COVERAGE_LIMIT_LABELS,
+    COVERAGE_STATE_LABELS,
+    CoverageState,
+    ScopeConsent,
+    ScopePreview,
+    bind_scope_consent,
+    build_scope_preview,
+    classify_coverage,
+    scope_consent_matches,
+)
 
 COLOR_TOKENS = {
     "obsidian": "#0F1215",
@@ -98,6 +110,7 @@ MAX_AUDIT_EVIDENCE = 4000
 MAX_AUDIT_FILES = 10_000
 MAX_AUDIT_ENTRIES = 50_000
 MAX_AUDIT_BYTES = 512 * 1024 * 1024
+_SCOPE_SELECTORS = tuple(sorted(SUPPORTED_SUFFIXES))
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
 _CONTEXT_ERROR = "invalid disposition context"
 _SAVE_FAILURE_TITLE = "保存失败"
@@ -154,6 +167,36 @@ def _audit_status_text(outcome: AuditOutcome) -> str:
     if outcome.findings:
         return f"审计完成：发现 {len(outcome.findings)} 项风险。"
     return "审计完成：未发现风险。"
+
+
+def _scope_preview_for(roots: tuple[Path, ...]) -> ScopePreview:
+    return build_scope_preview(
+        roots,
+        _SCOPE_SELECTORS,
+        max_files=MAX_AUDIT_FILES,
+        max_entries=MAX_AUDIT_ENTRIES,
+        max_bytes=MAX_AUDIT_BYTES,
+        max_findings=MAX_AUDIT_FINDINGS,
+        max_evidence=MAX_AUDIT_EVIDENCE,
+    )
+
+
+def _coverage_status_text(audit_score: Score) -> str:
+    state = classify_coverage(audit_score)
+    parts = [
+        f"覆盖状态：{COVERAGE_STATE_LABELS[state]}",
+        f"覆盖率 {audit_score.coverage:.0%}",
+    ]
+    if audit_score.limits:
+        reasons = "、".join(
+            COVERAGE_LIMIT_LABELS[limit] for limit in audit_score.limits
+        )
+        parts.append(f"原因：{reasons}")
+    if state is CoverageState.COMPLETE:
+        parts.append("已完成配置范围扫描。")
+    else:
+        parts.append("本次结果不能证明系统、账户、提供商或端点安全。")
+    return "；".join(parts)
 
 
 class _DispositionDialog(QDialog):
@@ -673,6 +716,8 @@ class AgentGuardianWindow(QMainWindow):
         self._worker: AuditWorker | None = None
         self._row_findings: list[Finding] = []
         self._audit_outcome: AuditOutcome | None = None
+        self._scope_preview: ScopePreview | None = None
+        self._scope_consent: ScopeConsent | None = None
         self._disposition_key = disposition_context.key
         self._dispositions = disposition_context.records
         self._protected_state_invalid = disposition_context.invalid_state
@@ -767,6 +812,43 @@ class AgentGuardianWindow(QMainWindow):
         self.root_display_label.setMinimumHeight(38)
         layout.addWidget(self.root_display_label)
 
+        self.scope_roots_label = QLabel("范围：尚未选择")
+        self.scope_selectors_label = QLabel(
+            "支持后缀：.env, .json, .log, .md, .toml, .txt, .yaml, .yml；"
+            "支持精确文件名：.env"
+        )
+        self.scope_limits_label = QLabel(
+            "上限：文件 10,000；目录条目 50,000；读取 536,870,912 字节；"
+            "风险发现 2,000；证据 4,000"
+        )
+        self.scope_exclusions_label = QLabel(
+            "排除：拒绝 UNC 和驱动器根目录；排除重解析路径。"
+        )
+        self.scope_mode_label = QLabel(
+            "模式：仅本地、只读检测和人工指引；不调用 OpenAI 或第三方 API。"
+        )
+        for label in (
+            self.scope_roots_label,
+            self.scope_selectors_label,
+            self.scope_limits_label,
+            self.scope_exclusions_label,
+            self.scope_mode_label,
+        ):
+            label.setWordWrap(True)
+            layout.addWidget(label)
+
+        self.scope_consent_checkbox = QCheckBox(
+            "我已核对并同意仅扫描当前显示范围"
+        )
+        self.scope_consent_checkbox.setAccessibleDescription(
+            "同意当前短名范围的本地只读扫描"
+        )
+        self.scope_consent_checkbox.setEnabled(False)
+        self.scope_consent_checkbox.toggled.connect(
+            self._scope_consent_changed
+        )
+        layout.addWidget(self.scope_consent_checkbox)
+
         actions = QHBoxLayout()
         actions.setSpacing(8)
         self.folder_button = QPushButton("选择文件夹")
@@ -790,6 +872,9 @@ class AgentGuardianWindow(QMainWindow):
         self.status_label = QLabel("请选择审计文件夹。")
         self.status_label.setObjectName("status")
         layout.addWidget(self.status_label)
+        self.coverage_status_label = QLabel("覆盖状态：尚无结果。")
+        self.coverage_status_label.setWordWrap(True)
+        layout.addWidget(self.coverage_status_label)
         layout.addStretch()
         return page
 
@@ -916,51 +1001,168 @@ class AgentGuardianWindow(QMainWindow):
     def _select_folder(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "选择审计文件夹")
         if not selected:
+            self._clear_scope("未选择有效的审计范围。")
             return
         if _is_unc_path(selected):
-            self._invalidate_report()
-            self._roots = ()
-            self.scan_button.setEnabled(False)
-            self.status_label.setText("不支持 UNC 路径；映射网络盘无法可靠识别。")
+            self._clear_scope("不支持 UNC 路径；映射网络盘无法可靠识别。")
             return
-        root = Path(selected)
+        try:
+            root = Path(selected)
+            preview = _scope_preview_for((root,))
+        except Exception:  # noqa: BLE001 - fixed folder-selection boundary
+            self._clear_scope("无法建立有效的审计范围。")
+            return
         self._invalidate_report()
+        self._clear_comparison_if_present()
+        self._revoke_scope_consent()
         self._roots = (root,)
+        self._scope_preview = preview
         self.root_display_label.setText(root.name or "所选文件夹")
-        self.scan_button.setEnabled(True)
-        self.status_label.setText("已选择审计范围。")
+        self._render_scope_preview(preview)
+        self.scope_consent_checkbox.setEnabled(True)
+        self._update_scan_enabled()
+        self.status_label.setText("请核对范围并明确同意后开始审计。")
+
+    def _render_scope_preview(self, preview: ScopePreview) -> None:
+        selectors = ", ".join(preview.selectors)
+        self.scope_roots_label.setText(
+            f"范围：{preview.root_count} 个根目录（{', '.join(preview.root_names)}）"
+        )
+        self.scope_selectors_label.setText(
+            f"支持后缀：{selectors}；支持精确文件名：{selectors}"
+        )
+        self.scope_limits_label.setText(
+            f"上限：文件 {preview.max_files:,}；目录条目 {preview.max_entries:,}；"
+            f"读取 {preview.max_bytes:,} 字节；风险发现 {preview.max_findings:,}；"
+            f"证据 {preview.max_evidence:,}"
+        )
+        self.scope_exclusions_label.setText(
+            "排除：拒绝 UNC 和驱动器根目录；排除重解析路径。"
+        )
+        self.scope_mode_label.setText(
+            "模式：仅本地、只读检测和人工指引；不调用 OpenAI 或第三方 API。"
+        )
+
+    def _scope_consent_changed(self, checked: bool) -> None:
+        self._scope_consent = None
+        if checked:
+            try:
+                if self._scope_preview is None:
+                    raise ValueError
+                self._scope_consent = bind_scope_consent(self._scope_preview)
+            except Exception:  # noqa: BLE001 - fixed consent callback boundary
+                self.scope_consent_checkbox.blockSignals(True)
+                self.scope_consent_checkbox.setChecked(False)
+                self.scope_consent_checkbox.blockSignals(False)
+                self.status_label.setText("请重新核对并同意当前审计范围。")
+        self._update_scan_enabled()
+
+    def _revoke_scope_consent(self) -> None:
+        self._scope_consent = None
+        self.scope_consent_checkbox.blockSignals(True)
+        self.scope_consent_checkbox.setChecked(False)
+        self.scope_consent_checkbox.blockSignals(False)
+        self._update_scan_enabled()
+
+    def _update_scan_enabled(self) -> None:
+        enabled = False
+        try:
+            expected_preview = _scope_preview_for(self._roots)
+            enabled = (
+                not self.is_scanning
+                and self.scope_consent_checkbox.isChecked()
+                and type(self._scope_preview) is ScopePreview
+                and self._scope_preview == expected_preview
+                and scope_consent_matches(
+                    self._scope_consent,
+                    expected_preview,
+                )
+            )
+        except Exception:
+            enabled = False
+        self.scan_button.setEnabled(enabled)
+
+    def _clear_scope(self, status: str) -> None:
+        self._invalidate_report()
+        self._clear_comparison_if_present()
+        self._roots = ()
+        self._scope_preview = None
+        self._revoke_scope_consent()
+        self.scope_consent_checkbox.setEnabled(False)
+        self.root_display_label.setText("尚未选择")
+        self.scope_roots_label.setText("范围：尚未选择")
+        self.status_label.setText(status)
+
+    def _clear_comparison_if_present(self) -> None:
+        if "_comparison_state" in self.__dict__:
+            self._comparison_state = None
 
     def _start_scan(self) -> None:
-        if not self._roots or self.is_scanning:
+        try:
+            expected_preview = _scope_preview_for(self._roots)
+            if (
+                self.is_scanning
+                or not self.scope_consent_checkbox.isChecked()
+                or type(self._scope_preview) is not ScopePreview
+                or self._scope_preview != expected_preview
+                or not scope_consent_matches(
+                    self._scope_consent,
+                    expected_preview,
+                )
+            ):
+                raise ValueError
+        except Exception:  # noqa: BLE001 - fixed scan-consent boundary
+            self._revoke_scope_consent()
+            self.status_label.setText("请重新核对并同意当前审计范围。")
             return
+
+        self._scope_preview = expected_preview
+        self._revoke_scope_consent()
+        self._clear_comparison_if_present()
         self.is_scanning = True
         self.scan_button.setEnabled(False)
         self.folder_button.setEnabled(False)
         self.scan_button.setText("审计中...")
         self.status_label.setText("正在执行只读本地审计。")
-        self._invalidate_report()
-        self.guidance_browser.setPlainText("等待审计结果。")
+        try:
+            self._invalidate_report()
+            self.guidance_browser.setPlainText("等待审计结果。")
 
-        self._thread = QThread(self)
-        self._worker = AuditWorker(
-            self._roots,
-            self._disposition_key,
-            self._dispositions,
-        )
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.completed.connect(self._scan_completed)
-        self._worker.failed.connect(self._scan_failed)
-        self._worker.completed.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._worker.completed.connect(self._worker.deleteLater)
-        self._worker.failed.connect(self._worker.deleteLater)
-        self._thread.finished.connect(self._thread.deleteLater)
-        self._thread.finished.connect(self._thread_finished)
-        self._thread.start()
+            self._thread = QThread(self)
+            self._worker = AuditWorker(
+                self._roots,
+                self._disposition_key,
+                self._dispositions,
+            )
+            self._worker.moveToThread(self._thread)
+            self._thread.started.connect(self._worker.run)
+            self._worker.completed.connect(self._scan_completed)
+            self._worker.failed.connect(self._scan_failed)
+            self._worker.completed.connect(self._thread.quit)
+            self._worker.failed.connect(self._thread.quit)
+            self._worker.completed.connect(self._worker.deleteLater)
+            self._worker.failed.connect(self._worker.deleteLater)
+            self._thread.finished.connect(self._thread.deleteLater)
+            self._thread.finished.connect(self._thread_finished)
+            self._thread.start()
+        except Exception:  # noqa: BLE001 - fixed scan-start callback boundary
+            self.is_scanning = False
+            self._thread = None
+            self._worker = None
+            self.folder_button.setEnabled(True)
+            self.scan_button.setText("开始审计")
+            self._update_scan_enabled()
+            self._invalidate_report()
+            self.status_label.setText("审计失败。")
+            self.guidance_browser.setPlainText("无法生成修复步骤。")
 
     @Slot(object)
     def _scan_completed(self, outcome: AuditOutcome) -> None:
+        try:
+            coverage_status = _coverage_status_text(outcome.score)
+        except Exception:  # noqa: BLE001 - fixed coverage callback boundary
+            self._scan_failed("scan_failed")
+            return
         self._audit_outcome = outcome
         self.report_json = outcome.report_json
         self.report_html = outcome.report_html
@@ -971,6 +1173,7 @@ class AgentGuardianWindow(QMainWindow):
         self.save_button.setEnabled(True)
         self.protected_state_button.setEnabled(True)
         self.status_label.setText(_audit_status_text(outcome))
+        self.coverage_status_label.setText(coverage_status)
 
     @Slot(str)
     def _scan_failed(self, _code: str) -> None:
@@ -989,6 +1192,7 @@ class AgentGuardianWindow(QMainWindow):
         self.guidance_browser.setPlainText("选择一项风险以查看人工步骤。")
         self.save_button.setEnabled(False)
         self.protected_state_button.setEnabled(False)
+        self.coverage_status_label.setText("覆盖状态：尚无结果。")
         self._update_disposition_commands()
         self._refresh_report()
 
@@ -996,10 +1200,10 @@ class AgentGuardianWindow(QMainWindow):
     def _thread_finished(self) -> None:
         self.is_scanning = False
         self.scan_button.setText("开始审计")
-        self.scan_button.setEnabled(bool(self._roots))
         self.folder_button.setEnabled(True)
         self._thread = None
         self._worker = None
+        self._update_scan_enabled()
 
     def _populate_findings(
         self,

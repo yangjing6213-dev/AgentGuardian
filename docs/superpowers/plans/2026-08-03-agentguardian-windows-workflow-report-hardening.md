@@ -399,7 +399,7 @@ Commit: `Bound baseline report imports`
 - Modify: `src/agentguardian/app.py`
 - Modify: `tests/test_app_smoke.py`
 
-- [ ] **Step 1: Write failing scope UI tests**
+- [x] **Step 1: Write failing scope UI tests**
 
 Update `test_folder_selection_shows_only_short_name` and add focused tests that
 require:
@@ -411,40 +411,40 @@ require:
 - a disabled scan button until consent; and
 - root change/rejection clearing consent, old audit, and comparison state.
 
-- [ ] **Step 2: Run scope UI tests and verify RED**
+- [x] **Step 2: Run scope UI tests and verify RED**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_app_smoke.py -k 'folder_selection or scope_preview or consent'`
 
 Expected: scan remains enabled without consent and preview widgets are absent.
 
-- [ ] **Step 3: Implement the minimum scope UI**
+- [x] **Step 3: Implement the minimum scope UI**
 
 Add `QCheckBox`, fixed preview labels, and private transient consent. Use the
 Task 1 contract. Keep the existing three-page layout and minimum window size.
 
-- [ ] **Step 4: Write failing callback and lifecycle tests**
+- [x] **Step 4: Write failing callback and lifecycle tests**
 
 Call `_start_scan()` directly with missing, stale, and forged consent and assert
 no thread/worker/discovery/randomness starts. Require valid consent to be reset
 before the worker starts. Update the three existing click-to-scan tests to check
 consent explicitly. A completed scan must require new consent before rerun.
 
-- [ ] **Step 5: Implement callback revalidation and consent consumption**
+- [x] **Step 5: Implement callback revalidation and consent consumption**
 
 Do not trust only Qt enabled state. Keep fixed safe status messages.
 
-- [ ] **Step 6: Write failing coverage UI tests**
+- [x] **Step 6: Write failing coverage UI tests**
 
 Require distinct complete, limited, and no-supported-file labels, percentages,
 fixed reason descriptions, and the exact incomplete disclaimer. Unknown or
 contradictory state must fail at the fixed report/audit boundary.
 
-- [ ] **Step 7: Implement coverage UI through the Task 1 classifier**
+- [x] **Step 7: Implement coverage UI through the Task 1 classifier**
 
 Do not create a second coverage calculation. Never say a complete configured
 scope proves provider, account, endpoint, or system safety.
 
-- [ ] **Step 8: Run Task 6 tests and commit**
+- [x] **Step 8: Run Task 6 tests and commit**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_app_smoke.py -k 'scope or consent or coverage or supported_files or threaded_worker'`
 
