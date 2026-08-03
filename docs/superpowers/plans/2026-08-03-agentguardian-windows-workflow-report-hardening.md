@@ -352,7 +352,7 @@ through the existing `Evidence` domain contract.
 - Modify: `src/agentguardian/report_comparison.py`
 - Modify: `tests/test_report_comparison.py`
 
-- [ ] **Step 1: Write failing local-file boundary tests**
+- [x] **Step 1: Write failing local-file boundary tests**
 
 Require a user-supplied `.json` path, regular file, strict UTF-8, and maximum
 2 MiB. Reject before parsing:
@@ -367,25 +367,25 @@ Require a user-supplied `.json` path, regular file, strict UTF-8, and maximum
 Use synthetic temporary paths only. Windows junction tests may skip when the
 test process cannot create a junction.
 
-- [ ] **Step 2: Run file tests and verify RED**
+- [x] **Step 2: Run file tests and verify RED**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_report_comparison.py -k file`
 
 Expected: missing file loader or unsafe paths are accepted.
 
-- [ ] **Step 3: Implement the bounded loader**
+- [x] **Step 3: Implement the bounded loader**
 
 Read at most `2 MiB + 1` bytes, reject a sentinel byte, decode UTF-8 strictly,
 and pass text to the one Task 4 parser. Recheck regular/reparse state around the
 read and normalize all errors to the fixed comparison error. Document the
 remaining same-user path replacement race.
 
-- [ ] **Step 4: Add privacy and cleanup tests**
+- [x] **Step 4: Add privacy and cleanup tests**
 
 Use a secret marker and full path marker in a malformed report. Assert neither
 appears in the exception, summary, comparison, or `repr`.
 
-- [ ] **Step 5: Run Task 5 tests and commit**
+- [x] **Step 5: Run Task 5 tests and commit**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_report_comparison.py`
 

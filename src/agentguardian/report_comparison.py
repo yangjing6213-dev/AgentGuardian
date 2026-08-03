@@ -2,7 +2,10 @@ from collections import Counter
 from dataclasses import dataclass
 import json
 from math import isfinite
+import os
+from pathlib import Path, PureWindowsPath
 import re
+import stat
 from typing import Callable, TypeVar
 
 from .dispositions import DispositionRecord, DispositionStatus
@@ -27,7 +30,17 @@ _PRODUCT = "AgentGuardian"
 _MAX_FINDINGS = 2_000
 _MAX_EVIDENCE = 4_000
 _MAX_SCORE_ITEMS = 2_000
+_MAX_BASELINE_BYTES = 2 * 1024 * 1024
+_PATH_TYPE = type(Path())
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
 _RULE_ID = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+_WINDOWS_DRIVE = re.compile(r"[A-Za-z]:")
+_WINDOWS_RESERVED_DEVICE_NAMES = frozenset(
+    {"con", "nul", "prn", "aux", "conin$", "conout$"}
+    | {f"com{number}" for number in range(1, 10)}
+    | {f"lpt{number}" for number in range(1, 10)}
+    | {f"{prefix}{number}" for prefix in ("com", "lpt") for number in "¹²³"}
+)
 _DISPOSITION_STATES = frozenset(
     ("open", "false_positive", "accepted_risk", "expired")
 )
@@ -96,6 +109,22 @@ def parse_report_summary(json_text: str) -> ReportSummary:
     raise AssertionError("unreachable")
 
 
+def load_report_summary(path: str | Path) -> ReportSummary:
+    """Load one bounded local report.
+
+    Portable Python on Windows cannot fully close the residual same-user
+    path-replacement race between the final path check and later use.
+    """
+    failed = False
+    try:
+        return _load_report_summary(path)
+    except (OSError, UnicodeError, _InvalidReport):
+        failed = True
+    if failed:
+        raise ValueError(_ERROR)
+    raise AssertionError("unreachable")
+
+
 def compare_report_summaries(
     baseline: ReportSummary,
     current: ReportSummary,
@@ -124,6 +153,116 @@ def compare_report_summaries(
         ),
         added_limits=tuple(sorted(set(current.limits) - set(baseline.limits))),
         resolved_limits=tuple(sorted(set(baseline.limits) - set(current.limits))),
+    )
+
+
+def _load_report_summary(path: str | Path) -> ReportSummary:
+    target = _validated_baseline_path(path)
+    initial = _checked_file_state(target)
+    with open(target, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        _validate_open_file(initial, opened)
+        data = stream.read(_MAX_BASELINE_BYTES + 1)
+        final_opened = os.fstat(stream.fileno())
+    if type(data) is not bytes or len(data) > _MAX_BASELINE_BYTES:
+        raise _InvalidReport
+    _validate_open_file(initial, final_opened, expected_size=len(data))
+    final_path = _checked_file_state(target)
+    if not _same_file(initial, final_path) or final_path.st_size != len(data):
+        raise _InvalidReport
+    text = data.decode("utf-8", errors="strict")
+    parse_failed = False
+    try:
+        return parse_report_summary(text)
+    except ValueError as error:
+        if (
+            type(error) is ValueError
+            and error.args == (_ERROR,)
+            and error.__cause__ is None
+            and error.__context__ is None
+        ):
+            parse_failed = True
+        else:
+            raise
+    if parse_failed:
+        raise _InvalidReport
+    raise AssertionError("unreachable")
+
+
+def _validated_baseline_path(path: object) -> Path:
+    if type(path) not in (str, _PATH_TYPE):
+        raise _InvalidReport
+    value = os.fspath(path)
+    windows_path = PureWindowsPath(value)
+    if (
+        value.startswith(("\\\\", "//"))
+        or windows_path.drive.startswith("\\\\")
+        or _WINDOWS_DRIVE.fullmatch(windows_path.drive) is None
+        or not windows_path.is_absolute()
+        or windows_path.suffix.casefold() != ".json"
+    ):
+        raise _InvalidReport
+    for component in windows_path.parts[1:]:
+        device_name = component.partition(".")[0].rstrip(" .").casefold()
+        if (
+            not component
+            or component.endswith((" ", "."))
+            or any(character in component for character in '/\\:*?"<>|')
+            or any(not character.isprintable() for character in component)
+            or device_name in _WINDOWS_RESERVED_DEVICE_NAMES
+        ):
+            raise _InvalidReport
+    return Path(path)
+
+
+def _checked_file_state(path: Path) -> os.stat_result:
+    path_state: os.stat_result | None = None
+    for component in (*reversed(path.parents), path):
+        component_state = os.lstat(component)
+        if _is_reparse(component_state):
+            raise _InvalidReport
+        path_state = component_state
+    if path_state is None:
+        raise _InvalidReport
+    _validate_regular_file(path_state)
+    return path_state
+
+
+def _validate_open_file(
+    expected: os.stat_result,
+    actual: os.stat_result,
+    *,
+    expected_size: int | None = None,
+) -> None:
+    _validate_regular_file(actual)
+    if not _same_file(expected, actual):
+        raise _InvalidReport
+    if expected_size is not None and actual.st_size != expected_size:
+        raise _InvalidReport
+
+
+def _validate_regular_file(path_state: os.stat_result) -> None:
+    if (
+        not stat.S_ISREG(path_state.st_mode)
+        or _is_reparse(path_state)
+        or type(path_state.st_size) is not int
+        or not 0 <= path_state.st_size <= _MAX_BASELINE_BYTES
+    ):
+        raise _InvalidReport
+
+
+def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
+    return (
+        left.st_dev == right.st_dev
+        and left.st_ino == right.st_ino
+        and left.st_size == right.st_size
+        and left.st_mtime_ns == right.st_mtime_ns
+    )
+
+
+def _is_reparse(path_state: os.stat_result) -> bool:
+    return stat.S_ISLNK(path_state.st_mode) or bool(
+        getattr(path_state, "st_file_attributes", 0) & _REPARSE_POINT
     )
 
 

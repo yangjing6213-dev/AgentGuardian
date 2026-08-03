@@ -1,6 +1,8 @@
 from dataclasses import FrozenInstanceError, fields, replace
 from datetime import datetime, timezone
 import json
+from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -15,6 +17,7 @@ from agentguardian.domain import Evidence, Finding, RiskDomain, Severity
 from agentguardian.report_comparison import (
     ReportSummary,
     compare_report_summaries,
+    load_report_summary,
     parse_report_summary,
 )
 from agentguardian.reporting import render_json
@@ -24,6 +27,7 @@ from agentguardian.workflow import CoverageState
 
 EVALUATED_AT = datetime(2026, 8, 3, 12, tzinfo=timezone.utc)
 ATTACKER_MARKER = r"C:\Synthetic\private\comparison-marker.txt"
+MAX_BASELINE_BYTES = 2 * 1024 * 1024
 
 
 class _LimitStr(str):
@@ -124,6 +128,17 @@ def _assert_summary_comparison_invalid(baseline: object, current: object) -> Non
         compare_report_summaries(baseline, current)  # type: ignore[arg-type]
 
     assert caught.value.args == ("REPORT_COMPARISON_INVALID",)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+def _assert_file_invalid(path: object) -> None:
+    with pytest.raises(ValueError, match="^REPORT_COMPARISON_INVALID$") as caught:
+        load_report_summary(path)  # type: ignore[arg-type]
+
+    rendered = repr(caught.value)
+    assert str(caught.value) == "REPORT_COMPARISON_INVALID"
+    assert ATTACKER_MARKER not in rendered
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
     assert ATTACKER_MARKER not in repr(
@@ -821,3 +836,338 @@ def test_parser_propagates_unexpected_internal_dependency_defects(
 
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
+
+
+def test_local_report_file_loads_through_the_canonical_parser(tmp_path: Path) -> None:
+    report_path = tmp_path / "baseline.json"
+    report_path.write_text(_report_json(), encoding="utf-8")
+
+    summary = load_report_summary(report_path)
+
+    assert summary == parse_report_summary(_report_json())
+    assert not hasattr(summary, "__dict__")
+
+
+def test_report_file_requires_json_suffix(tmp_path: Path) -> None:
+    report_path = tmp_path / "baseline.txt"
+    report_path.write_text(_report_json(), encoding="utf-8")
+
+    _assert_file_invalid(report_path)
+
+
+def test_missing_report_file_fails_closed(tmp_path: Path) -> None:
+    _assert_file_invalid(tmp_path / "missing.json")
+
+
+def test_report_file_directory_fails_closed(tmp_path: Path) -> None:
+    report_path = tmp_path / "directory.json"
+    report_path.mkdir()
+
+    _assert_file_invalid(report_path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        r"\\synthetic-server\share\baseline.json",
+        r"\\.\NUL.json",
+        r"\\?\C:\Synthetic\baseline.json",
+    ),
+    ids=("unc", "device", "extended-device"),
+)
+def test_report_file_rejects_unc_and_device_paths(path: str) -> None:
+    _assert_file_invalid(path)
+
+
+def test_report_file_requires_strict_utf8(tmp_path: Path) -> None:
+    report_path = tmp_path / "invalid-utf8.json"
+    report_path.write_bytes(b"\xff\xfe")
+
+    _assert_file_invalid(report_path)
+
+
+def test_oversized_report_file_fails_before_parsing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_path = tmp_path / "oversized.json"
+    report_path.write_bytes(b" " * (MAX_BASELINE_BYTES + 1))
+
+    def fail_parser(_text: str) -> ReportSummary:
+        raise AssertionError("oversized input reached parser")
+
+    def fail_open(*_args: object) -> object:
+        raise AssertionError("oversized input was opened")
+
+    monkeypatch.setattr(comparison_module, "parse_report_summary", fail_parser)
+    monkeypatch.setattr(comparison_module, "open", fail_open, raising=False)
+
+    _assert_file_invalid(report_path)
+
+
+def test_report_file_accepts_exact_byte_limit(tmp_path: Path) -> None:
+    report_path = tmp_path / "exact-limit.JSON"
+    content = _report_json().encode("utf-8")
+    report_path.write_bytes(content + b" " * (MAX_BASELINE_BYTES - len(content)))
+
+    assert load_report_summary(report_path) == parse_report_summary(_report_json())
+
+
+def test_report_file_symlink_is_rejected(tmp_path: Path) -> None:
+    target = tmp_path / "target.json"
+    target.write_text(_report_json(), encoding="utf-8")
+    linked = tmp_path / "linked.json"
+    try:
+        linked.symlink_to(target)
+    except OSError as error:
+        if getattr(error, "winerror", None) in (5, 1314):
+            pytest.skip("file symlink creation permission unavailable")
+        raise
+
+    _assert_file_invalid(linked)
+
+
+def test_report_file_symlink_ancestor_is_rejected(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "baseline.json").write_text(_report_json(), encoding="utf-8")
+    linked = tmp_path / "linked"
+    try:
+        linked.symlink_to(target, target_is_directory=True)
+    except OSError as error:
+        if getattr(error, "winerror", None) in (5, 1314):
+            pytest.skip("directory symlink creation permission unavailable")
+        raise
+
+    _assert_file_invalid(linked / "baseline.json")
+
+
+def test_report_file_windows_junction_is_rejected(tmp_path: Path) -> None:
+    target = tmp_path / "junction-target"
+    target.mkdir()
+    (target / "baseline.json").write_text(_report_json(), encoding="utf-8")
+    junction = tmp_path / "junction"
+    created = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(target)],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if created.returncode != 0:
+        details = f"{created.stdout}\n{created.stderr}".casefold()
+        permission_markers = (
+            "privilege",
+            "permission",
+            "access is denied",
+            "权限",
+            "拒绝访问",
+        )
+        if any(marker in details for marker in permission_markers):
+            pytest.skip("directory junction creation permission unavailable")
+        pytest.fail("directory junction creation failed without a permission error")
+
+    _assert_file_invalid(junction / "baseline.json")
+
+
+def test_report_file_read_is_bounded_and_rechecks_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_path = tmp_path / "baseline.json"
+    report_path.write_text(_report_json(), encoding="utf-8")
+    real_open = open
+    real_fstat = comparison_module.os.fstat
+    read_sizes: list[int] = []
+    fstat_calls: list[int] = []
+    path_checks: list[Path] = []
+    real_path_check = comparison_module._checked_file_state
+
+    class TrackingStream:
+        def __init__(self) -> None:
+            self._stream = real_open(report_path, "rb")
+
+        def __enter__(self) -> "TrackingStream":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self._stream.close()
+
+        def fileno(self) -> int:
+            return self._stream.fileno()
+
+        def read(self, size: int) -> bytes:
+            read_sizes.append(size)
+            return self._stream.read(size)
+
+    def checked_path(path: Path) -> object:
+        path_checks.append(path)
+        return real_path_check(path)
+
+    def checked_fstat(descriptor: int) -> object:
+        fstat_calls.append(descriptor)
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(comparison_module, "open", lambda *_args: TrackingStream(), raising=False)
+    monkeypatch.setattr(comparison_module, "_checked_file_state", checked_path)
+    monkeypatch.setattr(comparison_module.os, "fstat", checked_fstat)
+
+    summary = load_report_summary(report_path)
+
+    assert summary == parse_report_summary(_report_json())
+    assert read_sizes == [MAX_BASELINE_BYTES + 1]
+    assert len(fstat_calls) == 2
+    assert path_checks == [report_path, report_path]
+
+
+def test_report_file_growth_during_bounded_read_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_path = tmp_path / "growing.json"
+    report_path.write_text(_report_json(), encoding="utf-8")
+    real_open = open
+    read_sizes: list[int] = []
+
+    class GrowingStream:
+        def __init__(self) -> None:
+            self._stream = real_open(report_path, "rb")
+
+        def __enter__(self) -> "GrowingStream":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self._stream.close()
+
+        def fileno(self) -> int:
+            return self._stream.fileno()
+
+        def read(self, size: int) -> bytes:
+            read_sizes.append(size)
+            return b"x" * size
+
+    monkeypatch.setattr(comparison_module, "open", lambda *_args: GrowingStream(), raising=False)
+
+    _assert_file_invalid(report_path)
+    assert read_sizes == [MAX_BASELINE_BYTES + 1]
+
+
+def test_report_file_replacement_race_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_path = tmp_path / "replaced.json"
+    report_path.write_text(_report_json(), encoding="utf-8")
+    initial = comparison_module.os.lstat(report_path)
+
+    class ReplacedState:
+        st_dev = initial.st_dev
+        st_ino = initial.st_ino + 1
+        st_size = initial.st_size
+        st_mtime_ns = initial.st_mtime_ns
+
+    states = iter((initial, ReplacedState()))
+    calls: list[Path] = []
+
+    def changing_state(path: Path) -> object:
+        calls.append(path)
+        return next(states)
+
+    monkeypatch.setattr(comparison_module, "_checked_file_state", changing_state)
+
+    _assert_file_invalid(report_path)
+    assert calls == [report_path, report_path]
+
+
+def test_report_file_reparse_change_around_read_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_path = tmp_path / "reparse-change.json"
+    report_path.write_text(_report_json(), encoding="utf-8")
+    real_fstat = comparison_module.os.fstat
+    calls = 0
+
+    class ReparseState:
+        def __init__(self, original: object) -> None:
+            self.st_mode = original.st_mode
+            self.st_dev = original.st_dev
+            self.st_ino = original.st_ino
+            self.st_size = original.st_size
+            self.st_mtime_ns = original.st_mtime_ns
+            self.st_file_attributes = comparison_module._REPARSE_POINT
+
+    def changing_fstat(descriptor: int) -> object:
+        nonlocal calls
+        calls += 1
+        state = real_fstat(descriptor)
+        return state if calls == 1 else ReparseState(state)
+
+    monkeypatch.setattr(comparison_module.os, "fstat", changing_fstat)
+
+    _assert_file_invalid(report_path)
+    assert calls == 2
+
+
+def test_report_file_discards_path_and_item_level_private_text(
+    tmp_path: Path,
+) -> None:
+    secret = "private-secret-marker"
+    payload = json.loads(_report_json())
+    payload["findings"][0]["evidence"][0]["masked"] = secret
+    report_path = tmp_path / "private-baseline.json"
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    summary = load_report_summary(report_path)
+    comparison = compare_report_summaries(summary, summary)
+    rendered = repr((summary, comparison))
+
+    assert secret not in rendered
+    assert str(report_path) not in rendered
+    assert ATTACKER_MARKER not in rendered
+
+
+def test_malformed_report_file_error_discards_path_and_content(
+    tmp_path: Path,
+) -> None:
+    secret = "private-secret-marker"
+    report_path = tmp_path / "malformed-private.json"
+    report_path.write_text(
+        json.dumps({"secret": secret, "path": str(report_path)}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="^REPORT_COMPARISON_INVALID$") as caught:
+        load_report_summary(report_path)
+
+    rendered = repr(caught.value)
+    assert secret not in rendered
+    assert str(report_path) not in rendered
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+def test_report_file_loader_propagates_internal_value_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_path = tmp_path / "internal-error.json"
+    report_path.write_text(_report_json(), encoding="utf-8")
+
+    def fail_fstat(_descriptor: int) -> object:
+        raise ValueError(ATTACKER_MARKER)
+
+    monkeypatch.setattr(comparison_module.os, "fstat", fail_fstat)
+
+    with pytest.raises(ValueError, match="comparison-marker") as caught:
+        load_report_summary(report_path)
+
+    assert str(caught.value) == ATTACKER_MARKER
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+def test_report_file_loader_documents_residual_same_user_race() -> None:
+    documentation = " ".join((load_report_summary.__doc__ or "").split())
+
+    assert "same-user path-replacement race" in documentation
+    assert "portable python on windows" in documentation.casefold()
