@@ -187,7 +187,7 @@ def _audit_outcome(
         findings,
         coverage=0.75,
         confidence=0.8,
-        limits=("synthetic_limit",),
+        limits=("file_scan_limited",),
     )
     reviewed = score(
         reviewed_findings(
