@@ -95,7 +95,7 @@ COLOR_TOKENS = {
     "warning": "#F0BD5C",
     "critical": "#EF7167",
 }
-SUPPORTED_SUFFIXES = {
+SUPPORTED_SUFFIXES = (
     ".env",
     ".json",
     ".log",
@@ -104,13 +104,12 @@ SUPPORTED_SUFFIXES = {
     ".txt",
     ".yaml",
     ".yml",
-}
+)
 MAX_AUDIT_FINDINGS = 2000
 MAX_AUDIT_EVIDENCE = 4000
 MAX_AUDIT_FILES = 10_000
 MAX_AUDIT_ENTRIES = 50_000
 MAX_AUDIT_BYTES = 512 * 1024 * 1024
-_SCOPE_SELECTORS = tuple(sorted(SUPPORTED_SUFFIXES))
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
 _CONTEXT_ERROR = "invalid disposition context"
 _SAVE_FAILURE_TITLE = "保存失败"
@@ -172,7 +171,7 @@ def _audit_status_text(outcome: AuditOutcome) -> str:
 def _scope_preview_for(roots: tuple[Path, ...]) -> ScopePreview:
     return build_scope_preview(
         roots,
-        _SCOPE_SELECTORS,
+        SUPPORTED_SUFFIXES,
         max_files=MAX_AUDIT_FILES,
         max_entries=MAX_AUDIT_ENTRIES,
         max_bytes=MAX_AUDIT_BYTES,

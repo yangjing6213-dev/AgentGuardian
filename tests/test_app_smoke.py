@@ -2245,7 +2245,10 @@ def test_repeated_timer_failures_never_escape_spin_or_repeat_notification(
 
 
 def test_openai_local_config_suffixes_are_supported() -> None:
-    assert {".env", ".toml"} <= app_module.SUPPORTED_SUFFIXES
+    assert all(
+        selector in app_module.SUPPORTED_SUFFIXES
+        for selector in (".env", ".toml")
+    )
 
 
 def test_openai_env_override_is_masked_end_to_end(qapp, tmp_path: Path) -> None:
@@ -3283,6 +3286,89 @@ def test_start_scan_consumes_valid_consent_before_worker_construction(
     assert not window.scan_button.isEnabled()
     assert marker not in window.status_label.text()
     assert window.status_label.text() == "审计失败。"
+    window.close()
+
+
+def test_start_scan_rejects_consent_after_selector_contract_replacement(
+    qapp, monkeypatch, tmp_path
+):
+    root = tmp_path / "current-root"
+    root.mkdir()
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: str(root),
+    )
+    callbacks = []
+
+    def forbidden(name):
+        def callback(*args, **kwargs):
+            callbacks.append(name)
+            raise AssertionError(name)
+
+        return callback
+
+    window = create_window()
+    window.folder_button.click()
+    _approve_current_scope(window)
+    original_preview = window._scope_preview
+    original_consent = window._scope_consent
+    monkeypatch.setattr(app_module, "SUPPORTED_SUFFIXES", (".json",))
+    monkeypatch.setattr(app_module, "QThread", forbidden("thread"))
+    monkeypatch.setattr(app_module, "AuditWorker", forbidden("worker"))
+    monkeypatch.setattr(app_module, "discover_files", forbidden("discovery"))
+    monkeypatch.setattr(app_module.secrets, "token_bytes", forbidden("randomness"))
+
+    window._start_scan()
+
+    assert original_preview.selectors != app_module.SUPPORTED_SUFFIXES
+    assert original_consent is not None
+    assert callbacks == []
+    assert window._scope_consent is None
+    assert not window.scope_consent_checkbox.isChecked()
+    assert not window.is_scanning
+    assert not window.scan_button.isEnabled()
+    assert window.status_label.text() == "请重新核对并同意当前审计范围。"
+    window.close()
+
+
+def test_discovery_uses_the_exact_selector_tuple_from_the_accepted_preview(
+    qapp, monkeypatch, tmp_path
+):
+    root = tmp_path / "current-root"
+    root.mkdir()
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: str(root),
+    )
+    captured = {}
+
+    def discover(roots, selectors, *, max_files, max_entries):
+        captured.update(
+            roots=tuple(roots),
+            selectors=selectors,
+            max_files=max_files,
+            max_entries=max_entries,
+        )
+        return _discovery_result(())
+
+    monkeypatch.setattr(app_module, "discover_files", discover)
+    window = create_window()
+    window.folder_button.click()
+    _approve_current_scope(window)
+    accepted_preview = window._scope_preview
+
+    app_module._run_audit((root,), disposition_key=DISPOSITION_KEY)
+
+    assert type(app_module.SUPPORTED_SUFFIXES) is tuple
+    assert accepted_preview.selectors is app_module.SUPPORTED_SUFFIXES
+    assert captured == {
+        "roots": (root,),
+        "selectors": accepted_preview.selectors,
+        "max_files": accepted_preview.max_files,
+        "max_entries": accepted_preview.max_entries,
+    }
     window.close()
 
 
