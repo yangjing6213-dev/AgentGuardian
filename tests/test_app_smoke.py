@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QLabel,
     QMessageBox,
+    QPushButton,
     QTableWidget,
     QWidget,
 )
@@ -881,6 +882,160 @@ def test_filter_controls_use_canonical_data_count_findings_and_fit(qapp) -> None
         )
     )
     window.close()
+
+
+def _same_row_filter_findings() -> tuple[Finding, Finding]:
+    return (
+        Finding(
+            rule_id="RULE_HIGH",
+            domain=RiskDomain.CREDENTIALS,
+            severity=Severity.HIGH,
+            root_fingerprint="1" * 64,
+            evidence=(Evidence("high.env", "2" * 64, "masked-high"),),
+            disposition_ref="3" * 64,
+        ),
+        Finding(
+            rule_id="RULE_LOW",
+            domain=RiskDomain.RETENTION,
+            severity=Severity.LOW,
+            root_fingerprint="4" * 64,
+            evidence=(Evidence("low.env", "5" * 64, "masked-low"),),
+            disposition_ref="6" * 64,
+        ),
+    )
+
+
+def test_filter_same_row_count_clears_stale_selection_before_repopulation(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, second = _same_row_filter_findings()
+    window = create_window()
+    window._scan_completed(_audit_outcome((first, second)))
+    window.severity_filter_combo.setCurrentIndex(
+        window.severity_filter_combo.findData(Severity.HIGH)
+    )
+    window.findings_table.selectRow(0)
+    qapp.processEvents()
+    actions = (
+        window.false_positive_button,
+        window.accepted_risk_button,
+        window.withdraw_button,
+    )
+    assert window._row_findings == [first]
+    assert window._selected_finding() is first
+    assert window.findings_table.currentRow() == 0
+    assert window.false_positive_button.isEnabled()
+    assert window.accepted_risk_button.isEnabled()
+
+    enabled_during_switch = []
+    original_set_enabled = QPushButton.setEnabled
+
+    def track_action_enable(button, enabled):
+        if button in actions and enabled:
+            enabled_during_switch.append(button)
+        return original_set_enabled(button, enabled)
+
+    monkeypatch.setattr(QPushButton, "setEnabled", track_action_enable)
+
+    window.severity_filter_combo.setCurrentIndex(
+        window.severity_filter_combo.findData(Severity.LOW)
+    )
+    qapp.processEvents()
+
+    assert window._row_findings == [second]
+    assert window.findings_table.rowCount() == 1
+    assert window.findings_table.currentRow() == -1
+    assert not window.findings_table.selectionModel().hasSelection()
+    assert window.guidance_browser.toPlainText() == "选择一项风险以查看人工步骤。"
+    assert all(not button.isEnabled() for button in actions)
+    assert enabled_during_switch == []
+
+    window.findings_table.selectRow(0)
+    qapp.processEvents()
+
+    assert window._selected_finding() is second
+    assert window.findings_table.currentRow() == 0
+    assert window.false_positive_button.isEnabled()
+    assert window.accepted_risk_button.isEnabled()
+    window.close()
+
+
+def test_filter_disposition_expiry_refresh_restores_selection_only_by_identity(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, second = _same_row_filter_findings()
+    active_first = _disposition(
+        first,
+        DispositionStatus.FALSE_POSITIVE,
+        expires_at="2026-08-02T12:00:02Z",
+    )
+    expired_second = _disposition(
+        second,
+        DispositionStatus.FALSE_POSITIVE,
+        expires_at="2026-08-02T11:59:59Z",
+    )
+    clock = [EVALUATED_AT]
+    monkeypatch.setattr(app_module, "_utc_now", lambda: clock[0])
+    window = create_window()
+    window._dispositions = (active_first, expired_second)
+    window._scan_completed(
+        _audit_outcome((first, second), (active_first, expired_second))
+    )
+    window.disposition_filter_combo.setCurrentIndex(
+        window.disposition_filter_combo.findData("expired")
+    )
+    window.findings_table.selectRow(0)
+    qapp.processEvents()
+    assert window._row_findings == [second]
+    assert window._selected_finding() is second
+
+    clock[0] = EVALUATED_AT + timedelta(seconds=2)
+    window._handle_expiry_timeout()
+    qapp.processEvents()
+
+    assert window._row_findings == [first, second]
+    assert window.findings_table.currentRow() == 1
+    assert window._selected_finding() is second
+    window.close()
+
+    replacement = create_window()
+    replacement._dispositions = (active_first,)
+    replacement._scan_completed(_audit_outcome((first, second), (active_first,)))
+    replacement.disposition_filter_combo.setCurrentIndex(
+        replacement.disposition_filter_combo.findData("false_positive")
+    )
+    replacement.findings_table.selectRow(0)
+    qapp.processEvents()
+    assert replacement._row_findings == [first]
+    assert replacement._selected_finding() is first
+
+    active_second = _disposition(second, DispositionStatus.FALSE_POSITIVE)
+    selected_row = replacement.findings_table.currentRow()
+    refreshed = replacement._reviewed_outcome((active_second,), EVALUATED_AT)
+    replacement._dispositions = (active_second,)
+    replacement._audit_outcome = refreshed
+    replacement.report_json = refreshed.report_json
+    replacement.report_html = refreshed.report_html
+    replacement._refresh_reviewed_ui_no_throw(
+        refreshed.evaluated_at,
+        selected_row,
+        failure_message="处置已保存，界面刷新受限。",
+    )
+    qapp.processEvents()
+
+    assert replacement._row_findings == [second]
+    assert replacement.findings_table.rowCount() == 1
+    assert replacement.findings_table.currentRow() == -1
+    assert not replacement.findings_table.selectionModel().hasSelection()
+    assert replacement.guidance_browser.toPlainText() == (
+        "选择一项风险以查看人工步骤。"
+    )
+    assert not replacement.false_positive_button.isEnabled()
+    assert not replacement.accepted_risk_button.isEnabled()
+    assert not replacement.withdraw_button.isEnabled()
+    replacement.close()
 
 
 def test_filter_isolation_changes_only_visible_rows_and_selection(
@@ -2111,8 +2266,15 @@ def test_post_save_failures_roll_forward_persisted_core_without_save_warning(
     assert window.findings_table.item(0, 4).text() == expected_status
     if failure_stage == "report_ui":
         assert window.report_browser.toPlainText() == "报告已更新，界面暂时无法刷新。"
-    assert window.findings_table.currentRow() == 0
-    assert {index.row() for index in window.findings_table.selectedIndexes()} == {0}
+    if failure_stage == "selection":
+        assert window.findings_table.currentRow() == -1
+        assert window.findings_table.selectedIndexes() == []
+        assert not window.false_positive_button.isEnabled()
+        assert not window.accepted_risk_button.isEnabled()
+        assert not window.withdraw_button.isEnabled()
+    else:
+        assert window.findings_table.currentRow() == 0
+        assert {index.row() for index in window.findings_table.selectedIndexes()} == {0}
     if failure_stage == "timer_schedule":
         assert window._expiry_timer.isActive()
         assert window._expiry_timer.interval() == 60_000

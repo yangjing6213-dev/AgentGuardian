@@ -1324,8 +1324,10 @@ class AgentGuardianWindow(QMainWindow):
         now: datetime | None = None,
     ) -> None:
         rows = sum(len(finding.evidence) for finding in findings)
-        self.findings_table.setRowCount(rows)
+        self.findings_table.clearSelection()
+        self.findings_table.setCurrentCell(-1, -1)
         self._row_findings.clear()
+        self.findings_table.setRowCount(rows)
         row = 0
         for finding in findings:
             for evidence in finding.evidence:
