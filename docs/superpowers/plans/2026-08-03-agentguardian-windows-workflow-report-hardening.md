@@ -225,7 +225,7 @@ Commit: `Expose explicit report coverage states`
 - Modify: `src/agentguardian/workflow.py`
 - Modify: `tests/test_workflow.py`
 
-- [ ] **Step 1: Write failing filter tests**
+- [x] **Step 1: Write failing filter tests**
 
 Create synthetic findings spanning all severities, domains, multiple evidence
 rows, and open/false-positive/accepted-risk/expired states. Require exact
@@ -247,25 +247,25 @@ visible = filter_findings(
 Assert counts are per finding, original tuple order is preserved, inputs are not
 mutated, and evidence count does not become finding count.
 
-- [ ] **Step 2: Run filters and verify RED**
+- [x] **Step 2: Run filters and verify RED**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_workflow.py -k filter`
 
 Expected: missing filter contract/function.
 
-- [ ] **Step 3: Implement minimal filter predicates**
+- [x] **Step 3: Implement minimal filter predicates**
 
 Reuse `disposition_index` and `evaluate_disposition`. Validate one exact UTC
 evaluation time. Reject invalid enum/string criteria and hostile iterables at a
 bounded fixed error boundary.
 
-- [ ] **Step 4: Add expiry and privacy regression tests**
+- [x] **Step 4: Add expiry and privacy regression tests**
 
 Prove the same finding moves from false-positive to expired under a later time,
 and prove no `disposition_ref`, reason, reviewer, raw match, or full path enters
 filter labels or representations.
 
-- [ ] **Step 5: Run Task 3 tests and commit**
+- [x] **Step 5: Run Task 3 tests and commit**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_workflow.py tests/test_dispositions.py`
 

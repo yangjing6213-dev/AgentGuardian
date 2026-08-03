@@ -1,4 +1,6 @@
+from collections.abc import Callable, Iterator
 from dataclasses import FrozenInstanceError
+from datetime import datetime, timedelta, timezone, tzinfo
 import ntpath
 import os
 from pathlib import Path
@@ -6,16 +8,19 @@ from pathlib import Path
 import pytest
 
 import agentguardian.workflow as workflow_module
-from agentguardian.domain import RiskDomain, Score
+from agentguardian.dispositions import DispositionRecord, DispositionStatus
+from agentguardian.domain import Evidence, Finding, RiskDomain, Score, Severity
 from agentguardian.workflow import (
     COVERAGE_LIMIT_LABELS,
     COVERAGE_STATE_LABELS,
     CoverageState,
+    FindingFilters,
     ScopeConsent,
     ScopePreview,
     bind_scope_consent,
     build_scope_preview,
     classify_coverage,
+    filter_findings,
     scope_consent_matches,
 )
 
@@ -517,3 +522,492 @@ def test_coverage_classifier_rejects_forged_malformed_score_fields(
 
     with pytest.raises(ValueError, match="^COVERAGE_INVALID$"):
         classify_coverage(score)
+
+
+FILTER_NOW = datetime(2026, 8, 3, 10, tzinfo=timezone.utc)
+FILTER_PRIVATE_MARKER = r"C:\private\RAW_MATCH_REVIEW_SECRET.txt"
+
+
+class _FilterDatetimeSubclass(datetime):
+    pass
+
+
+class _FilterHostileTimezone(tzinfo):
+    def utcoffset(self, value: datetime | None) -> timedelta | None:
+        raise RuntimeError(FILTER_PRIVATE_MARKER)
+
+
+class _FilterCountingUtc(tzinfo):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def utcoffset(self, value: datetime | None) -> timedelta:
+        self.calls += 1
+        return timedelta(0)
+
+
+class _FilterSinglePass(Iterator[object]):
+    def __init__(self, values: tuple[object, ...]) -> None:
+        self._values = iter(values)
+        self.iterations = 0
+
+    def __iter__(self) -> Iterator[object]:
+        self.iterations += 1
+        if self.iterations > 1:
+            raise RuntimeError(FILTER_PRIVATE_MARKER)
+        return self
+
+    def __next__(self) -> object:
+        return next(self._values)
+
+
+class _FilterExplodingIterable:
+    def __iter__(self) -> Iterator[object]:
+        raise RuntimeError(FILTER_PRIVATE_MARKER)
+
+
+class _FilterOverLimit:
+    def __init__(self, factory: Callable[[int], object]) -> None:
+        self._factory = factory
+        self.consumed = 0
+
+    def __iter__(self) -> Iterator[object]:
+        for index in range(2_001):
+            self.consumed += 1
+            yield self._factory(index)
+
+
+def _filter_evidence(index: int) -> Evidence:
+    return Evidence(
+        f"synthetic-{index}.env",
+        f"{index + 100:064x}",
+        f"masked synthetic value {index}",
+    )
+
+
+def _filter_finding(
+    index: int,
+    domain: RiskDomain,
+    severity: Severity,
+    disposition_ref: str | None = None,
+    *,
+    evidence_count: int = 1,
+) -> Finding:
+    return Finding(
+        f"RULE_{index}",
+        domain,
+        severity,
+        f"{index + 1:064x}",
+        tuple(_filter_evidence(index * 10 + item) for item in range(evidence_count)),
+        disposition_ref,
+    )
+
+
+def _filter_record(
+    disposition_ref: str,
+    rule_id: str,
+    *,
+    status: DispositionStatus = DispositionStatus.FALSE_POSITIVE,
+    expires_at: str = "2026-08-03T11:00:00Z",
+) -> DispositionRecord:
+    return DispositionRecord(
+        disposition_ref,
+        rule_id,
+        status,
+        "PRIVATE_REASON_MARKER",
+        "PRIVATE_REVIEWER_MARKER",
+        "2026-08-03T09:00:00Z",
+        expires_at,
+    )
+
+
+def _filter_fixture() -> tuple[tuple[Finding, ...], tuple[DispositionRecord, ...]]:
+    false_positive_ref = "a" * 64
+    accepted_risk_ref = "b" * 64
+    expired_ref = "c" * 64
+    findings = (
+        _filter_finding(0, RiskDomain.EXPOSURE, Severity.CRITICAL, evidence_count=2),
+        _filter_finding(
+            1,
+            RiskDomain.PRIVACY,
+            Severity.HIGH,
+            false_positive_ref,
+            evidence_count=3,
+        ),
+        _filter_finding(
+            2,
+            RiskDomain.CREDENTIALS,
+            Severity.HIGH,
+            accepted_risk_ref,
+        ),
+        _filter_finding(
+            3,
+            RiskDomain.PERMISSIONS,
+            Severity.MEDIUM,
+            expired_ref,
+        ),
+        _filter_finding(4, RiskDomain.RETENTION, Severity.LOW),
+        _filter_finding(5, RiskDomain.SUPPLY_CHAIN, Severity.MEDIUM),
+    )
+    dispositions = (
+        _filter_record(false_positive_ref, "RULE_1"),
+        _filter_record(
+            accepted_risk_ref,
+            "RULE_2",
+            status=DispositionStatus.ACCEPTED_RISK,
+        ),
+        _filter_record(
+            expired_ref,
+            "RULE_3",
+            expires_at="2026-08-03T09:30:00Z",
+        ),
+    )
+    return findings, dispositions
+
+
+def _assert_finding_filter_invalid(call: Callable[[], object]) -> None:
+    with pytest.raises(ValueError) as raised:
+        call()
+
+    assert str(raised.value) == "FINDING_FILTER_INVALID"
+    assert FILTER_PRIVATE_MARKER not in str(raised.value)
+    assert raised.value.__cause__ is None
+
+
+def test_finding_filters_are_exact_frozen_slotted_and_private() -> None:
+    filters = FindingFilters(
+        severity=Severity.HIGH,
+        domain=RiskDomain.CREDENTIALS,
+        disposition_state="accepted_risk",
+    )
+
+    assert filters.severity is Severity.HIGH
+    assert filters.domain is RiskDomain.CREDENTIALS
+    assert filters.disposition_state == "accepted_risk"
+    assert not hasattr(filters, "__dict__")
+    assert FILTER_PRIVATE_MARKER not in repr(filters)
+    with pytest.raises(FrozenInstanceError):
+        filters.severity = Severity.LOW  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    (
+        ("severity", "high"),
+        ("severity", True),
+        ("domain", "credentials"),
+        ("domain", False),
+        ("disposition_state", "PRIVATE_UNKNOWN_STATE"),
+        ("disposition_state", True),
+    ),
+)
+def test_finding_filters_reject_invalid_exact_field_types(
+    field_name: str, invalid_value: object
+) -> None:
+    _assert_finding_filter_invalid(
+        lambda: FindingFilters(**{field_name: invalid_value})  # type: ignore[arg-type]
+    )
+
+
+def test_finding_filters_reject_subclasses_and_forged_mutable_fields() -> None:
+    class FindingFiltersSubclass(FindingFilters):
+        pass
+
+    _assert_finding_filter_invalid(lambda: FindingFiltersSubclass())
+
+    filters = FindingFilters()
+    object.__setattr__(filters, "severity", [Severity.HIGH])
+    _assert_finding_filter_invalid(
+        lambda: filter_findings((), (), filters, now=FILTER_NOW)
+    )
+
+
+@pytest.mark.parametrize(
+    ("filters", "expected_indexes"),
+    (
+        (FindingFilters(severity=Severity.CRITICAL), (0,)),
+        (FindingFilters(severity=Severity.HIGH), (1, 2)),
+        (FindingFilters(severity=Severity.MEDIUM), (3, 5)),
+        (FindingFilters(severity=Severity.LOW), (4,)),
+        (FindingFilters(domain=RiskDomain.EXPOSURE), (0,)),
+        (FindingFilters(domain=RiskDomain.PRIVACY), (1,)),
+        (FindingFilters(domain=RiskDomain.CREDENTIALS), (2,)),
+        (FindingFilters(domain=RiskDomain.PERMISSIONS), (3,)),
+        (FindingFilters(domain=RiskDomain.RETENTION), (4,)),
+        (FindingFilters(domain=RiskDomain.SUPPLY_CHAIN), (5,)),
+        (FindingFilters(disposition_state="open"), (0, 4, 5)),
+        (FindingFilters(disposition_state="false_positive"), (1,)),
+        (FindingFilters(disposition_state="accepted_risk"), (2,)),
+        (FindingFilters(disposition_state="expired"), (3,)),
+        (
+            FindingFilters(
+                severity=Severity.HIGH,
+                domain=RiskDomain.CREDENTIALS,
+                disposition_state="accepted_risk",
+            ),
+            (2,),
+        ),
+    ),
+)
+def test_filter_findings_applies_exact_criteria_per_finding_in_original_order(
+    filters: FindingFilters, expected_indexes: tuple[int, ...]
+) -> None:
+    findings, dispositions = _filter_fixture()
+    finding_input = list(findings)
+    disposition_input = list(dispositions)
+
+    visible = filter_findings(
+        finding_input,
+        disposition_input,
+        filters,
+        now=FILTER_NOW,
+    )
+
+    assert visible == tuple(findings[index] for index in expected_indexes)
+    assert all(
+        actual is findings[index]
+        for actual, index in zip(visible, expected_indexes, strict=True)
+    )
+    assert finding_input == list(findings)
+    assert disposition_input == list(dispositions)
+
+
+def test_filter_findings_counts_findings_not_evidence_rows() -> None:
+    findings, dispositions = _filter_fixture()
+
+    visible = filter_findings(findings, dispositions, FindingFilters(), now=FILTER_NOW)
+
+    assert len(visible) == len(findings) == 6
+    assert sum(len(finding.evidence) for finding in findings) == 9
+    assert visible == findings
+
+
+def test_filter_findings_reuses_expiry_evaluation_at_later_validated_time() -> None:
+    reference = "d" * 64
+    finding = _filter_finding(
+        6,
+        RiskDomain.CREDENTIALS,
+        Severity.HIGH,
+        reference,
+    )
+    record = _filter_record(reference, "RULE_6")
+
+    assert filter_findings(
+        (finding,),
+        (record,),
+        FindingFilters(disposition_state="false_positive"),
+        now=FILTER_NOW,
+    ) == (finding,)
+    assert filter_findings(
+        (finding,),
+        (record,),
+        FindingFilters(disposition_state="expired"),
+        now=datetime(2026, 8, 3, 12, tzinfo=timezone.utc),
+    ) == (finding,)
+
+
+def test_filter_findings_supports_one_pass_inputs_without_reiteration() -> None:
+    findings, dispositions = _filter_fixture()
+    finding_input = _FilterSinglePass(findings)
+    disposition_input = _FilterSinglePass(dispositions)
+
+    visible = filter_findings(
+        finding_input,
+        disposition_input,
+        FindingFilters(),
+        now=FILTER_NOW,
+    )
+
+    assert visible == findings
+    assert finding_input.iterations == 1
+    assert disposition_input.iterations == 1
+
+
+@pytest.mark.parametrize("target", ("findings", "dispositions"))
+def test_filter_findings_normalizes_hostile_iterator_failures(target: str) -> None:
+    findings, dispositions = _filter_fixture()
+    finding_input: object = _FilterExplodingIterable() if target == "findings" else findings
+    disposition_input: object = (
+        _FilterExplodingIterable() if target == "dispositions" else dispositions
+    )
+
+    _assert_finding_filter_invalid(
+        lambda: filter_findings(  # type: ignore[arg-type]
+            finding_input,
+            disposition_input,
+            FindingFilters(),
+            now=FILTER_NOW,
+        )
+    )
+
+
+@pytest.mark.parametrize("target", ("findings", "dispositions"))
+def test_filter_findings_bounds_findings_and_dispositions(target: str) -> None:
+    finding = _filter_finding(7, RiskDomain.EXPOSURE, Severity.LOW)
+    if target == "findings":
+        probe = _FilterOverLimit(lambda _index: finding)
+        findings: object = probe
+        dispositions: object = ()
+    else:
+        probe = _FilterOverLimit(
+            lambda index: _filter_record(f"{index:064x}", "RULE_7")
+        )
+        findings = ()
+        dispositions = probe
+
+    _assert_finding_filter_invalid(
+        lambda: filter_findings(  # type: ignore[arg-type]
+            findings,
+            dispositions,
+            FindingFilters(),
+            now=FILTER_NOW,
+        )
+    )
+    assert probe.consumed == 2_001
+
+
+@pytest.mark.parametrize("target", ("finding", "disposition"))
+def test_filter_findings_rejects_item_subclasses(target: str) -> None:
+    class FindingSubclass(Finding):
+        pass
+
+    class DispositionSubclass(DispositionRecord):
+        pass
+
+    findings, dispositions = _filter_fixture()
+    finding_input: object = findings
+    disposition_input: object = dispositions
+    if target == "finding":
+        base = findings[0]
+        finding_input = (
+            FindingSubclass(
+                base.rule_id,
+                base.domain,
+                base.severity,
+                base.root_fingerprint,
+                base.evidence,
+                base.disposition_ref,
+            ),
+        )
+    else:
+        base_record = dispositions[0]
+        disposition_input = (
+            DispositionSubclass(
+                base_record.disposition_ref,
+                base_record.rule_id,
+                base_record.status,
+                base_record.reason,
+                base_record.reviewer,
+                base_record.created_at,
+                base_record.expires_at,
+            ),
+        )
+
+    _assert_finding_filter_invalid(
+        lambda: filter_findings(  # type: ignore[arg-type]
+            finding_input,
+            disposition_input,
+            FindingFilters(),
+            now=FILTER_NOW,
+        )
+    )
+
+
+def test_filter_findings_rejects_forged_mutable_finding_fields() -> None:
+    finding = _filter_finding(8, RiskDomain.EXPOSURE, Severity.LOW)
+    object.__setattr__(finding, "evidence", list(finding.evidence))
+
+    _assert_finding_filter_invalid(
+        lambda: filter_findings((finding,), (), FindingFilters(), now=FILTER_NOW)
+    )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    (
+        ("status", "false_positive"),
+        ("reason", ["PRIVATE_REASON_MARKER"]),
+        ("expires_at", ["2026-08-03T11:00:00Z"]),
+    ),
+)
+def test_filter_findings_rejects_forged_disposition_fields(
+    field_name: str, invalid_value: object
+) -> None:
+    record = _filter_record("e" * 64, "RULE_8")
+    object.__setattr__(record, field_name, invalid_value)
+
+    _assert_finding_filter_invalid(
+        lambda: filter_findings((), (record,), FindingFilters(), now=FILTER_NOW)
+    )
+
+
+@pytest.mark.parametrize(
+    "now",
+    (
+        datetime(2026, 8, 3, 10),
+        datetime(2026, 8, 3, 10, tzinfo=timezone(timedelta(hours=1))),
+        _FilterDatetimeSubclass(2026, 8, 3, 10, tzinfo=timezone.utc),
+        datetime(2026, 8, 3, 10, tzinfo=_FilterHostileTimezone()),
+    ),
+)
+def test_filter_findings_requires_exact_timezone_aware_utc_time(now: datetime) -> None:
+    _assert_finding_filter_invalid(
+        lambda: filter_findings((), (), FindingFilters(), now=now)
+    )
+
+
+def test_filter_findings_validates_evaluation_time_once() -> None:
+    findings, dispositions = _filter_fixture()
+    counting_utc = _FilterCountingUtc()
+    now = datetime(2026, 8, 3, 10, tzinfo=counting_utc)
+
+    assert filter_findings(findings, dispositions, FindingFilters(), now=now) == findings
+    assert counting_utc.calls == 1
+
+
+def test_filter_findings_normalizes_dependency_equality_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    findings, dispositions = _filter_fixture()
+    explosive = ExplosiveEquality(FILTER_PRIVATE_MARKER)
+
+    def fail_evaluation(*_args: object, **_kwargs: object) -> object:
+        return explosive == object()
+
+    monkeypatch.setattr(workflow_module, "evaluate_disposition", fail_evaluation)
+
+    _assert_finding_filter_invalid(
+        lambda: filter_findings(
+            findings,
+            dispositions,
+            FindingFilters(),
+            now=FILTER_NOW,
+        )
+    )
+
+
+def test_finding_filter_repr_and_errors_do_not_expose_disposition_details() -> None:
+    findings, dispositions = _filter_fixture()
+    filters = FindingFilters(disposition_state="false_positive")
+    protected = (
+        dispositions[0].disposition_ref,
+        dispositions[0].reason,
+        dispositions[0].reviewer,
+        "RAW_MATCH_REVIEW_SECRET",
+        FILTER_PRIVATE_MARKER,
+    )
+
+    assert filter_findings(findings, dispositions, filters, now=FILTER_NOW) == (
+        findings[1],
+    )
+    for value in protected:
+        assert value not in repr(filters)
+
+    _assert_finding_filter_invalid(
+        lambda: filter_findings(
+            _FilterExplodingIterable(),  # type: ignore[arg-type]
+            dispositions,
+            filters,
+            now=FILTER_NOW,
+        )
+    )

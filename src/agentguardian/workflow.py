@@ -1,17 +1,31 @@
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from math import isfinite
 import ntpath
 import os
 from pathlib import Path, PureWindowsPath
 from types import MappingProxyType
+from typing import Literal
 
-from .domain import RiskDomain, Score
+from .dispositions import (
+    DispositionRecord,
+    DispositionStatus,
+    disposition_index,
+    evaluate_disposition,
+)
+from .domain import Evidence, Finding, RiskDomain, Score, Severity
 
 
 SCOPE_PREVIEW_CONTRACT_VERSION = 1
 _PATH_TYPE = type(Path())
 _COVERAGE_ERROR = "COVERAGE_INVALID"
+_FINDING_FILTER_ERROR = "FINDING_FILTER_INVALID"
+_MAX_FILTER_ITEMS = 2_000
+_DISPOSITION_STATES = frozenset(
+    ("open", "false_positive", "accepted_risk", "expired")
+)
 _WINDOWS_RESERVED_DEVICE_NAMES = frozenset(
     {"con", "nul", "prn", "aux", "conin$", "conout$"}
     | {f"com{number}" for number in range(1, 10)}
@@ -24,6 +38,21 @@ class CoverageState(str, Enum):
     COMPLETE = "complete"
     LIMITED = "limited"
     NO_SUPPORTED_FILES = "no_supported_files"
+
+
+@dataclass(frozen=True, slots=True)
+class FindingFilters:
+    severity: Severity | None = None
+    domain: RiskDomain | None = None
+    disposition_state: Literal[
+        "open", "false_positive", "accepted_risk", "expired"
+    ] | None = None
+
+    def __post_init__(self) -> None:
+        try:
+            _validate_finding_filters(self)
+        except Exception:
+            raise ValueError(_FINDING_FILTER_ERROR) from None
 
 
 COVERAGE_STATE_LABELS = MappingProxyType(
@@ -152,6 +181,40 @@ def classify_coverage(score: Score) -> CoverageState:
     raise ValueError(_COVERAGE_ERROR) from None
 
 
+def filter_findings(
+    findings: Iterable[Finding],
+    dispositions: Iterable[DispositionRecord],
+    filters: FindingFilters,
+    *,
+    now: datetime,
+) -> tuple[Finding, ...]:
+    try:
+        _validate_finding_filters(filters)
+        evaluated_at = _validated_filter_time(now)
+        records = disposition_index(
+            _validated_filter_dispositions(_bounded_filter_items(dispositions))
+        )
+        visible: list[Finding] = []
+        for candidate in _bounded_filter_items(findings):
+            finding = _validated_filter_finding(candidate)
+            evaluation = evaluate_disposition(finding, records, now=evaluated_at)
+            state = evaluation.state
+            if type(state) is not str or state not in _DISPOSITION_STATES:
+                raise ValueError
+            if (
+                (filters.severity is None or finding.severity is filters.severity)
+                and (filters.domain is None or finding.domain is filters.domain)
+                and (
+                    filters.disposition_state is None
+                    or state == filters.disposition_state
+                )
+            ):
+                visible.append(finding)
+        return tuple(visible)
+    except Exception:
+        raise ValueError(_FINDING_FILTER_ERROR) from None
+
+
 def _classify_validated_coverage(score: Score) -> CoverageState:
     if type(score) is not Score:
         raise ValueError(_COVERAGE_ERROR)
@@ -195,6 +258,90 @@ def _classify_validated_coverage(score: Score) -> CoverageState:
     if score.coverage == 1 and not score.limits:
         raise ValueError(_COVERAGE_ERROR)
     return CoverageState.LIMITED
+
+
+def _validate_finding_filters(filters: object) -> None:
+    if type(filters) is not FindingFilters:
+        raise ValueError
+    severity = filters.severity
+    domain = filters.domain
+    disposition_state = filters.disposition_state
+    if (
+        (severity is not None and type(severity) is not Severity)
+        or (domain is not None and type(domain) is not RiskDomain)
+        or (
+            disposition_state is not None
+            and (
+                type(disposition_state) is not str
+                or disposition_state not in _DISPOSITION_STATES
+            )
+        )
+    ):
+        raise ValueError
+
+
+def _validated_filter_time(now: object) -> datetime:
+    if type(now) is not datetime:
+        raise ValueError
+    offset = now.utcoffset()
+    if type(offset) is not timedelta or offset != timedelta(0):
+        raise ValueError
+    return now.replace(tzinfo=timezone.utc)
+
+
+def _bounded_filter_items(values: Iterable[object]) -> Iterable[object]:
+    count = 0
+    for item in values:
+        if count >= _MAX_FILTER_ITEMS:
+            raise ValueError
+        count += 1
+        yield item
+
+
+def _validated_filter_dispositions(
+    records: Iterable[object],
+) -> Iterable[DispositionRecord]:
+    for record in records:
+        if type(record) is not DispositionRecord or any(
+            (
+                type(record.disposition_ref) is not str,
+                type(record.rule_id) is not str,
+                type(record.status) is not DispositionStatus,
+                type(record.reason) is not str,
+                type(record.reviewer) is not str,
+                type(record.created_at) is not str,
+                type(record.expires_at) is not str,
+            )
+        ):
+            raise ValueError
+        yield record
+
+
+def _validated_filter_finding(finding: object) -> Finding:
+    if type(finding) is not Finding:
+        raise ValueError
+    if (
+        type(finding.rule_id) is not str
+        or type(finding.domain) is not RiskDomain
+        or type(finding.severity) is not Severity
+        or type(finding.root_fingerprint) is not str
+        or type(finding.evidence) is not tuple
+        or (
+            finding.disposition_ref is not None
+            and type(finding.disposition_ref) is not str
+        )
+    ):
+        raise ValueError
+    for evidence in finding.evidence:
+        if type(evidence) is not Evidence or any(
+            (
+                type(evidence.source) is not str,
+                type(evidence.fingerprint) is not str,
+                type(evidence.masked) is not str,
+            )
+        ):
+            raise ValueError
+    return finding
 
 
 def _validate_scope_preview(preview: ScopePreview) -> None:
