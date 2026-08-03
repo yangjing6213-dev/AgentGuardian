@@ -261,15 +261,23 @@ def _coverage_status_text(audit_score: Score) -> str:
 
 
 def _comparison_text(comparison: ReportComparison) -> str:
-    def delta_lines(
+    def category_lines(
         title: str,
-        values: tuple[tuple[str, int], ...],
+        baseline_values: tuple[tuple[str, int], ...],
+        current_values: tuple[tuple[str, int], ...],
+        deltas: tuple[tuple[str, int], ...],
         labels: dict[str, str] | None = None,
     ) -> list[str]:
+        baseline_counts = dict(baseline_values)
+        current_counts = dict(current_values)
         lines = [title]
         lines.extend(
-            f"{labels.get(name, name) if labels else name}: {delta:+d}"
-            for name, delta in values
+            (
+                f"{labels.get(name, name) if labels else name}: "
+                f"基线 {baseline_counts.get(name, 0)} | "
+                f"当前 {current_counts.get(name, 0)} | 差值 {delta:+d}"
+            )
+            for name, delta in deltas
         )
         if len(lines) == 1:
             lines.append("无")
@@ -312,14 +320,23 @@ def _comparison_text(comparison: ReportComparison) -> str:
             f"当前 {current.finding_count} | "
             f"差值 {comparison.finding_count_delta:+d}"
         ),
-        *delta_lines("规则数量差值", comparison.rule_count_deltas),
-        *delta_lines(
+        *category_lines(
+            "规则数量差值",
+            baseline.rule_counts,
+            current.rule_counts,
+            comparison.rule_count_deltas,
+        ),
+        *category_lines(
             "严重性数量差值",
+            baseline.severity_counts,
+            current.severity_counts,
             comparison.severity_count_deltas,
             severity_labels,
         ),
-        *delta_lines(
+        *category_lines(
             "处置状态数量差值",
+            baseline.disposition_counts,
+            current.disposition_counts,
             comparison.disposition_count_deltas,
             _STATUS_LABELS,
         ),
@@ -1320,11 +1337,17 @@ class AgentGuardianWindow(QMainWindow):
 
     def _clear_comparison_if_present(self) -> None:
         self._comparison_state = None
-        if hasattr(self, "baseline_name_label"):
+        if not hasattr(self, "baseline_name_label"):
+            return
+        try:
             self.baseline_name_label.setText("基线：未选择")
+        except Exception:
+            pass
+        try:
             self.comparison_browser.setPlainText(_COMPARISON_EMPTY_MESSAGE)
-            self.comparison_clear_button.setEnabled(False)
-            self._sync_comparison_commands()
+        except Exception:
+            pass
+        self._sync_comparison_commands()
 
     def _clear_comparison_callback(self) -> None:
         try:
@@ -1345,8 +1368,16 @@ class AgentGuardianWindow(QMainWindow):
                 parse_report_summary(self.report_json)
             except Exception:
                 valid_current = False
-        self.comparison_select_button.setEnabled(valid_current)
-        self.comparison_clear_button.setEnabled(self._comparison_state is not None)
+        try:
+            self.comparison_select_button.setEnabled(valid_current)
+        except Exception:
+            pass
+        try:
+            self.comparison_clear_button.setEnabled(
+                self._comparison_state is not None
+            )
+        except Exception:
+            pass
 
     def _render_comparison(self, state: _ComparisonState) -> None:
         text = _comparison_text(state.comparison)

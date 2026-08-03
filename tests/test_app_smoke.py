@@ -55,6 +55,7 @@ from agentguardian.evidence_state import (
 )
 from agentguardian.state_store import StateStoreError
 from agentguardian.reporting import render_html, render_json
+from agentguardian.report_comparison import ReportSummary, compare_report_summaries
 from agentguardian.scoring import score
 
 
@@ -798,8 +799,12 @@ def test_report_page_comparison_controls_and_valid_aggregate_flow(
     assert "覆盖率：基线 100.0% | 当前 75.0% | 差值 -25.0%" in text
     assert "覆盖状态：基线 已完成 | 当前 覆盖受限" in text
     assert "发现数：基线 1 | 当前 2 | 差值 +1" in text
-    assert text.index("ALPHA_RULE: +1") < text.index("BASELINE_RULE: -1")
-    assert text.index("BASELINE_RULE: -1") < text.index("ZETA_RULE: +1")
+    assert text.index("ALPHA_RULE: 基线 0 | 当前 1 | 差值 +1") < text.index(
+        "BASELINE_RULE: 基线 1 | 当前 0 | 差值 -1"
+    )
+    assert text.index("BASELINE_RULE: 基线 1 | 当前 0 | 差值 -1") < text.index(
+        "ZETA_RULE: 基线 0 | 当前 1 | 差值 +1"
+    )
     assert "新增限制：文件扫描受限" in text
     assert "已解除限制：无" in text
     assert all(
@@ -827,6 +832,67 @@ def test_report_page_comparison_selection_requires_parseable_current_report(qapp
 
     assert not window.comparison_select_button.isEnabled()
     window.close()
+
+
+def test_comparison_category_rows_show_baseline_current_and_signed_delta() -> None:
+    baseline = ReportSummary(
+        technical_score=80,
+        reviewed_score=82,
+        coverage=1.0,
+        coverage_state=app_module.CoverageState.COMPLETE,
+        finding_count=9,
+        rule_counts=(("ALPHA", 2), ("BETA", 3), ("SAME", 4)),
+        severity_counts=(("high", 2), ("low", 3), ("medium", 4)),
+        disposition_counts=(
+            ("accepted_risk", 2),
+            ("false_positive", 3),
+            ("open", 4),
+        ),
+        limits=(),
+    )
+    current = ReportSummary(
+        technical_score=70,
+        reviewed_score=76,
+        coverage=1.0,
+        coverage_state=app_module.CoverageState.COMPLETE,
+        finding_count=16,
+        rule_counts=(("BETA", 5), ("GAMMA", 7), ("SAME", 4)),
+        severity_counts=(("critical", 7), ("high", 5), ("medium", 4)),
+        disposition_counts=(
+            ("accepted_risk", 2),
+            ("expired", 7),
+            ("open", 7),
+        ),
+        limits=(),
+    )
+
+    text = app_module._comparison_text(
+        compare_report_summaries(baseline, current)
+    )
+
+    rule_rows = (
+        "ALPHA: 基线 2 | 当前 0 | 差值 -2",
+        "BETA: 基线 3 | 当前 5 | 差值 +2",
+        "GAMMA: 基线 0 | 当前 7 | 差值 +7",
+        "SAME: 基线 4 | 当前 4 | 差值 +0",
+    )
+    severity_rows = (
+        "严重: 基线 0 | 当前 7 | 差值 +7",
+        "高: 基线 2 | 当前 5 | 差值 +3",
+        "低: 基线 3 | 当前 0 | 差值 -3",
+        "中: 基线 4 | 当前 4 | 差值 +0",
+    )
+    disposition_rows = (
+        "已接受风险: 基线 2 | 当前 2 | 差值 +0",
+        "已过期: 基线 0 | 当前 7 | 差值 +7",
+        "误报: 基线 3 | 当前 0 | 差值 -3",
+        "待处理: 基线 4 | 当前 7 | 差值 +3",
+    )
+    for rows in (rule_rows, severity_rows, disposition_rows):
+        assert all(row in text for row in rows)
+        assert [text.index(row) for row in rows] == sorted(
+            text.index(row) for row in rows
+        )
 
 
 def test_comparison_valid_secret_bearing_baseline_retains_only_aggregates(
@@ -1125,6 +1191,99 @@ def test_comparison_scan_lifecycle_resets_transient_state(
     assert window.baseline_name_label.text() == "基线：未选择"
     assert not window.comparison_clear_button.isEnabled()
     assert "baseline.json" not in window.comparison_browser.toPlainText()
+    window.close()
+
+
+@pytest.mark.parametrize(
+    ("surface", "reset"),
+    (
+        ("baseline_label", "clear"),
+        ("comparison_browser", "root_change"),
+        ("clear_command", "invalidate"),
+        ("select_command", "scan_failure"),
+    ),
+)
+def test_comparison_reset_attempts_each_surface_after_qt_setter_failure(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    surface: str,
+    reset: str,
+) -> None:
+    baseline_path = tmp_path / "stale-baseline.json"
+    baseline_path.write_text(
+        _audit_outcome((_disposition_finding(81),)).report_json,
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        lambda *args, **kwargs: (str(baseline_path), "JSON (*.json)"),
+    )
+    window = create_window()
+    current = _audit_outcome((_disposition_finding(82),))
+    window._scan_completed(current)
+    window._select_baseline_report()
+    assert window._comparison_state is not None
+    original_current = (
+        window._audit_outcome,
+        window.report_json,
+        window.report_html,
+        window._report_roots,
+    )
+
+    target = {
+        "baseline_label": window.baseline_name_label,
+        "comparison_browser": window.comparison_browser,
+        "clear_command": window.comparison_clear_button,
+        "select_command": window.comparison_select_button,
+    }[surface]
+    setter_name = {
+        "baseline_label": "setText",
+        "comparison_browser": "setPlainText",
+        "clear_command": "setEnabled",
+        "select_command": "setEnabled",
+    }[surface]
+    monkeypatch.setattr(
+        target,
+        setter_name,
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError(f"private-{surface}-marker")
+        ),
+    )
+
+    if reset == "clear":
+        window._clear_comparison_callback()
+    elif reset == "root_change":
+        next_root = tmp_path / "next-root"
+        next_root.mkdir()
+        monkeypatch.setattr(
+            QFileDialog,
+            "getExistingDirectory",
+            lambda *args, **kwargs: str(next_root),
+        )
+        window._select_folder()
+    elif reset == "invalidate":
+        window._invalidate_report()
+    else:
+        window._scan_failed("scan_failed")
+
+    assert window._comparison_state is None
+    if surface != "baseline_label":
+        assert window.baseline_name_label.text() == "基线：未选择"
+    if surface != "comparison_browser":
+        assert window.comparison_browser.toPlainText() == "尚未选择基线报告。"
+    if surface != "clear_command":
+        assert not window.comparison_clear_button.isEnabled()
+    if surface != "select_command":
+        assert window.comparison_select_button.isEnabled() is (reset == "clear")
+    if reset == "clear":
+        assert (
+            window._audit_outcome,
+            window.report_json,
+            window.report_html,
+            window._report_roots,
+        ) == original_current
     window.close()
 
 
