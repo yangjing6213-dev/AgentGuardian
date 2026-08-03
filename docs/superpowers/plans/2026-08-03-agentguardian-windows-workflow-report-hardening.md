@@ -279,19 +279,19 @@ Commit: `Add view-only finding filters`
 - Create: `src/agentguardian/report_comparison.py`
 - Create: `tests/test_report_comparison.py`
 
-- [ ] **Step 1: Write failing schema-1 summary tests**
+- [x] **Step 1: Write failing schema-1 summary tests**
 
 Build reports with the real renderer. Require immutable `ReportSummary` fields
 for technical score, reviewed score, coverage ratio/state, finding count, and
 sorted counts by rule, severity, disposition state, and canonical limits.
 
-- [ ] **Step 2: Run summary tests and verify RED**
+- [x] **Step 2: Run summary tests and verify RED**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_report_comparison.py -k schema_1`
 
 Expected: module import failure.
 
-- [ ] **Step 3: Implement a strict schema-1 parser**
+- [x] **Step 3: Implement a strict schema-1 parser**
 
 Use `json.loads` with explicit rejection of `NaN`, `Infinity`, and
 `-Infinity`. Require exact built-in types and exact key sets. Reuse existing
@@ -299,18 +299,18 @@ domain validation for enum values, fingerprints, display names, masked evidence,
 annotations, and timestamps. Enforce 2,000 findings and 4,000 total evidence.
 Discard item-level values after aggregation.
 
-- [ ] **Step 4: Write failing legacy-schema tests**
+- [x] **Step 4: Write failing legacy-schema tests**
 
 Create an exact legacy report by removing `report_schema` and score
 `coverage_state` from a valid rendered payload. Require derived coverage state
 and the same aggregate summary. Reject partial legacy/new hybrids and unknown
 schema versions.
 
-- [ ] **Step 5: Implement only exact legacy compatibility**
+- [x] **Step 5: Implement only exact legacy compatibility**
 
 Do not infer or guess future schemas. Unknown and extra keys fail closed.
 
-- [ ] **Step 6: Write failing aggregate-delta tests**
+- [x] **Step 6: Write failing aggregate-delta tests**
 
 Require signed `current - baseline` score/count/coverage deltas, sorted category
 deltas, added limits as `current - baseline`, and resolved limits as
@@ -321,11 +321,11 @@ deltas, added limits as `current - baseline`, and resolved limits as
 - reason, reviewer, or timestamps; or
 - individual `new`, `fixed`, `matched`, or `unchanged` claims.
 
-- [ ] **Step 7: Implement immutable deterministic comparison**
+- [x] **Step 7: Implement immutable deterministic comparison**
 
 Use tuples of sorted key/count pairs. Do not retain parsed payloads.
 
-- [ ] **Step 8: Add hostile and bounded-input tests**
+- [x] **Step 8: Add hostile and bounded-input tests**
 
 Parametrize missing/extra keys, booleans as numbers, non-finite values, invalid
 domains/severities/statuses, unsafe strings, malformed fingerprints, duplicate
@@ -333,7 +333,7 @@ or unknown limits, contradictory scores, 2,001 findings, and 4,001 evidence
 entries. Every failure must normalize to `REPORT_COMPARISON_INVALID` without
 including attacker text.
 
-- [ ] **Step 9: Run Task 4 tests and commit**
+- [x] **Step 9: Run Task 4 tests and commit**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_report_comparison.py tests/test_reporting.py`
 
