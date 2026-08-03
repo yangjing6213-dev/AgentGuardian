@@ -791,6 +791,39 @@ def test_filter_findings_normalize_hostile_iterable_exception_chain(
     )
 
 
+@pytest.mark.parametrize(
+    "dependency",
+    (
+        "_validate_finding_filters",
+        "_validated_filter_dispositions",
+        "_validated_filter_finding",
+        "disposition_index",
+        "evaluate_disposition",
+    ),
+)
+def test_filter_findings_propagates_internal_attribute_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    dependency: str,
+) -> None:
+    findings, _ = _filter_fixture()
+    filters = FindingFilters()
+
+    def fail_dependency(*_args: object, **_kwargs: object) -> object:
+        raise AttributeError(FILTER_CHAIN_SECRET)
+
+    monkeypatch.setattr(workflow_module, dependency, fail_dependency)
+
+    finding_input = findings[:1] if dependency in {
+        "_validated_filter_finding",
+        "evaluate_disposition",
+    } else ()
+    with pytest.raises(AttributeError, match=f"^{FILTER_CHAIN_SECRET}$") as raised:
+        filter_findings(finding_input, (), filters, now=FILTER_NOW)
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
+
 def test_finding_filters_are_exact_frozen_slotted_and_private() -> None:
     filters = FindingFilters(
         severity=Severity.HIGH,

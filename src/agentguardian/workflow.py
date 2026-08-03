@@ -34,6 +34,10 @@ _WINDOWS_RESERVED_DEVICE_NAMES = frozenset(
 )
 
 
+class _FindingFilterInputError(ValueError):
+    pass
+
+
 class CoverageState(str, Enum):
     COMPLETE = "complete"
     LIMITED = "limited"
@@ -260,9 +264,12 @@ def _classify_validated_coverage(score: Score) -> CoverageState:
 def _validate_finding_filters(filters: object) -> None:
     if type(filters) is not FindingFilters:
         raise ValueError
-    severity = filters.severity
-    domain = filters.domain
-    disposition_state = filters.disposition_state
+    try:
+        severity = filters.severity
+        domain = filters.domain
+        disposition_state = filters.disposition_state
+    except AttributeError:
+        raise _FindingFilterInputError from None
     if (
         (severity is not None and type(severity) is not Severity)
         or (domain is not None and type(domain) is not RiskDomain)
@@ -296,7 +303,7 @@ def _validated_filter_request(
     try:
         _validate_finding_filters(filters)
         evaluated_at = _validated_filter_time(now)
-    except (AttributeError, ValueError):
+    except ValueError:
         pass
     else:
         return evaluated_at
@@ -322,7 +329,7 @@ def _materialized_filter_dispositions(
     else:
         try:
             return tuple(_validated_filter_dispositions(candidates))
-        except (AttributeError, ValueError):
+        except ValueError:
             pass
     raise ValueError(_FINDING_FILTER_ERROR) from None
 
@@ -348,7 +355,7 @@ def _materialized_filter_findings(
     else:
         try:
             return tuple(_validated_filter_finding(candidate) for candidate in candidates)
-        except (AttributeError, ValueError):
+        except ValueError:
             pass
     raise ValueError(_FINDING_FILTER_ERROR) from None
 
@@ -359,13 +366,16 @@ def _validated_filter_dispositions(
     for record in records:
         if type(record) is not DispositionRecord:
             raise ValueError
-        disposition_ref = record.disposition_ref
-        rule_id = record.rule_id
-        status = record.status
-        reason = record.reason
-        reviewer = record.reviewer
-        created_at = record.created_at
-        expires_at = record.expires_at
+        try:
+            disposition_ref = record.disposition_ref
+            rule_id = record.rule_id
+            status = record.status
+            reason = record.reason
+            reviewer = record.reviewer
+            created_at = record.created_at
+            expires_at = record.expires_at
+        except AttributeError:
+            raise _FindingFilterInputError from None
         if any(
             (
                 type(disposition_ref) is not str,
@@ -395,12 +405,15 @@ def _validated_filter_dispositions(
 def _validated_filter_finding(finding: object) -> Finding:
     if type(finding) is not Finding:
         raise ValueError
-    rule_id = finding.rule_id
-    domain = finding.domain
-    severity = finding.severity
-    root_fingerprint = finding.root_fingerprint
-    evidence_items = finding.evidence
-    disposition_ref = finding.disposition_ref
+    try:
+        rule_id = finding.rule_id
+        domain = finding.domain
+        severity = finding.severity
+        root_fingerprint = finding.root_fingerprint
+        evidence_items = finding.evidence
+        disposition_ref = finding.disposition_ref
+    except AttributeError:
+        raise _FindingFilterInputError from None
     if (
         type(rule_id) is not str
         or type(domain) is not RiskDomain
@@ -417,9 +430,12 @@ def _validated_filter_finding(finding: object) -> Finding:
     for evidence in evidence_items:
         if type(evidence) is not Evidence:
             raise ValueError
-        source = evidence.source
-        fingerprint = evidence.fingerprint
-        masked = evidence.masked
+        try:
+            source = evidence.source
+            fingerprint = evidence.fingerprint
+            masked = evidence.masked
+        except AttributeError:
+            raise _FindingFilterInputError from None
         if any(
             (
                 type(source) is not str,
