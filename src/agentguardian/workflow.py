@@ -280,7 +280,7 @@ def _validate_short_name(value: str) -> None:
         not value
         or value in (".", "..")
         or len(value) > 80
-        or any(separator in value for separator in ("/", "\\", ":"))
+        or any(character in value for character in '/\\:*?"<>|')
         or any(not character.isprintable() for character in value)
     ):
         raise ValueError("unsafe short name")

@@ -1,4 +1,5 @@
 from dataclasses import FrozenInstanceError
+import ntpath
 import os
 from pathlib import Path
 
@@ -27,6 +28,17 @@ CAPS = {
     "max_findings": 2_000,
     "max_evidence": 4_000,
 }
+
+
+def _assert_full_paths_not_in_repr(value: object, roots: tuple[Path, ...]) -> None:
+    representation = repr(value).casefold().replace("/", "\\")
+    while "\\\\" in representation:
+        representation = representation.replace("\\\\", "\\")
+    for root in roots:
+        identity = ntpath.normcase(
+            ntpath.abspath(ntpath.normpath(os.fspath(root)))
+        ).casefold()
+        assert identity not in representation, "full root path leaked"
 
 
 def _build_preview(
@@ -63,7 +75,7 @@ def test_scope_preview_is_pure_private_and_immutable(monkeypatch: pytest.MonkeyP
     assert preview.unc_roots_excluded is True
     assert preview.drive_roots_excluded is True
     assert preview.reparse_paths_excluded is True
-    assert r"C:\Synthetic" not in repr(preview)
+    _assert_full_paths_not_in_repr(preview, ROOTS)
     with pytest.raises(FrozenInstanceError):
         preview.max_files = 1  # type: ignore[misc]
 
@@ -148,6 +160,21 @@ def test_scope_preview_rejects_unsafe_or_duplicate_selectors() -> None:
             _build_preview(selectors=selectors)
 
 
+@pytest.mark.parametrize("unsafe_character", tuple('*?"<>|'))
+@pytest.mark.parametrize("target", ("root", "selector"))
+def test_scope_preview_rejects_windows_unsafe_short_name_characters(
+    unsafe_character: str, target: str
+) -> None:
+    if target == "root":
+        with pytest.raises(ValueError):
+            _build_preview(
+                (Path(f"C:/Synthetic/unsafe{unsafe_character}name"),)
+            )
+    else:
+        with pytest.raises(ValueError):
+            _build_preview(selectors=(f".env{unsafe_character}",))
+
+
 def test_consent_binds_to_normalized_roots_without_path_repr() -> None:
     preview = _build_preview(
         (
@@ -166,10 +193,26 @@ def test_consent_binds_to_normalized_roots_without_path_repr() -> None:
 
     assert scope_consent_matches(consent, preview) is True
     assert scope_consent_matches(consent, equivalent) is True
-    assert r"C:\Synthetic" not in repr(consent)
+    _assert_full_paths_not_in_repr(consent, preview._roots)
     assert not hasattr(consent, "__dict__")
     with pytest.raises(FrozenInstanceError):
         consent.contract_version = 2  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    "leak",
+    (
+        Path(r"C:\Synthetic\selected-root"),
+        r"C:\Synthetic\selected-root",
+        r"c:\synthetic\selected-root",
+    ),
+)
+def test_repr_privacy_guard_detects_leaky_forged_preview(leak: object) -> None:
+    preview = _build_preview()
+    object.__setattr__(preview, "root_names", (leak,))
+
+    with pytest.raises(AssertionError, match="full root path leaked"):
+        _assert_full_paths_not_in_repr(preview, ROOTS)
 
 
 def test_consent_rejects_changed_order_root_and_version() -> None:
