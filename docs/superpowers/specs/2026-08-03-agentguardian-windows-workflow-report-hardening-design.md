@@ -194,8 +194,9 @@ validators even though comparison discards their item-level values.
 
 Missing required fields, unknown schema versions, non-finite or boolean numeric
 values, oversized collections, invalid enum values, unknown limit codes,
-contradictory score data, more than 2,000 findings, or more than 2,000 total
-evidence entries fail closed. The parser does not retain evidence sources,
+contradictory score data, more than 2,000 findings, or more than 4,000 total
+evidence entries fail closed. These bounds match the existing audit caps. The
+parser does not retain evidence sources,
 masked evidence, fingerprints, disposition reasons, reviewers, timestamps, or
 the selected full path after validation.
 
