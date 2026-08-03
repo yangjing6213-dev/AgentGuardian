@@ -816,7 +816,7 @@ def test_renderer_round_trip_accepts_domain_valid_masked_text(
 
 @pytest.mark.parametrize(
     "exception_type",
-    (AttributeError, RuntimeError, TypeError),
+    (AttributeError, RuntimeError, TypeError, UnicodeError),
 )
 def test_parser_propagates_unexpected_internal_dependency_defects(
     monkeypatch: pytest.MonkeyPatch,
@@ -834,6 +834,42 @@ def test_parser_propagates_unexpected_internal_dependency_defects(
     with pytest.raises(exception_type, match="comparison-marker") as caught:
         parse_report_summary(_report_json())
 
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+def test_parser_propagates_internal_json_unicode_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_json(*_args: object, **_kwargs: object) -> object:
+        raise UnicodeError(ATTACKER_MARKER)
+
+    monkeypatch.setattr(comparison_module.json, "loads", fail_json)
+
+    with pytest.raises(UnicodeError, match="comparison-marker") as caught:
+        parse_report_summary(_report_json())
+
+    assert str(caught.value) == ATTACKER_MARKER
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+def test_report_file_loader_propagates_internal_json_unicode_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_path = tmp_path / "internal-json-unicode.json"
+    report_path.write_text(_report_json(), encoding="utf-8")
+
+    def fail_json(*_args: object, **_kwargs: object) -> object:
+        raise UnicodeError(ATTACKER_MARKER)
+
+    monkeypatch.setattr(comparison_module.json, "loads", fail_json)
+
+    with pytest.raises(UnicodeError, match="comparison-marker") as caught:
+        load_report_summary(report_path)
+
+    assert str(caught.value) == ATTACKER_MARKER
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
 

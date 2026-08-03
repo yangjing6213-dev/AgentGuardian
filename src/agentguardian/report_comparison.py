@@ -95,6 +95,8 @@ def parse_report_summary(json_text: str) -> ReportSummary:
             object_pairs_hook=_unique_object,
             parse_constant=_reject_constant,
         )
+    except UnicodeError:
+        raise
     except (ValueError, RecursionError):
         parse_failed = True
     if parse_failed:
@@ -576,6 +578,8 @@ def _domain_call(call: Callable[..., _T], *args: object) -> _T:
     failed = False
     try:
         return call(*args)
+    except UnicodeError:
+        raise
     except ValueError:
         failed = True
     if failed:
