@@ -71,7 +71,7 @@ calls, or Batch 5/6 features.
 - Create: `src/agentguardian/workflow.py`
 - Create: `tests/test_workflow.py`
 
-- [ ] **Step 1: Write failing scope-preview tests**
+- [x] **Step 1: Write failing scope-preview tests**
 
 Cover a synthetic, nonexistent local root and prove preview construction does
 not call `stat`, `resolve`, `scandir`, or directory iteration. Require:
@@ -96,38 +96,38 @@ assert preview.manual_guidance_only is True
 Also reject an empty root tuple, duplicate roots, mutable selector inputs,
 non-positive limits, Windows drive roots, UNC roots, and unsafe short names.
 
-- [ ] **Step 2: Run the preview tests and verify RED**
+- [x] **Step 2: Run the preview tests and verify RED**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_workflow.py -k scope_preview`
 
 Expected: import or symbol failure because `workflow.py` does not exist.
 
-- [ ] **Step 3: Implement the minimal immutable preview contract**
+- [x] **Step 3: Implement the minimal immutable preview contract**
 
 Add exact frozen/slotted dataclasses and pure constructors. Keep root paths in
 private `repr=False` fields only where consent matching requires them. Display
 data contains short names and fixed contract values only. Do not traverse the
 filesystem.
 
-- [ ] **Step 4: Write failing consent-binding tests**
+- [x] **Step 4: Write failing consent-binding tests**
 
 Require an in-memory consent value to match only the exact normalized root tuple
 and preview-contract version. Test changed order, changed root, changed version,
 subclasses, and forged mutable fields. No consent value may reveal a full path
 through `repr`.
 
-- [ ] **Step 5: Run consent tests and verify RED**
+- [x] **Step 5: Run consent tests and verify RED**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_workflow.py -k consent`
 
 Expected: missing consent contract or matcher.
 
-- [ ] **Step 6: Implement minimum consent binding**
+- [x] **Step 6: Implement minimum consent binding**
 
 Use host Windows lexical normalization for the private root identity. Do not
 persist, export, hash into reports, or add a new key.
 
-- [ ] **Step 7: Write failing coverage-state tests**
+- [x] **Step 7: Write failing coverage-state tests**
 
 Require `complete`, `limited`, and `no_supported_files`. Require the exact
 canonical limit-code allowlist from the design. Reject:
@@ -138,18 +138,18 @@ canonical limit-code allowlist from the design. Reject:
 - incomplete scores with no reason and full coverage; and
 - `no_supported_files` with nonzero coverage or additional reasons.
 
-- [ ] **Step 8: Run coverage tests and verify RED**
+- [x] **Step 8: Run coverage tests and verify RED**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_workflow.py -k coverage`
 
 Expected: missing classifier or validation behavior.
 
-- [ ] **Step 9: Implement the coverage classifier and fixed labels**
+- [x] **Step 9: Implement the coverage classifier and fixed labels**
 
 Return an enum plus fixed Chinese UI labels/reason descriptions. Never echo an
 unvalidated limit string.
 
-- [ ] **Step 10: Run Task 1 tests and commit**
+- [x] **Step 10: Run Task 1 tests and commit**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_workflow.py`
 
