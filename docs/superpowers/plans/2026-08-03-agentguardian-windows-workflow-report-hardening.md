@@ -508,50 +508,50 @@ Commit: `Add view-only finding filters to UI`
 - Modify: `src/agentguardian/app.py`
 - Modify: `tests/test_app_smoke.py`
 
-- [ ] **Step 1: Write failing comparison UI tests**
+- [x] **Step 1: Write failing comparison UI tests**
 
 Require a baseline JSON selection command, clear command, short-name label, and
 aggregate comparison view. Selection is disabled before a current audit.
 Selecting a valid synthetic baseline must show baseline/current/delta for scores,
 coverage, finding count, category counts, and added/resolved limits.
 
-- [ ] **Step 2: Run comparison UI tests and verify RED**
+- [x] **Step 2: Run comparison UI tests and verify RED**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_app_smoke.py -k comparison`
 
 Expected: comparison controls do not exist.
 
-- [ ] **Step 3: Implement transient comparison state**
+- [x] **Step 3: Implement transient comparison state**
 
 Use `QFileDialog.getOpenFileName` with JSON filter, `load_report_summary()` for
 the baseline, and `summarize_report_json()` for the current report. Store only
 the short baseline name and aggregate objects. Render deterministic text/table
 without item-level data.
 
-- [ ] **Step 4: Write failing fixed-error and privacy tests**
+- [x] **Step 4: Write failing fixed-error and privacy tests**
 
 Inject invalid, oversized, and secret-bearing baseline files. Require one fixed
 Chinese error message and cleared comparison state. Assert full path, raw JSON,
 evidence, fingerprints, reason, reviewer, and timestamps never enter visible
 widgets, reports, protected state, or exceptions.
 
-- [ ] **Step 5: Write failing reset/export-isolation tests**
+- [x] **Step 5: Write failing reset/export-isolation tests**
 
 Require root selection, scan start, scan failure, and `_invalidate_report()` to
 clear comparison. Filter changes must not clear it. Export content must remain
 byte-for-byte equal before and after comparison.
 
-- [ ] **Step 6: Implement reset and fixed callback boundaries**
+- [x] **Step 6: Implement reset and fixed callback boundaries**
 
 Comparison failures clear comparison only, never the valid current audit.
 Unexpected Qt callback exceptions do not escape.
 
-- [ ] **Step 7: Add minimum-size layout checks**
+- [x] **Step 7: Add minimum-size layout checks**
 
 At 960 by 640, report controls and comparison output must not overlap. Use Qt
 standard icons where available and tooltips for unfamiliar commands.
 
-- [ ] **Step 8: Run Task 8 tests and commit**
+- [x] **Step 8: Run Task 8 tests and commit**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_report_comparison.py tests/test_app_smoke.py -k 'comparison or export or report_page'`
 

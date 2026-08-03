@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFrame,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -202,12 +203,15 @@ def _audit_outcome(
     records: tuple[DispositionRecord, ...] = (),
     *,
     evaluated_at: datetime = EVALUATED_AT,
+    coverage: float = 0.75,
+    confidence: float = 0.8,
+    limits: tuple[str, ...] = ("file_scan_limited",),
 ) -> app_module.AuditOutcome:
     technical = score(
         findings,
-        coverage=0.75,
-        confidence=0.8,
-        limits=("file_scan_limited",),
+        coverage=coverage,
+        confidence=confidence,
+        limits=limits,
     )
     reviewed = score(
         reviewed_findings(
@@ -707,6 +711,468 @@ def test_window_navigation_trust_strip_and_approved_theme(qapp):
     )
     assert not _global_rect(window.trust_strip).intersects(_global_rect(window.stack))
 
+    window.close()
+
+
+def test_report_page_comparison_controls_and_valid_aggregate_flow(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    baseline_finding = Finding(
+        "BASELINE_RULE",
+        RiskDomain.PRIVACY,
+        Severity.MEDIUM,
+        "1" * 64,
+        (Evidence("baseline.env", "2" * 64, "masked-baseline"),),
+        "3" * 64,
+    )
+    baseline_record = _disposition(
+        baseline_finding,
+        DispositionStatus.FALSE_POSITIVE,
+    )
+    baseline = _audit_outcome(
+        (baseline_finding,),
+        (baseline_record,),
+        coverage=1.0,
+        confidence=1.0,
+        limits=(),
+    )
+    current_findings = (
+        Finding(
+            "ALPHA_RULE",
+            RiskDomain.CREDENTIALS,
+            Severity.HIGH,
+            "4" * 64,
+            (Evidence("alpha.env", "5" * 64, "masked-alpha"),),
+            "6" * 64,
+        ),
+        Finding(
+            "ZETA_RULE",
+            RiskDomain.RETENTION,
+            Severity.LOW,
+            "7" * 64,
+            (Evidence("zeta.env", "8" * 64, "masked-zeta"),),
+            "9" * 64,
+        ),
+    )
+    current_record = _disposition(
+        current_findings[1],
+        DispositionStatus.ACCEPTED_RISK,
+    )
+    baseline_path = tmp_path / "baseline-report.json"
+    baseline_path.write_text(baseline.report_json, encoding="utf-8")
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        lambda *args, **kwargs: (str(baseline_path), "JSON (*.json)"),
+    )
+
+    window = create_window()
+    assert not window.comparison_select_button.isEnabled()
+    assert not window.comparison_clear_button.isEnabled()
+    assert window.baseline_name_label.text() == "基线：未选择"
+
+    current = _audit_outcome(current_findings, (current_record,))
+    window._scan_completed(current)
+    assert window.comparison_select_button.isEnabled()
+
+    window.comparison_select_button.click()
+    qapp.processEvents()
+
+    comparison = window._comparison_state.comparison
+    text = window.comparison_browser.toPlainText()
+    assert window.baseline_name_label.text() == "基线：baseline-report.json"
+    assert window.comparison_clear_button.isEnabled()
+    assert "差值（当前 - 基线）" in text
+    assert (
+        f"技术分：基线 {comparison.baseline.technical_score} | "
+        f"当前 {comparison.current.technical_score} | "
+        f"差值 {comparison.technical_score_delta:+d}"
+    ) in text
+    assert (
+        f"审阅分：基线 {comparison.baseline.reviewed_score} | "
+        f"当前 {comparison.current.reviewed_score} | "
+        f"差值 {comparison.reviewed_score_delta:+d}"
+    ) in text
+    assert "覆盖率：基线 100.0% | 当前 75.0% | 差值 -25.0%" in text
+    assert "覆盖状态：基线 已完成 | 当前 覆盖受限" in text
+    assert "发现数：基线 1 | 当前 2 | 差值 +1" in text
+    assert text.index("ALPHA_RULE: +1") < text.index("BASELINE_RULE: -1")
+    assert text.index("BASELINE_RULE: -1") < text.index("ZETA_RULE: +1")
+    assert "新增限制：文件扫描受限" in text
+    assert "已解除限制：无" in text
+    assert all(
+        claim not in text
+        for claim in ("新增发现", "已修复发现", "匹配发现", "未变化发现")
+    )
+    window.close()
+
+
+def test_report_page_comparison_selection_requires_parseable_current_report(qapp) -> None:
+    window = create_window()
+    current = _audit_outcome((_disposition_finding(11),))
+    window._scan_completed(
+        app_module.AuditOutcome(
+            findings=current.findings,
+            score=current.score,
+            reviewed_score=current.reviewed_score,
+            evaluated_at=current.evaluated_at,
+            rule_version=current.rule_version,
+            report_json='{"invalid":"current"}',
+            report_html=current.report_html,
+            scanned_roots=current.scanned_roots,
+        )
+    )
+
+    assert not window.comparison_select_button.isEnabled()
+    window.close()
+
+
+def test_comparison_valid_secret_bearing_baseline_retains_only_aggregates(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    marker = "baseline-private-marker"
+    baseline_finding = Finding(
+        "PRIVATE_RULE",
+        RiskDomain.CREDENTIALS,
+        Severity.HIGH,
+        "a" * 64,
+        (Evidence(f"{marker}.env", "b" * 64, f"masked-{marker}"),),
+        "c" * 64,
+    )
+    baseline_record = DispositionRecord(
+        baseline_finding.disposition_ref,
+        baseline_finding.rule_id,
+        DispositionStatus.FALSE_POSITIVE,
+        f"reason-{marker}",
+        f"reviewer-{marker}",
+        "2026-08-02T08:00:00Z",
+        "2026-08-03T08:00:00Z",
+    )
+    baseline = _audit_outcome((baseline_finding,), (baseline_record,))
+    baseline_path = tmp_path / "private-baseline.json"
+    baseline_path.write_text(baseline.report_json, encoding="utf-8")
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        lambda *args, **kwargs: (str(baseline_path), "JSON (*.json)"),
+    )
+    original_protected = []
+    monkeypatch.setattr(
+        app_module,
+        "save_protected_state",
+        lambda snapshot: original_protected.append(snapshot),
+    )
+    window = create_window()
+    current = _audit_outcome((_disposition_finding(21),))
+    window._scan_completed(current)
+
+    window.comparison_select_button.click()
+    qapp.processEvents()
+
+    comparison_surfaces = " ".join(
+        (
+            repr(window._comparison_state),
+            window.baseline_name_label.text(),
+            window.baseline_name_label.toolTip(),
+            window.baseline_name_label.accessibleName(),
+            window.baseline_name_label.accessibleDescription(),
+            window.comparison_browser.toPlainText(),
+            window.comparison_browser.toolTip(),
+            window.comparison_browser.accessibleName(),
+            window.comparison_browser.accessibleDescription(),
+        )
+    )
+    assert marker not in comparison_surfaces
+    assert str(baseline_path) not in comparison_surfaces
+    assert baseline.report_json not in repr(window.__dict__)
+    assert baseline_finding.root_fingerprint not in comparison_surfaces
+    assert baseline_finding.evidence[0].fingerprint not in comparison_surfaces
+    assert baseline_finding.disposition_ref not in comparison_surfaces
+    assert "reason-" not in comparison_surfaces
+    assert "reviewer-" not in comparison_surfaces
+    assert "2026-08-02T08:00:00Z" not in comparison_surfaces
+    assert window.report_json == current.report_json
+    assert window.report_html == current.report_html
+    assert original_protected == []
+    window.close()
+
+
+@pytest.mark.parametrize("kind", ("invalid", "oversized"))
+def test_comparison_invalid_baseline_uses_one_fixed_error_and_preserves_current(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    marker = "hostile-baseline-content-marker"
+    baseline_path = tmp_path / f"{kind}.json"
+    content = f'{{"private":"{marker}"}}'
+    if kind == "oversized":
+        content = marker + ("x" * (2 * 1024 * 1024))
+    baseline_path.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        lambda *args, **kwargs: (str(baseline_path), "JSON (*.json)"),
+    )
+    warnings = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda *args: warnings.append(args[1:]),
+    )
+    window = create_window()
+    current = _audit_outcome((_disposition_finding(31),))
+    window._scan_completed(current)
+    original = (
+        window._audit_outcome,
+        window.report_json,
+        window.report_html,
+        window._report_roots,
+        window._dispositions,
+        window._protected_state_invalid,
+    )
+
+    window.comparison_select_button.click()
+    qapp.processEvents()
+
+    assert window._comparison_state is None
+    assert window.baseline_name_label.text() == "基线：未选择"
+    assert not window.comparison_clear_button.isEnabled()
+    assert warnings == [("基线报告错误", "无法读取基线报告。")]
+    assert marker not in repr(warnings)
+    assert str(baseline_path) not in repr(warnings)
+    assert (
+        window._audit_outcome,
+        window.report_json,
+        window.report_html,
+        window._report_roots,
+        window._dispositions,
+        window._protected_state_invalid,
+    ) == original
+    window.close()
+
+
+@pytest.mark.parametrize(
+    "target",
+    ("dialog", "load_report_summary", "parse_report_summary", "compare_report_summaries"),
+)
+def test_comparison_callback_contains_unexpected_errors_without_private_text(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    target: str,
+) -> None:
+    marker = f"private-{target}-marker"
+    baseline_path = tmp_path / "valid-baseline.json"
+    baseline_path.write_text(
+        _audit_outcome((_disposition_finding(41),)).report_json,
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        lambda *args, **kwargs: (str(baseline_path), "JSON (*.json)"),
+    )
+    if target == "dialog":
+        monkeypatch.setattr(
+            QFileDialog,
+            "getOpenFileName",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(marker)),
+        )
+    else:
+        monkeypatch.setattr(
+            app_module,
+            target,
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(marker)),
+        )
+    warnings = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda *args: warnings.append(args[1:]),
+    )
+    window = create_window()
+    current = _audit_outcome((_disposition_finding(42),))
+    window._scan_completed(current)
+
+    window._select_baseline_report()
+
+    assert window._comparison_state is None
+    assert warnings == [("基线报告错误", "无法读取基线报告。")]
+    assert marker not in repr(warnings)
+    assert window.report_json == current.report_json
+    assert window._audit_outcome is current
+    window.close()
+
+
+def test_comparison_filter_refresh_clear_and_export_isolation(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    finding = _disposition_finding(51)
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text(_audit_outcome((finding,)).report_json, encoding="utf-8")
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        lambda *args, **kwargs: (str(baseline_path), "JSON (*.json)"),
+    )
+    exports = []
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: ("comparison-export.json", "JSON (*.json)"),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "export_new_report",
+        lambda path, content, roots: exports.append((path, content, roots)),
+    )
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_module, "save_protected_state", lambda snapshot: None)
+    window = create_window()
+    current = _audit_outcome((finding,))
+    window._scan_completed(current)
+    window.report_mode_combo.setCurrentText("JSON")
+    window._export_report()
+    window._select_baseline_report()
+    first_state = window._comparison_state
+
+    window.severity_filter_combo.setCurrentIndex(
+        window.severity_filter_combo.findData(Severity.HIGH)
+    )
+    qapp.processEvents()
+    assert window._comparison_state is first_state
+
+    window._export_report()
+    window.comparison_clear_button.click()
+    window._export_report()
+    assert window._comparison_state is None
+    assert window.baseline_name_label.text() == "基线：未选择"
+    assert exports[0] == exports[1] == exports[2]
+    assert exports[0][1] == current.report_json
+    assert exports[0][2] == current.scanned_roots
+
+    window._select_baseline_report()
+    first_state = window._comparison_state
+    replacement = _disposition(finding, DispositionStatus.FALSE_POSITIVE)
+    window._save_and_commit_dispositions((replacement,), EVALUATED_AT)
+    assert window._comparison_state is not None
+    assert window._comparison_state is not first_state
+    assert (
+        window._comparison_state.comparison.current.reviewed_score
+        == window._audit_outcome.reviewed_score.total
+    )
+    window.close()
+
+
+@pytest.mark.parametrize("reset", ("invalidate", "scan_failure", "scan_start", "root_change"))
+def test_comparison_scan_lifecycle_resets_transient_state(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    reset: str,
+) -> None:
+    root = tmp_path / "current-root"
+    next_root = tmp_path / "next-root"
+    root.mkdir()
+    next_root.mkdir()
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text(
+        _audit_outcome((_disposition_finding(61),)).report_json,
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        lambda *args, **kwargs: (str(baseline_path), "JSON (*.json)"),
+    )
+    window = create_window()
+    window._scan_completed(_audit_outcome((_disposition_finding(62),)))
+    window._select_baseline_report()
+    assert window._comparison_state is not None
+
+    if reset == "invalidate":
+        window._invalidate_report()
+    elif reset == "scan_failure":
+        window._scan_failed("scan_failed")
+    elif reset == "root_change":
+        monkeypatch.setattr(
+            QFileDialog,
+            "getExistingDirectory",
+            lambda *args, **kwargs: str(next_root),
+        )
+        window._select_folder()
+    else:
+        window._roots = (root,)
+        window._scope_preview = app_module._scope_preview_for((root,))
+        window.scope_consent_checkbox.setEnabled(True)
+        window.scope_consent_checkbox.setChecked(True)
+        monkeypatch.setattr(
+            app_module,
+            "AuditWorker",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("private")),
+        )
+        window._start_scan()
+
+    assert window._comparison_state is None
+    assert window.baseline_name_label.text() == "基线：未选择"
+    assert not window.comparison_clear_button.isEnabled()
+    assert "baseline.json" not in window.comparison_browser.toPlainText()
+    window.close()
+
+
+def test_report_page_comparison_controls_fit_at_minimum_size(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text(
+        _audit_outcome((_disposition_finding(71),)).report_json,
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        lambda *args, **kwargs: (str(baseline_path), "JSON (*.json)"),
+    )
+    window = create_window()
+    window._scan_completed(_audit_outcome((_disposition_finding(72),)))
+    window._select_baseline_report()
+    window._switch_view(2)
+    window.resize(960, 640)
+    window.show()
+    qapp.processEvents()
+
+    comparison_controls = (
+        window.comparison_select_button,
+        window.comparison_clear_button,
+        window.baseline_name_label,
+    )
+    assert all(control.isVisible() for control in comparison_controls)
+    assert window.comparison_browser.isVisible()
+    assert window.comparison_browser.frameShape() == QFrame.Shape.NoFrame
+    assert not window.comparison_select_button.icon().isNull()
+    assert not window.comparison_clear_button.icon().isNull()
+    assert window.comparison_select_button.toolTip()
+    assert window.comparison_clear_button.toolTip()
+    for left, right in zip(comparison_controls, comparison_controls[1:]):
+        assert not _global_rect(left).intersects(_global_rect(right))
+    for control in comparison_controls:
+        assert not _global_rect(control).intersects(_global_rect(window.report_browser))
+        assert not _global_rect(control).intersects(
+            _global_rect(window.comparison_browser)
+        )
+    assert not _global_rect(window.report_browser).intersects(
+        _global_rect(window.comparison_browser)
+    )
     window.close()
 
 

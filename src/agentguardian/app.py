@@ -70,6 +70,12 @@ from .evidence_state import (
     build_snapshot,
 )
 from .guidance import guidance_for
+from .report_comparison import (
+    ReportComparison,
+    compare_report_summaries,
+    load_report_summary,
+    parse_report_summary,
+)
 from .reporting import render_html, render_json
 from .scoring import score
 from .state_store import StateStoreError, load_protected_state, save_protected_state
@@ -145,6 +151,9 @@ _DOMAIN_FILTER_LABELS = {
 _FILTER_EMPTY_MESSAGE = "当前筛选条件下无匹配风险发现。"
 _FILTER_ERROR_MESSAGE = "无法筛选风险发现，请重试。"
 _FINDING_SELECTION_MESSAGE = "选择一项风险以查看人工步骤。"
+_COMPARISON_ERROR_TITLE = "基线报告错误"
+_COMPARISON_ERROR_MESSAGE = "无法读取基线报告。"
+_COMPARISON_EMPTY_MESSAGE = "尚未选择基线报告。"
 
 
 class _FindingFilterCallbackError(Exception):
@@ -168,6 +177,12 @@ class AuditOutcome:
     report_json: str
     report_html: str
     scanned_roots: tuple[Path, ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _ComparisonState:
+    baseline_name: str
+    comparison: ReportComparison
 
 
 def _utc_now() -> datetime:
@@ -243,6 +258,75 @@ def _coverage_status_text(audit_score: Score) -> str:
     else:
         parts.append("本次结果不能证明系统、账户、提供商或端点安全。")
     return "；".join(parts)
+
+
+def _comparison_text(comparison: ReportComparison) -> str:
+    def delta_lines(
+        title: str,
+        values: tuple[tuple[str, int], ...],
+        labels: dict[str, str] | None = None,
+    ) -> list[str]:
+        lines = [title]
+        lines.extend(
+            f"{labels.get(name, name) if labels else name}: {delta:+d}"
+            for name, delta in values
+        )
+        if len(lines) == 1:
+            lines.append("无")
+        return lines
+
+    baseline = comparison.baseline
+    current = comparison.current
+    severity_labels = {
+        severity.value: _SEVERITY_FILTER_LABELS[severity] for severity in Severity
+    }
+    added_limits = "、".join(
+        COVERAGE_LIMIT_LABELS[limit] for limit in comparison.added_limits
+    ) or "无"
+    resolved_limits = "、".join(
+        COVERAGE_LIMIT_LABELS[limit] for limit in comparison.resolved_limits
+    ) or "无"
+    lines = [
+        "差值（当前 - 基线）",
+        (
+            f"技术分：基线 {baseline.technical_score} | "
+            f"当前 {current.technical_score} | "
+            f"差值 {comparison.technical_score_delta:+d}"
+        ),
+        (
+            f"审阅分：基线 {baseline.reviewed_score} | "
+            f"当前 {current.reviewed_score} | "
+            f"差值 {comparison.reviewed_score_delta:+d}"
+        ),
+        (
+            f"覆盖率：基线 {baseline.coverage:.1%} | "
+            f"当前 {current.coverage:.1%} | "
+            f"差值 {comparison.coverage_delta:+.1%}"
+        ),
+        (
+            f"覆盖状态：基线 {COVERAGE_STATE_LABELS[baseline.coverage_state]} | "
+            f"当前 {COVERAGE_STATE_LABELS[current.coverage_state]}"
+        ),
+        (
+            f"发现数：基线 {baseline.finding_count} | "
+            f"当前 {current.finding_count} | "
+            f"差值 {comparison.finding_count_delta:+d}"
+        ),
+        *delta_lines("规则数量差值", comparison.rule_count_deltas),
+        *delta_lines(
+            "严重性数量差值",
+            comparison.severity_count_deltas,
+            severity_labels,
+        ),
+        *delta_lines(
+            "处置状态数量差值",
+            comparison.disposition_count_deltas,
+            _STATUS_LABELS,
+        ),
+        f"新增限制：{added_limits}",
+        f"已解除限制：{resolved_limits}",
+    ]
+    return "\n".join(lines)
 
 
 class _DispositionDialog(QDialog):
@@ -799,6 +883,7 @@ class AgentGuardianWindow(QMainWindow):
         self.is_scanning = False
         self.report_json = ""
         self.report_html = ""
+        self._comparison_state: _ComparisonState | None = None
         self._refresh_failure_notified = False
         self._expiry_timer = QTimer(self)
         self._expiry_timer.setSingleShot(True)
@@ -1095,9 +1180,42 @@ class AgentGuardianWindow(QMainWindow):
         controls.addWidget(self.protected_state_button)
         controls.addWidget(self.save_button)
         layout.addLayout(controls)
+
+        comparison_controls = QHBoxLayout()
+        comparison_controls.setSpacing(8)
+        self.comparison_select_button = QPushButton("选择基线 JSON")
+        self.comparison_select_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton)
+        )
+        self.comparison_select_button.setToolTip("选择一份本地 AgentGuardian JSON 报告")
+        self.comparison_select_button.setFixedHeight(32)
+        self.comparison_select_button.setEnabled(False)
+        self.comparison_select_button.clicked.connect(self._select_baseline_report)
+        self.comparison_clear_button = QPushButton("清除基线")
+        self.comparison_clear_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogResetButton)
+        )
+        self.comparison_clear_button.setToolTip("清除当前基线与聚合比较")
+        self.comparison_clear_button.setFixedHeight(32)
+        self.comparison_clear_button.setEnabled(False)
+        self.comparison_clear_button.clicked.connect(self._clear_comparison_callback)
+        self.baseline_name_label = QLabel("基线：未选择")
+        self.baseline_name_label.setMinimumWidth(0)
+        self.baseline_name_label.setFixedHeight(32)
+        comparison_controls.addWidget(self.comparison_select_button)
+        comparison_controls.addWidget(self.comparison_clear_button)
+        comparison_controls.addWidget(self.baseline_name_label, 1)
+        layout.addLayout(comparison_controls)
+
         self.report_browser = QTextBrowser()
         self.report_browser.setHtml("<p>尚无审计报告。</p>")
         layout.addWidget(self.report_browser, 1)
+        self.comparison_browser = QTextBrowser()
+        self.comparison_browser.setFrameShape(QFrame.Shape.NoFrame)
+        self.comparison_browser.setMinimumHeight(116)
+        self.comparison_browser.setMaximumHeight(170)
+        self.comparison_browser.setPlainText(_COMPARISON_EMPTY_MESSAGE)
+        layout.addWidget(self.comparison_browser)
         return page
 
     def _switch_view(self, index: int) -> None:
@@ -1201,8 +1319,91 @@ class AgentGuardianWindow(QMainWindow):
         self.status_label.setText(status)
 
     def _clear_comparison_if_present(self) -> None:
-        if "_comparison_state" in self.__dict__:
+        self._comparison_state = None
+        if hasattr(self, "baseline_name_label"):
+            self.baseline_name_label.setText("基线：未选择")
+            self.comparison_browser.setPlainText(_COMPARISON_EMPTY_MESSAGE)
+            self.comparison_clear_button.setEnabled(False)
+            self._sync_comparison_commands()
+
+    def _clear_comparison_callback(self) -> None:
+        try:
+            self._clear_comparison_if_present()
+        except Exception:  # noqa: BLE001 - fixed Qt callback boundary
             self._comparison_state = None
+
+    def _sync_comparison_commands(self) -> None:
+        if not hasattr(self, "comparison_select_button"):
+            return
+        valid_current = (
+            not self.is_scanning
+            and self._audit_outcome is not None
+            and bool(self.report_json)
+        )
+        if valid_current:
+            try:
+                parse_report_summary(self.report_json)
+            except Exception:
+                valid_current = False
+        self.comparison_select_button.setEnabled(valid_current)
+        self.comparison_clear_button.setEnabled(self._comparison_state is not None)
+
+    def _render_comparison(self, state: _ComparisonState) -> None:
+        text = _comparison_text(state.comparison)
+        self._comparison_state = state
+        self.baseline_name_label.setText(f"基线：{state.baseline_name}")
+        self.comparison_browser.setPlainText(text)
+        self._sync_comparison_commands()
+
+    def _show_comparison_failure(self) -> None:
+        try:
+            self._clear_comparison_if_present()
+        except Exception:
+            self._comparison_state = None
+        try:
+            QMessageBox.warning(
+                self,
+                _COMPARISON_ERROR_TITLE,
+                _COMPARISON_ERROR_MESSAGE,
+            )
+        except Exception:
+            pass
+
+    def _select_baseline_report(self) -> None:
+        try:
+            selected, _selected_filter = QFileDialog.getOpenFileName(
+                self,
+                "选择基线报告",
+                "",
+                "JSON (*.json)",
+            )
+            if not selected:
+                return
+            if self._audit_outcome is None or not self.report_json:
+                raise ValueError
+            baseline = load_report_summary(selected)
+            current = parse_report_summary(self.report_json)
+            comparison = compare_report_summaries(baseline, current)
+            state = _ComparisonState(Path(selected).name, comparison)
+            self._render_comparison(state)
+        except Exception:  # noqa: BLE001 - fixed baseline callback boundary
+            self._show_comparison_failure()
+
+    def _refresh_comparison_for_current_report(self) -> None:
+        state = self._comparison_state
+        if state is None:
+            return
+        try:
+            current = parse_report_summary(self.report_json)
+            comparison = compare_report_summaries(
+                state.comparison.baseline,
+                current,
+            )
+            self._render_comparison(
+                _ComparisonState(state.baseline_name, comparison)
+            )
+        except Exception:  # noqa: BLE001 - fixed comparison refresh boundary
+            self._show_comparison_failure()
 
     def _start_scan(self) -> None:
         try:
@@ -1285,6 +1486,7 @@ class AgentGuardianWindow(QMainWindow):
         self.protected_state_button.setEnabled(True)
         self.status_label.setText(_audit_status_text(outcome))
         self.coverage_status_label.setText(coverage_status)
+        self._sync_comparison_commands()
 
     @Slot(str)
     def _scan_failed(self, _code: str) -> None:
@@ -1307,6 +1509,7 @@ class AgentGuardianWindow(QMainWindow):
         self.coverage_status_label.setText("覆盖状态：尚无结果。")
         self._update_disposition_commands()
         self._refresh_report()
+        self._clear_comparison_if_present()
 
     @Slot()
     def _thread_finished(self) -> None:
@@ -1316,6 +1519,7 @@ class AgentGuardianWindow(QMainWindow):
         self._thread = None
         self._worker = None
         self._update_scan_enabled()
+        self._sync_comparison_commands()
 
     def _populate_findings(
         self,
@@ -1744,6 +1948,7 @@ class AgentGuardianWindow(QMainWindow):
                 self.report_browser.setPlainText(_REPORT_REFRESH_FALLBACK)
             except Exception:
                 pass
+        self._refresh_comparison_for_current_report()
         try:
             if (
                 selected_finding is not None
