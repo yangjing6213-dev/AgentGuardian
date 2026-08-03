@@ -59,7 +59,7 @@ from .dispositions import (
     upsert_disposition,
     withdraw_disposition,
 )
-from .domain import Finding, Score, Severity, validate_safe_annotation
+from .domain import Finding, RiskDomain, Score, Severity, validate_safe_annotation
 from .evidence_state import (
     MAX_STATE_EVIDENCE,
     MAX_STATE_FINDINGS,
@@ -77,11 +77,13 @@ from .workflow import (
     COVERAGE_LIMIT_LABELS,
     COVERAGE_STATE_LABELS,
     CoverageState,
+    FindingFilters,
     ScopeConsent,
     ScopePreview,
     bind_scope_consent,
     build_scope_preview,
     classify_coverage,
+    filter_findings,
     scope_consent_matches,
 )
 
@@ -126,6 +128,27 @@ _STATUS_LABELS = {
     "accepted_risk": "已接受风险",
     "expired": "已过期",
 }
+_SEVERITY_FILTER_LABELS = {
+    Severity.CRITICAL: "严重",
+    Severity.HIGH: "高",
+    Severity.MEDIUM: "中",
+    Severity.LOW: "低",
+}
+_DOMAIN_FILTER_LABELS = {
+    RiskDomain.EXPOSURE: "暴露",
+    RiskDomain.PRIVACY: "隐私",
+    RiskDomain.CREDENTIALS: "凭据",
+    RiskDomain.PERMISSIONS: "权限",
+    RiskDomain.RETENTION: "保留",
+    RiskDomain.SUPPLY_CHAIN: "供应链",
+}
+_FILTER_EMPTY_MESSAGE = "当前筛选条件下无匹配风险发现。"
+_FILTER_ERROR_MESSAGE = "无法筛选风险发现，请重试。"
+_FINDING_SELECTION_MESSAGE = "选择一项风险以查看人工步骤。"
+
+
+class _FindingFilterCallbackError(Exception):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -936,6 +959,38 @@ class AgentGuardianWindow(QMainWindow):
         layout.setContentsMargins(24, 22, 24, 22)
         layout.setSpacing(10)
         layout.addWidget(_heading("风险发现"))
+        filters = QHBoxLayout()
+        filters.setSpacing(8)
+        self.severity_filter_combo = QComboBox()
+        self.severity_filter_combo.addItem("全部严重性", None)
+        for severity in Severity:
+            self.severity_filter_combo.addItem(
+                _SEVERITY_FILTER_LABELS[severity], severity
+            )
+        self.domain_filter_combo = QComboBox()
+        self.domain_filter_combo.addItem("全部风险域", None)
+        for domain in RiskDomain:
+            self.domain_filter_combo.addItem(_DOMAIN_FILTER_LABELS[domain], domain)
+        self.disposition_filter_combo = QComboBox()
+        self.disposition_filter_combo.addItem("全部处置", None)
+        for state in ("open", "false_positive", "accepted_risk", "expired"):
+            self.disposition_filter_combo.addItem(_STATUS_LABELS[state], state)
+        for combo in (
+            self.severity_filter_combo,
+            self.domain_filter_combo,
+            self.disposition_filter_combo,
+        ):
+            combo.setFixedSize(140, 32)
+            combo.currentIndexChanged.connect(self._finding_filters_changed)
+            filters.addWidget(combo)
+        filters.addStretch()
+        self.findings_count_label = QLabel("显示 0 / 共 0 项发现")
+        self.findings_count_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.findings_count_label.setFixedSize(184, 32)
+        filters.addWidget(self.findings_count_label)
+        layout.addLayout(filters)
         self.findings_table = QTableWidget(0, 5)
         self.findings_table.setHorizontalHeaderLabels(
             ["严重性", "规则", "来源", "已掩码证据", "处置状态"]
@@ -1003,7 +1058,7 @@ class AgentGuardianWindow(QMainWindow):
         self.guidance_browser = QTextBrowser()
         self.guidance_browser.setMinimumHeight(120)
         self.guidance_browser.setMaximumHeight(170)
-        self.guidance_browser.setPlainText("选择一项风险以查看人工步骤。")
+        self.guidance_browser.setPlainText(_FINDING_SELECTION_MESSAGE)
         layout.addWidget(self.guidance_browser)
         return page
 
@@ -1220,7 +1275,10 @@ class AgentGuardianWindow(QMainWindow):
         self.report_json = outcome.report_json
         self.report_html = outcome.report_html
         self._report_roots = outcome.scanned_roots
-        self._populate_findings(outcome.findings, now=outcome.evaluated_at)
+        try:
+            self._refresh_finding_view(outcome.evaluated_at)
+        except Exception:  # noqa: BLE001 - preserve valid audit at UI boundary
+            self._show_filter_failure()
         self._refresh_report()
         self._schedule_expiry_timer(outcome.evaluated_at)
         self.save_button.setEnabled(True)
@@ -1242,7 +1300,8 @@ class AgentGuardianWindow(QMainWindow):
         self._report_roots = ()
         self.findings_table.setRowCount(0)
         self._row_findings.clear()
-        self.guidance_browser.setPlainText("选择一项风险以查看人工步骤。")
+        self.findings_count_label.setText("显示 0 / 共 0 项发现")
+        self.guidance_browser.setPlainText(_FINDING_SELECTION_MESSAGE)
         self.save_button.setEnabled(False)
         self.protected_state_button.setEnabled(False)
         self.coverage_status_label.setText("覆盖状态：尚无结果。")
@@ -1299,6 +1358,88 @@ class AgentGuardianWindow(QMainWindow):
         )
         self._refresh_disposition_ui(evaluation_time)
 
+    def _current_finding_filters(self) -> FindingFilters:
+        severity = self.severity_filter_combo.currentData()
+        domain = self.domain_filter_combo.currentData()
+        return FindingFilters(
+            severity=None if severity is None else Severity(severity),
+            domain=None if domain is None else RiskDomain(domain),
+            disposition_state=self.disposition_filter_combo.currentData(),
+        )
+
+    def _current_row_finding(self) -> Finding | None:
+        row = self.findings_table.currentRow()
+        if not 0 <= row < len(self._row_findings):
+            return None
+        return self._row_findings[row]
+
+    def _refresh_finding_view(
+        self,
+        now: datetime,
+        *,
+        selected_finding: Finding | None = None,
+        restore_selection: bool = True,
+    ) -> None:
+        outcome = self._audit_outcome
+        if outcome is None:
+            self.findings_table.setRowCount(0)
+            self._row_findings.clear()
+            self.findings_count_label.setText("显示 0 / 共 0 项发现")
+            self.guidance_browser.setPlainText(_FINDING_SELECTION_MESSAGE)
+            self._update_disposition_commands()
+            return
+        evaluation_time = _validated_evaluation_time(now)
+        previous_selection = (
+            self._current_row_finding()
+            if selected_finding is None
+            else selected_finding
+        )
+        filter_failed = False
+        try:
+            visible = filter_findings(
+                outcome.findings,
+                self._dispositions,
+                self._current_finding_filters(),
+                now=evaluation_time,
+            )
+        except Exception:
+            filter_failed = True
+        if filter_failed:
+            raise _FindingFilterCallbackError
+        self._populate_findings(visible, now=evaluation_time)
+        self.findings_count_label.setText(
+            f"显示 {len(visible)} / 共 {len(outcome.findings)} 项发现"
+        )
+        if not visible:
+            self.guidance_browser.setPlainText(_FILTER_EMPTY_MESSAGE)
+            self._update_disposition_commands()
+            return
+        if restore_selection and previous_selection is not None:
+            for row, finding in enumerate(self._row_findings):
+                if finding is previous_selection:
+                    self.findings_table.selectRow(row)
+                    return
+        self.guidance_browser.setPlainText(_FINDING_SELECTION_MESSAGE)
+        self._update_disposition_commands()
+
+    @Slot(int)
+    def _finding_filters_changed(self, _index: int) -> None:
+        try:
+            outcome = self._audit_outcome
+            if outcome is None:
+                self._refresh_finding_view(_utc_now())
+                return
+            self._refresh_finding_view(outcome.evaluated_at)
+        except Exception:  # noqa: BLE001 - fixed filter callback boundary
+            self._show_filter_failure()
+
+    def _show_filter_failure(self) -> None:
+        self.findings_table.setRowCount(0)
+        self._row_findings.clear()
+        self.findings_count_label.setText(_FILTER_ERROR_MESSAGE)
+        self.guidance_browser.setPlainText(_FILTER_ERROR_MESSAGE)
+        self._update_disposition_commands()
+
     def _selection_changed(self) -> None:
         self._show_guidance()
         self._update_disposition_commands()
@@ -1306,10 +1447,9 @@ class AgentGuardianWindow(QMainWindow):
     def _selected_finding(self) -> Finding | None:
         if not self.findings_table.selectionModel().hasSelection():
             return None
-        row = self.findings_table.currentRow()
-        if not 0 <= row < len(self._row_findings):
+        finding = self._current_row_finding()
+        if finding is None:
             return None
-        finding = self._row_findings[row]
         return finding if finding.disposition_ref is not None else None
 
     def _update_disposition_commands(self) -> None:
@@ -1344,7 +1484,17 @@ class AgentGuardianWindow(QMainWindow):
     def _show_guidance(self) -> None:
         row = self.findings_table.currentRow()
         if not 0 <= row < len(self._row_findings):
-            self.guidance_browser.setPlainText("选择一项风险以查看人工步骤。")
+            if self.findings_count_label.text() == _FILTER_ERROR_MESSAGE:
+                message = _FILTER_ERROR_MESSAGE
+            elif (
+                self._audit_outcome is not None
+                and self._audit_outcome.findings
+                and self.findings_table.rowCount() == 0
+            ):
+                message = _FILTER_EMPTY_MESSAGE
+            else:
+                message = _FINDING_SELECTION_MESSAGE
+            self.guidance_browser.setPlainText(message)
             return
         finding = self._row_findings[row]
         try:
@@ -1559,8 +1709,23 @@ class AgentGuardianWindow(QMainWindow):
         failure_message: str,
     ) -> None:
         failed = False
+        selected_finding = (
+            self._row_findings[selected_row]
+            if 0 <= selected_row < len(self._row_findings)
+            else None
+        )
         try:
-            self._refresh_disposition_ui(now)
+            self._refresh_finding_view(
+                now,
+                selected_finding=selected_finding,
+                restore_selection=False,
+            )
+        except _FindingFilterCallbackError:
+            failed = True
+            try:
+                self._show_filter_failure()
+            except Exception:
+                pass
         except Exception:  # noqa: BLE001 - independent status fallback
             failed = True
             try:
@@ -1578,7 +1743,17 @@ class AgentGuardianWindow(QMainWindow):
             except Exception:
                 pass
         try:
-            if 0 <= selected_row < self.findings_table.rowCount():
+            if (
+                selected_finding is not None
+                and any(
+                    finding is selected_finding for finding in self._row_findings
+                )
+            ):
+                selected_row = next(
+                    row
+                    for row, finding in enumerate(self._row_findings)
+                    if finding is selected_finding
+                )
                 self.findings_table.selectRow(selected_row)
         except Exception:  # noqa: BLE001 - preserve the existing selection
             failed = True

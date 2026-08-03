@@ -458,43 +458,43 @@ Commit: `Require explicit scan scope consent`
 - Modify: `src/agentguardian/app.py`
 - Modify: `tests/test_app_smoke.py`
 
-- [ ] **Step 1: Write failing filter-control tests**
+- [x] **Step 1: Write failing filter-control tests**
 
 Require three compact combo boxes with exact all/value options and a stable
 `visible findings / total findings` label. At 960 by 640, controls, table,
 disposition actions, and guidance must not overlap or resize when options change.
 
-- [ ] **Step 2: Run control tests and verify RED**
+- [x] **Step 2: Run control tests and verify RED**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_app_smoke.py -k filter_control`
 
 Expected: controls do not exist.
 
-- [ ] **Step 3: Implement controls backed by pure filters**
+- [x] **Step 3: Implement controls backed by pure filters**
 
 Derive visible findings from `AuditOutcome.findings`; render all evidence rows
 for each visible finding. Keep a row-to-finding map only for visible rows.
 
-- [ ] **Step 4: Write failing isolation tests**
+- [x] **Step 4: Write failing isolation tests**
 
 Capture immutable outcome, scores, reports, dispositions, and protected-state
 save calls. Change every filter and assert only table rows, count label,
 selection, guidance, and action enabled states change. An empty filtered view
 must not say the audit found no risks.
 
-- [ ] **Step 5: Write failing disposition-expiry tests**
+- [x] **Step 5: Write failing disposition-expiry tests**
 
 With a disposition-only filter active, advance the validated evaluation time
 through expiry and require the row to move to the expired filter. Reuse the same
 time used for reviewed score/report refresh.
 
-- [ ] **Step 6: Implement filter refresh and selection clearing**
+- [x] **Step 6: Implement filter refresh and selection clearing**
 
 Integrate with scan completion, disposition create/replace/withdraw, expiry
 timer, report invalidation, and scan failure. Contain unexpected filter errors
 without altering the authoritative outcome or report.
 
-- [ ] **Step 7: Run Task 7 tests and commit**
+- [x] **Step 7: Run Task 7 tests and commit**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_workflow.py tests/test_app_smoke.py -k 'filter or disposition or expiry'`
 

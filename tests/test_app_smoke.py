@@ -652,6 +652,7 @@ def test_window_navigation_trust_strip_and_approved_theme(qapp):
     window.show()
     qapp.processEvents()
 
+    assert window.stack.count() == 3
     assert window.local_mode_label.text() == "本地路径模式"
     assert window.scan_button.text() == "开始审计"
     assert not window.scan_button.icon().isNull()
@@ -795,6 +796,466 @@ def test_finding_disposition_controls_are_stable_private_and_selection_driven(qa
     assert not window.false_positive_button.isEnabled()
     assert not window.accepted_risk_button.isEnabled()
     assert not window.withdraw_button.isEnabled()
+    window.close()
+
+
+def test_filter_controls_use_canonical_data_count_findings_and_fit(qapp) -> None:
+    finding = Finding(
+        rule_id="GENERIC_API_KEY",
+        domain=RiskDomain.CREDENTIALS,
+        severity=Severity.HIGH,
+        root_fingerprint="1" * 64,
+        evidence=(
+            Evidence("first.env", "2" * 64, "masked-one"),
+            Evidence("second.env", "3" * 64, "masked-two"),
+        ),
+        disposition_ref="4" * 64,
+    )
+    window = create_window()
+    window._scan_completed(_audit_outcome((finding,)))
+    window._switch_view(1)
+    window.resize(960, 640)
+    window.show()
+    qapp.processEvents()
+
+    assert [
+        window.severity_filter_combo.itemData(index)
+        for index in range(window.severity_filter_combo.count())
+    ] == [None, *(severity.value for severity in Severity)]
+    assert [
+        window.domain_filter_combo.itemData(index)
+        for index in range(window.domain_filter_combo.count())
+    ] == [None, *(domain.value for domain in RiskDomain)]
+    assert [
+        window.disposition_filter_combo.itemData(index)
+        for index in range(window.disposition_filter_combo.count())
+    ] == [None, "open", "false_positive", "accepted_risk", "expired"]
+    assert all(
+        type(window.severity_filter_combo.itemData(index)) is str
+        for index in range(1, window.severity_filter_combo.count())
+    )
+    assert all(
+        type(window.domain_filter_combo.itemData(index)) is str
+        for index in range(1, window.domain_filter_combo.count())
+    )
+    assert window.findings_count_label.text() == "显示 1 / 共 1 项发现"
+    assert window.findings_table.rowCount() == 2
+
+    controls = (
+        window.severity_filter_combo,
+        window.domain_filter_combo,
+        window.disposition_filter_combo,
+        window.findings_count_label,
+    )
+    original_sizes = tuple(control.size() for control in controls)
+    for combo in controls[:3]:
+        combo.setCurrentIndex(combo.count() - 1)
+        qapp.processEvents()
+    assert tuple(control.size() for control in controls) == original_sizes
+    for left, right in zip(controls, controls[1:]):
+        assert not _global_rect(left).intersects(_global_rect(right))
+    for control in controls:
+        assert not _global_rect(control).intersects(_global_rect(window.findings_table))
+        assert not _global_rect(control).intersects(_global_rect(window.guidance_browser))
+    for button in (
+        window.false_positive_button,
+        window.accepted_risk_button,
+        window.withdraw_button,
+    ):
+        assert not _global_rect(button).intersects(_global_rect(window.findings_table))
+        assert not _global_rect(button).intersects(_global_rect(window.guidance_browser))
+
+    visible_controls = " ".join(
+        combo.itemText(index)
+        for combo in controls[:3]
+        for index in range(combo.count())
+    )
+    assert all(
+        value not in visible_controls
+        for value in (
+            finding.disposition_ref,
+            "Synthetic audit review",
+            "Local reviewer",
+            "synthetic-raw-match-marker",
+            r"C:\private\audit-root",
+        )
+    )
+    window.close()
+
+
+def test_filter_isolation_changes_only_visible_rows_and_selection(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    findings = (
+        Finding(
+            "RULE_CRITICAL",
+            RiskDomain.EXPOSURE,
+            Severity.CRITICAL,
+            "1" * 64,
+            (
+                Evidence("critical-1.env", "2" * 64, "masked-one"),
+                Evidence("critical-2.env", "3" * 64, "masked-two"),
+            ),
+            "4" * 64,
+        ),
+        Finding(
+            "RULE_HIGH",
+            RiskDomain.CREDENTIALS,
+            Severity.HIGH,
+            "5" * 64,
+            (Evidence("high.env", "6" * 64, "masked-high"),),
+            "7" * 64,
+        ),
+        Finding(
+            "RULE_MEDIUM",
+            RiskDomain.PRIVACY,
+            Severity.MEDIUM,
+            "8" * 64,
+            (Evidence("medium.env", "9" * 64, "masked-medium"),),
+            "a" * 64,
+        ),
+        Finding(
+            "RULE_LOW",
+            RiskDomain.RETENTION,
+            Severity.LOW,
+            "b" * 64,
+            (Evidence("low.env", "c" * 64, "masked-low"),),
+            "d" * 64,
+        ),
+    )
+    records = (
+        _disposition(findings[1], DispositionStatus.FALSE_POSITIVE),
+        _disposition(findings[2], DispositionStatus.ACCEPTED_RISK),
+        _disposition(
+            findings[3],
+            DispositionStatus.FALSE_POSITIVE,
+            expires_at="2026-08-02T11:59:59Z",
+        ),
+    )
+    saved = []
+    exports = []
+    monkeypatch.setattr(app_module, "save_protected_state", saved.append)
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: ("filtered-export.json", "JSON (*.json)"),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "export_new_report",
+        lambda path, content, roots: exports.append((path, content, roots)),
+    )
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: None)
+    window = create_window()
+    window._dispositions = records
+    outcome = _audit_outcome(findings, records)
+    window._scan_completed(outcome)
+    window.report_mode_combo.setCurrentText("JSON")
+    window.save_button.click()
+    original = (
+        window._audit_outcome,
+        window._audit_outcome.findings,
+        window._audit_outcome.score,
+        window._audit_outcome.reviewed_score,
+        window.report_json,
+        window.report_html,
+        window._dispositions,
+        window._protected_state_invalid,
+        window._report_roots,
+        window.report_browser.toPlainText(),
+        window._expiry_timer.isActive(),
+        window._expiry_timer.interval(),
+    )
+
+    window.disposition_filter_combo.setCurrentIndex(
+        window.disposition_filter_combo.findData("false_positive")
+    )
+    qapp.processEvents()
+    assert window.findings_count_label.text() == "显示 1 / 共 4 项发现"
+    assert window.findings_table.rowCount() == 1
+    assert window._row_findings == [findings[1]]
+    window.findings_table.selectRow(0)
+    assert window.false_positive_button.isEnabled()
+
+    window.severity_filter_combo.setCurrentIndex(
+        window.severity_filter_combo.findData(Severity.CRITICAL)
+    )
+    qapp.processEvents()
+    assert window.findings_count_label.text() == "显示 0 / 共 4 项发现"
+    assert window.findings_table.rowCount() == 0
+    assert window.findings_table.currentRow() == -1
+    assert window.guidance_browser.toPlainText() == "当前筛选条件下无匹配风险发现。"
+    assert "审计未发现风险" not in window.guidance_browser.toPlainText()
+    assert not window.false_positive_button.isEnabled()
+    assert not window.accepted_risk_button.isEnabled()
+    assert not window.withdraw_button.isEnabled()
+    window._review_guidance()
+    qapp.processEvents()
+    assert window.guidance_browser.toPlainText() == "当前筛选条件下无匹配风险发现。"
+
+    window.disposition_filter_combo.setCurrentIndex(0)
+    qapp.processEvents()
+    assert window.findings_count_label.text() == "显示 1 / 共 4 项发现"
+    assert window.findings_table.rowCount() == 2
+    assert window._row_findings == [findings[0], findings[0]]
+    assert window.guidance_browser.toPlainText() == "选择一项风险以查看人工步骤。"
+
+    window.severity_filter_combo.setCurrentIndex(0)
+    window.domain_filter_combo.setCurrentIndex(
+        window.domain_filter_combo.findData(RiskDomain.PRIVACY)
+    )
+    qapp.processEvents()
+    assert window._row_findings == [findings[2]]
+    assert window.findings_count_label.text() == "显示 1 / 共 4 项发现"
+    window.save_button.click()
+
+    assert (
+        window._audit_outcome,
+        window._audit_outcome.findings,
+        window._audit_outcome.score,
+        window._audit_outcome.reviewed_score,
+        window.report_json,
+        window.report_html,
+        window._dispositions,
+        window._protected_state_invalid,
+        window._report_roots,
+        window.report_browser.toPlainText(),
+        window._expiry_timer.isActive(),
+        window._expiry_timer.interval(),
+    ) == original
+    assert window.report_json == outcome.report_json
+    assert window.report_html == outcome.report_html
+    assert len(exports) == 2
+    assert exports[0] == exports[1]
+    assert exports[0][1] == outcome.report_json
+    assert exports[0][2] == outcome.scanned_roots
+    assert saved == []
+    window.close()
+
+
+def test_filter_isolation_contains_unexpected_callback_error(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finding = _disposition_finding()
+    window = create_window()
+    window._scan_completed(_audit_outcome((finding,)))
+    original = (
+        window._audit_outcome,
+        window.report_json,
+        window.report_html,
+        window._dispositions,
+        window._protected_state_invalid,
+        window._report_roots,
+    )
+    marker = "private-filter-callback-marker"
+    saves = []
+    monkeypatch.setattr(app_module, "save_protected_state", saves.append)
+    monkeypatch.setattr(
+        app_module,
+        "filter_findings",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(marker)),
+    )
+
+    window.severity_filter_combo.setCurrentIndex(
+        window.severity_filter_combo.findData(Severity.HIGH)
+    )
+    qapp.processEvents()
+
+    assert window.findings_table.rowCount() == 0
+    assert window._row_findings == []
+    assert window.findings_count_label.text() == "无法筛选风险发现，请重试。"
+    assert window.guidance_browser.toPlainText() == "无法筛选风险发现，请重试。"
+    assert window.findings_table.currentRow() == -1
+    window.resize(960, 640)
+    window.show()
+    qapp.processEvents()
+    assert window.findings_count_label.sizeHint().width() <= window.findings_count_label.width()
+    assert not window.false_positive_button.isEnabled()
+    assert not window.accepted_risk_button.isEnabled()
+    assert not window.withdraw_button.isEnabled()
+    assert (
+        window._audit_outcome,
+        window.report_json,
+        window.report_html,
+        window._dispositions,
+        window._protected_state_invalid,
+        window._report_roots,
+    ) == original
+    assert marker not in " ".join(
+        (
+            window.findings_count_label.text(),
+            window.guidance_browser.toPlainText(),
+            window.status_label.text(),
+            window.report_browser.toPlainText(),
+        )
+    )
+    assert saves == []
+    window.close()
+
+
+def test_filter_disposition_create_replace_and_withdraw_refresh_visible_rows(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finding = _disposition_finding()
+    false_positive = _disposition(finding, DispositionStatus.FALSE_POSITIVE)
+    accepted_risk = _disposition(finding, DispositionStatus.ACCEPTED_RISK)
+    saved = []
+    monkeypatch.setattr(app_module, "save_protected_state", saved.append)
+    window = create_window()
+    window._scan_completed(_audit_outcome((finding,)))
+    window.disposition_filter_combo.setCurrentIndex(
+        window.disposition_filter_combo.findData("open")
+    )
+    window.findings_table.selectRow(0)
+
+    window._save_and_commit_dispositions((false_positive,), EVALUATED_AT)
+
+    assert window.findings_count_label.text() == "显示 0 / 共 1 项发现"
+    assert window.findings_table.rowCount() == 0
+    assert window.guidance_browser.toPlainText() == "当前筛选条件下无匹配风险发现。"
+    window.disposition_filter_combo.setCurrentIndex(
+        window.disposition_filter_combo.findData("false_positive")
+    )
+    qapp.processEvents()
+    assert window.findings_table.rowCount() == 1
+    assert window.findings_table.item(0, 4).text() == "误报"
+
+    window._save_and_commit_dispositions((accepted_risk,), EVALUATED_AT)
+
+    assert window.findings_table.rowCount() == 0
+    window.disposition_filter_combo.setCurrentIndex(
+        window.disposition_filter_combo.findData("accepted_risk")
+    )
+    qapp.processEvents()
+    assert window.findings_table.rowCount() == 1
+    assert window.findings_table.item(0, 4).text() == "已接受风险"
+
+    window._save_and_commit_dispositions((), EVALUATED_AT)
+
+    assert window.findings_table.rowCount() == 0
+    window.disposition_filter_combo.setCurrentIndex(
+        window.disposition_filter_combo.findData("open")
+    )
+    qapp.processEvents()
+    assert window.findings_table.rowCount() == 1
+    assert window.findings_table.item(0, 4).text() == "待处理"
+    assert window._dispositions == ()
+    assert len(saved) == 3
+    window.close()
+
+
+def test_filter_disposition_refresh_contains_unexpected_filter_error_after_save(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finding = _disposition_finding()
+    candidate = (_disposition(finding, DispositionStatus.FALSE_POSITIVE),)
+    marker = "private-saved-filter-marker"
+    saved = []
+    monkeypatch.setattr(app_module, "save_protected_state", saved.append)
+    window = create_window()
+    window._scan_completed(_audit_outcome((finding,)))
+    window.findings_table.selectRow(0)
+    monkeypatch.setattr(
+        app_module,
+        "filter_findings",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(marker)),
+    )
+
+    window._save_and_commit_dispositions(candidate, EVALUATED_AT)
+
+    assert len(saved) == 1
+    assert window._dispositions == candidate
+    assert window._audit_outcome.reviewed_score.total == 100
+    assert json.loads(window.report_json)["findings"][0]["disposition"][
+        "status"
+    ] == "false_positive"
+    assert window.findings_table.rowCount() == 0
+    assert window._row_findings == []
+    assert window.findings_count_label.text() == "无法筛选风险发现，请重试。"
+    assert window.guidance_browser.toPlainText() == "无法筛选风险发现，请重试。"
+    assert marker not in " ".join(
+        (
+            window.findings_count_label.text(),
+            window.guidance_browser.toPlainText(),
+            window.status_label.text(),
+            window.report_browser.toPlainText(),
+        )
+    )
+    window.close()
+
+
+def test_filter_scan_completion_invalidation_and_failure_refresh_view(qapp) -> None:
+    high = _disposition_finding()
+    low = Finding(
+        "RULE_LOW",
+        RiskDomain.RETENTION,
+        Severity.LOW,
+        "a" * 64,
+        (Evidence("low.env", "b" * 64, "masked-low"),),
+        "c" * 64,
+    )
+    window = create_window()
+    window.severity_filter_combo.setCurrentIndex(
+        window.severity_filter_combo.findData(Severity.HIGH)
+    )
+
+    window._scan_completed(_audit_outcome((high, low)))
+
+    assert window.findings_count_label.text() == "显示 1 / 共 2 项发现"
+    assert window._row_findings == [high]
+
+    window._invalidate_report()
+
+    assert window.findings_count_label.text() == "显示 0 / 共 0 项发现"
+    assert window.findings_table.rowCount() == 0
+    assert window._row_findings == []
+    assert window.guidance_browser.toPlainText() == "选择一项风险以查看人工步骤。"
+
+    window._scan_completed(_audit_outcome((high, low)))
+    assert window.findings_count_label.text() == "显示 1 / 共 2 项发现"
+    window._scan_failed("private-code")
+    assert window.findings_count_label.text() == "显示 0 / 共 0 项发现"
+    assert window.findings_table.rowCount() == 0
+    assert window._row_findings == []
+    assert window._audit_outcome is None
+    window.close()
+
+
+def test_filter_scan_completion_contains_unexpected_filter_error(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finding = _disposition_finding()
+    outcome = _audit_outcome((finding,))
+    marker = "private-scan-filter-marker"
+    monkeypatch.setattr(
+        app_module,
+        "filter_findings",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(marker)),
+    )
+    window = create_window()
+
+    window._scan_completed(outcome)
+
+    assert window._audit_outcome is outcome
+    assert window.report_json == outcome.report_json
+    assert window.report_html == outcome.report_html
+    assert window.findings_table.rowCount() == 0
+    assert window._row_findings == []
+    assert window.findings_count_label.text() == "无法筛选风险发现，请重试。"
+    assert window.guidance_browser.toPlainText() == "无法筛选风险发现，请重试。"
+    assert marker not in " ".join(
+        (
+            window.findings_count_label.text(),
+            window.guidance_browser.toPlainText(),
+            window.status_label.text(),
+            window.report_browser.toPlainText(),
+        )
+    )
     window.close()
 
 
@@ -2022,6 +2483,67 @@ def test_expiry_timer_refreshes_scores_reports_and_status_without_writing(
 
     window._invalidate_report()
     assert not window._expiry_timer.isActive()
+    window.close()
+
+
+def test_filter_expiry_moves_finding_between_disposition_views_at_same_time(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finding = _disposition_finding()
+    active = _disposition(
+        finding,
+        DispositionStatus.FALSE_POSITIVE,
+        expires_at="2026-08-02T12:00:02Z",
+    )
+    clock = [EVALUATED_AT]
+    filter_times = []
+    saves = []
+    real_filter = app_module.filter_findings
+
+    def tracking_filter(findings, dispositions, filters, *, now):
+        filter_times.append(now)
+        return real_filter(findings, dispositions, filters, now=now)
+
+    monkeypatch.setattr(app_module, "_utc_now", lambda: clock[0])
+    monkeypatch.setattr(app_module, "filter_findings", tracking_filter)
+    monkeypatch.setattr(app_module, "save_protected_state", saves.append)
+    window = create_window()
+    window._dispositions = (active,)
+    window._scan_completed(_audit_outcome((finding,), (active,)))
+    window.disposition_filter_combo.setCurrentIndex(
+        window.disposition_filter_combo.findData("false_positive")
+    )
+    qapp.processEvents()
+
+    assert window.findings_count_label.text() == "显示 1 / 共 1 项发现"
+    assert window.findings_table.item(0, 4).text() == "误报"
+
+    clock[0] = EVALUATED_AT + timedelta(seconds=2)
+    window._handle_expiry_timeout()
+
+    assert window._audit_outcome.evaluated_at == clock[0]
+    assert window._audit_outcome.reviewed_score == window._audit_outcome.score
+    assert json.loads(window.report_json)["findings"][0]["disposition"][
+        "status"
+    ] == "expired"
+    assert filter_times[-1] == clock[0]
+    assert window.findings_count_label.text() == "显示 0 / 共 1 项发现"
+    assert window.findings_table.rowCount() == 0
+    assert window.guidance_browser.toPlainText() == "当前筛选条件下无匹配风险发现。"
+
+    window.disposition_filter_combo.setCurrentIndex(
+        window.disposition_filter_combo.findData("expired")
+    )
+    qapp.processEvents()
+
+    assert filter_times[-1] == clock[0]
+    assert window.findings_count_label.text() == "显示 1 / 共 1 项发现"
+    assert window.findings_table.rowCount() == 1
+    assert window.findings_table.item(0, 4).text() == "已过期"
+    assert window._row_findings == [finding]
+    assert window._dispositions == (active,)
+    assert saves == []
     window.close()
 
 
