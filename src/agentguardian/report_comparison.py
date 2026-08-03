@@ -14,6 +14,7 @@ from .domain import (
     Severity,
     validate_safe_annotation,
 )
+from .scoring import score as calculate_score
 from .workflow import (
     COVERAGE_LIMIT_LABELS,
     CoverageState,
@@ -67,28 +68,30 @@ class ReportComparison:
 
 @dataclass(frozen=True, slots=True)
 class _ParsedScore:
-    total: int
-    coverage: float
-    confidence: float
-    incomplete: bool
-    limits: tuple[str, ...]
+    score: Score
     coverage_state: CoverageState
 
 
 def parse_report_summary(json_text: str) -> ReportSummary:
-    failed = False
+    if type(json_text) is not str:
+        raise ValueError(_ERROR)
+    parse_failed = False
     try:
-        if type(json_text) is not str:
-            raise _InvalidReport
         payload = json.loads(
             json_text,
             object_pairs_hook=_unique_object,
             parse_constant=_reject_constant,
         )
-        return _report_summary(payload)
     except (ValueError, RecursionError):
-        failed = True
-    if failed:
+        parse_failed = True
+    if parse_failed:
+        raise ValueError(_ERROR)
+    invalid_report = False
+    try:
+        return _report_summary(payload)
+    except _InvalidReport:
+        invalid_report = True
+    if invalid_report:
         raise ValueError(_ERROR)
     raise AssertionError("unreachable")
 
@@ -158,27 +161,31 @@ def _report_summary(payload: object) -> ReportSummary:
     _safe_annotation(report["rule_version"], 32)
     technical = _validated_score(report["score"], legacy=legacy)
     reviewed = _validated_score(report["reviewed_score"], legacy=legacy)
+    technical_score = technical.score
+    reviewed_score = reviewed.score
     if (
-        technical.coverage != reviewed.coverage
-        or technical.confidence != reviewed.confidence
-        or technical.incomplete is not reviewed.incomplete
-        or technical.limits != reviewed.limits
+        technical_score.coverage != reviewed_score.coverage
+        or technical_score.confidence != reviewed_score.confidence
+        or technical_score.incomplete is not reviewed_score.incomplete
+        or technical_score.limits != reviewed_score.limits
         or technical.coverage_state is not reviewed.coverage_state
     ):
         raise _InvalidReport
     finding_count, rules, severities, dispositions = _aggregate_findings(
-        report["findings"]
+        report["findings"],
+        technical_score,
+        reviewed_score,
     )
     return ReportSummary(
-        technical_score=technical.total,
-        reviewed_score=reviewed.total,
-        coverage=technical.coverage,
+        technical_score=technical_score.total,
+        reviewed_score=reviewed_score.total,
+        coverage=float(technical_score.coverage),
         coverage_state=technical.coverage_state,
         finding_count=finding_count,
         rule_counts=tuple(sorted(rules.items())),
         severity_counts=tuple(sorted(severities.items())),
         disposition_counts=tuple(sorted(dispositions.items())),
-        limits=tuple(sorted(technical.limits)),
+        limits=tuple(sorted(technical_score.limits)),
     )
 
 
@@ -237,22 +244,22 @@ def _validated_score(value: object, *, legacy: bool) -> _ParsedScore:
         if reported_state is not coverage_state:
             raise _InvalidReport
     return _ParsedScore(
-        total=total,
-        coverage=float(coverage),
-        confidence=float(confidence),
-        incomplete=incomplete,
-        limits=tuple(limits),
+        score=domain_score,
         coverage_state=reported_state,
     )
 
 
 def _aggregate_findings(
     value: object,
+    technical_score: Score,
+    reviewed_score: Score,
 ) -> tuple[int, Counter[str], Counter[str], Counter[str]]:
     findings = _exact_list(value, _MAX_FINDINGS)
     rules: Counter[str] = Counter()
     severities: Counter[str] = Counter()
     dispositions: Counter[str] = Counter()
+    technical_findings: list[Finding] = []
+    reviewed_findings: list[Finding] = []
     evidence_count = 0
     for value in findings:
         finding = _exact_object(
@@ -289,6 +296,7 @@ def _aggregate_findings(
                 for key in ("source", "hmac_fingerprint", "masked")
             ):
                 raise _InvalidReport
+            _safe_annotation(evidence["masked"], 80)
             evidence_items.append(
                 _domain_call(
                     Evidence,
@@ -297,7 +305,7 @@ def _aggregate_findings(
                     evidence["masked"],
                 )
             )
-        _domain_call(
+        validated_finding = _domain_call(
             Finding,
             rule_id,
             domain,
@@ -308,9 +316,29 @@ def _aggregate_findings(
         disposition_state = _validated_disposition(
             finding["disposition"], rule_id
         )
+        technical_findings.append(validated_finding)
+        if disposition_state != DispositionStatus.FALSE_POSITIVE.value:
+            reviewed_findings.append(validated_finding)
         rules[rule_id] += 1
         severities[severity.value] += 1
         dispositions[disposition_state] += 1
+    recomputed_technical = calculate_score(
+        tuple(technical_findings),
+        coverage=technical_score.coverage,
+        confidence=technical_score.confidence,
+        limits=technical_score.limits,
+    )
+    recomputed_reviewed = calculate_score(
+        tuple(reviewed_findings),
+        coverage=reviewed_score.coverage,
+        confidence=reviewed_score.confidence,
+        limits=reviewed_score.limits,
+    )
+    if (
+        technical_score != recomputed_technical
+        or reviewed_score != recomputed_reviewed
+    ):
+        raise _InvalidReport
     return len(findings), rules, severities, dispositions
 
 
@@ -454,24 +482,32 @@ def _validate_summary(value: object) -> None:
         lambda item: item in _DISPOSITION_STATES,
         finding_count,
     )
-    if (
-        type(limits) is not tuple
-        or limits != tuple(sorted(limits))
-        or len(set(limits)) != len(limits)
-        or any(
-            type(limit) is not str or limit not in COVERAGE_LIMIT_LABELS
-            for limit in limits
-        )
-    ):
+    validated_limits = _validated_summary_limits(limits)
+    summary_score = _domain_call(
+        Score,
+        technical_score,
+        (),
+        None,
+        coverage,
+        1.0,
+        validated_limits,
+        coverage_state is not CoverageState.COMPLETE,
+    )
+    if _domain_call(classify_coverage, summary_score) is not coverage_state:
         raise _InvalidReport
-    if coverage_state is CoverageState.COMPLETE:
-        valid_state = coverage == 1 and not limits
-    elif coverage_state is CoverageState.NO_SUPPORTED_FILES:
-        valid_state = coverage == 0 and limits == ("no_supported_files",)
-    else:
-        valid_state = not (coverage == 1 and not limits)
-    if not valid_state:
+
+
+def _validated_summary_limits(value: object) -> tuple[str, ...]:
+    if type(value) is not tuple:
         raise _InvalidReport
+    limits: list[str] = []
+    for limit in value:
+        if type(limit) is not str or limit not in COVERAGE_LIMIT_LABELS:
+            raise _InvalidReport
+        limits.append(limit)
+    if len(set(limits)) != len(limits) or limits != sorted(limits):
+        raise _InvalidReport
+    return tuple(limits)
 
 
 def _validate_counts(

@@ -1,4 +1,4 @@
-from dataclasses import FrozenInstanceError, fields
+from dataclasses import FrozenInstanceError, fields, replace
 from datetime import datetime, timezone
 import json
 
@@ -26,7 +26,11 @@ EVALUATED_AT = datetime(2026, 8, 3, 12, tzinfo=timezone.utc)
 ATTACKER_MARKER = r"C:\Synthetic\private\comparison-marker.txt"
 
 
-def _report_json() -> str:
+class _LimitStr(str):
+    pass
+
+
+def _report_inputs() -> tuple[tuple[Finding, ...], tuple[DispositionRecord, ...]]:
     findings = (
         Finding(
             "Z_RULE",
@@ -55,10 +59,21 @@ def _report_json() -> str:
             "2026-08-04T08:00:00Z",
         ),
     )
+    return findings, records
+
+
+def _render_report(
+    findings: tuple[Finding, ...],
+    records: tuple[DispositionRecord, ...],
+    *,
+    coverage: float,
+    confidence: float,
+    limits: tuple[str, ...],
+) -> str:
     options = {
-        "coverage": 0.75,
-        "confidence": 0.8,
-        "limits": ("file_scan_limited", "byte_limit_reached"),
+        "coverage": coverage,
+        "confidence": confidence,
+        "limits": limits,
     }
     technical = score(findings, **options)
     reviewed = score(
@@ -76,6 +91,17 @@ def _report_json() -> str:
         reviewed_score=reviewed,
         dispositions=records,
         evaluated_at=EVALUATED_AT,
+    )
+
+
+def _report_json() -> str:
+    findings, records = _report_inputs()
+    return _render_report(
+        findings,
+        records,
+        coverage=0.75,
+        confidence=0.8,
+        limits=("file_scan_limited", "byte_limit_reached"),
     )
 
 
@@ -106,38 +132,124 @@ def _assert_summary_comparison_invalid(baseline: object, current: object) -> Non
 
 
 def _current_report_json() -> str:
-    payload = json.loads(_report_json())
-    payload["score"]["total"] = 88
-    payload["reviewed_score"]["total"] = 95
-    for score_data in (payload["score"], payload["reviewed_score"]):
-        score_data["coverage"] = 0.5
-        score_data["limits"] = [
-            "file_scan_limited",
-            "directory_excluded",
-        ]
-    payload["findings"].append(
-        {
-            "rule_id": "A_RULE",
-            "domain": "privacy",
-            "severity": "medium",
-            "root_hmac_fingerprint": "9" * 64,
-            "evidence": [
-                {
-                    "source": "settings.json",
-                    "hmac_fingerprint": "8" * 64,
-                    "masked": "masked configuration marker",
-                }
-            ],
-            "disposition": {
-                "status": "accepted_risk",
-                "reason": "Synthetic accepted risk",
-                "reviewer": "Second reviewer",
-                "created_at": "2026-08-03T09:00:00Z",
-                "expires_at": "2026-08-05T09:00:00Z",
-            },
-        }
+    findings, records = _report_inputs()
+    findings += (
+        Finding(
+            "A_RULE",
+            RiskDomain.PRIVACY,
+            Severity.MEDIUM,
+            "9" * 64,
+            (
+                Evidence(
+                    "settings.json",
+                    "8" * 64,
+                    "masked configuration marker",
+                ),
+            ),
+            "e" * 64,
+        ),
     )
-    return json.dumps(payload)
+    records += (
+        DispositionRecord(
+            "e" * 64,
+            "A_RULE",
+            DispositionStatus.ACCEPTED_RISK,
+            "Synthetic accepted risk",
+            "Second reviewer",
+            "2026-08-03T09:00:00Z",
+            "2026-08-05T09:00:00Z",
+        ),
+    )
+    return _render_report(
+        findings,
+        records,
+        coverage=0.5,
+        confidence=0.8,
+        limits=("file_scan_limited", "directory_excluded"),
+    )
+
+
+def _disposition_semantics_report_json() -> str:
+    findings = (
+        Finding(
+            "PUBLIC_ACTIVE_CREDENTIAL",
+            RiskDomain.CREDENTIALS,
+            Severity.CRITICAL,
+            "1" * 64,
+            (Evidence("public.env", "a" * 64, "sk-p************live"),),
+            "a" * 64,
+        ),
+        Finding(
+            "MCP_DANGEROUS_COMBINATION",
+            RiskDomain.PERMISSIONS,
+            Severity.LOW,
+            "2" * 64,
+            (Evidence("mcp.json", "b" * 64, "masked MCP permissions"),),
+            "b" * 64,
+        ),
+        Finding(
+            "HIGHER_PERMISSION",
+            RiskDomain.PERMISSIONS,
+            Severity.HIGH,
+            "2" * 64,
+            (Evidence("policy.json", "c" * 64, "masked policy setting"),),
+        ),
+        Finding(
+            "EXPIRED_RULE",
+            RiskDomain.PRIVACY,
+            Severity.MEDIUM,
+            "3" * 64,
+            (Evidence("privacy.json", "d" * 64, "masked privacy value"),),
+            "c" * 64,
+        ),
+    )
+    records = (
+        DispositionRecord(
+            "a" * 64,
+            "PUBLIC_ACTIVE_CREDENTIAL",
+            DispositionStatus.FALSE_POSITIVE,
+            "Synthetic false positive",
+            "Local reviewer",
+            "2026-08-03T08:00:00Z",
+            "2026-08-04T08:00:00Z",
+        ),
+        DispositionRecord(
+            "b" * 64,
+            "MCP_DANGEROUS_COMBINATION",
+            DispositionStatus.ACCEPTED_RISK,
+            "Synthetic accepted risk",
+            "Local reviewer",
+            "2026-08-03T08:00:00Z",
+            "2026-08-04T08:00:00Z",
+        ),
+        DispositionRecord(
+            "c" * 64,
+            "EXPIRED_RULE",
+            DispositionStatus.FALSE_POSITIVE,
+            "Synthetic expired review",
+            "Local reviewer",
+            "2026-08-01T08:00:00Z",
+            "2026-08-02T08:00:00Z",
+        ),
+    )
+    options = {"coverage": 1.0, "confidence": 1.0, "limits": ()}
+    technical = score(findings, **options)
+    reviewed = score(
+        reviewed_findings(
+            findings,
+            disposition_index(records),
+            now=EVALUATED_AT,
+        ),
+        **options,
+    )
+    return render_json(
+        technical,
+        findings,
+        rule_version="rules-1",
+        reviewed_score=reviewed,
+        dispositions=records,
+        evaluated_at=EVALUATED_AT,
+    )
 
 
 def test_schema_1_renderer_report_reduces_to_immutable_summary() -> None:
@@ -172,6 +284,41 @@ def test_schema_1_summary_discards_item_level_values() -> None:
         "2026-08-03T08:00:00Z",
     ):
         assert private_value not in rendered
+
+
+def test_schema_1_recomputes_caps_roots_and_disposition_semantics() -> None:
+    summary = parse_report_summary(_disposition_semantics_report_json())
+
+    assert summary.technical_score == 39
+    assert summary.reviewed_score == 59
+    assert summary.disposition_counts == (
+        ("accepted_risk", 1),
+        ("expired", 1),
+        ("false_positive", 1),
+        ("open", 1),
+    )
+
+
+@pytest.mark.parametrize(
+    ("score_name", "field", "value"),
+    (
+        ("score", "total", 0),
+        ("reviewed_score", "total", 0),
+        ("score", "deductions", []),
+        ("reviewed_score", "deductions", []),
+        ("score", "cap_reason", "mcp_dangerous_combination"),
+        ("reviewed_score", "cap_reason", "public_active_credential"),
+    ),
+)
+def test_score_recomputation_rejects_independent_contradictions(
+    score_name: str,
+    field: str,
+    value: object,
+) -> None:
+    payload = json.loads(_disposition_semantics_report_json())
+    payload[score_name][field] = value
+
+    _assert_comparison_invalid(json.dumps(payload))
 
 
 def test_legacy_report_derives_coverage_state_and_matches_schema_1() -> None:
@@ -213,8 +360,8 @@ def test_aggregate_delta_comparison_is_signed_sorted_and_immutable() -> None:
 
     assert comparison.baseline == baseline
     assert comparison.current == current
-    assert comparison.technical_score_delta == -4
-    assert comparison.reviewed_score_delta == -4
+    assert comparison.technical_score_delta == -3
+    assert comparison.reviewed_score_delta == -3
     assert comparison.coverage_delta == -0.25
     assert comparison.finding_count_delta == 1
     assert comparison.rule_count_deltas == (("A_RULE", 1), ("Z_RULE", 0))
@@ -508,12 +655,29 @@ def test_hostile_4001_evidence_fail_before_item_validation(
 
 
 def test_exact_finding_and_evidence_limits_are_accepted() -> None:
-    payload = json.loads(_report_json())
-    finding = payload["findings"][0]
-    finding["evidence"] = [finding["evidence"][0]] * 2
-    payload["findings"] = [finding] * 2_000
+    finding = Finding(
+        "A_RULE",
+        RiskDomain.EXPOSURE,
+        Severity.LOW,
+        "a" * 64,
+        (
+            Evidence("first.txt", "b" * 64, "masked first value"),
+            Evidence("second.txt", "c" * 64, "masked second value"),
+        ),
+    )
+    findings = (finding,) * 2_000
+    report = render_json(
+        score(
+            findings,
+            coverage=0.75,
+            confidence=0.8,
+            limits=("file_scan_limited",),
+        ),
+        findings,
+        rule_version="rules-1",
+    )
 
-    summary = parse_report_summary(json.dumps(payload))
+    summary = parse_report_summary(report)
 
     assert summary.finding_count == 2_000
     assert summary.rule_counts == (("A_RULE", 2_000),)
@@ -532,6 +696,82 @@ def test_public_comparison_normalizes_forged_missing_summary_slots() -> None:
         forged,
         parse_report_summary(_report_json()),
     )
+
+
+@pytest.mark.parametrize(
+    "limits",
+    (
+        [],
+        ([ATTACKER_MARKER],),
+        ("file_scan_limited", 1),
+        (_LimitStr("file_scan_limited"),),
+    ),
+    ids=("list", "unhashable-item", "mixed-item", "str-subclass"),
+)
+def test_public_comparison_normalizes_forged_limit_types(
+    limits: object,
+) -> None:
+    valid = parse_report_summary(_report_json())
+    forged = replace(valid, limits=limits)  # type: ignore[arg-type]
+
+    _assert_summary_comparison_invalid(forged, valid)
+
+
+@pytest.mark.parametrize(
+    ("coverage", "coverage_state", "limits"),
+    (
+        (0.0, CoverageState.LIMITED, ("no_supported_files",)),
+        (
+            0.0,
+            CoverageState.LIMITED,
+            ("file_scan_limited", "no_supported_files"),
+        ),
+        (1.0, CoverageState.COMPLETE, ("file_scan_limited",)),
+        (0.5, CoverageState.NO_SUPPORTED_FILES, ("no_supported_files",)),
+        (0.0, CoverageState.NO_SUPPORTED_FILES, ("file_scan_limited",)),
+    ),
+)
+def test_public_comparison_rejects_contradictory_summary_coverage(
+    coverage: float,
+    coverage_state: CoverageState,
+    limits: tuple[str, ...],
+) -> None:
+    valid = parse_report_summary(_report_json())
+    forged = replace(
+        valid,
+        coverage=coverage,
+        coverage_state=coverage_state,
+        limits=limits,
+    )
+
+    _assert_summary_comparison_invalid(forged, valid)
+
+
+def test_summary_validation_propagates_internal_classifier_defects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    valid = parse_report_summary(_report_json())
+
+    def fail_classifier(_score: object) -> object:
+        raise RuntimeError(ATTACKER_MARKER)
+
+    monkeypatch.setattr(comparison_module, "classify_coverage", fail_classifier)
+
+    with pytest.raises(RuntimeError, match="comparison-marker") as caught:
+        compare_report_summaries(valid, valid)
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize("control", ("\x00", "\n", "\u202e"))
+def test_hostile_masked_evidence_controls_fail_closed(control: str) -> None:
+    payload = json.loads(_report_json())
+    payload["findings"][0]["evidence"][0]["masked"] = (
+        f"masked{control}value"
+    )
+
+    _assert_comparison_invalid(json.dumps(payload))
 
 
 @pytest.mark.parametrize(
