@@ -1146,7 +1146,7 @@ def test_malformed_report_file_error_discards_path_and_content(
     assert caught.value.__context__ is None
 
 
-def test_report_file_loader_propagates_internal_value_errors(
+def test_report_file_loader_normalizes_loader_value_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1158,7 +1158,95 @@ def test_report_file_loader_propagates_internal_value_errors(
 
     monkeypatch.setattr(comparison_module.os, "fstat", fail_fstat)
 
-    with pytest.raises(ValueError, match="comparison-marker") as caught:
+    with pytest.raises(ValueError, match="^REPORT_COMPARISON_INVALID$") as caught:
+        load_report_summary(report_path)
+
+    assert ATTACKER_MARKER not in repr(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+def test_report_file_loader_normalizes_parser_value_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_path = tmp_path / "parser-value-error.json"
+    report_path.write_text(_report_json(), encoding="utf-8")
+
+    def fail_parser(_text: str) -> ReportSummary:
+        raise ValueError(ATTACKER_MARKER)
+
+    monkeypatch.setattr(comparison_module, "parse_report_summary", fail_parser)
+
+    _assert_file_invalid(report_path)
+
+
+@pytest.mark.parametrize(
+    "stage",
+    ("path", "lstat", "open", "read", "fstat"),
+)
+def test_report_file_loader_normalizes_file_stage_os_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    report_path = tmp_path / "file-stage-error.json"
+    report_path.write_text(_report_json(), encoding="utf-8")
+    real_open = open
+
+    class FailingReadStream:
+        def __init__(self) -> None:
+            self._stream = real_open(report_path, "rb")
+
+        def __enter__(self) -> "FailingReadStream":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self._stream.close()
+
+        def fileno(self) -> int:
+            return self._stream.fileno()
+
+        def read(self, _size: int) -> bytes:
+            raise OSError(ATTACKER_MARKER)
+
+    def fail(*_args: object) -> object:
+        raise OSError(ATTACKER_MARKER)
+
+    if stage == "path":
+        monkeypatch.setattr(comparison_module, "_validated_baseline_path", fail)
+    elif stage == "lstat":
+        monkeypatch.setattr(comparison_module.os, "lstat", fail)
+    elif stage == "open":
+        monkeypatch.setattr(comparison_module, "open", fail, raising=False)
+    elif stage == "read":
+        monkeypatch.setattr(
+            comparison_module,
+            "open",
+            lambda *_args: FailingReadStream(),
+            raising=False,
+        )
+    else:
+        monkeypatch.setattr(comparison_module.os, "fstat", fail)
+
+    _assert_file_invalid(report_path)
+
+
+@pytest.mark.parametrize("exception_type", (OSError, UnicodeError))
+def test_report_file_loader_propagates_parser_boundary_faults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exception_type: type[Exception],
+) -> None:
+    report_path = tmp_path / "parser-boundary-fault.json"
+    report_path.write_text(_report_json(), encoding="utf-8")
+
+    def fail_parser(_text: str) -> ReportSummary:
+        raise exception_type(ATTACKER_MARKER)
+
+    monkeypatch.setattr(comparison_module, "parse_report_summary", fail_parser)
+
+    with pytest.raises(exception_type, match="comparison-marker") as caught:
         load_report_summary(report_path)
 
     assert str(caught.value) == ATTACKER_MARKER

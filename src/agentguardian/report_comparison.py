@@ -115,12 +115,22 @@ def load_report_summary(path: str | Path) -> ReportSummary:
     Portable Python on Windows cannot fully close the residual same-user
     path-replacement race between the final path check and later use.
     """
-    failed = False
+    load_failed = False
     try:
-        return _load_report_summary(path)
-    except (OSError, UnicodeError, _InvalidReport):
-        failed = True
-    if failed:
+        text = _load_report_text(path)
+    except ValueError:
+        load_failed = True
+    if load_failed:
+        raise ValueError(_ERROR)
+
+    parse_failed = False
+    try:
+        return parse_report_summary(text)
+    except UnicodeError:
+        raise
+    except ValueError:
+        parse_failed = True
+    if parse_failed:
         raise ValueError(_ERROR)
     raise AssertionError("unreachable")
 
@@ -156,35 +166,26 @@ def compare_report_summaries(
     )
 
 
-def _load_report_summary(path: str | Path) -> ReportSummary:
-    target = _validated_baseline_path(path)
-    initial = _checked_file_state(target)
-    with open(target, "rb") as stream:
-        opened = os.fstat(stream.fileno())
-        _validate_open_file(initial, opened)
-        data = stream.read(_MAX_BASELINE_BYTES + 1)
-        final_opened = os.fstat(stream.fileno())
-    if type(data) is not bytes or len(data) > _MAX_BASELINE_BYTES:
-        raise _InvalidReport
-    _validate_open_file(initial, final_opened, expected_size=len(data))
-    final_path = _checked_file_state(target)
-    if not _same_file(initial, final_path) or final_path.st_size != len(data):
-        raise _InvalidReport
-    text = data.decode("utf-8", errors="strict")
-    parse_failed = False
+def _load_report_text(path: str | Path) -> str:
+    failed = False
     try:
-        return parse_report_summary(text)
-    except ValueError as error:
-        if (
-            type(error) is ValueError
-            and error.args == (_ERROR,)
-            and error.__cause__ is None
-            and error.__context__ is None
-        ):
-            parse_failed = True
-        else:
-            raise
-    if parse_failed:
+        target = _validated_baseline_path(path)
+        initial = _checked_file_state(target)
+        with open(target, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            _validate_open_file(initial, opened)
+            data = stream.read(_MAX_BASELINE_BYTES + 1)
+            final_opened = os.fstat(stream.fileno())
+        if type(data) is not bytes or len(data) > _MAX_BASELINE_BYTES:
+            raise _InvalidReport
+        _validate_open_file(initial, final_opened, expected_size=len(data))
+        final_path = _checked_file_state(target)
+        if not _same_file(initial, final_path) or final_path.st_size != len(data):
+            raise _InvalidReport
+        return data.decode("utf-8", errors="strict")
+    except (OSError, UnicodeError, _InvalidReport):
+        failed = True
+    if failed:
         raise _InvalidReport
     raise AssertionError("unreachable")
 
