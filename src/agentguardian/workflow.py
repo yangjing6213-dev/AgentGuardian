@@ -51,9 +51,10 @@ class FindingFilters:
     def __post_init__(self) -> None:
         try:
             _validate_finding_filters(self)
-            return
-        except Exception:
+        except ValueError:
             pass
+        else:
+            return
         raise ValueError(_FINDING_FILTER_ERROR) from None
 
 
@@ -190,32 +191,25 @@ def filter_findings(
     *,
     now: datetime,
 ) -> tuple[Finding, ...]:
-    try:
-        _validate_finding_filters(filters)
-        evaluated_at = _validated_filter_time(now)
-        records = disposition_index(
-            _validated_filter_dispositions(_bounded_filter_items(dispositions))
-        )
-        visible: list[Finding] = []
-        for candidate in _bounded_filter_items(findings):
-            finding = _validated_filter_finding(candidate)
-            evaluation = evaluate_disposition(finding, records, now=evaluated_at)
-            state = evaluation.state
-            if type(state) is not str or state not in _DISPOSITION_STATES:
-                raise ValueError
-            if (
-                (filters.severity is None or finding.severity is filters.severity)
-                and (filters.domain is None or finding.domain is filters.domain)
-                and (
-                    filters.disposition_state is None
-                    or state == filters.disposition_state
-                )
-            ):
-                visible.append(finding)
-        return tuple(visible)
-    except Exception:
-        pass
-    raise ValueError(_FINDING_FILTER_ERROR) from None
+    evaluated_at = _validated_filter_request(filters, now)
+    records = _indexed_filter_dispositions(dispositions)
+    validated_findings = _materialized_filter_findings(findings)
+    visible: list[Finding] = []
+    for finding in validated_findings:
+        evaluation = evaluate_disposition(finding, records, now=evaluated_at)
+        state = evaluation.state
+        if type(state) is not str or state not in _DISPOSITION_STATES:
+            raise ValueError
+        if (
+            (filters.severity is None or finding.severity is filters.severity)
+            and (filters.domain is None or finding.domain is filters.domain)
+            and (
+                filters.disposition_state is None
+                or state == filters.disposition_state
+            )
+        ):
+            visible.append(finding)
+    return tuple(visible)
 
 
 def _classify_validated_coverage(score: Score) -> CoverageState:
@@ -286,10 +280,27 @@ def _validate_finding_filters(filters: object) -> None:
 def _validated_filter_time(now: object) -> datetime:
     if type(now) is not datetime:
         raise ValueError
-    offset = now.utcoffset()
-    if type(offset) is not timedelta or offset != timedelta(0):
-        raise ValueError
-    return now.replace(tzinfo=timezone.utc)
+    try:
+        offset = now.utcoffset()
+    except Exception:
+        pass
+    else:
+        if type(offset) is timedelta and offset == timedelta(0):
+            return now.replace(tzinfo=timezone.utc)
+    raise ValueError
+
+
+def _validated_filter_request(
+    filters: FindingFilters, now: datetime
+) -> datetime:
+    try:
+        _validate_finding_filters(filters)
+        evaluated_at = _validated_filter_time(now)
+    except ValueError:
+        pass
+    else:
+        return evaluated_at
+    raise ValueError(_FINDING_FILTER_ERROR) from None
 
 
 def _bounded_filter_items(values: Iterable[object]) -> Iterable[object]:
@@ -299,6 +310,47 @@ def _bounded_filter_items(values: Iterable[object]) -> Iterable[object]:
             raise ValueError
         count += 1
         yield item
+
+
+def _materialized_filter_dispositions(
+    dispositions: Iterable[DispositionRecord],
+) -> tuple[DispositionRecord, ...]:
+    try:
+        candidates = tuple(_bounded_filter_items(dispositions))
+    except Exception:
+        pass
+    else:
+        try:
+            return tuple(_validated_filter_dispositions(candidates))
+        except ValueError:
+            pass
+    raise ValueError(_FINDING_FILTER_ERROR) from None
+
+
+def _indexed_filter_dispositions(
+    dispositions: Iterable[DispositionRecord],
+) -> dict[str, DispositionRecord]:
+    records = _materialized_filter_dispositions(dispositions)
+    try:
+        return disposition_index(records)
+    except ValueError:
+        pass
+    raise ValueError(_FINDING_FILTER_ERROR) from None
+
+
+def _materialized_filter_findings(
+    findings: Iterable[Finding],
+) -> tuple[Finding, ...]:
+    try:
+        candidates = tuple(_bounded_filter_items(findings))
+    except Exception:
+        pass
+    else:
+        try:
+            return tuple(_validated_filter_finding(candidate) for candidate in candidates)
+        except ValueError:
+            pass
+    raise ValueError(_FINDING_FILTER_ERROR) from None
 
 
 def _validated_filter_dispositions(

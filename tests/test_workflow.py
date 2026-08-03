@@ -722,6 +722,7 @@ def _assert_finding_filter_invalid(call: Callable[[], object]) -> None:
         assert marker not in str(raised.value)
         assert marker not in repr(raised.value)
     assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
 
 
 def _assert_finding_filter_chain_is_private(
@@ -738,7 +739,7 @@ def _assert_finding_filter_chain_is_private(
     assert marker not in repr((error, error.__cause__, error.__context__))
 
 
-def test_finding_filters_clear_hostile_validation_exception_chain(
+def test_finding_filters_propagate_internal_validation_runtime_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fail_validation(_filters: object) -> None:
@@ -750,19 +751,38 @@ def test_finding_filters_clear_hostile_validation_exception_chain(
         fail_validation,
     )
 
-    _assert_finding_filter_chain_is_private(FindingFilters, FILTER_CHAIN_SECRET)
+    with pytest.raises(RuntimeError, match=f"^{FILTER_CHAIN_SECRET}$") as raised:
+        FindingFilters()
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
 
 
-def test_filter_findings_clears_hostile_processing_exception_chain() -> None:
+@pytest.mark.parametrize("failure_point", ("iter", "next"))
+def test_filter_findings_normalize_hostile_iterable_exception_chain(
+    failure_point: str,
+) -> None:
     filters = FindingFilters()
 
     class SecretExplodingIterable:
         def __iter__(self) -> Iterator[object]:
             raise RuntimeError(FILTER_CHAIN_SECRET)
 
+    class SecretExplodingIterator:
+        def __iter__(self) -> Iterator[object]:
+            return self
+
+        def __next__(self) -> object:
+            raise RuntimeError(FILTER_CHAIN_SECRET)
+
+    findings: object = (
+        SecretExplodingIterable()
+        if failure_point == "iter"
+        else SecretExplodingIterator()
+    )
     _assert_finding_filter_chain_is_private(
         lambda: filter_findings(
-            SecretExplodingIterable(),
+            findings,  # type: ignore[arg-type]
             (),
             filters,
             now=FILTER_NOW,
@@ -1194,6 +1214,21 @@ def test_filter_findings_indexes_original_valid_disposition_record(
     assert indexed[0] is record
 
 
+def test_filter_findings_propagates_internal_disposition_index_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_index(_records: object) -> object:
+        raise RuntimeError(FILTER_CHAIN_SECRET)
+
+    monkeypatch.setattr(workflow_module, "disposition_index", fail_index)
+
+    with pytest.raises(RuntimeError, match=f"^{FILTER_CHAIN_SECRET}$") as raised:
+        filter_findings((), (), FindingFilters(), now=FILTER_NOW)
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
+
 @pytest.mark.parametrize(
     "now",
     (
@@ -1239,25 +1274,26 @@ def test_filter_findings_validates_evaluation_time_once(
     assert counting_utc.calls == 1
 
 
-def test_filter_findings_normalizes_dependency_equality_failures(
+def test_filter_findings_propagates_internal_evaluation_runtime_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     findings, dispositions = _filter_fixture()
-    explosive = ExplosiveEquality(FILTER_PRIVATE_MARKER)
 
     def fail_evaluation(*_args: object, **_kwargs: object) -> object:
-        return explosive == object()
+        raise RuntimeError(FILTER_CHAIN_SECRET)
 
     monkeypatch.setattr(workflow_module, "evaluate_disposition", fail_evaluation)
 
-    _assert_finding_filter_invalid(
-        lambda: filter_findings(
+    with pytest.raises(RuntimeError, match=f"^{FILTER_CHAIN_SECRET}$") as raised:
+        filter_findings(
             findings,
             dispositions,
             FindingFilters(),
             now=FILTER_NOW,
         )
-    )
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
 
 
 def test_finding_filter_repr_and_errors_do_not_expose_disposition_details() -> None:
