@@ -570,7 +570,7 @@ Commit: `Add transient aggregate report comparison UI`
 - Modify: `docs/superpowers/plans/2026-08-02-agentguardian-windows-mvp-hardening.md`
 - Modify: `docs/superpowers/plans/2026-08-03-agentguardian-windows-workflow-report-hardening.md`
 
-- [ ] **Step 1: Add failing documentation and capability assertions**
+- [x] **Step 1: Add failing documentation and capability assertions**
 
 Require current docs to state:
 
@@ -584,30 +584,30 @@ Require current docs to state:
 - same-user/path-race/clock/aggregate-collision/dependency/binary limits; and
 - Batches 5-6, Windows MVP, and production safety remain open.
 
-- [ ] **Step 2: Run documentation assertions and verify RED**
+- [x] **Step 2: Run documentation assertions and verify RED**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_self_audit.py -k batch_4`
 
 Expected: missing current status documentation.
 
-- [ ] **Step 3: Update only verified behavior in docs**
+- [x] **Step 3: Update only verified behavior in docs**
 
 Record local implementation evidence only. Do not claim remote CI or Batch 4
 acceptance before the final SHA workflows complete.
 
-- [ ] **Step 4: Regenerate the exact reviewed-source manifest**
+- [x] **Step 4: Regenerate the exact reviewed-source manifest**
 
 Update canonical source SHA-256 values for every package `.py` module, including
 the two new modules. Do not weaken exact module-set checks or sign/attest claims.
 
-- [ ] **Step 5: Run focused source-policy and wheel tests**
+- [x] **Step 5: Run focused source-policy and wheel tests**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_self_audit.py tests/test_packaging.py`
 
 Expected: source manifest matches exactly; wheel contains the policy and rules;
 offline extraction probe passes.
 
-- [ ] **Step 6: Run the complete local gate on Python 3.14**
+- [x] **Step 6: Run the complete local gate on Python 3.14**
 
 Run: `rtk pytest -q -p no:cacheprovider`
 
@@ -624,13 +624,13 @@ Run with `PYTHONPATH=src`:
 Expected: zero failures, no whitespace errors, `findings=[]`, `local_only=true`,
 and `network_capability=not_detected`. Record skips separately.
 
-- [ ] **Step 7: Run the complete local gate on Python 3.12**
+- [x] **Step 7: Run the complete local gate on Python 3.12**
 
 Use the available locked local test environment without mixing incompatible
 binary packages. Run the full suite and source compilation. Record any local
 environment limitation separately; do not convert it into code success.
 
-- [ ] **Step 8: Commit local Batch 4 evidence**
+- [x] **Step 8: Commit local Batch 4 evidence**
 
 Commit: `Document Batch 4 local verification`
 

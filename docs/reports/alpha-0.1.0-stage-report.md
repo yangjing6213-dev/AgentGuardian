@@ -181,3 +181,26 @@ Batch 3 本地实现、自动门禁、独立安全复审和最终 SHA 远程验�
 - 残余限制不变：清单未签名，同一用户可同时替换代码和清单；有限启发式不是语义证明；依赖和二进制未扫描；DPAPI 同用户、主机时钟、路径别名、文件移动、路径检查竞态和不可变 bytes 副本限制继续存在。
 
 当前证据支持 Batch 3 本地实现、自动门禁、独立安全复审和最终 SHA 远程验收，Batch 3 已完成。该验收不构成生产安全结论。Batches 4-6 仍待完成；Founder Alpha 继续保持非生产、Windows MVP 不完整状态，不建立生产安全结论。
+
+## 11. Windows MVP 硬化 Batch 4：工作流与报告硬化
+
+Batch 4 Task 1-8 已在本地实现。每次扫描都需要与当前范围绑定的明确同意；范围预览不遍历目录，扫描回调会重新校验并消费同意。覆盖状态固定为 `complete`、`limited` 和 `no_supported_files`，不完整结果不能用于确认安全。严重性、风险领域和处置状态筛选仅影响界面可见行，导出仍包含完整当前审计，不改变分数、报告、处置或受保护状态。
+
+基线比较仅支持 JSON。用户必须显式选择一个不超过 2 MiB 的本地 AgentGuardian 报告；加载器拒绝 UNC、reparse、非普通文件和超限读取。解析器只接受精确的 legacy schema 0 和 report schema 1，且校验不证明报告真实性。比较仅保留类别聚合；聚合比较结果只在内存中瞬态保留，不匹配单个 finding，不导出稳定的跨扫描 finding 标识符，也不保留完整路径、原始 JSON、证据、指纹或处置详情。显式读取一个基线文件不会增加环境目录扫描、网络、API 调用或写入能力。
+
+残余限制仍包括 DPAPI 无法抵御同一用户控制、文件检查后的路径竞态、主机时钟与路径别名影响、类别聚合碰撞，以及静态自审计不覆盖依赖和二进制。OpenAI Provider 仍仅做本地适配、检测与人工指引，不默认调用 API。
+
+### Batch 4 当前本地证据
+
+- 本轮门禁运行在以 Task 8 提交 `71cdc81fdf372f3deace33005137d69e5a0cd6bc` 为父提交的 Task 9 工作树；Task 9 只修改文档、文档断言和精确源码清单，不修改运行时 `.py` 代码。
+- 文档 RED：`rtk pytest -q -p no:cacheprovider tests/test_self_audit.py -k batch_4` 首次为 `1 failed`，缺少 README Batch 4 状态；文档更新后为 `1 passed`。
+- Python 3.14：`D:\python3.14\python.exe`，`3.14.0`；`rtk pytest -q -p no:cacheprovider` 为 `1174 passed, 8 skipped, 0 failed`。
+- Python 3.12：`C:\Users\HU\AppData\Local\Programs\Python\Python312\python.exe`，`3.12.2`；现有本地 wheelhouse 先通过 `--dry-run --no-index --require-hashes` 与 `requirements-dev.lock` 校验，再只解压到临时目录，并用 `-S` 禁用系统 site-packages。未安装或混用 Python 3.14 包。完整测试为 `1174 passed, 8 skipped, 0 failed`，测试后已删除临时解压目录。
+- 8 项 skip 均因当前 Windows 用户缺少 symlink 创建权限：app smoke 目录/文件 symlink 2 项、discovery 3 项、report comparison 2 项、state store 1 项。junction 已测试；skip 不构成对应 symlink 场景通过证据。
+- `tests/test_self_audit.py tests/test_packaging.py` 聚焦门禁：`132 passed`；精确清单包含全部 16 个包内 `.py` 模块和 `workflow.py`、`report_comparison.py`。
+- Python 3.14 与隔离 Python 3.12 的品牌校验、`compileall -q src` 均退出 0；`git diff --check` 退出 0，无输出。
+- 两个解释器使用 `PYTHONPATH=src` 的自审结果均为 `findings=[]`、`local_only=true`、`network_capability=not_detected`、`ordinary_user_mode=true`；规则 SHA-256 为 `83a14590d59f61a3c6aede084644fdbbd9f5cff6f55794b9af60e385e053ccba`。范围仍是 `package_source_policy`，依赖和二进制未扫描。
+- 当前 Batch 4 GitHub CI 尚未重新验证；没有把 Batch 3 的历史远程运行当作当前 Batch 4 证据。
+- Task 10 的独立规格、安全和质量复审，以及最终 SHA 的 push/Draft PR CI 证据仍待执行。
+
+Batches 5-6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。

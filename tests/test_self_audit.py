@@ -1280,3 +1280,61 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         assert forbidden not in disposition_plan, (
             f"disposition plan contains premature status: {forbidden}"
         )
+
+
+def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    architecture = (PROJECT_ROOT / "docs" / "architecture.md").read_text(
+        encoding="utf-8"
+    )
+    report = (
+        PROJECT_ROOT / "docs" / "reports" / "alpha-0.1.0-stage-report.md"
+    ).read_text(encoding="utf-8")
+    hardening_plan = (
+        PROJECT_ROOT / "docs" / "superpowers" / "plans"
+        / "2026-08-02-agentguardian-windows-mvp-hardening.md"
+    ).read_text(encoding="utf-8")
+    combined = "\n".join((readme, architecture, report, hardening_plan))
+
+    assert "工作流与报告硬化 Batch 4" in readme
+    assert "Task 9 完整本地门禁已重新通过" in readme
+    assert "Task 9 的完整本地门禁" not in readme
+    assert "## Windows MVP Batch 4 工作流与报告硬化" in architecture
+    assert "## 11. Windows MVP 硬化 Batch 4：工作流与报告硬化" in report
+    assert "尚待本节提交" not in report
+    assert "## Batch 4 Local Implementation Status" in hardening_plan
+
+    for required in (
+        "每次扫描都需要与当前范围绑定的明确同意",
+        "`complete`、`limited` 和 `no_supported_files`",
+        "不完整结果不能用于确认安全",
+        "筛选仅影响界面可见行，导出仍包含完整当前审计",
+        "2 MiB",
+        "仅支持 JSON",
+        "聚合比较结果只在内存中瞬态保留",
+        "只接受精确的 legacy schema 0 和 report schema 1",
+        "不证明报告真实性",
+        "不匹配单个 finding",
+        "不导出稳定的跨扫描 finding 标识符",
+        "不会增加环境目录扫描、网络、API 调用或写入能力",
+        "同一用户控制",
+        "路径竞态",
+        "主机时钟",
+        "聚合碰撞",
+        "依赖和二进制",
+        "symlink 创建权限",
+        "junction 已测试",
+        "当前 Batch 4 GitHub CI 尚未重新验证",
+        "Batches 5-6 仍待完成",
+        "Windows MVP 尚未完成",
+        "未形成生产安全结论",
+    ):
+        assert required in combined
+
+    for premature in (
+        "Batch 4 已完成",
+        "Batch 4 accepted",
+        "Windows MVP 已完成",
+        "已达到生产安全",
+    ):
+        assert premature not in combined
