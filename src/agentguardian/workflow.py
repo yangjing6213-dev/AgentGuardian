@@ -51,8 +51,10 @@ class FindingFilters:
     def __post_init__(self) -> None:
         try:
             _validate_finding_filters(self)
+            return
         except Exception:
-            raise ValueError(_FINDING_FILTER_ERROR) from None
+            pass
+        raise ValueError(_FINDING_FILTER_ERROR) from None
 
 
 COVERAGE_STATE_LABELS = MappingProxyType(
@@ -212,7 +214,8 @@ def filter_findings(
                 visible.append(finding)
         return tuple(visible)
     except Exception:
-        raise ValueError(_FINDING_FILTER_ERROR) from None
+        pass
+    raise ValueError(_FINDING_FILTER_ERROR) from None
 
 
 def _classify_validated_coverage(score: Score) -> CoverageState:

@@ -527,6 +527,7 @@ def test_coverage_classifier_rejects_forged_malformed_score_fields(
 FILTER_NOW = datetime(2026, 8, 3, 10, tzinfo=timezone.utc)
 FILTER_PRIVATE_MARKER = r"C:\private\RAW_MATCH_REVIEW_SECRET.txt"
 FILTER_RAW_SECRET = "sk-proj-PRIVATE_RAW_SECRET_MARKER"
+FILTER_CHAIN_SECRET = "UNIQUE_FINDING_FILTER_CHAIN_SECRET_7F31A9"
 
 
 class _FilterDatetimeSubclass(datetime):
@@ -721,6 +722,53 @@ def _assert_finding_filter_invalid(call: Callable[[], object]) -> None:
         assert marker not in str(raised.value)
         assert marker not in repr(raised.value)
     assert raised.value.__cause__ is None
+
+
+def _assert_finding_filter_chain_is_private(
+    call: Callable[[], object], marker: str
+) -> None:
+    with pytest.raises(ValueError) as raised:
+        call()
+
+    error = raised.value
+    assert str(error) == "FINDING_FILTER_INVALID"
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert marker not in repr(error)
+    assert marker not in repr((error, error.__cause__, error.__context__))
+
+
+def test_finding_filters_clear_hostile_validation_exception_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_validation(_filters: object) -> None:
+        raise RuntimeError(FILTER_CHAIN_SECRET)
+
+    monkeypatch.setattr(
+        workflow_module,
+        "_validate_finding_filters",
+        fail_validation,
+    )
+
+    _assert_finding_filter_chain_is_private(FindingFilters, FILTER_CHAIN_SECRET)
+
+
+def test_filter_findings_clears_hostile_processing_exception_chain() -> None:
+    filters = FindingFilters()
+
+    class SecretExplodingIterable:
+        def __iter__(self) -> Iterator[object]:
+            raise RuntimeError(FILTER_CHAIN_SECRET)
+
+    _assert_finding_filter_chain_is_private(
+        lambda: filter_findings(
+            SecretExplodingIterable(),
+            (),
+            filters,
+            now=FILTER_NOW,
+        ),
+        FILTER_CHAIN_SECRET,
+    )
 
 
 def test_finding_filters_are_exact_frozen_slotted_and_private() -> None:
