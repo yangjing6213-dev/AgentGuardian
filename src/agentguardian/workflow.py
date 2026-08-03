@@ -296,7 +296,7 @@ def _validated_filter_request(
     try:
         _validate_finding_filters(filters)
         evaluated_at = _validated_filter_time(now)
-    except ValueError:
+    except (AttributeError, ValueError):
         pass
     else:
         return evaluated_at
@@ -322,7 +322,7 @@ def _materialized_filter_dispositions(
     else:
         try:
             return tuple(_validated_filter_dispositions(candidates))
-        except ValueError:
+        except (AttributeError, ValueError):
             pass
     raise ValueError(_FINDING_FILTER_ERROR) from None
 
@@ -348,7 +348,7 @@ def _materialized_filter_findings(
     else:
         try:
             return tuple(_validated_filter_finding(candidate) for candidate in candidates)
-        except ValueError:
+        except (AttributeError, ValueError):
             pass
     raise ValueError(_FINDING_FILTER_ERROR) from None
 

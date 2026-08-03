@@ -1152,6 +1152,59 @@ def test_filter_findings_revalidates_forged_finding_and_evidence_invariants(
 
 
 @pytest.mark.parametrize(
+    "target",
+    ("filters", "disposition", "finding", "evidence"),
+)
+def test_filter_findings_normalizes_exact_missing_slot_inputs(target: str) -> None:
+    filters: object = FindingFilters()
+    findings: object = ()
+    dispositions: object = ()
+    if target == "filters":
+        filters = object.__new__(FindingFilters)
+        object.__setattr__(filters, "domain", RiskDomain.EXPOSURE)
+        object.__setattr__(filters, "disposition_state", None)
+    elif target == "disposition":
+        record = object.__new__(DispositionRecord)
+        for field_name, value in {
+            "disposition_ref": FILTER_PRIVATE_MARKER,
+            "rule_id": "RULE_10",
+            "status": DispositionStatus.FALSE_POSITIVE,
+            "reason": "Synthetic reason",
+            "reviewer": "Synthetic reviewer",
+            "created_at": "2026-08-03T09:00:00Z",
+        }.items():
+            object.__setattr__(record, field_name, value)
+        dispositions = (record,)
+    else:
+        finding = object.__new__(Finding)
+        finding_fields: dict[str, object] = {
+            "rule_id": FILTER_PRIVATE_MARKER,
+            "domain": RiskDomain.EXPOSURE,
+            "severity": Severity.LOW,
+            "root_fingerprint": "a" * 64,
+            "disposition_ref": None,
+        }
+        if target == "evidence":
+            evidence = object.__new__(Evidence)
+            object.__setattr__(evidence, "source", FILTER_PRIVATE_MARKER)
+            object.__setattr__(evidence, "fingerprint", "b" * 64)
+            finding_fields["rule_id"] = "RULE_10"
+            finding_fields["evidence"] = (evidence,)
+        for field_name, value in finding_fields.items():
+            object.__setattr__(finding, field_name, value)
+        findings = (finding,)
+
+    _assert_finding_filter_invalid(
+        lambda: filter_findings(  # type: ignore[arg-type]
+            findings,
+            dispositions,
+            filters,
+            now=FILTER_NOW,
+        )
+    )
+
+
+@pytest.mark.parametrize(
     ("field_name", "invalid_value"),
     (
         ("status", "false_positive"),
