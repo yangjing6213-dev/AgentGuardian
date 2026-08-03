@@ -165,7 +165,7 @@ Commit: `Add workflow consent contracts`
 - Modify: `src/agentguardian/reporting.py`
 - Modify: `tests/test_reporting.py`
 
-- [ ] **Step 1: Write failing JSON schema tests**
+- [x] **Step 1: Write failing JSON schema tests**
 
 Require top-level `report_schema == 1` and require both score objects to contain
 the same exact `coverage_state`. Replace historical arbitrary synthetic limit
@@ -180,36 +180,36 @@ assert payload["reviewed_score"]["coverage_state"] == "limited"
 
 Add complete and no-supported-file cases and retain deterministic JSON equality.
 
-- [ ] **Step 2: Run JSON tests and verify RED**
+- [x] **Step 2: Run JSON tests and verify RED**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_reporting.py -k 'schema or coverage'`
 
 Expected: missing schema and coverage-state fields.
 
-- [ ] **Step 3: Implement schema 1 through the workflow classifier**
+- [x] **Step 3: Implement schema 1 through the workflow classifier**
 
 Call the single Task 1 classifier from `_validated_score_data`. Do not duplicate
 coverage rules in `reporting.py`.
 
-- [ ] **Step 4: Write failing score-consistency and HTML tests**
+- [x] **Step 4: Write failing score-consistency and HTML tests**
 
 Require technical and reviewed scores to share coverage, confidence,
 incomplete, limits, and coverage state. Require deterministic HTML labels for
 all three states and fixed safe reason descriptions. Contradictory pairs must
 raise `ValueError("REPORT_INVALID")`.
 
-- [ ] **Step 5: Run the new tests and verify RED**
+- [x] **Step 5: Run the new tests and verify RED**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_reporting.py -k 'consistency or html'`
 
 Expected: mismatched scores are accepted or HTML omits the explicit state.
 
-- [ ] **Step 6: Implement consistency validation and HTML output**
+- [x] **Step 6: Implement consistency validation and HTML output**
 
 Preserve escaping, ordering, report item bounds, disposition privacy, and the
 existing technical/reviewed totals.
 
-- [ ] **Step 7: Run reporting regression tests and commit**
+- [x] **Step 7: Run reporting regression tests and commit**
 
 Run: `rtk pytest -q -p no:cacheprovider tests/test_reporting.py tests/test_scoring.py`
 

@@ -2,7 +2,6 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from html import escape
 import json
-from math import isfinite
 
 from . import __version__
 from .dispositions import (
@@ -11,6 +10,12 @@ from .dispositions import (
     evaluate_disposition,
 )
 from .domain import Evidence, Finding, RiskDomain, Score, Severity
+from .workflow import (
+    COVERAGE_LIMIT_LABELS,
+    COVERAGE_STATE_LABELS,
+    CoverageState,
+    classify_coverage,
+)
 
 
 _PRODUCT = "AgentGuardian"
@@ -49,6 +54,7 @@ def render_json(
         report = {
             "product": _PRODUCT,
             "version": __version__,
+            "report_schema": 1,
             "rule_version": rule_version,
             "score": technical,
             "reviewed_score": reviewed,
@@ -100,6 +106,7 @@ def render_html(
             cap_reason = current_score["cap_reason"]
             if cap_reason is None:
                 cap_reason = "None"
+            coverage_state = CoverageState(current_score["coverage_state"])
             parts.extend(
                 (
                     f"<h2>{label} score</h2>",
@@ -121,13 +128,22 @@ def render_html(
                     f"<p>Confidence: {_text(current_score['confidence'])}</p>",
                     "<p>Incomplete: "
                     f"{_text(str(current_score['incomplete']).lower())}</p>",
+                    f"<p>Coverage state: {_text(coverage_state.value)}</p>",
+                    "<p>Coverage state label: "
+                    f"{_text(COVERAGE_STATE_LABELS[coverage_state])}</p>",
                     "<h3>Limits</h3>",
                     "<ul>",
                 )
             )
             for limit in current_score["limits"]:
-                parts.append(f"<li>{_text(limit)}</li>")
+                parts.append(f"<li>{_text(COVERAGE_LIMIT_LABELS[limit])}</li>")
             parts.append("</ul>")
+            if coverage_state is CoverageState.COMPLETE:
+                parts.append("<p>已完成配置范围扫描。</p>")
+            else:
+                parts.append(
+                    "<p>本次结果不能证明系统、账户、提供商或端点安全。</p>"
+                )
         parts.append("<h2>Findings</h2>")
 
         for finding, disposition in prepared:
@@ -196,6 +212,14 @@ def _prepare_report(
         if reviewed_score is None
         else _validated_score_data(reviewed_score)
     )
+    if (
+        technical["coverage"] != reviewed["coverage"]
+        or technical["confidence"] != reviewed["confidence"]
+        or technical["incomplete"] != reviewed["incomplete"]
+        or technical["limits"] != reviewed["limits"]
+        or technical["coverage_state"] != reviewed["coverage_state"]
+    ):
+        raise ValueError(_ERROR)
     if type(rule_version) is not str:
         raise ValueError(_ERROR)
     now = _validated_report_time(evaluated_at)
@@ -230,8 +254,7 @@ def _prepare_report(
 
 
 def _validated_score_data(score: Score) -> dict[str, object]:
-    if type(score) is not Score:
-        raise ValueError(_ERROR)
+    coverage_state = classify_coverage(score)
     total = score.total
     deductions = score.deductions
     cap_reason = score.cap_reason
@@ -239,40 +262,10 @@ def _validated_score_data(score: Score) -> dict[str, object]:
     confidence = score.confidence
     limits = score.limits
     incomplete = score.incomplete
-    if type(total) is not int or not 0 <= total <= 100:
-        raise ValueError(_ERROR)
-    if type(deductions) is not tuple:
-        raise ValueError(_ERROR)
     deduction_data: list[dict[str, object]] = []
     for deduction in deductions:
-        if type(deduction) is not tuple:
-            raise ValueError(_ERROR)
         domain, amount = deduction
-        if (
-            type(domain) is not RiskDomain
-            or type(amount) is not int
-            or amount < 0
-        ):
-            raise ValueError(_ERROR)
         deduction_data.append({"domain": domain.value, "amount": amount})
-    if cap_reason is not None and type(cap_reason) is not str:
-        raise ValueError(_ERROR)
-    for ratio in (coverage, confidence):
-        if (
-            (type(ratio) is not int and type(ratio) is not float)
-            or not isfinite(ratio)
-            or not 0 <= ratio <= 1
-        ):
-            raise ValueError(_ERROR)
-    if type(limits) is not tuple:
-        raise ValueError(_ERROR)
-    limit_data: list[str] = []
-    for limit in limits:
-        if type(limit) is not str:
-            raise ValueError(_ERROR)
-        limit_data.append(limit)
-    if type(incomplete) is not bool:
-        raise ValueError(_ERROR)
     return {
         "total": total,
         "deductions": deduction_data,
@@ -280,7 +273,8 @@ def _validated_score_data(score: Score) -> dict[str, object]:
         "coverage": coverage,
         "confidence": confidence,
         "incomplete": incomplete,
-        "limits": limit_data,
+        "limits": [limit for limit in limits],
+        "coverage_state": coverage_state.value,
     }
 
 

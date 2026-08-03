@@ -17,6 +17,7 @@ from agentguardian.dispositions import (
 from agentguardian.domain import Evidence, Finding, RiskDomain, Score, Severity
 from agentguardian.reporting import render_html, render_json
 from agentguardian.scoring import score as calculate_score
+from agentguardian.workflow import classify_coverage
 
 
 EVALUATED_AT = datetime(2026, 8, 2, 12, tzinfo=timezone.utc)
@@ -167,7 +168,7 @@ def _score() -> Score:
         cap_reason="public_active_credential",
         coverage=0.75,
         confidence=0.8,
-        limits=("未扫描浏览器",),
+        limits=("file_scan_limited",),
         incomplete=True,
     )
 
@@ -369,7 +370,7 @@ def _reviewed_report_inputs() -> tuple[
     scoring_options = {
         "coverage": 0.75,
         "confidence": 0.8,
-        "limits": ("browser not scanned",),
+        "limits": ("file_scan_limited",),
     }
     technical = calculate_score(findings, **scoring_options)
     reviewed = calculate_score(
@@ -395,6 +396,7 @@ def _expected_score_data(score: Score) -> dict[str, object]:
         "confidence": score.confidence,
         "incomplete": score.incomplete,
         "limits": list(score.limits),
+        "coverage_state": classify_coverage(score).value,
     }
 
 
@@ -715,7 +717,8 @@ def test_render_json_contains_safe_complete_deterministic_report() -> None:
         "coverage": 0.75,
         "confidence": 0.8,
         "incomplete": True,
-        "limits": ["未扫描浏览器"],
+        "limits": ["file_scan_limited"],
+        "coverage_state": "limited",
     }
     assert report["reviewed_score"] == report["score"]
     assert all(
@@ -732,6 +735,94 @@ def test_render_json_contains_safe_complete_deterministic_report() -> None:
     assert evidence[0]["hmac_fingerprint"] == "c" * 64
     assert evidence[0]["masked"] == "身份证号：********1234"
     assert "身份证号" in first
+
+
+@pytest.mark.parametrize(
+    ("score", "coverage_state"),
+    (
+        (_unchecked_score(), "complete"),
+        (_score(), "limited"),
+        (
+            _unchecked_score(
+                coverage=0.0,
+                confidence=0.0,
+                limits=("no_supported_files",),
+                incomplete=True,
+            ),
+            "no_supported_files",
+        ),
+    ),
+)
+def test_render_json_schema_exposes_exact_coverage_state(
+    score: Score,
+    coverage_state: str,
+) -> None:
+    report = json.loads(render_json(score, (), rule_version="rules-1"))
+
+    assert report["report_schema"] == 1
+    assert report["score"]["coverage_state"] == coverage_state
+    assert report["reviewed_score"]["coverage_state"] == coverage_state
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
+@pytest.mark.parametrize(
+    "reviewed_score",
+    (
+        _unchecked_score(
+            coverage=0.5,
+            confidence=0.8,
+            limits=("file_scan_limited",),
+            incomplete=True,
+        ),
+        _unchecked_score(
+            coverage=0.75,
+            confidence=0.5,
+            limits=("file_scan_limited",),
+            incomplete=True,
+        ),
+        _unchecked_score(
+            coverage=0.75,
+            confidence=0.8,
+            limits=("byte_limit_reached",),
+            incomplete=True,
+        ),
+        _unchecked_score(confidence=0.8),
+    ),
+    ids=("coverage", "confidence", "limits", "incomplete-state"),
+)
+def test_renderers_reject_score_coverage_consistency_mismatches(
+    renderer: object,
+    reviewed_score: Score,
+) -> None:
+    _assert_report_invalid(
+        renderer,
+        _score(),
+        (),
+        reviewed_score=reviewed_score,
+    )
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
+def test_renderers_require_exact_score_limit_order(renderer: object) -> None:
+    technical = _unchecked_score(
+        coverage=0.75,
+        confidence=0.8,
+        limits=("byte_limit_reached", "file_scan_limited"),
+        incomplete=True,
+    )
+    reviewed = _unchecked_score(
+        coverage=0.75,
+        confidence=0.8,
+        limits=("file_scan_limited", "byte_limit_reached"),
+        incomplete=True,
+    )
+
+    _assert_report_invalid(
+        renderer,
+        technical,
+        (),
+        reviewed_score=reviewed,
+    )
 
 
 def test_render_json_exports_exact_reviewed_dispositions_from_one_shot_inputs() -> None:
@@ -882,6 +973,20 @@ def test_real_detection_scoring_reporting_chain_keeps_raw_data_private() -> None
         _unchecked_score(confidence=math.inf),
         _unchecked_score(limits=[]),
         _unchecked_score(limits=(_LeakyStr(REPORT_MARKER),)),
+        _unchecked_score(limits=("unknown_limit",), incomplete=True),
+        _unchecked_score(limits=("file_scan_limited",)),
+        _unchecked_score(coverage=0.5),
+        _unchecked_score(incomplete=True),
+        _unchecked_score(
+            coverage=0.5,
+            limits=("no_supported_files",),
+            incomplete=True,
+        ),
+        _unchecked_score(
+            coverage=0.0,
+            limits=("no_supported_files", "file_scan_limited"),
+            incomplete=True,
+        ),
         _unchecked_score(incomplete=1),
     ),
     ids=(
@@ -899,6 +1004,12 @@ def test_real_detection_scoring_reporting_chain_keeps_raw_data_private() -> None
         "infinite-confidence",
         "list-limits",
         "string-subclass-limit",
+        "unknown-limit",
+        "complete-with-limit",
+        "complete-with-partial-coverage",
+        "incomplete-without-limit-or-gap",
+        "no-supported-files-with-coverage",
+        "no-supported-files-with-extra-limit",
         "integer-incomplete",
     ),
 )
@@ -933,7 +1044,7 @@ def test_render_html_escapes_every_dynamic_text_field() -> None:
         malicious,
         1.0,
         0.5,
-        (malicious,),
+        ("file_scan_limited",),
         True,
     )
 
@@ -959,7 +1070,9 @@ def test_render_html_contains_requested_score_and_finding_fields() -> None:
         "public_active_credential",
         "0.75",
         "0.8",
-        "未扫描浏览器",
+        "覆盖受限",
+        "文件扫描受限",
+        "本次结果不能证明系统、账户、提供商或端点安全。",
         "Z_RULE",
         "凭据.env",
         "身份证号：********1234",
@@ -972,6 +1085,52 @@ def test_render_html_contains_requested_score_and_finding_fields() -> None:
     assert "<h2>Reviewed score</h2>" in rendered
     assert rendered.count("<p>Disposition status: open</p>") == 2
     assert "Disposition reason:" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("score", "state", "state_label", "reason_label", "incomplete"),
+    (
+        (_unchecked_score(), "complete", "已完成", None, False),
+        (_score(), "limited", "覆盖受限", "文件扫描受限", True),
+        (
+            _unchecked_score(
+                coverage=0.0,
+                confidence=0.0,
+                limits=("no_supported_files",),
+                incomplete=True,
+            ),
+            "no_supported_files",
+            "无支持文件",
+            "未发现支持的文件",
+            True,
+        ),
+    ),
+)
+def test_render_html_uses_fixed_coverage_state_and_reason_labels(
+    score: Score,
+    state: str,
+    state_label: str,
+    reason_label: str | None,
+    incomplete: bool,
+) -> None:
+    first = render_html(score, (), rule_version="rules-1")
+    second = render_html(score, (), rule_version="rules-1")
+    disclaimer = "本次结果不能证明系统、账户、提供商或端点安全。"
+    completion = "已完成配置范围扫描。"
+
+    assert first == second
+    assert first.count(f"<p>Coverage state: {state}</p>") == 2
+    assert first.count(f"<p>Coverage state label: {state_label}</p>") == 2
+    if reason_label is not None:
+        assert first.count(f"<li>{reason_label}</li>") == 2
+    if incomplete:
+        assert first.count(f"<p>{disclaimer}</p>") == 2
+        assert completion not in first
+    else:
+        assert first.count(f"<p>{completion}</p>") == 2
+        assert disclaimer not in first
+        for unsafe_claim in ("系统安全", "账户安全", "提供商安全", "端点安全"):
+            assert unsafe_claim not in first
 
 
 def test_render_html_presents_complete_reviewed_scores_and_dispositions() -> None:
@@ -1014,7 +1173,9 @@ def test_render_html_presents_complete_reviewed_scores_and_dispositions() -> Non
         assert f"<p>Coverage: {audit_score.coverage}</p>" in section
         assert f"<p>Confidence: {audit_score.confidence}</p>" in section
         assert "<p>Incomplete: true</p>" in section
-        assert "browser not scanned" in section
+        assert "覆盖受限" in section
+        assert "文件扫描受限" in section
+        assert "本次结果不能证明系统、账户、提供商或端点安全。" in section
         for domain, amount in audit_score.deductions:
             assert f"<li>{domain.value}: {amount}</li>" in section
     assert "<p>Cap reason: public_active_credential</p>" in technical_section
@@ -1204,7 +1365,6 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
             ),
             ("from", 0, "html", (("escape", None),)),
             ("import", 0, None, (("json", None),)),
-            ("from", 0, "math", (("isfinite", None),)),
             ("from", 1, None, (("__version__", None),)),
             (
                 "from",
@@ -1228,6 +1388,17 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
                     ("Severity", None),
                 ),
             ),
+            (
+                "from",
+                1,
+                "workflow",
+                (
+                    ("COVERAGE_LIMIT_LABELS", None),
+                    ("COVERAGE_STATE_LABELS", None),
+                    ("CoverageState", None),
+                    ("classify_coverage", None),
+                ),
+            ),
         },
     }
     allowed_name_calls = {
@@ -1244,6 +1415,7 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
             "DispositionRecord",
             "Evidence",
             "Finding",
+            "CoverageState",
             "ValueError",
             "_bounded_items",
             "_disposition_data",
@@ -1255,10 +1427,10 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
             "_validated_dispositions",
             "_validated_score_data",
             "_validated_report_time",
+            "classify_coverage",
             "disposition_index",
             "escape",
             "evaluate_disposition",
-            "isfinite",
             "sorted",
             "str",
             "timedelta",
