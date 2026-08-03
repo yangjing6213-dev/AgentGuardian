@@ -764,14 +764,39 @@ def test_summary_validation_propagates_internal_classifier_defects(
     assert caught.value.__context__ is None
 
 
-@pytest.mark.parametrize("control", ("\x00", "\n", "\u202e"))
-def test_hostile_masked_evidence_controls_fail_closed(control: str) -> None:
-    payload = json.loads(_report_json())
-    payload["findings"][0]["evidence"][0]["masked"] = (
-        f"masked{control}value"
+@pytest.mark.parametrize(
+    "masked",
+    ("masked\x00value", "masked\nvalue", "masked\u202evalue"),
+)
+def test_renderer_round_trip_accepts_domain_valid_masked_text(
+    masked: str,
+) -> None:
+    findings = (
+        Finding(
+            "A_RULE",
+            RiskDomain.EXPOSURE,
+            Severity.LOW,
+            "a" * 64,
+            (Evidence("notes.txt", "b" * 64, masked),),
+        ),
+    )
+    report = render_json(
+        score(findings, coverage=1.0),
+        findings,
+        rule_version="rules-1",
     )
 
-    _assert_comparison_invalid(json.dumps(payload))
+    summary = parse_report_summary(report)
+
+    assert summary.technical_score == 99
+    assert summary.reviewed_score == 99
+    assert summary.coverage == 1.0
+    assert summary.coverage_state is CoverageState.COMPLETE
+    assert summary.finding_count == 1
+    assert summary.rule_counts == (("A_RULE", 1),)
+    assert summary.severity_counts == (("low", 1),)
+    assert summary.disposition_counts == (("open", 1),)
+    assert summary.limits == ()
 
 
 @pytest.mark.parametrize(

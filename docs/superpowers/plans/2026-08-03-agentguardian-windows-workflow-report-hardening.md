@@ -343,8 +343,8 @@ Commit: `Add aggregate report comparison`
 
 Review follow-up: recompute both scores from validated ephemeral findings,
 validate forged summary limits before sorting or set operations, classify
-summary coverage through the canonical contract, and reject masked control
-characters at the strict import boundary.
+summary coverage through the canonical contract, and validate masked text
+through the existing `Evidence` domain contract.
 
 ## Task 5: Add the Bounded Baseline File Boundary
 

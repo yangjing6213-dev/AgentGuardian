@@ -296,7 +296,6 @@ def _aggregate_findings(
                 for key in ("source", "hmac_fingerprint", "masked")
             ):
                 raise _InvalidReport
-            _safe_annotation(evidence["masked"], 80)
             evidence_items.append(
                 _domain_call(
                     Evidence,
