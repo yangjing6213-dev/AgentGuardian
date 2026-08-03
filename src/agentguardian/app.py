@@ -180,6 +180,30 @@ def _scope_preview_for(roots: tuple[Path, ...]) -> ScopePreview:
     )
 
 
+def _validated_audit_preview(
+    roots: tuple[Path, ...],
+    preview: object,
+) -> ScopePreview:
+    try:
+        if type(preview) is not ScopePreview:
+            raise ValueError
+        rebuilt = build_scope_preview(
+            roots,
+            preview.selectors,
+            max_files=preview.max_files,
+            max_entries=preview.max_entries,
+            max_bytes=preview.max_bytes,
+            max_findings=preview.max_findings,
+            max_evidence=preview.max_evidence,
+        )
+        if preview != rebuilt:
+            raise ValueError
+        return preview
+    except Exception:
+        pass
+    raise ValueError("SCOPE_PREVIEW_INVALID") from None
+
+
 def _coverage_status_text(audit_score: Score) -> str:
     state = classify_coverage(audit_score)
     parts = [
@@ -299,12 +323,19 @@ def _generate_key() -> bytes:
 def _validated_disposition_context(
     key: object,
     records: Iterable[DispositionRecord],
+    *,
+    max_records: int = MAX_AUDIT_FINDINGS,
 ) -> _DispositionContext:
     try:
-        if type(key) is not bytes or len(key) != 32:
+        if (
+            type(key) is not bytes
+            or len(key) != 32
+            or type(max_records) is not int
+            or max_records <= 0
+        ):
             raise ValueError
-        items = tuple(islice(records, MAX_AUDIT_FINDINGS + 1))
-        if len(items) > MAX_AUDIT_FINDINGS:
+        items = tuple(islice(records, max_records + 1))
+        if len(items) > max_records:
             raise ValueError
         rebuilt = []
         for record in items:
@@ -513,14 +544,17 @@ def _append_finding_batch(
     seen: set[Finding],
     batch: Iterable[Finding],
     evidence_count: int,
+    *,
+    max_findings: int,
+    max_evidence: int,
 ) -> tuple[int, bool]:
     for finding in batch:
         if finding in seen:
             continue
         next_evidence_count = evidence_count + len(finding.evidence)
         if (
-            len(aggregate) >= MAX_AUDIT_FINDINGS
-            or next_evidence_count > MAX_AUDIT_EVIDENCE
+            len(aggregate) >= max_findings
+            or next_evidence_count > max_evidence
         ):
             return evidence_count, False
         aggregate.append(finding)
@@ -532,6 +566,7 @@ def _append_finding_batch(
 def _run_audit(
     roots: tuple[Path, ...],
     *,
+    scope_preview: ScopePreview,
     disposition_key: bytes,
     dispositions: Iterable[DispositionRecord] = (),
     evaluated_at: datetime | None = None,
@@ -539,6 +574,7 @@ def _run_audit(
     frozen_roots = tuple(Path(os.path.abspath(root)) for root in roots)
     if any(_is_unc_path(root) for root in frozen_roots):
         raise ValueError("UNC scan roots are not allowed")
+    accepted_preview = _validated_audit_preview(frozen_roots, scope_preview)
     evaluation_time = (
         _validated_evaluation_time(evaluated_at)
         if evaluated_at is not None
@@ -547,6 +583,7 @@ def _run_audit(
     disposition_context = _validated_disposition_context(
         disposition_key,
         dispositions,
+        max_records=accepted_preview.max_findings,
     )
     local_disposition_key = disposition_context.key
     frozen_dispositions = disposition_context.records
@@ -556,9 +593,9 @@ def _run_audit(
     scan_key = _generate_key()
     discovery = discover_files(
         list(frozen_roots),
-        SUPPORTED_SUFFIXES,
-        max_files=MAX_AUDIT_FILES,
-        max_entries=MAX_AUDIT_ENTRIES,
+        accepted_preview.selectors,
+        max_files=accepted_preview.max_files,
+        max_entries=accepted_preview.max_entries,
     )
     files = list(discovery.files)
     findings: list[Finding] = []
@@ -575,7 +612,7 @@ def _run_audit(
         except OSError:
             limits.append("file_scan_limited")
             continue
-        if scanned_bytes + file_bytes > MAX_AUDIT_BYTES:
+        if scanned_bytes + file_bytes > accepted_preview.max_bytes:
             limits.append("byte_limit_reached")
             break
         scanned_bytes += file_bytes
@@ -589,7 +626,12 @@ def _run_audit(
             limits.append("file_scan_limited")
             continue
         evidence_count, batch_complete = _append_finding_batch(
-            findings, seen_findings, result.findings, evidence_count
+            findings,
+            seen_findings,
+            result.findings,
+            evidence_count,
+            max_findings=accepted_preview.max_findings,
+            max_evidence=accepted_preview.max_evidence,
         )
         if not batch_complete:
             limits.append("finding_limit_reached")
@@ -612,7 +654,12 @@ def _run_audit(
                 limits.append("mcp_config_scan_limited")
                 continue
             evidence_count, batch_complete = _append_finding_batch(
-                findings, seen_findings, mcp_findings, evidence_count
+                findings,
+                seen_findings,
+                mcp_findings,
+                evidence_count,
+                max_findings=accepted_preview.max_findings,
+                max_evidence=accepted_preview.max_evidence,
             )
             if not batch_complete:
                 limits.append("finding_limit_reached")
@@ -681,11 +728,16 @@ class AuditWorker(QObject):
     def __init__(
         self,
         roots: tuple[Path, ...],
+        scope_preview: ScopePreview,
         disposition_key: bytes,
         dispositions: Iterable[DispositionRecord],
     ) -> None:
         super().__init__()
         self._roots = tuple(roots)
+        self._scope_preview = _validated_audit_preview(
+            self._roots,
+            scope_preview,
+        )
         self._disposition_key = disposition_key
         self._dispositions = tuple(dispositions)
 
@@ -695,6 +747,7 @@ class AuditWorker(QObject):
             self.completed.emit(
                 _run_audit(
                     self._roots,
+                    scope_preview=self._scope_preview,
                     disposition_key=self._disposition_key,
                     dispositions=self._dispositions,
                 )
@@ -1130,6 +1183,7 @@ class AgentGuardianWindow(QMainWindow):
             self._thread = QThread(self)
             self._worker = AuditWorker(
                 self._roots,
+                expected_preview,
                 self._disposition_key,
                 self._dispositions,
             )

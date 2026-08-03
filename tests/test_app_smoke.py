@@ -86,6 +86,18 @@ def _approve_current_scope(window) -> None:
     assert window.scan_button.isEnabled()
 
 
+def _run_audit(
+    roots: tuple[Path, ...],
+    **kwargs: object,
+) -> app_module.AuditOutcome:
+    normalized_roots = tuple(Path(os.path.abspath(root)) for root in roots)
+    return app_module._run_audit(
+        roots,
+        scope_preview=app_module._scope_preview_for(normalized_roots),
+        **kwargs,
+    )
+
+
 def _global_rect(widget) -> QRect:
     return QRect(widget.mapToGlobal(QPoint(0, 0)), widget.size())
 
@@ -286,7 +298,7 @@ def test_discovery_limit_marks_audit_incomplete(
         ),
     )
 
-    outcome = app_module._run_audit(
+    outcome = _run_audit(
         (tmp_path,), disposition_key=DISPOSITION_KEY
     )
 
@@ -2258,7 +2270,7 @@ def test_openai_env_override_is_masked_end_to_end(qapp, tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    outcome = app_module._run_audit(
+    outcome = _run_audit(
         (tmp_path,), disposition_key=DISPOSITION_KEY
     )
 
@@ -2343,7 +2355,7 @@ def test_cross_scan_dispositions_keep_identity_and_reviewed_score_context(
     monkeypatch.setattr(app_module, "detect_file", capture_file)
     monkeypatch.setattr(app_module, "detect_mcp_config", capture_mcp)
 
-    first = app_module._run_audit(
+    first = _run_audit(
         (root,),
         disposition_key=disposition_key,
         evaluated_at=EVALUATED_AT,
@@ -2362,7 +2374,7 @@ def test_cross_scan_dispositions_keep_identity_and_reviewed_score_context(
         disposition_key=disposition_key,
         dispositions=(saved_record,),
     )
-    second = app_module._run_audit(
+    second = _run_audit(
         (root,),
         disposition_key=saved_state.disposition_key,
         dispositions=saved_state.dispositions,
@@ -2397,7 +2409,7 @@ def test_cross_scan_dispositions_keep_identity_and_reviewed_score_context(
     with pytest.raises(FrozenInstanceError):
         second.evaluated_at = datetime.now(timezone.utc)
 
-    accepted = app_module._run_audit(
+    accepted = _run_audit(
         (root,),
         disposition_key=disposition_key,
         dispositions=(
@@ -2405,7 +2417,7 @@ def test_cross_scan_dispositions_keep_identity_and_reviewed_score_context(
         ),
         evaluated_at=EVALUATED_AT,
     )
-    expired = app_module._run_audit(
+    expired = _run_audit(
         (root,),
         disposition_key=disposition_key,
         dispositions=(
@@ -2427,7 +2439,7 @@ def test_cross_scan_dispositions_keep_identity_and_reviewed_score_context(
     moved_root.mkdir()
     moved_path = moved_root / config_path.name
     config_path.replace(moved_path)
-    moved = app_module._run_audit(
+    moved = _run_audit(
         (moved_root,),
         disposition_key=disposition_key,
         dispositions=(saved_record,),
@@ -2490,7 +2502,7 @@ def test_production_audit_evaluates_expiry_after_detection_finishes(
     monkeypatch.setattr(app_module, "_utc_now", current_time)
     monkeypatch.setattr(app_module, "save_protected_state", saves.append)
 
-    outcome = app_module._run_audit(
+    outcome = _run_audit(
         (tmp_path,),
         disposition_key=DISPOSITION_KEY,
         dispositions=(record,),
@@ -2576,7 +2588,7 @@ def test_audit_freezes_relative_paths_before_cwd_changes_during_mcp_processing(
     monkeypatch.setattr(app_module, "detect_mcp_config", capture_mcp_source)
     monkeypatch.chdir(original)
 
-    outcome = app_module._run_audit(
+    outcome = _run_audit(
         (Path("relative"),),
         disposition_key=DISPOSITION_KEY,
         evaluated_at=EVALUATED_AT,
@@ -2623,7 +2635,7 @@ def test_scan_key_generation_fails_before_discovery_without_leaking(
     )
 
     with pytest.raises(ValueError, match="^invalid disposition context$") as error:
-        app_module._run_audit(
+        _run_audit(
             (tmp_path,),
             disposition_key=DISPOSITION_KEY,
             evaluated_at=EVALUATED_AT,
@@ -2642,7 +2654,12 @@ def test_worker_maps_scan_key_generation_failure_to_fixed_signal(
 ) -> None:
     marker = "synthetic-private-worker-marker"
     failures = []
-    worker = app_module.AuditWorker((tmp_path,), DISPOSITION_KEY, ())
+    worker = app_module.AuditWorker(
+        (tmp_path,),
+        app_module._scope_preview_for((tmp_path,)),
+        DISPOSITION_KEY,
+        (),
+    )
     worker.failed.connect(failures.append)
     monkeypatch.setattr(
         app_module.secrets,
@@ -2654,6 +2671,85 @@ def test_worker_maps_scan_key_generation_failure_to_fixed_signal(
 
     assert failures == ["scan_failed"]
     assert marker not in repr(failures)
+
+
+def test_worker_uses_accepted_preview_after_selector_and_cap_replacement(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "accepted-root"
+    root.mkdir()
+    files = tuple(root / name for name in ("a.txt", "b.txt"))
+    for path in files:
+        path.write_bytes(b"xx")
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: str(root),
+    )
+    window = create_window()
+    window.folder_button.click()
+    _approve_current_scope(window)
+    accepted_preview = window._scope_preview
+    assert accepted_preview is not None
+    worker = app_module.AuditWorker(
+        (root,),
+        accepted_preview,
+        DISPOSITION_KEY,
+        (),
+    )
+    captured = {}
+    completed = []
+    failures = []
+    worker.completed.connect(completed.append)
+    worker.failed.connect(failures.append)
+
+    def discover(roots, selectors, *, max_files, max_entries):
+        captured.update(
+            roots=tuple(roots),
+            selectors=selectors,
+            max_files=max_files,
+            max_entries=max_entries,
+        )
+        return _discovery_result(files)
+
+    monkeypatch.setattr(app_module, "discover_files", discover)
+    monkeypatch.setattr(
+        app_module,
+        "detect_file",
+        lambda path, *, scan_key, disposition_key: FileDetectionResult(
+            (_synthetic_finding(1 if path == files[0] else 2),),
+            True,
+            (),
+        ),
+    )
+    monkeypatch.setattr(app_module, "SUPPORTED_SUFFIXES", (".replacement",))
+    monkeypatch.setattr(app_module, "MAX_AUDIT_FILES", 1)
+    monkeypatch.setattr(app_module, "MAX_AUDIT_ENTRIES", 2)
+    monkeypatch.setattr(app_module, "MAX_AUDIT_BYTES", 1)
+    monkeypatch.setattr(app_module, "MAX_AUDIT_FINDINGS", 1)
+    monkeypatch.setattr(app_module, "MAX_AUDIT_EVIDENCE", 1)
+
+    worker.run()
+
+    assert failures == []
+    assert len(completed) == 1
+    assert captured == {
+        "roots": (root,),
+        "selectors": accepted_preview.selectors,
+        "max_files": accepted_preview.max_files,
+        "max_entries": accepted_preview.max_entries,
+    }
+    assert completed[0].findings == (
+        _synthetic_finding(1),
+        _synthetic_finding(2),
+    )
+    assert completed[0].score.coverage == 1.0
+    assert completed[0].score.limits == ()
+    assert str(root).casefold() not in repr(accepted_preview).casefold()
+    assert str(root).casefold() not in repr(worker).casefold()
+    window.close()
 
 
 def test_disposition_context_validation_consumes_once_without_length_hint() -> None:
@@ -2800,7 +2896,7 @@ def test_invalid_audit_context_stops_before_randomness_and_callbacks(
     )
 
     with pytest.raises(ValueError, match="^invalid disposition context$") as error:
-        app_module._run_audit(
+        _run_audit(
             (tmp_path,),
             disposition_key=key,
             dispositions=dispositions,
@@ -2869,7 +2965,7 @@ def test_protected_state_is_saved_only_after_explicit_action(
 
     assert not window.protected_state_button.isEnabled()
     assert saved == []
-    outcome = app_module._run_audit(
+    outcome = _run_audit(
         (tmp_path,), disposition_key=DISPOSITION_KEY
     )
     assert saved == []
@@ -2915,10 +3011,16 @@ def test_normal_audit_lifecycle_never_saves_protected_state(
     real_worker = app_module.AuditWorker
 
     class CapturingWorker(real_worker):
-        def __init__(self, roots, disposition_key, dispositions):
-            super().__init__(roots, disposition_key, dispositions)
+        def __init__(self, roots, scope_preview, disposition_key, dispositions):
+            super().__init__(
+                roots,
+                scope_preview,
+                disposition_key,
+                dispositions,
+            )
             worker_context.update(
                 roots=self._roots,
+                scope_preview=self._scope_preview,
                 disposition_key=self._disposition_key,
                 dispositions=self._dispositions,
                 representation=repr(self),
@@ -2948,6 +3050,7 @@ def test_normal_audit_lifecycle_never_saves_protected_state(
     _approve_current_scope(window)
     window.scan_button.click()
     assert worker_context["roots"] == (root,)
+    assert worker_context["scope_preview"] is window._scope_preview
     assert worker_context["disposition_key"] == window._disposition_key
     assert type(worker_context["dispositions"]) is tuple
     assert repr(window._disposition_key) not in worker_context["representation"]
@@ -2968,7 +3071,7 @@ def test_protected_state_failure_uses_fixed_safe_message(
     qapp, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     (tmp_path / "safe.txt").write_text("safe", encoding="utf-8")
-    outcome = app_module._run_audit(
+    outcome = _run_audit(
         (tmp_path,), disposition_key=DISPOSITION_KEY
     )
     messages = []
@@ -3168,7 +3271,7 @@ def test_unc_paths_are_rejected_before_filesystem_access(monkeypatch):
     with pytest.raises(ValueError, match="UNC"):
         export_new_report(unc_root / "report.json", "unsafe", [])
     with pytest.raises(ValueError, match="UNC"):
-        app_module._run_audit((unc_root,), disposition_key=DISPOSITION_KEY)
+        _run_audit((unc_root,), disposition_key=DISPOSITION_KEY)
 
 
 def test_folder_selection_rejects_unc_root(qapp, monkeypatch):
@@ -3359,7 +3462,11 @@ def test_discovery_uses_the_exact_selector_tuple_from_the_accepted_preview(
     _approve_current_scope(window)
     accepted_preview = window._scope_preview
 
-    app_module._run_audit((root,), disposition_key=DISPOSITION_KEY)
+    app_module._run_audit(
+        (root,),
+        scope_preview=accepted_preview,
+        disposition_key=DISPOSITION_KEY,
+    )
 
     assert type(app_module.SUPPORTED_SUFFIXES) is tuple
     assert accepted_preview.selectors is app_module.SUPPORTED_SUFFIXES
@@ -3406,7 +3513,7 @@ def test_export_uses_roots_that_produced_report(qapp, monkeypatch, tmp_path):
     current_root = tmp_path / "current-root"
     report_root.mkdir()
     current_root.mkdir()
-    outcome = app_module._run_audit(
+    outcome = _run_audit(
         (report_root,), disposition_key=DISPOSITION_KEY
     )
     window = create_window()
@@ -3675,7 +3782,7 @@ def test_audit_finding_cap_stops_remaining_files_and_uses_complete_coverage(
 
     monkeypatch.setattr(app_module, "detect_file", fake_detect_file)
 
-    outcome = app_module._run_audit(
+    outcome = _run_audit(
         (tmp_path,), disposition_key=DISPOSITION_KEY
     )
 
@@ -3717,7 +3824,7 @@ def test_audit_evidence_cap_rejects_partial_finding_batch(monkeypatch, tmp_path)
 
     monkeypatch.setattr(app_module, "detect_file", fake_detect_file)
 
-    outcome = app_module._run_audit(
+    outcome = _run_audit(
         (tmp_path,), disposition_key=DISPOSITION_KEY
     )
 
@@ -3746,7 +3853,7 @@ def test_discovery_file_sentinel_marks_scan_incomplete(monkeypatch, tmp_path):
     monkeypatch.setattr(app_module, "discover_files", fake_discover)
     monkeypatch.setattr(app_module, "detect_file", fake_detect_file)
 
-    outcome = app_module._run_audit(
+    outcome = _run_audit(
         (tmp_path,), disposition_key=DISPOSITION_KEY
     )
 
@@ -3775,7 +3882,7 @@ def test_total_byte_limit_stops_before_over_budget_file(monkeypatch, tmp_path):
 
     monkeypatch.setattr(app_module, "detect_file", fake_detect_file)
 
-    outcome = app_module._run_audit(
+    outcome = _run_audit(
         (tmp_path,), disposition_key=DISPOSITION_KEY
     )
 
@@ -3811,7 +3918,7 @@ def test_duplicate_findings_are_aggregated_once(monkeypatch, tmp_path):
         ),
     )
 
-    outcome = app_module._run_audit(
+    outcome = _run_audit(
         (tmp_path,), disposition_key=DISPOSITION_KEY
     )
 
