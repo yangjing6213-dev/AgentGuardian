@@ -16,6 +16,7 @@ _WINDOWS_RESERVED_DEVICE_NAMES = frozenset(
     {"con", "nul", "prn", "aux", "conin$", "conout$"}
     | {f"com{number}" for number in range(1, 10)}
     | {f"lpt{number}" for number in range(1, 10)}
+    | {f"{prefix}{number}" for prefix in ("com", "lpt") for number in "¹²³"}
 )
 
 

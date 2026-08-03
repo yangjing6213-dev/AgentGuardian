@@ -38,6 +38,8 @@ WINDOWS_RESERVED_COMPONENTS = tuple(
         "AUX",
         *(f"COM{number}" for number in range(1, 10)),
         *(f"LPT{number}" for number in range(1, 10)),
+        *(f"COM{number}" for number in "¹²³"),
+        *(f"LPT{number}" for number in "¹²³"),
         "CONIN$",
         "CONOUT$",
     )
