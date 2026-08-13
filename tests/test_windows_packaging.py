@@ -2,6 +2,8 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
+from types import SimpleNamespace
 import zipfile
 from datetime import datetime, timezone
 
@@ -15,11 +17,13 @@ from scripts.build_windows_portable import (
     filter_qt_gui_binaries,
     portable_component_specs,
     reviewed_source_paths,
+    runtime_library_versions,
     validate_relative_paths,
     write_portable_evidence,
     validate_frozen_layout,
     validate_git_build_context,
     validate_build_time,
+    _pe_version,
 )
 
 
@@ -459,3 +463,30 @@ def test_build_time_requires_canonical_utc_seconds() -> None:
     ):
         with pytest.raises(ValueError, match="canonical UTC"):
             validate_build_time(invalid)
+
+
+def test_pe_version_parses_version_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed = SimpleNamespace(
+        FileVersionMS=(3 << 16) | 12,
+        FileVersionLS=(2 << 16),
+    )
+
+    def fake_pe(path: str, *, fast_load: bool) -> object:
+        assert path == "runtime.dll"
+        assert fast_load is False
+        return SimpleNamespace(VS_FIXEDFILEINFO=[fixed])
+
+    monkeypatch.setitem(sys.modules, "pefile", SimpleNamespace(PE=fake_pe))
+
+    assert _pe_version(Path("runtime.dll")) == "3.12.2.0"
+
+
+def test_runtime_library_versions_use_semantic_versions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("platform.python_version", lambda: "3.12.2")
+    monkeypatch.setattr("ssl.OPENSSL_VERSION", "OpenSSL 3.0.13 30 Jan 2024")
+
+    assert runtime_library_versions() == ("3.12.2", "3.0.13")

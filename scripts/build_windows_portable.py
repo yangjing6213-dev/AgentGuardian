@@ -7,12 +7,14 @@ from datetime import datetime, timezone
 import json
 import hashlib
 import os
+import platform
 from pathlib import Path
 from pathlib import PurePosixPath
 import shutil
 import stat
 import subprocess
 import sys
+import ssl
 from uuid import UUID, uuid5
 import zipfile
 
@@ -345,9 +347,10 @@ def build_portable(
     bundle_root = output_root / "dist" / "AgentGuardian"
     validate_frozen_layout(bundle_root, project_root)
     internal = bundle_root / "_internal"
+    python_version, openssl_version = runtime_library_versions()
     components = portable_component_specs(
-        python_version=_pe_version(internal / "python312.dll"),
-        openssl_version=_pe_version(internal / "libcrypto-3.dll"),
+        python_version=python_version,
+        openssl_version=openssl_version,
         vc_runtime_version=_pe_version(internal / "VCRUNTIME140.dll"),
         ucrt_version=_pe_version(internal / "ucrtbase.dll"),
     )
@@ -376,18 +379,23 @@ def _git(project_root: Path, *arguments: str) -> str:
     ).stdout.strip()
 
 
+def runtime_library_versions() -> tuple[str, str]:
+    openssl_version = ssl.OPENSSL_VERSION.split()[1]
+    return platform.python_version(), openssl_version
+
+
 def _pe_version(path: Path) -> str:
     import pefile
 
-    pe = pefile.PE(str(path), fast_load=True)
+    pe = pefile.PE(str(path), fast_load=False)
     fixed = pe.VS_FIXEDFILEINFO[0]
     return ".".join(
         str(value)
         for value in (
-            fixed.dwFileVersionMS >> 16,
-            fixed.dwFileVersionMS & 0xFFFF,
-            fixed.dwFileVersionLS >> 16,
-            fixed.dwFileVersionLS & 0xFFFF,
+            fixed.FileVersionMS >> 16,
+            fixed.FileVersionMS & 0xFFFF,
+            fixed.FileVersionLS >> 16,
+            fixed.FileVersionLS & 0xFFFF,
         )
     )
 
