@@ -186,7 +186,7 @@ Batch 3 本地实现、自动门禁、独立安全复审和最终 SHA 远程验�
 
 Batch 4 Task 1-8 已在本地实现。每次扫描都需要与当前范围绑定的明确同意；范围预览不遍历目录，扫描回调会重新校验并消费同意。覆盖状态固定为 `complete`、`limited` 和 `no_supported_files`，不完整结果不能用于确认安全。严重性、风险领域和处置状态筛选仅影响界面可见行，导出仍包含完整当前审计，不改变分数、报告、处置或受保护状态。
 
-基线比较仅支持 JSON。用户必须显式选择一个不超过 2 MiB 的本地 AgentGuardian 报告；加载器拒绝 UNC、reparse、非普通文件和超限读取。当前 Task 10 修复树已让 JSON 生成与导入共享最多 2,000 个 findings、4,000 条 evidence 和 2 MiB UTF-8 的预算；HTML 只共享两项数量上限。新 report schema 1 写入规范 UTC 秒级 `evaluated_at`；`evaluated_at` 是无默认值的 keyword-only 必填参数，不存在隐藏时钟路径，相同输入（包括该时点）生成逐字节相同的 JSON 和 HTML。生成器先有界物化 findings 和处置，再以声明分数的 coverage、confidence、limits 精确复算技术分和复核分；省略 reviewed score 时使用复算值，任何矛盾固定失败。解析器按同一时点重新验证非 `open` 处置和复核分；缺少该时点的旧 schema 1 与 legacy schema 0 只接受所有处置均为 `open` 的可独立重算报告。规则版本、cap reason 和规则 ID 使用同一安全元数据契约；长基线 basename 省略显示，tooltip 不含目录。上述实现仍待 Task 10 独立复审和完整门禁，不构成验收。校验不证明报告真实性。比较仅保留类别聚合；聚合比较结果只在内存中瞬态保留，不匹配单个 finding，不导出稳定的跨扫描 finding 标识符，也不保留完整路径、原始 JSON、证据、指纹或处置详情。显式读取一个基线文件不会增加环境目录扫描、网络、API 调用或写入能力。
+基线比较仅支持 JSON。用户必须显式选择一个不超过 2 MiB 的本地 AgentGuardian 报告；加载器拒绝 UNC、reparse、非普通文件和超限读取。当前 Task 10 修复树已让 JSON 生成与导入共享最多 2,000 个 findings、4,000 条 evidence 和 2 MiB UTF-8 的预算；HTML 只共享两项数量上限。新 report schema 1 写入规范 UTC 秒级 `evaluated_at`；`evaluated_at` 是无默认值的 keyword-only 必填参数，不存在隐藏时钟路径，相同输入（包括该时点）生成逐字节相同的 JSON 和 HTML。生成器先有界物化 findings 和处置，再以声明分数的 coverage、confidence、limits 精确复算技术分和复核分；省略 reviewed score 时使用复算值，任何矛盾固定失败。解析器按同一时点重新验证非 `open` 处置和复核分；缺少该时点的旧 schema 1 与 legacy schema 0 只接受所有处置均为 `open` 的可独立重算报告。规则版本、cap reason 和规则 ID 使用同一安全元数据契约；长基线 basename 省略显示，tooltip 不含目录。上述实现已完成当前 SHA 的 Task 10 独立复审和完整本地门禁，但 Task 10 最终 SHA 的 push/Draft PR CI 证据仍待执行，不构成远程验收。校验不证明报告真实性。比较仅保留类别聚合；聚合比较结果只在内存中瞬态保留，不匹配单个 finding，不导出稳定的跨扫描 finding 标识符，也不保留完整路径、原始 JSON、证据、指纹或处置详情。显式读取一个基线文件不会增加环境目录扫描、网络、API 调用或写入能力。
 
 残余限制仍包括 DPAPI 无法抵御同一用户控制、文件检查后的路径竞态、主机时钟与路径别名影响、类别聚合碰撞，以及静态自审计不覆盖依赖和二进制。OpenAI Provider 仍仅做本地适配、检测与人工指引，不默认调用 API。
 
@@ -200,9 +200,11 @@ Batch 4 Task 1-8 已在本地实现。每次扫描都需要与当前范围绑定
 - 该提交的 `tests/test_self_audit.py tests/test_packaging.py` 聚焦门禁：`132 passed`；精确清单包含全部 16 个包内 `.py` 模块和 `workflow.py`、`report_comparison.py`。
 - Python 3.14 与隔离 Python 3.12 的品牌校验、`compileall -q src` 均退出 0；`git diff --check` 退出 0，无输出。
 - 两个解释器使用 `PYTHONPATH=src` 的自审结果均为 `findings=[]`、`local_only=true`、`network_capability=not_detected`、`ordinary_user_mode=true`；规则 SHA-256 为 `83a14590d59f61a3c6aede084644fdbbd9f5cff6f55794b9af60e385e053ccba`。范围仍是 `package_source_policy`，依赖和二进制未扫描。
-- 2026-08-13，截至 `9d87f972df6c5021482cf6dfc01b0ecf8ced86c9` 的仅断言提交已重新运行同一聚焦门禁，结果为 `143 passed`；这些提交不修改运行时或包源码。
-- 本节不把后续文档/测试同步提交声明为被该结果覆盖，也不形成自证循环。Task 10 仍需在当前复审 HEAD 重新运行两个 Python 版本的完整门禁。
+- 2026-08-13，Task 10 当前复审实现为 `d1c3e9caa856812d0bdd3221b0c6a7083da937ff`。独立规格复审和独立安全/质量复审结论均绑定该 SHA，发现计数为 Critical：0；Important：0；Minor：0。
+- 该 SHA 的 Python 3.14.0 完整门禁和使用 `requirements-dev.lock` 哈希锁定依赖临时隔离的 Python 3.12.2 完整门禁均为 `1264 passed, 8 skipped, 0 failed`；聚焦 `tests/test_self_audit.py tests/test_packaging.py` 门禁为 `152 passed`。
+- 两个解释器的品牌校验、`compileall -q src` 和 package-source self-audit 均通过；自审仍为 `findings=[]`、`local_only=true`、`network_capability=not_detected`。
+- 本节不把该 SHA 之后的文档/测试证据同步提交声明为被这些本地结果覆盖，也不形成自证循环。
 - 当前 Batch 4 GitHub CI 尚未重新验证；没有把 Batch 3 的历史远程运行当作当前 Batch 4 证据。
-- Task 10 的独立规格、安全和质量复审，以及最终 SHA 的 push/Draft PR CI 证据仍待执行。
+- Task 10 最终 SHA 的 push/Draft PR CI 证据仍待执行。
 
 Batches 5-6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。

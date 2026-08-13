@@ -1665,7 +1665,12 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
         _assert_no_machine_specific_paths(document, status)
     owned_details = {
         "README": (
-            "Task 10 的独立复审和最终 SHA 远程验收尚未完成",
+            "Task 10 的本地独立复审和双 Python 完整门禁已绑定",
+            "`d1c3e9caa856812d0bdd3221b0c6a7083da937ff`",
+            "Critical、Important、Minor 均为 0",
+            "`1264 passed, 8 skipped, 0 failed`",
+            "`152 passed`",
+            "该 SHA 之后的文档/测试证据同步提交不由这些本地结果自动覆盖",
             "每次扫描都需要与当前范围绑定的明确同意",
             "`complete`、`limited` 和 `no_supported_files`",
             "不完整结果不能用于确认安全",
@@ -1676,11 +1681,6 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
             "2026-08-03 的 Task 9 证据提交",
             "`991bf81bb520e7f2ec12f331fbbe714f03212507`",
             "绑定该提交的历史证据",
-            "截至 `9d87f972df6c5021482cf6dfc01b0ecf8ced86c9` 的仅断言提交",
-            "`143 passed`",
-            "不修改运行时或包源码",
-            "后续文档/测试同步提交不由该结果自动覆盖",
-            "Task 10 仍需在当前复审 HEAD 重新运行 Python 3.14 和 Python 3.12 完整门禁",
             "规范 UTC 秒级 `evaluated_at`",
             "最多 2,000 个 findings、4,000 条 evidence 和 2 MiB UTF-8",
             "旧 schema 1 和 legacy schema 0 仅在所有处置均为 `open`",
@@ -1700,10 +1700,11 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
             "2026-08-03",
             "`991bf81bb520e7f2ec12f331fbbe714f03212507`",
             "绑定该 SHA 的历史证据",
-            "`9d87f972df6c5021482cf6dfc01b0ecf8ced86c9`",
-            "`143 passed`",
-            "不是当前复审 HEAD 的完整门禁",
-            "Task 10 仍需重新运行 Python 3.14 和 Python 3.12 完整门禁",
+            "`d1c3e9caa856812d0bdd3221b0c6a7083da937ff`",
+            "独立规格复审和独立安全/质量复审均为零发现",
+            "`1264 passed, 8 skipped, 0 failed`",
+            "哈希锁定依赖临时隔离",
+            "该 SHA 之后的文档/测试证据同步提交不由这些本地结果自动覆盖",
             "最多 2,000 个 findings、4,000 条 evidence 和 2 MiB UTF-8",
             "生成器用同一个已验证时点计算处置状态、复核分并序列化",
             "任何不可验证的非 `open` 处置失败关闭",
@@ -1725,25 +1726,27 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
             "symlink 创建权限",
             "junction 已测试",
             "2026-08-13",
-            "`9d87f972df6c5021482cf6dfc01b0ecf8ced86c9`",
-            "`143 passed`",
-            "不修改运行时或包源码",
-            "不把后续文档/测试同步提交声明为被该结果覆盖",
-            "Task 10 仍需在当前复审 HEAD 重新运行两个 Python 版本的完整门禁",
-            "Task 10 的独立规格、安全和质量复审",
+            "`d1c3e9caa856812d0bdd3221b0c6a7083da937ff`",
+            "独立规格复审和独立安全/质量复审",
+            "Critical：0；Important：0；Minor：0",
+            "`1264 passed, 8 skipped, 0 failed`",
+            "`152 passed`",
+            "哈希锁定依赖临时隔离",
+            "不把该 SHA 之后的文档/测试证据同步提交声明为被这些本地结果覆盖",
             "当前 Task 10 修复树",
             "最多 2,000 个 findings、4,000 条 evidence 和 2 MiB UTF-8",
-            "上述实现仍待 Task 10 独立复审和完整门禁",
+            "Task 10 最终 SHA 的 push/Draft PR CI 证据仍待执行",
         ),
         "Windows MVP hardening plan": (
             "Task 1-8 已在本地实现",
             "2026-08-03",
             "`991bf81bb520e7f2ec12f331fbbe714f03212507`",
             "2026-08-13",
-            "`9d87f972df6c5021482cf6dfc01b0ecf8ced86c9`",
-            "`143 passed`",
-            "Task 10 仍需在当前复审 HEAD 重新运行 Python 3.14 和 Python 3.12 完整门禁",
-            "Task 10 的独立复审和最终 SHA 远程证据未执行",
+            "`d1c3e9caa856812d0bdd3221b0c6a7083da937ff`",
+            "独立规格复审和独立安全/质量复审均为零发现",
+            "`1264 passed, 8 skipped, 0 failed`",
+            "哈希锁定依赖临时隔离",
+            "Task 10 的最终 SHA 远程证据未执行",
             "规范 UTC 秒级 `evaluated_at`",
             "旧 schema 1 与 legacy schema 0 仅兼容全 `open` 报告",
             "长 basename 省略显示且 tooltip 不含目录",
@@ -1814,7 +1817,7 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
         for phrase in required:
             assert phrase in text, f"{document} missing report contract: {phrase}"
     assert (
-        "Task 1-8 implementation is local; Task 9 full-gate evidence is bound to "
+        "Task 1-8 implementation is local; Task 9 historical evidence is bound to "
         "`991bf81bb520e7f2ec12f331fbbe714f03212507`"
     ) in hardening_plan
     normalized_task_9 = " ".join(task_9.split())
@@ -1831,8 +1834,8 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
 
     assert re.findall(r"- \[x\] \*\*Step (\d):", task_9) == list("12345678")
     assert "- [ ] **Step" not in task_9
-    assert re.findall(r"- \[ \] \*\*Step (\d):", task_10) == list("1234567")
-    assert "- [x] **Step" not in task_10
+    assert re.findall(r"- \[x\] \*\*Step (\d):", task_10) == list("1234")
+    assert re.findall(r"- \[ \] \*\*Step (\d):", task_10) == list("567")
 
     assert "Task 9 的完整本地门禁" not in readme_status
     assert "尚待本节提交" not in report_status
@@ -1873,7 +1876,7 @@ def _replace_document_text(
         ),
         (
             "docs/superpowers/plans/2026-08-02-agentguardian-windows-mvp-hardening.md",
-            "Task 10 的独立复审和最终 SHA 远程证据未执行",
+            "Task 10 的最终 SHA 远程证据未执行",
             "Windows MVP hardening plan",
         ),
     ),
