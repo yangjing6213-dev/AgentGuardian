@@ -181,9 +181,18 @@ codes.
 import json
 from datetime import datetime, timezone
 
+from agentguardian.reporting import render_json
+from agentguardian.scoring import score
+
+findings = ()
+technical_score = score(
+    findings,
+    coverage=0.75,
+    limits=("file_scan_limited",),
+)
 payload = json.loads(
     render_json(
-        score,
+        technical_score,
         findings,
         rule_version="rules-1",
         evaluated_at=datetime(2026, 8, 3, 12, tzinfo=timezone.utc),

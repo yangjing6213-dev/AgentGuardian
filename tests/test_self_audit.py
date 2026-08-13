@@ -1424,12 +1424,34 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
 
     assert task_2_sample is not None
     sample = task_2_sample.group(1)
-    assert "import json" in sample
-    assert "from datetime import datetime, timezone" in sample
-    assert (
-        "evaluated_at=datetime(2026, 8, 3, 12, tzinfo=timezone.utc)"
-        in sample
-    )
+    namespace: dict[str, object] = {}
+    exec(compile(sample, "<task-2-report-example>", "exec"), namespace)
+    payload = namespace["payload"]
+    expected_score = {
+        "total": 100,
+        "deductions": [
+            {"domain": risk_domain.value, "amount": 0}
+            for risk_domain in domain.RiskDomain
+        ],
+        "cap_reason": None,
+        "coverage": 0.75,
+        "confidence": 1.0,
+        "incomplete": True,
+        "limits": ["file_scan_limited"],
+        "coverage_state": "limited",
+    }
+
+    assert type(payload) is dict
+    assert payload == {
+        "product": "AgentGuardian",
+        "version": __version__,
+        "report_schema": 1,
+        "evaluated_at": "2026-08-03T12:00:00Z",
+        "rule_version": "rules-1",
+        "score": expected_score,
+        "reviewed_score": expected_score,
+        "findings": [],
+    }
 
     readme_status = _extract_unique_current_section(
         "README",
