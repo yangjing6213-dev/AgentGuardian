@@ -490,3 +490,28 @@ def test_runtime_library_versions_use_semantic_versions(
     monkeypatch.setattr("ssl.OPENSSL_VERSION", "OpenSSL 3.0.13 30 Jan 2024")
 
     assert runtime_library_versions() == ("3.12.2", "3.0.13")
+
+
+def test_windows_portable_verifier_enforces_isolated_smoke_and_cleanup() -> None:
+    script = PROJECT_ROOT / "scripts" / "verify_windows_portable.ps1"
+    text = script.read_text(encoding="utf-8")
+
+    for required in (
+        "$BundleRoot",
+        "$TestRoot",
+        '"APPDATA"',
+        '"LOCALAPPDATA"',
+        '"TEMP"',
+        '"TMP"',
+        '"QT_QPA_PLATFORM"',
+        "Copy-Item",
+        "Start-Process",
+        ".HasExited",
+        "Stop-Process",
+        "Remove-Item",
+        "declared_residue",
+    ):
+        assert required in text
+
+    assert "Invoke-WebRequest" not in text
+    assert "Invoke-RestMethod" not in text
