@@ -1336,8 +1336,9 @@ def _assert_current_batch_4_status(
 ) -> None:
     for required in required_phrases:
         assert required in status, f"{document} missing Batch 4 status: {required}"
+    normalized_status = " ".join(status.split())
     for pattern in _PREMATURE_BATCH_4_STATUS_PATTERNS:
-        match = re.search(pattern, status, re.IGNORECASE)
+        match = re.search(pattern, normalized_status, re.IGNORECASE)
         assert match is None, (
             f"{document} contains premature Batch 4 status: {match.group(0)}"
         )
@@ -1438,6 +1439,8 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
         _assert_current_batch_4_status(
             document, status, incomplete_boundary + owned_details[document]
         )
+    _assert_current_batch_4_status("Task 9 plan", task_9, ())
+    _assert_current_batch_4_status("Task 10 plan", task_10, ())
 
     assert "不默认访问 OpenAI API" in readme
     assert "不默认访问 OpenAI API" in architecture
@@ -1524,5 +1527,37 @@ def test_batch_4_doc_contract_rejects_alternate_premature_claims(
 ) -> None:
     current = "当前 Batch 4 GitHub CI 尚未重新验证"
     _replace_document_text(monkeypatch, "README.md", current, f"{current}。{claim}")
+    with pytest.raises(AssertionError, match="README"):
+        test_docs_track_batch_4_workflow_and_report_boundaries()
+
+
+def test_batch_4_doc_contract_rejects_premature_claim_in_task_10(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = (
+        "docs/superpowers/plans/"
+        "2026-08-03-agentguardian-windows-workflow-report-hardening.md"
+    )
+    heading = "## Task 10: Independent Review and Final-SHA Remote Evidence"
+    _replace_document_text(
+        monkeypatch,
+        plan,
+        heading,
+        f"{heading}\n\nGitHub CI 已通过",
+    )
+    with pytest.raises(AssertionError, match="Task 10"):
+        test_docs_track_batch_4_workflow_and_report_boundaries()
+
+
+def test_batch_4_doc_contract_rejects_multiline_premature_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = "当前 Batch 4 GitHub CI 尚未重新验证"
+    _replace_document_text(
+        monkeypatch,
+        "README.md",
+        current,
+        f"{current}。GitHub CI\n已通过",
+    )
     with pytest.raises(AssertionError, match="README"):
         test_docs_track_batch_4_workflow_and_report_boundaries()
