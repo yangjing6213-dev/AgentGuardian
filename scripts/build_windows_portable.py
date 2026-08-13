@@ -125,6 +125,7 @@ def portable_component_specs(
         _component("Microsoft Universal C Runtime", ucrt_version, "NOASSERTION", "runtime"),
         _component("Microsoft Visual C++ Runtime", vc_runtime_version, "NOASSERTION", "runtime"),
         _component("PyInstaller", versions["pyinstaller"], "GPL-2.0-or-later WITH Bootloader-exception", "build-time"),
+        _component("PyInstaller Bootloader", versions["pyinstaller"], "GPL-2.0-or-later WITH Bootloader-exception", "runtime"),
         _component("PySide6", versions["pyside6"], qt_license, "runtime"),
         _component("PySide6_Addons", versions["pyside6-addons"], qt_license, "runtime"),
         _component("PySide6_Essentials", versions["pyside6-essentials"], qt_license, "runtime"),

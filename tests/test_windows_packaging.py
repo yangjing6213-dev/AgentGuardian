@@ -13,6 +13,7 @@ from scripts.build_windows_portable import (
     artifact_manifest,
     build_pyinstaller_command,
     canonical_json_bytes,
+    cyclonedx_bom_bytes,
     deterministic_zip,
     filter_qt_gui_binaries,
     portable_component_specs,
@@ -289,6 +290,7 @@ def test_portable_component_specs_separate_runtime_and_build_tools() -> None:
         "CPython",
         "OpenSSL",
         "PyInstaller",
+        "PyInstaller Bootloader",
         "PySide6",
         "PySide6_Addons",
         "PySide6_Essentials",
@@ -303,6 +305,10 @@ def test_portable_component_specs_separate_runtime_and_build_tools() -> None:
     assert by_name["Microsoft Visual C++ Runtime"]["license"] == "NOASSERTION"
     assert by_name["Microsoft Universal C Runtime"]["license"] == "NOASSERTION"
     assert by_name["PyInstaller"]["role"] == "build-time"
+    assert by_name["PyInstaller Bootloader"]["role"] == "runtime"
+    assert by_name["PyInstaller Bootloader"]["license"] == (
+        "GPL-2.0-or-later WITH Bootloader-exception"
+    )
     for name in ("PySide6", "PySide6_Addons", "PySide6_Essentials", "shiboken6"):
         assert by_name[name]["role"] == "runtime"
         assert by_name[name]["license"] == (
@@ -324,6 +330,33 @@ def test_third_party_notices_keep_qt_and_signing_limits_explicit() -> None:
         "unsigned development artifact",
     ):
         assert required in notices
+
+
+def test_cyclonedx_tracks_embedded_bootloader_as_runtime_dependency() -> None:
+    pytest.importorskip("cyclonedx")
+    specs = portable_component_specs(
+        python_version="3.12.2",
+        openssl_version="3.0.13",
+        vc_runtime_version="14.38.33126.1",
+        ucrt_version="10.0.19041.1",
+    )
+    bom = json.loads(
+        cyclonedx_bom_bytes(
+            specs,
+            build_id="a" * 40,
+            built_at=datetime(2026, 8, 14, tzinfo=timezone.utc),
+        )
+    )
+    by_name = {component["name"]: component for component in bom["components"]}
+    dependencies = {dependency["ref"]: dependency for dependency in bom["dependencies"]}
+    root_ref = bom["metadata"]["component"]["bom-ref"]
+    bootloader_ref = by_name["PyInstaller Bootloader"]["bom-ref"]
+    tool_ref = by_name["PyInstaller"]["bom-ref"]
+
+    assert by_name["PyInstaller Bootloader"]["scope"] == "required"
+    assert by_name["PyInstaller"]["scope"] == "excluded"
+    assert bootloader_ref in dependencies[root_ref]["dependsOn"]
+    assert tool_ref not in dependencies[root_ref]["dependsOn"]
 
 
 def test_portable_evidence_is_canonical_and_excludes_its_own_checksums(
