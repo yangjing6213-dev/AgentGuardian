@@ -1157,6 +1157,13 @@ def test_docs_track_openai_local_provider_hardening_batch() -> None:
     assert "Windows MVP 硬化批次 1" in spec
 
 
+def test_readme_does_not_claim_self_audit_exposes_interpreter_path() -> None:
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "运行解释器路径" not in readme
+    assert "Python 版本" in readme
+
+
 def test_docs_track_protected_evidence_state_boundaries() -> None:
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
     architecture = (PROJECT_ROOT / "docs" / "architecture.md").read_text(
