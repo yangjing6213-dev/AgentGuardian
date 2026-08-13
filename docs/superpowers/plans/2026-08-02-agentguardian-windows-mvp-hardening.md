@@ -26,7 +26,7 @@
 | 1 | OpenAI local Provider hardening | Detect local OpenAI key and base-URL override evidence, cover the official Codex user config root, route OpenAI findings to manual OpenAI guidance, and retain zero network/LLM capability. |
 | 2 | [Protected local evidence state](2026-08-02-agentguardian-protected-evidence-state.md) | Completed in `6f87445`, `8780a4d`, and `e8e01f9`; local gate, independent review, push CI `30715647491`, and Draft PR CI `30715649117` passed. Persists only rule IDs, fixed rule-owned summaries, scan metadata, and HMAC references under Windows DPAPI; never raw matches or scan keys; corrupted state fails closed. |
 | 3 | [Finding disposition and exceptions](../specs/2026-08-02-agentguardian-finding-dispositions-design.md) | Remotely accepted Batch 3 implementation/evidence baseline: `50b74e6cc50dd7a4681a26b3084e7f312c096c47`. Exact local cross-scan false-positive/accepted-risk states use mandatory expiry, preserve technical scoring, add reviewed scoring, and keep report and local HMAC purposes separate. |
-| 4 | Windows workflow and report hardening | Task 1-9 local implementation and evidence recorded. Task 10 independent review and final-SHA remote evidence remain pending. |
+| 4 | Windows workflow and report hardening | Task 1-8 implementation is local; Task 9 full-gate evidence is bound to `991bf81bb520e7f2ec12f331fbbe714f03212507`. Assertion-only review through `9d87f972df6c5021482cf6dfc01b0ecf8ced86c9` is focused evidence only. Task 10 current-HEAD full gates, independent review, and final-SHA remote evidence remain pending. |
 | 5 | Packaging and release provenance | Pending. Produce a reproducible Windows package, SBOM, checksums, signature/provenance evidence, clean-machine install test, and uninstall residue check. |
 | 6 | Windows MVP release candidate | Pending. Run the full threat-model checklist, negative security tests, performance limits, independent read-only review, and release-candidate report. |
 
@@ -46,7 +46,7 @@ Task 1-8 已在本地实现。每次扫描都需要与当前范围绑定的明�
 
 报告比较仅支持 JSON 和用户显式选择的不超过 2 MiB 的本地普通文件。解析器只接受精确的 legacy schema 0 和 report schema 1，校验不证明报告真实性。聚合比较结果只在内存中瞬态保留，不匹配单个 finding，不导出稳定的跨扫描 finding 标识符，也不保留完整路径或逐项证据。显式读取一个基线文件不会增加环境目录扫描、网络、API 调用或写入能力。
 
-已知残余限制包括同一用户控制、路径竞态、主机时钟、路径别名、聚合碰撞，以及静态自审计不覆盖依赖和二进制。Task 9 本地门禁在 Python 3.14 和以锁定 wheel 临时隔离的 Python 3.12 环境中均为 `1174 passed, 8 skipped, 0 failed`；自审均为 `findings=[]`、`local_only=true`、`network_capability=not_detected`。8 项真实 symlink 用例因本机 symlink 创建权限不足而跳过，junction 已测试，skip 不算对应场景通过。当前 Batch 4 GitHub CI 尚未重新验证，Task 10 的独立复审和最终 SHA 远程证据未执行。Batches 5-6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。
+已知残余限制包括同一用户控制、路径竞态、主机时钟、路径别名、聚合碰撞，以及静态自审计不覆盖依赖和二进制。2026-08-03 的 Task 9 证据提交 `991bf81bb520e7f2ec12f331fbbe714f03212507` 在 Python 3.14 和以锁定 wheel 临时隔离的 Python 3.12 环境中均记录为 `1174 passed, 8 skipped, 0 failed`；自审均为 `findings=[]`、`local_only=true`、`network_capability=not_detected`。2026-08-13，截至仅断言提交 `9d87f972df6c5021482cf6dfc01b0ecf8ced86c9` 的聚焦门禁为 `143 passed`，不修改运行时或包源码；该结果不覆盖后续文档/测试同步提交。Task 10 仍需在当前复审 HEAD 重新运行 Python 3.14 和 Python 3.12 完整门禁。当前 Batch 4 GitHub CI 尚未重新验证，Task 10 的独立复审和最终 SHA 远程证据未执行。Batches 5-6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。
 
 ## Completed Batch: OpenAI Local Provider Hardening
 

@@ -1344,6 +1344,27 @@ def _assert_current_batch_4_status(
         )
 
 
+def _extract_unique_current_section(
+    document: str,
+    text: str,
+    start: str,
+    end: str | None = None,
+) -> str:
+    start_count = text.count(start)
+    assert start_count != 0, f"{document} missing section start: {start}"
+    assert start_count == 1, f"{document} duplicate section start: {start}"
+    start_index = text.index(start) + len(start)
+    if end is None:
+        return text[start_index:]
+
+    end_count = text.count(end)
+    assert end_count != 0, f"{document} missing section end: {end}"
+    assert end_count == 1, f"{document} duplicate section end: {end}"
+    end_index = text.index(end)
+    assert start_index < end_index, f"{document} invalid section order"
+    return text[start_index:end_index]
+
+
 def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
     architecture = (PROJECT_ROOT / "docs" / "architecture.md").read_text(
@@ -1360,25 +1381,41 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
         plans / "2026-08-03-agentguardian-windows-workflow-report-hardening.md"
     ).read_text(encoding="utf-8")
 
-    readme_status = readme.split(
-        "**工作流与报告硬化 Batch 4 当前状态。**", 1
-    )[1].split("## 开发与验证", 1)[0]
-    architecture_status = architecture.split(
-        "## Windows MVP Batch 4 工作流与报告硬化", 1
-    )[1].split("## 后续可信性要求", 1)[0]
-    report_status = report.split(
-        "## 11. Windows MVP 硬化 Batch 4：工作流与报告硬化", 1
-    )[1]
-    hardening_status = hardening_plan.split(
-        "## Batch 4 Local Implementation Status", 1
-    )[1].split("## Completed Batch: OpenAI Local Provider Hardening", 1)[0]
-    task_9 = workflow_plan.split(
-        "## Task 9: Close Local Security, Documentation, and Package Evidence", 1
-    )[1]
-    task_9, task_10 = task_9.split(
-        "## Task 10: Independent Review and Final-SHA Remote Evidence", 1
+    readme_status = _extract_unique_current_section(
+        "README",
+        readme,
+        "**工作流与报告硬化 Batch 4 当前状态。**",
+        "## 开发与验证",
     )
-    task_10 = task_10.split("## Plan Completion Gate", 1)[0]
+    architecture_status = _extract_unique_current_section(
+        "architecture",
+        architecture,
+        "## Windows MVP Batch 4 工作流与报告硬化",
+        "## 后续可信性要求",
+    )
+    report_status = _extract_unique_current_section(
+        "stage report",
+        report,
+        "## 11. Windows MVP 硬化 Batch 4：工作流与报告硬化",
+    )
+    hardening_status = _extract_unique_current_section(
+        "Windows MVP hardening plan",
+        hardening_plan,
+        "## Batch 4 Local Implementation Status",
+        "## Completed Batch: OpenAI Local Provider Hardening",
+    )
+    task_9 = _extract_unique_current_section(
+        "Task 9 plan",
+        workflow_plan,
+        "## Task 9: Close Local Security, Documentation, and Package Evidence",
+        "## Task 10: Independent Review and Final-SHA Remote Evidence",
+    )
+    task_10 = _extract_unique_current_section(
+        "Task 10 plan",
+        workflow_plan,
+        "## Task 10: Independent Review and Final-SHA Remote Evidence",
+        "## Plan Completion Gate",
+    )
 
     incomplete_boundary = (
         "当前 Batch 4 GitHub CI 尚未重新验证",
@@ -1394,7 +1431,6 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
     }
     owned_details = {
         "README": (
-            "Task 9 完整本地门禁已重新通过",
             "Task 10 的独立复审和最终 SHA 远程验收尚未完成",
             "每次扫描都需要与当前范围绑定的明确同意",
             "`complete`、`limited` 和 `no_supported_files`",
@@ -1403,6 +1439,14 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
             "仅支持 JSON",
             "2 MiB",
             "聚合比较结果只在内存中瞬态保留",
+            "2026-08-03 的 Task 9 证据提交",
+            "`991bf81bb520e7f2ec12f331fbbe714f03212507`",
+            "绑定该提交的历史证据",
+            "截至 `9d87f972df6c5021482cf6dfc01b0ecf8ced86c9` 的仅断言提交",
+            "`143 passed`",
+            "不修改运行时或包源码",
+            "后续文档/测试同步提交不由该结果自动覆盖",
+            "Task 10 仍需在当前复审 HEAD 重新运行 Python 3.14 和 Python 3.12 完整门禁",
         ),
         "architecture": (
             "只接受精确的 legacy schema 0 和 report schema 1",
@@ -1415,6 +1459,13 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
             "主机时钟",
             "聚合碰撞",
             "依赖和二进制",
+            "2026-08-03",
+            "`991bf81bb520e7f2ec12f331fbbe714f03212507`",
+            "绑定该 SHA 的历史证据",
+            "`9d87f972df6c5021482cf6dfc01b0ecf8ced86c9`",
+            "`143 passed`",
+            "不是当前复审 HEAD 的完整门禁",
+            "Task 10 仍需重新运行 Python 3.14 和 Python 3.12 完整门禁",
         ),
         "stage report": (
             "OpenAI Provider 仍仅做本地适配、检测与人工指引",
@@ -1422,16 +1473,31 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
             "Python 3.14",
             "Python 3.12",
             "1174 passed, 8 skipped, 0 failed",
+            "2026-08-03",
+            "`991bf81bb520e7f2ec12f331fbbe714f03212507`",
+            "`132 passed`",
             "全部 16 个包内 `.py` 模块",
             "findings=[]",
             "local_only=true",
             "network_capability=not_detected",
             "symlink 创建权限",
             "junction 已测试",
+            "2026-08-13",
+            "`9d87f972df6c5021482cf6dfc01b0ecf8ced86c9`",
+            "`143 passed`",
+            "不修改运行时或包源码",
+            "不把后续文档/测试同步提交声明为被该结果覆盖",
+            "Task 10 仍需在当前复审 HEAD 重新运行两个 Python 版本的完整门禁",
             "Task 10 的独立规格、安全和质量复审",
         ),
         "Windows MVP hardening plan": (
             "Task 1-8 已在本地实现",
+            "2026-08-03",
+            "`991bf81bb520e7f2ec12f331fbbe714f03212507`",
+            "2026-08-13",
+            "`9d87f972df6c5021482cf6dfc01b0ecf8ced86c9`",
+            "`143 passed`",
+            "Task 10 仍需在当前复审 HEAD 重新运行 Python 3.14 和 Python 3.12 完整门禁",
             "Task 10 的独立复审和最终 SHA 远程证据未执行",
         ),
     }
@@ -1448,9 +1514,20 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
     assert "free of default API calls" in hardening_plan
     assert "zero default OpenAI API access" in workflow_plan
     assert (
-        "Task 1-9 local implementation and evidence recorded. Task 10 independent "
-        "review and final-SHA remote evidence remain pending."
+        "Task 1-8 implementation is local; Task 9 full-gate evidence is bound to "
+        "`991bf81bb520e7f2ec12f331fbbe714f03212507`"
     ) in hardening_plan
+    normalized_task_9 = " ".join(task_9.split())
+    for required in (
+        "Task 9 checkbox evidence was captured on 2026-08-03 for",
+        "`991bf81bb520e7f2ec12f331fbbe714f03212507`",
+        "Assertion-only commits through `9d87f972df6c5021482cf6dfc01b0ecf8ced86c9`",
+        "`143 passed` on 2026-08-13",
+        "No runtime or package source changed",
+        "does not cover a later docs/tests synchronization commit",
+        "Task 10 must rerun both complete Python gates at the current reviewed HEAD",
+    ):
+        assert required in normalized_task_9
 
     assert re.findall(r"- \[x\] \*\*Step (\d):", task_9) == list("12345678")
     assert "- [ ] **Step" not in task_9
@@ -1483,7 +1560,7 @@ def _replace_document_text(
 @pytest.mark.parametrize(
     ("relative_path", "marker", "document"),
     (
-        ("README.md", "Task 9 完整本地门禁已重新通过", "README"),
+        ("README.md", "2026-08-03 的 Task 9 证据提交", "README"),
         (
             "docs/architecture.md",
             "只接受精确的 legacy schema 0 和 report schema 1",
@@ -1508,7 +1585,10 @@ def test_batch_4_doc_contract_rejects_cross_document_masking(
     document: str,
 ) -> None:
     _replace_document_text(monkeypatch, relative_path, marker, "")
-    with pytest.raises(AssertionError, match=re.escape(document)):
+    with pytest.raises(
+        AssertionError,
+        match=rf"{re.escape(document)} missing Batch 4 status",
+    ):
         test_docs_track_batch_4_workflow_and_report_boundaries()
 
 
@@ -1527,7 +1607,10 @@ def test_batch_4_doc_contract_rejects_alternate_premature_claims(
 ) -> None:
     current = "当前 Batch 4 GitHub CI 尚未重新验证"
     _replace_document_text(monkeypatch, "README.md", current, f"{current}。{claim}")
-    with pytest.raises(AssertionError, match="README"):
+    with pytest.raises(
+        AssertionError,
+        match="README contains premature Batch 4 status",
+    ):
         test_docs_track_batch_4_workflow_and_report_boundaries()
 
 
@@ -1545,7 +1628,10 @@ def test_batch_4_doc_contract_rejects_premature_claim_in_task_10(
         heading,
         f"{heading}\n\nGitHub CI 已通过",
     )
-    with pytest.raises(AssertionError, match="Task 10"):
+    with pytest.raises(
+        AssertionError,
+        match="Task 10 plan contains premature Batch 4 status",
+    ):
         test_docs_track_batch_4_workflow_and_report_boundaries()
 
 
@@ -1559,5 +1645,32 @@ def test_batch_4_doc_contract_rejects_multiline_premature_claim(
         current,
         f"{current}。GitHub CI\n已通过",
     )
-    with pytest.raises(AssertionError, match="README"):
+    with pytest.raises(
+        AssertionError,
+        match="README contains premature Batch 4 status",
+    ):
+        test_docs_track_batch_4_workflow_and_report_boundaries()
+
+
+def test_batch_4_doc_contract_rejects_duplicate_current_section(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    heading = "**工作流与报告硬化 Batch 4 当前状态。**"
+    end = "## 开发与验证"
+    _replace_document_text(
+        monkeypatch,
+        "README.md",
+        end,
+        f"{end}\n\n{heading}\n\nGitHub CI 已通过",
+    )
+    with pytest.raises(AssertionError, match="README duplicate section start"):
+        test_docs_track_batch_4_workflow_and_report_boundaries()
+
+
+def test_batch_4_doc_contract_reports_missing_current_section(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    heading = "## Windows MVP Batch 4 工作流与报告硬化"
+    _replace_document_text(monkeypatch, "docs/architecture.md", heading, "")
+    with pytest.raises(AssertionError, match="architecture missing section start"):
         test_docs_track_batch_4_workflow_and_report_boundaries()

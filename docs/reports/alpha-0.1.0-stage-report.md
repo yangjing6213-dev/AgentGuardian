@@ -190,16 +190,18 @@ Batch 4 Task 1-8 已在本地实现。每次扫描都需要与当前范围绑定
 
 残余限制仍包括 DPAPI 无法抵御同一用户控制、文件检查后的路径竞态、主机时钟与路径别名影响、类别聚合碰撞，以及静态自审计不覆盖依赖和二进制。OpenAI Provider 仍仅做本地适配、检测与人工指引，不默认调用 API。
 
-### Batch 4 当前本地证据
+### Batch 4 按 SHA 记录的本地证据
 
-- 本轮门禁运行在以 Task 8 提交 `71cdc81fdf372f3deace33005137d69e5a0cd6bc` 为父提交的 Task 9 工作树；Task 9 只修改文档、文档断言和精确源码清单，不修改运行时 `.py` 代码。
+- 2026-08-03 的 Task 9 证据提交为 `991bf81bb520e7f2ec12f331fbbe714f03212507`，其父提交为 Task 8 的 `71cdc81fdf372f3deace33005137d69e5a0cd6bc`；Task 9 只修改文档、文档断言和精确源码清单，不修改运行时 `.py` 代码。
 - 文档 RED：`rtk pytest -q -p no:cacheprovider tests/test_self_audit.py -k batch_4` 首次为 `1 failed`，缺少 README Batch 4 状态；文档更新后为 `1 passed`。
-- Python 3.14：`D:\python3.14\python.exe`，`3.14.0`；`rtk pytest -q -p no:cacheprovider` 为 `1174 passed, 8 skipped, 0 failed`。
-- Python 3.12：`C:\Users\HU\AppData\Local\Programs\Python\Python312\python.exe`，`3.12.2`；现有本地 wheelhouse 先通过 `--dry-run --no-index --require-hashes` 与 `requirements-dev.lock` 校验，再只解压到临时目录，并用 `-S` 禁用系统 site-packages。未安装或混用 Python 3.14 包。完整测试为 `1174 passed, 8 skipped, 0 failed`，测试后已删除临时解压目录。
+- 该提交的 Python 3.14 门禁：`D:\python3.14\python.exe`，`3.14.0`；`rtk pytest -q -p no:cacheprovider` 为 `1174 passed, 8 skipped, 0 failed`。
+- 该提交的 Python 3.12 门禁：`C:\Users\HU\AppData\Local\Programs\Python\Python312\python.exe`，`3.12.2`；现有本地 wheelhouse 先通过 `--dry-run --no-index --require-hashes` 与 `requirements-dev.lock` 校验，再只解压到临时目录，并用 `-S` 禁用系统 site-packages。未安装或混用 Python 3.14 包。完整测试为 `1174 passed, 8 skipped, 0 failed`，测试后已删除临时解压目录。
 - 8 项 skip 均因当前 Windows 用户缺少 symlink 创建权限：app smoke 目录/文件 symlink 2 项、discovery 3 项、report comparison 2 项、state store 1 项。junction 已测试；skip 不构成对应 symlink 场景通过证据。
-- `tests/test_self_audit.py tests/test_packaging.py` 聚焦门禁：`132 passed`；精确清单包含全部 16 个包内 `.py` 模块和 `workflow.py`、`report_comparison.py`。
+- 该提交的 `tests/test_self_audit.py tests/test_packaging.py` 聚焦门禁：`132 passed`；精确清单包含全部 16 个包内 `.py` 模块和 `workflow.py`、`report_comparison.py`。
 - Python 3.14 与隔离 Python 3.12 的品牌校验、`compileall -q src` 均退出 0；`git diff --check` 退出 0，无输出。
 - 两个解释器使用 `PYTHONPATH=src` 的自审结果均为 `findings=[]`、`local_only=true`、`network_capability=not_detected`、`ordinary_user_mode=true`；规则 SHA-256 为 `83a14590d59f61a3c6aede084644fdbbd9f5cff6f55794b9af60e385e053ccba`。范围仍是 `package_source_policy`，依赖和二进制未扫描。
+- 2026-08-13，截至 `9d87f972df6c5021482cf6dfc01b0ecf8ced86c9` 的仅断言提交已重新运行同一聚焦门禁，结果为 `143 passed`；这些提交不修改运行时或包源码。
+- 本节不把后续文档/测试同步提交声明为被该结果覆盖，也不形成自证循环。Task 10 仍需在当前复审 HEAD 重新运行两个 Python 版本的完整门禁。
 - 当前 Batch 4 GitHub CI 尚未重新验证；没有把 Batch 3 的历史远程运行当作当前 Batch 4 证据。
 - Task 10 的独立规格、安全和质量复审，以及最终 SHA 的 push/Draft PR CI 证据仍待执行。
 

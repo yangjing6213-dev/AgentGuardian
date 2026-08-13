@@ -123,7 +123,7 @@ Batch 4 Task 1-8 的本地实现把交互状态放在两个独立边界中：`wo
 
 比较只陈述类别基线值、当前值和差值，不匹配单个 finding，也不导出稳定的跨扫描 finding 标识符。显式读取一个基线文件不会增加环境目录扫描、网络、API 调用或写入能力；报告导出仍不包含筛选、基线或比较状态。残余限制包括同一用户控制、路径竞态、主机时钟和路径别名，以及不同 findings 汇总到同一类别造成的聚合碰撞。静态自审计仍不扫描依赖和二进制。
 
-Task 9 完整本地门禁已在 Python 3.14 和隔离的 Python 3.12 环境中重新运行，两者均为 `1174 passed, 8 skipped, 0 failed`。8 项真实 symlink 用例因本机 symlink 创建权限不足而跳过，junction 已测试；skip 不算对应 symlink 场景通过。当前 Batch 4 GitHub CI 尚未重新验证，Task 10 独立复审与最终 SHA 远程证据也未执行。Batches 5-6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。
+证据边界：2026-08-03 的 Task 9 提交 `991bf81bb520e7f2ec12f331fbbe714f03212507` 在 Python 3.14 和隔离的 Python 3.12 环境中均记录为 `1174 passed, 8 skipped, 0 failed`；这是绑定该 SHA 的历史证据。2026-08-13，截至仅断言提交 `9d87f972df6c5021482cf6dfc01b0ecf8ced86c9` 的聚焦门禁为 `143 passed`，但不是当前复审 HEAD 的完整门禁。Task 10 仍需重新运行 Python 3.14 和 Python 3.12 完整门禁。当前 Batch 4 GitHub CI 尚未重新验证，Task 10 独立复审与最终 SHA 远程证据也未执行。Batches 5-6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。
 
 ## 后续可信性要求（未实现门禁）
 

@@ -634,6 +634,14 @@ environment limitation separately; do not convert it into code success.
 
 Commit: `Document Batch 4 local verification`
 
+Task 9 checkbox evidence was captured on 2026-08-03 for
+`991bf81bb520e7f2ec12f331fbbe714f03212507`. Assertion-only commits through `9d87f972df6c5021482cf6dfc01b0ecf8ced86c9`
+passed the focused `tests/test_self_audit.py tests/test_packaging.py` gate with
+`143 passed` on 2026-08-13. No runtime or package source changed in those
+assertion-only commits. That result does not cover a later docs/tests
+synchronization commit; Task 10 must rerun both complete Python gates at the
+current reviewed HEAD.
+
 ## Task 10: Independent Review and Final-SHA Remote Evidence
 
 **Files:**
