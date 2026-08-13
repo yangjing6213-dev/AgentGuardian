@@ -1836,6 +1836,15 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
     assert "- [ ] **Step" not in task_9
     assert re.findall(r"- \[x\] \*\*Step (\d):", task_10) == list("1234")
     assert re.findall(r"- \[ \] \*\*Step (\d):", task_10) == list("567")
+    normalized_task_10 = " ".join(task_10.split())
+    for required in (
+        "`https://github.com/yangjing6213-dev/AgentGuardian.git`",
+        "target repository is absent before creation",
+        "`origin` must match that exact URL",
+        "upstream must be `origin/agent/founder-alpha`",
+        "Never push to the retired `hqwzhu/AgentGuardian` remote",
+    ):
+        assert required in normalized_task_10
 
     assert "Task 9 的完整本地门禁" not in readme_status
     assert "尚待本节提交" not in report_status

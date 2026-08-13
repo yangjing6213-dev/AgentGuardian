@@ -89,3 +89,7 @@ python -m agentguardian
 英文缩写：AG
 
 品牌源文件和导出资产位于 [`assets/brand`](assets/brand)。
+
+## 许可证
+
+本项目采用 [Apache License 2.0](LICENSE)。

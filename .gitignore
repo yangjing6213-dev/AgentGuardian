@@ -2,6 +2,7 @@
 .analysis/
 .superpowers/
 .worktrees/
+.local-audit/
 
 # Local secrets, evidence, and generated artifacts
 .env

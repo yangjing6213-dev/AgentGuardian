@@ -713,8 +713,14 @@ results. Steps 5-7 remain open; no remote CI or Batch 4 acceptance is claimed.
 
 - [ ] **Step 5: Push and verify both final-HEAD workflows**
 
-Push `agent/founder-alpha`. Wait for both push and Draft PR workflows for the
-exact final HEAD. Record:
+The exact publication target is
+`https://github.com/yangjing6213-dev/AgentGuardian.git`. For initial
+publication, verify that the target repository is absent before creation. After
+creation, `origin` must match that exact URL and the current branch upstream
+must be `origin/agent/founder-alpha`. Never push to the retired
+`hqwzhu/AgentGuardian` remote. Push `agent/design-baseline` first as the Draft
+PR base, then push `agent/founder-alpha`. Wait for both push and Draft PR
+workflows for the exact final HEAD. Record:
 
 - final local and remote SHA equality;
 - exact run and job IDs;
@@ -730,8 +736,9 @@ cover which SHA, then verify that final docs-only HEAD separately in the handoff
 
 - [ ] **Step 7: Final boundary check**
 
-Confirm Draft PR #1 remains open/draft. Do not merge, deploy, mark ready, or say
-Windows MVP/production safety is complete. Keep Batches 5-6 pending.
+Confirm the newly created Draft PR in the current repository remains open/draft.
+Do not merge, deploy, mark ready, or say Windows MVP/production safety is
+complete. Keep Batches 5-6 pending.
 
 ## Plan Completion Gate
 
