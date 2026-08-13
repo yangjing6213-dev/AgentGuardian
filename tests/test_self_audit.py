@@ -1409,6 +1409,13 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
     workflow_plan = (
         plans / "2026-08-03-agentguardian-windows-workflow-report-hardening.md"
     ).read_text(encoding="utf-8")
+    workflow_design = (
+        PROJECT_ROOT
+        / "docs"
+        / "superpowers"
+        / "specs"
+        / "2026-08-03-agentguardian-windows-workflow-report-hardening-design.md"
+    ).read_text(encoding="utf-8")
 
     readme_status = _extract_unique_current_section(
         "README",
@@ -1562,6 +1569,58 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
     assert "不默认调用 API" in report_status
     assert "free of default API calls" in hardening_plan
     assert "zero default OpenAI API access" in workflow_plan
+    for document, text, required in (
+        (
+            "README",
+            readme,
+            (
+                "`evaluated_at` 是无默认值的 keyword-only 必填参数",
+                "精确复算技术分和复核分",
+            ),
+        ),
+        (
+            "architecture",
+            architecture,
+            (
+                "`evaluated_at` 是无默认值的 keyword-only 必填参数",
+                "精确复算技术分和复核分",
+            ),
+        ),
+        (
+            "stage report",
+            report,
+            (
+                "`evaluated_at` 是无默认值的 keyword-only 必填参数",
+                "精确复算技术分和复核分",
+            ),
+        ),
+        (
+            "Windows MVP hardening plan",
+            hardening_plan,
+            (
+                "required keyword-only `evaluated_at`",
+                "recompute the technical and reviewed scores exactly",
+            ),
+        ),
+        (
+            "workflow plan",
+            workflow_plan,
+            (
+                "required keyword-only `evaluated_at`",
+                "recompute the technical and reviewed scores exactly",
+            ),
+        ),
+        (
+            "workflow design",
+            workflow_design,
+            (
+                "required keyword-only `evaluated_at`",
+                "recompute the technical and reviewed scores exactly",
+            ),
+        ),
+    ):
+        for phrase in required:
+            assert phrase in text, f"{document} missing report contract: {phrase}"
     assert (
         "Task 1-8 implementation is local; Task 9 full-gate evidence is bound to "
         "`991bf81bb520e7f2ec12f331fbbe714f03212507`"

@@ -186,7 +186,7 @@ Batch 3 本地实现、自动门禁、独立安全复审和最终 SHA 远程验�
 
 Batch 4 Task 1-8 已在本地实现。每次扫描都需要与当前范围绑定的明确同意；范围预览不遍历目录，扫描回调会重新校验并消费同意。覆盖状态固定为 `complete`、`limited` 和 `no_supported_files`，不完整结果不能用于确认安全。严重性、风险领域和处置状态筛选仅影响界面可见行，导出仍包含完整当前审计，不改变分数、报告、处置或受保护状态。
 
-基线比较仅支持 JSON。用户必须显式选择一个不超过 2 MiB 的本地 AgentGuardian 报告；加载器拒绝 UNC、reparse、非普通文件和超限读取。当前 Task 10 修复树已让 JSON 生成与导入共享最多 2,000 个 findings、4,000 条 evidence 和 2 MiB UTF-8 的预算；HTML 只共享两项数量上限。新 report schema 1 写入规范 UTC 秒级 `evaluated_at`，解析器按该时点重新验证非 `open` 处置和复核分；缺少该时点的旧 schema 1 与 legacy schema 0 只接受所有处置均为 `open` 的可独立重算报告。规则版本、cap reason 和规则 ID 使用同一安全元数据契约；长基线 basename 省略显示，tooltip 不含目录。上述实现仍待 Task 10 独立复审和完整门禁，不构成验收。校验不证明报告真实性。比较仅保留类别聚合；聚合比较结果只在内存中瞬态保留，不匹配单个 finding，不导出稳定的跨扫描 finding 标识符，也不保留完整路径、原始 JSON、证据、指纹或处置详情。显式读取一个基线文件不会增加环境目录扫描、网络、API 调用或写入能力。
+基线比较仅支持 JSON。用户必须显式选择一个不超过 2 MiB 的本地 AgentGuardian 报告；加载器拒绝 UNC、reparse、非普通文件和超限读取。当前 Task 10 修复树已让 JSON 生成与导入共享最多 2,000 个 findings、4,000 条 evidence 和 2 MiB UTF-8 的预算；HTML 只共享两项数量上限。新 report schema 1 写入规范 UTC 秒级 `evaluated_at`；`evaluated_at` 是无默认值的 keyword-only 必填参数，不存在隐藏时钟路径，相同输入（包括该时点）生成逐字节相同的 JSON 和 HTML。生成器先有界物化 findings 和处置，再以声明分数的 coverage、confidence、limits 精确复算技术分和复核分；省略 reviewed score 时使用复算值，任何矛盾固定失败。解析器按同一时点重新验证非 `open` 处置和复核分；缺少该时点的旧 schema 1 与 legacy schema 0 只接受所有处置均为 `open` 的可独立重算报告。规则版本、cap reason 和规则 ID 使用同一安全元数据契约；长基线 basename 省略显示，tooltip 不含目录。上述实现仍待 Task 10 独立复审和完整门禁，不构成验收。校验不证明报告真实性。比较仅保留类别聚合；聚合比较结果只在内存中瞬态保留，不匹配单个 finding，不导出稳定的跨扫描 finding 标识符，也不保留完整路径、原始 JSON、证据、指纹或处置详情。显式读取一个基线文件不会增加环境目录扫描、网络、API 调用或写入能力。
 
 残余限制仍包括 DPAPI 无法抵御同一用户控制、文件检查后的路径竞态、主机时钟与路径别名影响、类别聚合碰撞，以及静态自审计不覆盖依赖和二进制。OpenAI Provider 仍仅做本地适配、检测与人工指引，不默认调用 API。
 

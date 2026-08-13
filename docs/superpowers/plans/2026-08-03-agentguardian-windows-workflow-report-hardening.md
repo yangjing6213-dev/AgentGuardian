@@ -167,8 +167,13 @@ Commit: `Add workflow consent contracts`
 
 - [x] **Step 1: Write failing JSON schema tests**
 
-Require top-level `report_schema == 1`, canonical UTC-seconds `evaluated_at`,
-and both score objects to contain the same exact `coverage_state`. Replace
+Require top-level `report_schema == 1` and required keyword-only `evaluated_at`
+as a canonical UTC-seconds timestamp, with no hidden clock fallback. Identical
+inputs including that timestamp must produce byte-identical JSON and HTML.
+After bounded materialization, recompute the technical and reviewed scores exactly
+from findings, verified dispositions, and the declared coverage options; an
+omitted reviewed score uses the recomputed value. Require both score objects to
+contain the same exact `coverage_state`. Replace
 historical arbitrary synthetic limit strings in report fixtures with canonical
 codes.
 

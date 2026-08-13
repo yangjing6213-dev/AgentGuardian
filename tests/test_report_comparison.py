@@ -782,6 +782,7 @@ def test_exact_finding_and_evidence_limits_are_accepted() -> None:
         ),
         findings,
         rule_version="rules-1",
+        evaluated_at=EVALUATED_AT,
     )
 
     summary = parse_report_summary(report)
@@ -805,6 +806,12 @@ def test_parser_accepts_exact_utf8_budget_and_rejects_one_byte_over() -> None:
 
 def test_public_parser_rejects_non_text_without_file_access() -> None:
     _assert_comparison_invalid(b"{}")
+
+
+def test_public_parser_normalizes_real_unpaired_surrogate() -> None:
+    hostile = chr(0xD800)
+
+    _assert_comparison_invalid(hostile)
 
 
 def test_public_comparison_normalizes_forged_missing_summary_slots() -> None:
@@ -902,6 +909,7 @@ def test_renderer_round_trip_accepts_domain_valid_masked_text(
         score(findings, coverage=1.0),
         findings,
         rule_version="rules-1",
+        evaluated_at=EVALUATED_AT,
     )
 
     summary = parse_report_summary(report)

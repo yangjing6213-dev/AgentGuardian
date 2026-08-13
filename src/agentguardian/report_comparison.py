@@ -93,11 +93,15 @@ class _ParsedScore:
 def parse_report_summary(json_text: str) -> ReportSummary:
     if type(json_text) is not str:
         raise ValueError(_ERROR)
+    encoding_failed = False
     try:
-        if len(json_text.encode("utf-8")) > MAX_REPORT_JSON_BYTES:
-            raise ValueError(_ERROR)
-    except UnicodeError:
-        raise
+        encoded_size = len(json_text.encode("utf-8"))
+    except UnicodeEncodeError:
+        encoding_failed = True
+    if encoding_failed:
+        raise ValueError(_ERROR)
+    if encoded_size > MAX_REPORT_JSON_BYTES:
+        raise ValueError(_ERROR)
     parse_failed = False
     try:
         payload = json.loads(

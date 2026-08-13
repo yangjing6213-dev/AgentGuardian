@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-import agentguardian.reporting as reporting_module
 from agentguardian.detectors import detect_text
 from agentguardian.dispositions import (
     DispositionRecord,
@@ -26,6 +25,7 @@ from agentguardian.domain import (
     Severity,
 )
 from agentguardian.reporting import render_html, render_json
+from agentguardian.report_comparison import parse_report_summary
 from agentguardian.scoring import score as calculate_score
 from agentguardian.workflow import classify_coverage
 
@@ -170,17 +170,11 @@ class _DatetimeSubclass(datetime):
 
 
 def _score() -> Score:
-    return Score(
-        total=39,
-        deductions=tuple(
-            (domain, 7 if domain is RiskDomain.CREDENTIALS else 0)
-            for domain in RiskDomain
-        ),
-        cap_reason="public_active_credential",
+    return calculate_score(
+        (),
         coverage=0.75,
         confidence=0.8,
         limits=("file_scan_limited",),
-        incomplete=True,
     )
 
 
@@ -206,6 +200,15 @@ def _findings() -> tuple[Finding, ...]:
     )
 
 
+def _findings_score() -> Score:
+    return calculate_score(
+        _findings(),
+        coverage=0.75,
+        confidence=0.8,
+        limits=("file_scan_limited",),
+    )
+
+
 def _assert_report_invalid(
     renderer: object,
     score: object,
@@ -213,6 +216,7 @@ def _assert_report_invalid(
     rule_version: object = "rules-1",
     **kwargs: object,
 ) -> None:
+    kwargs.setdefault("evaluated_at", EVALUATED_AT)
     with pytest.raises(ValueError) as caught:
         renderer(score, findings, rule_version=rule_version, **kwargs)  # type: ignore[operator]
 
@@ -687,30 +691,144 @@ def test_renderers_reject_more_than_total_evidence_budget(renderer: object) -> N
     _assert_report_invalid(renderer, _score(), (finding,))
 
 
-def test_render_json_rejects_output_over_utf8_byte_budget(
+def test_renderers_reject_evidence_over_budget_before_reading_item_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    oversized = "é" * (REPORT_JSON_BYTES // 2) + "x"
-    monkeypatch.setattr(
-        reporting_module.json,
-        "dumps",
-        lambda *args, **kwargs: oversized,
+    evidence = Evidence("safe.txt", "a" * 64, "safe masked evidence")
+    finding = Finding(
+        "EVIDENCE_LIMIT",
+        RiskDomain.EXPOSURE,
+        Severity.LOW,
+        "b" * 64,
+        (evidence,) * (REPORT_EVIDENCE_LIMIT + 1),
+    )
+    audit_score = calculate_score((finding,), coverage=1.0)
+    reads: list[str] = []
+    real_getattribute = Evidence.__getattribute__
+
+    def observe_field_access(item: Evidence, name: str) -> object:
+        if name in ("source", "fingerprint", "masked"):
+            reads.append(name)
+        return real_getattribute(item, name)
+
+    monkeypatch.setattr(Evidence, "__getattribute__", observe_field_access)
+
+    _assert_report_invalid(render_json, audit_score, (finding,))
+
+    assert reads == []
+
+
+def test_render_json_rejects_real_output_over_utf8_byte_budget() -> None:
+    evidence = Evidence("界" * 80, "a" * 64, "遮" * 80)
+    finding = Finding(
+        "EVIDENCE_LIMIT",
+        RiskDomain.EXPOSURE,
+        Severity.LOW,
+        "b" * 64,
+        (evidence,) * REPORT_EVIDENCE_LIMIT,
     )
 
-    _assert_report_invalid(render_json, _score(), ())
-
-
-def test_render_json_accepts_output_at_exact_utf8_byte_budget(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    exact = "é" * (REPORT_JSON_BYTES // 2)
-    monkeypatch.setattr(
-        reporting_module.json,
-        "dumps",
-        lambda *args, **kwargs: exact,
+    _assert_report_invalid(
+        render_json,
+        calculate_score((finding,), coverage=1.0),
+        (finding,),
     )
 
-    assert render_json(_score(), (), rule_version="rules-1") == exact
+
+def test_render_json_accepts_real_valid_json_below_utf8_byte_budget() -> None:
+    findings = (
+        Finding(
+            "A_RULE",
+            RiskDomain.EXPOSURE,
+            Severity.LOW,
+            "a" * 64,
+            (Evidence("safe.txt", "b" * 64, "safe masked evidence"),),
+        ),
+    )
+
+    rendered = render_json(
+        calculate_score(findings, coverage=1.0),
+        findings,
+        rule_version="rules-1",
+        evaluated_at=EVALUATED_AT,
+    )
+
+    assert len(rendered.encode("utf-8")) < REPORT_JSON_BYTES
+    assert parse_report_summary(rendered).finding_count == 1
+
+
+def test_render_json_rejects_technical_score_inconsistent_with_findings() -> None:
+    findings = (
+        Finding(
+            "A_RULE",
+            RiskDomain.EXPOSURE,
+            Severity.LOW,
+            "a" * 64,
+            (),
+        ),
+    )
+
+    _assert_report_invalid(
+        render_json,
+        calculate_score((), coverage=1.0),
+        findings,
+    )
+
+
+def test_render_json_recomputes_omitted_reviewed_score_and_round_trips() -> None:
+    finding = Finding(
+        "A_RULE",
+        RiskDomain.EXPOSURE,
+        Severity.LOW,
+        "a" * 64,
+        (),
+        "f" * 64,
+    )
+    record = DispositionRecord(
+        "f" * 64,
+        "A_RULE",
+        DispositionStatus.FALSE_POSITIVE,
+        "Synthetic false positive",
+        "Local reviewer",
+        "2026-08-02T08:00:00Z",
+        "2026-08-03T08:00:00Z",
+    )
+
+    rendered = render_json(
+        calculate_score((finding,), coverage=1.0),
+        (finding,),
+        rule_version="rules-1",
+        dispositions=(record,),
+        evaluated_at=EVALUATED_AT,
+    )
+    summary = parse_report_summary(rendered)
+
+    assert summary.technical_score == 99
+    assert summary.reviewed_score == 100
+
+
+def test_render_json_rejects_excessive_declared_deductions() -> None:
+    excessive = Score(
+        total=100,
+        deductions=((RiskDomain.EXPOSURE, 0),) * 2_001,
+        cap_reason=None,
+        coverage=1.0,
+        confidence=1.0,
+        limits=(),
+        incomplete=False,
+    )
+
+    _assert_report_invalid(render_json, excessive, ())
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
+def test_renderers_require_explicit_evaluated_at(renderer: object) -> None:
+    with pytest.raises(TypeError):
+        renderer(  # type: ignore[operator]
+            calculate_score((), coverage=1.0),
+            (),
+            rule_version="rules-1",
+        )
 
 
 @pytest.mark.parametrize("renderer", (render_json, render_html))
@@ -789,7 +907,7 @@ def test_renderers_validate_evaluated_at_once(
     evaluated_at = datetime(2026, 8, 2, 12, tzinfo=counting_utc)
 
     renderer(  # type: ignore[operator]
-        _score(),
+        _findings_score(),
         _findings(),
         rule_version="rules-1",
         evaluated_at=evaluated_at,
@@ -810,13 +928,13 @@ def test_renderers_reject_subsecond_evaluated_at(renderer: object) -> None:
 
 def test_render_json_contains_safe_complete_deterministic_report() -> None:
     first = render_json(
-        _score(),
+        _findings_score(),
         _findings(),
         rule_version="规则-1",
         evaluated_at=EVALUATED_AT,
     )
     second = render_json(
-        _score(),
+        _findings_score(),
         tuple(reversed(_findings())),
         rule_version="规则-1",
         evaluated_at=EVALUATED_AT,
@@ -830,12 +948,19 @@ def test_render_json_contains_safe_complete_deterministic_report() -> None:
     assert report["evaluated_at"] == "2026-08-02T12:00:00Z"
     assert report["rule_version"] == "规则-1"
     assert report["score"] == {
-        "total": 39,
+        "total": 92,
         "deductions": [
-            {"domain": domain.value, "amount": 7 if domain is RiskDomain.CREDENTIALS else 0}
+            {
+                "domain": domain.value,
+                "amount": (
+                    7
+                    if domain is RiskDomain.CREDENTIALS
+                    else 1 if domain is RiskDomain.EXPOSURE else 0
+                ),
+            }
             for domain in RiskDomain
         ],
-        "cap_reason": "public_active_credential",
+        "cap_reason": None,
         "coverage": 0.75,
         "confidence": 0.8,
         "incomplete": True,
@@ -863,7 +988,15 @@ def test_render_json_contains_safe_complete_deterministic_report() -> None:
     ("score", "coverage_state"),
     (
         (_unchecked_score(), "complete"),
-        (_score(), "limited"),
+        (
+            _unchecked_score(
+                coverage=0.75,
+                confidence=0.8,
+                limits=("file_scan_limited",),
+                incomplete=True,
+            ),
+            "limited",
+        ),
         (
             _unchecked_score(
                 coverage=0.0,
@@ -879,7 +1012,14 @@ def test_render_json_schema_exposes_exact_coverage_state(
     score: Score,
     coverage_state: str,
 ) -> None:
-    report = json.loads(render_json(score, (), rule_version="rules-1"))
+    report = json.loads(
+        render_json(
+            score,
+            (),
+            rule_version="rules-1",
+            evaluated_at=EVALUATED_AT,
+        )
+    )
 
     assert report["report_schema"] == 1
     assert report["score"]["coverage_state"] == coverage_state
@@ -1171,7 +1311,12 @@ def test_render_html_escapes_every_dynamic_text_field() -> None:
         True,
     )
 
-    rendered = render_html(audit_score, (finding,), rule_version="rules-1")
+    rendered = render_html(
+        audit_score,
+        (finding,),
+        rule_version="rules-1",
+        evaluated_at=EVALUATED_AT,
+    )
 
     assert source_html not in rendered
     assert masked_html not in rendered
@@ -1181,14 +1326,18 @@ def test_render_html_escapes_every_dynamic_text_field() -> None:
 
 
 def test_render_html_contains_requested_score_and_finding_fields() -> None:
-    rendered = render_html(_score(), _findings(), rule_version="规则-1")
+    rendered = render_html(
+        _findings_score(),
+        _findings(),
+        rule_version="规则-1",
+        evaluated_at=EVALUATED_AT,
+    )
 
     for value in (
         "AgentGuardian",
         "0.1.0",
         "规则-1",
-        "39",
-        "public_active_credential",
+        "92",
         "0.75",
         "0.8",
         "覆盖受限",
@@ -1212,7 +1361,18 @@ def test_render_html_contains_requested_score_and_finding_fields() -> None:
     ("score", "state", "state_label", "reason_label", "incomplete"),
     (
         (_unchecked_score(), "complete", "已完成", None, False),
-        (_score(), "limited", "覆盖受限", "文件扫描受限", True),
+        (
+            _unchecked_score(
+                coverage=0.75,
+                confidence=0.8,
+                limits=("file_scan_limited",),
+                incomplete=True,
+            ),
+            "limited",
+            "覆盖受限",
+            "文件扫描受限",
+            True,
+        ),
         (
             _unchecked_score(
                 coverage=0.0,
@@ -1355,18 +1515,36 @@ def test_renderers_sort_identical_finding_keys_by_evidence() -> None:
         "f" * 64,
         (Evidence("a.txt", "a" * 64, "脱敏证据A"),),
     )
+    audit_score = calculate_score(
+        (first, second),
+        coverage=0.75,
+        confidence=0.8,
+        limits=("file_scan_limited",),
+    )
 
     forward_json = render_json(
-        _score(), (first, second), rule_version="规则-1", evaluated_at=EVALUATED_AT
+        audit_score,
+        (first, second),
+        rule_version="规则-1",
+        evaluated_at=EVALUATED_AT,
     )
     reverse_json = render_json(
-        _score(), (second, first), rule_version="规则-1", evaluated_at=EVALUATED_AT
+        audit_score,
+        (second, first),
+        rule_version="规则-1",
+        evaluated_at=EVALUATED_AT,
     )
     forward_html = render_html(
-        _score(), (first, second), rule_version="规则-1", evaluated_at=EVALUATED_AT
+        audit_score,
+        (first, second),
+        rule_version="规则-1",
+        evaluated_at=EVALUATED_AT,
     )
     reverse_html = render_html(
-        _score(), (second, first), rule_version="规则-1", evaluated_at=EVALUATED_AT
+        audit_score,
+        (second, first),
+        rule_version="规则-1",
+        evaluated_at=EVALUATED_AT,
     )
 
     assert forward_json == reverse_json
@@ -1408,16 +1586,20 @@ def test_renderers_stabilize_identical_findings_by_safe_disposition(
         "2026-08-02T08:00:00Z",
         "2026-08-03T08:00:00Z",
     )
+    audit_score = calculate_score(
+        (false_positive, open_finding),
+        coverage=1.0,
+    )
 
     forward = renderer(  # type: ignore[operator]
-        _score(),
+        audit_score,
         (finding for finding in (false_positive, open_finding)),
         rule_version="rules-1",
         dispositions=(item for item in (record,)),
         evaluated_at=EVALUATED_AT,
     )
     reverse = renderer(  # type: ignore[operator]
-        _score(),
+        audit_score,
         (finding for finding in (open_finding, false_positive)),
         rule_version="rules-1",
         dispositions=(item for item in (record,)),
@@ -1441,27 +1623,30 @@ def test_renderers_stabilize_identical_findings_by_safe_disposition(
 
 @pytest.mark.parametrize("renderer", (render_json, render_html))
 def test_renderers_accept_one_shot_finding_generators(renderer: object) -> None:
-    findings = (
-        finding
-        for finding in (
-            Finding(
-                "GENERATOR_A",
-                RiskDomain.EXPOSURE,
-                Severity.LOW,
-                "a" * 64,
-                (),
-            ),
-            Finding(
-                "GENERATOR_B",
-                RiskDomain.PRIVACY,
-                Severity.MEDIUM,
-                "b" * 64,
-                (),
-            ),
-        )
+    expected_findings = (
+        Finding(
+            "GENERATOR_A",
+            RiskDomain.EXPOSURE,
+            Severity.LOW,
+            "a" * 64,
+            (),
+        ),
+        Finding(
+            "GENERATOR_B",
+            RiskDomain.PRIVACY,
+            Severity.MEDIUM,
+            "b" * 64,
+            (),
+        ),
     )
+    findings = (finding for finding in expected_findings)
 
-    output = renderer(_score(), findings, rule_version="rules-1")  # type: ignore[operator]
+    output = renderer(  # type: ignore[operator]
+        calculate_score(expected_findings, coverage=1.0),
+        findings,
+        rule_version="rules-1",
+        evaluated_at=EVALUATED_AT,
+    )
 
     assert "GENERATOR_A" in output
     assert "GENERATOR_B" in output
@@ -1529,6 +1714,12 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
             (
                 "from",
                 1,
+                "scoring",
+                (("score", "calculate_score"),),
+            ),
+            (
+                "from",
+                1,
                 "workflow",
                 (
                     ("COVERAGE_LIMIT_LABELS", None),
@@ -1565,6 +1756,7 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
             "_validated_dispositions",
             "_validated_score_data",
             "_validated_report_time",
+            "calculate_score",
             "classify_coverage",
             "disposition_index",
             "escape",
@@ -1588,7 +1780,6 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
             "extend",
             "join",
             "lower",
-            "now",
             "replace",
             "strftime",
             "utcoffset",

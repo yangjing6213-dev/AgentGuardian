@@ -132,11 +132,16 @@ scan may say only that the configured scope completed; it must not say the
 system, account, provider, or endpoint is safe.
 
 New reports declare `report_schema: 1`, include the explicit coverage state,
-and record canonical UTC-seconds `evaluated_at`. The same validated instant
-drives disposition evaluation, reviewed scoring, and serialization. Explicit
-sub-second input fails closed. JSON and HTML render the same state, reasons,
-safe metadata, and evaluation time. The technical and reviewed scores continue
-to share coverage and limits.
+and accept required keyword-only `evaluated_at` as a canonical UTC-seconds
+timestamp with no hidden clock fallback. The same validated instant drives
+disposition evaluation, reviewed scoring, and serialization. Identical inputs,
+including `evaluated_at`, produce byte-identical JSON and HTML. After bounded
+materialization, renderers recompute the technical and reviewed scores exactly
+from findings, verified dispositions, and the declared coverage options; an
+omitted reviewed score uses the recomputed value. Explicit sub-second input
+fails closed. JSON and HTML render the same state, reasons, safe metadata, and
+evaluation time. The technical and reviewed scores continue to share coverage
+and limits.
 
 ### 4. Finding Filters
 

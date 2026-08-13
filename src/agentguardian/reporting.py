@@ -21,6 +21,7 @@ from .domain import (
     validate_rule_id,
     validate_safe_annotation,
 )
+from .scoring import score as calculate_score
 from .workflow import (
     COVERAGE_LIMIT_LABELS,
     COVERAGE_STATE_LABELS,
@@ -49,7 +50,7 @@ def render_json(
     rule_version: str,
     reviewed_score: Score | None = None,
     dispositions: Iterable[DispositionRecord] = (),
-    evaluated_at: datetime | None = None,
+    evaluated_at: datetime,
 ) -> str:
     try:
         rule_version, evaluated_timestamp, technical, reviewed, prepared = _prepare_report(
@@ -89,7 +90,7 @@ def render_html(
     rule_version: str,
     reviewed_score: Score | None = None,
     dispositions: Iterable[DispositionRecord] = (),
-    evaluated_at: datetime | None = None,
+    evaluated_at: datetime,
 ) -> str:
     try:
         rule_version, evaluated_timestamp, technical, reviewed, prepared = _prepare_report(
@@ -213,7 +214,7 @@ def _prepare_report(
     rule_version: str,
     reviewed_score: Score | None,
     dispositions: Iterable[DispositionRecord],
-    evaluated_at: datetime | None,
+    evaluated_at: datetime,
 ) -> tuple[
     str,
     str,
@@ -221,12 +222,49 @@ def _prepare_report(
     dict[str, object],
     tuple[_PreparedFinding, ...],
 ]:
-    technical = _validated_score_data(score)
-    reviewed = (
-        technical
-        if reviewed_score is None
-        else _validated_score_data(reviewed_score)
+    rule_version = validate_safe_annotation("rule_version", rule_version, 32)
+    now = _validated_report_time(evaluated_at)
+    records = disposition_index(
+        _validated_dispositions(_bounded_items(dispositions, MAX_REPORT_FINDINGS))
     )
+    prepared: list[_PreparedFinding] = []
+    validated_findings: list[Finding] = []
+    reviewed_findings: list[Finding] = []
+    evidence_count = 0
+    for candidate in _bounded_items(findings, MAX_REPORT_FINDINGS):
+        validated_finding, canonical = _validated_finding(
+            candidate,
+            MAX_REPORT_EVIDENCE - evidence_count,
+        )
+        evidence_count += len(canonical[4])
+        disposition = _disposition_data(validated_finding, records, now)
+        validated_findings.append(validated_finding)
+        if disposition["status"] != "false_positive":
+            reviewed_findings.append(validated_finding)
+        prepared.append((canonical, disposition))
+
+    _validated_score_data(score)
+    expected_technical = calculate_score(
+        tuple(validated_findings),
+        coverage=score.coverage,
+        confidence=score.confidence,
+        limits=score.limits,
+    )
+    if score != expected_technical:
+        raise ValueError(_ERROR)
+    technical = _validated_score_data(expected_technical)
+
+    expected_reviewed = calculate_score(
+        tuple(reviewed_findings),
+        coverage=score.coverage,
+        confidence=score.confidence,
+        limits=score.limits,
+    )
+    if reviewed_score is not None:
+        _validated_score_data(reviewed_score)
+        if reviewed_score != expected_reviewed:
+            raise ValueError(_ERROR)
+    reviewed = _validated_score_data(expected_reviewed)
     if (
         technical["coverage"] != reviewed["coverage"]
         or technical["confidence"] != reviewed["confidence"]
@@ -235,20 +273,6 @@ def _prepare_report(
         or technical["coverage_state"] != reviewed["coverage_state"]
     ):
         raise ValueError(_ERROR)
-    rule_version = validate_safe_annotation("rule_version", rule_version, 32)
-    now = _validated_report_time(evaluated_at)
-    records = disposition_index(
-        _validated_dispositions(_bounded_items(dispositions, MAX_REPORT_FINDINGS))
-    )
-    prepared: list[_PreparedFinding] = []
-    evidence_count = 0
-    for candidate in _bounded_items(findings, MAX_REPORT_FINDINGS):
-        validated_finding, canonical = _validated_finding(candidate)
-        evidence_count += len(canonical[4])
-        if evidence_count > MAX_REPORT_EVIDENCE:
-            raise ValueError(_ERROR)
-        disposition = _disposition_data(validated_finding, records, now)
-        prepared.append((canonical, disposition))
     return (
         rule_version,
         now.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -299,22 +323,17 @@ def _validated_score_data(score: Score) -> dict[str, object]:
     }
 
 
-def _validated_report_time(evaluated_at: datetime | None) -> datetime:
-    now = (
-        datetime.now(timezone.utc)
-        if evaluated_at is None
-        else evaluated_at
-    )
-    if type(now) is not datetime:
+def _validated_report_time(evaluated_at: datetime) -> datetime:
+    if type(evaluated_at) is not datetime:
         raise ValueError(_ERROR)
-    offset = now.utcoffset()
+    offset = evaluated_at.utcoffset()
     if (
         type(offset) is not timedelta
         or offset != timedelta(0)
-        or (evaluated_at is not None and now.microsecond != 0)
+        or evaluated_at.microsecond != 0
     ):
         raise ValueError(_ERROR)
-    return now.replace(tzinfo=timezone.utc, microsecond=0)
+    return evaluated_at.replace(tzinfo=timezone.utc)
 
 
 def _bounded_items(
@@ -355,6 +374,7 @@ def _validated_dispositions(
 
 def _validated_finding(
     finding: object,
+    remaining_evidence: int,
 ) -> tuple[Finding, _CanonicalFinding]:
     if type(finding) is not Finding:
         raise ValueError(_ERROR)
@@ -374,6 +394,8 @@ def _validated_finding(
             and type(disposition_ref) is not str
         )
     ):
+        raise ValueError(_ERROR)
+    if len(evidence) > remaining_evidence:
         raise ValueError(_ERROR)
     captured_evidence: list[_CanonicalEvidence] = []
     for item in evidence:

@@ -5045,8 +5045,18 @@ def test_coverage_ui_uses_canonical_state_percentage_reasons_and_disclaimer(
         reviewed_score=audit_score,
         evaluated_at=EVALUATED_AT,
         rule_version="1.1.0",
-        report_json=render_json(audit_score, (), rule_version="1.1.0"),
-        report_html=render_html(audit_score, (), rule_version="1.1.0"),
+        report_json=render_json(
+            audit_score,
+            (),
+            rule_version="1.1.0",
+            evaluated_at=EVALUATED_AT,
+        ),
+        report_html=render_html(
+            audit_score,
+            (),
+            rule_version="1.1.0",
+            evaluated_at=EVALUATED_AT,
+        ),
         scanned_roots=(Path(r"C:\synthetic\scope"),),
     )
     real_classifier = app_module.classify_coverage
