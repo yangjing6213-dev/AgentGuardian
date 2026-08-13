@@ -47,7 +47,7 @@ DPAPI 不能抵御已经控制同一 Windows 用户会话的程序，状态也�
 
 该能力只提供本地静态操作和人工指引，不发起 API 调用，也不默认访问 OpenAI API。主机时钟、路径别名或文件移动可能重新打开发现，但不会扩大处置范围。Python 不能保证清除所有不可变 bytes 或字符串副本；静态自审计只覆盖有界源码策略，不是对依赖或二进制的语义证明。当前状态仍是非生产 Founder Alpha；Batches 4-6 仍待完成。
 
-**工作流与报告硬化 Batch 4 当前状态。** Task 1-8 已在本地实现；Task 9 保留按 SHA 绑定的历史本地证据；Task 10 的本地独立复审和双 Python 完整门禁已绑定 `d1c3e9caa856812d0bdd3221b0c6a7083da937ff`，最终 SHA 远程验收尚未完成。该 SHA 的独立规格复审和独立安全/质量复审中 Critical、Important、Minor 均为 0。每次扫描都需要与当前范围绑定的明确同意；范围变化会撤销同意并清除旧结果，扫描启动前会再次校验并消费本次同意。范围预览不遍历目录，只显示短名称、支持的选择器和固定扫描上限。
+**工作流与报告硬化 Batch 4 当前状态。** Task 1-8 已在本地实现；Task 9 保留按 SHA 绑定的历史本地证据；Task 10 的本地独立复审和双 Python 完整门禁已绑定 `d1c3e9caa856812d0bdd3221b0c6a7083da937ff`。远程实现与证据基线 `a79995a7a6a950050d5628324f94a6b8a07e6308` 已由精确绑定的 push 与 Draft PR 运行验证；后续文档/测试证据同步提交必须单独验证。独立规格复审和独立安全/质量复审中 Critical、Important、Minor 均为 0。每次扫描都需要与当前范围绑定的明确同意；范围变化会撤销同意并清除旧结果，扫描启动前会再次校验并消费本次同意。范围预览不遍历目录，只显示短名称、支持的选择器和固定扫描上限。
 
 覆盖结果明确分为 `complete`、`limited` 和 `no_supported_files`。不完整结果不能用于确认安全；`complete` 也只表示配置范围完成，不能证明系统、账户、Provider 或端点安全。严重性、风险领域和处置状态筛选仅影响界面可见行，导出仍包含完整当前审计，分数、受保护状态和报告内容不会因筛选改变。
 
@@ -55,7 +55,7 @@ DPAPI 不能抵御已经控制同一 Windows 用户会话的程序，状态也�
 
 残余限制包括同一用户控制、路径竞态、主机时钟、路径别名、聚合碰撞，以及静态自审计不覆盖依赖和二进制。2026-08-03 的 Task 9 证据提交 `991bf81bb520e7f2ec12f331fbbe714f03212507` 记录了 Python 3.14 和隔离的 Python 3.12 完整门禁均为 `1174 passed, 8 skipped, 0 failed`；该结果是绑定该提交的历史证据，不是当前 HEAD 的新鲜完整门禁。8 项真实 symlink 用例当时因本机 symlink 创建权限不足而跳过，junction 已测试；这些 skip 不算对应 symlink 场景通过。
 
-2026-08-13，`d1c3e9caa856812d0bdd3221b0c6a7083da937ff` 在 Python 3.14.0 和使用 `requirements-dev.lock` 哈希锁定依赖临时隔离的 Python 3.12.2 中均重新验证为 `1264 passed, 8 skipped, 0 failed`；`tests/test_self_audit.py tests/test_packaging.py` 聚焦门禁为 `152 passed`。两个解释器的品牌校验、源码编译和 package-source self-audit 均通过。该 SHA 之后的文档/测试证据同步提交不由这些本地结果自动覆盖。当前 Batch 4 GitHub CI 尚未重新验证。Batches 5-6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。
+2026-08-13，`d1c3e9caa856812d0bdd3221b0c6a7083da937ff` 在 Python 3.14.0 和使用 `requirements-dev.lock` 哈希锁定依赖临时隔离的 Python 3.12.2 中均重新验证为 `1264 passed, 8 skipped, 0 failed`；`tests/test_self_audit.py tests/test_packaging.py` 聚焦门禁为 `152 passed`。两个解释器的品牌校验、源码编译和 package-source self-audit 均通过。该 SHA 之后的文档/测试证据同步提交不由这些本地结果自动覆盖。远程实现与证据基线 `a79995a7a6a950050d5628324f94a6b8a07e6308` 的 push run `31714716636` 与 Draft PR run `31714721274` 均为 `SUCCESS`；该实现基线的本地 Python 3.14/3.12 门禁均为 `1269 passed, 8 skipped, 0 failed`。Batches 5-6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。
 
 ## 开发与验证
 

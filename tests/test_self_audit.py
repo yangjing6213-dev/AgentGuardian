@@ -1365,7 +1365,6 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         assert required in report
     assert "下一批为 DPAPI 保护的本地证据状态，目前尚未实现" not in report
     assert "最终验收 SHA：" not in report
-    assert "Draft PR #1 保持 `OPEN / DRAFT`" not in report
 
     for required in (
         "## Batch 3 Local Implementation and Gate Status",
@@ -1659,7 +1658,7 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
     )
 
     incomplete_boundary = (
-        "当前 Batch 4 GitHub CI 尚未重新验证",
+        "`a79995a7a6a950050d5628324f94a6b8a07e6308`",
         "Batches 5-6 仍待完成",
         "Windows MVP 尚未完成",
         "未形成生产安全结论",
@@ -1683,7 +1682,7 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
             "Critical、Important、Minor 均为 0",
             "`1264 passed, 8 skipped, 0 failed`",
             "`152 passed`",
-            "该 SHA 之后的文档/测试证据同步提交不由这些本地结果自动覆盖",
+            "后续文档/测试证据同步提交必须单独验证",
             "每次扫描都需要与当前范围绑定的明确同意",
             "`complete`、`limited` 和 `no_supported_files`",
             "不完整结果不能用于确认安全",
@@ -1717,7 +1716,7 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
             "独立规格复审和独立安全/质量复审均为零发现",
             "`1264 passed, 8 skipped, 0 failed`",
             "哈希锁定依赖临时隔离",
-            "该 SHA 之后的文档/测试证据同步提交不由这些本地结果自动覆盖",
+            "该实现基线之后的文档/测试证据同步提交不由上述运行自动覆盖",
             "最多 2,000 个 findings、4,000 条 evidence 和 2 MiB UTF-8",
             "生成器用同一个已验证时点计算处置状态、复核分并序列化",
             "任何不可验证的非 `open` 处置失败关闭",
@@ -1748,7 +1747,9 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
             "不把该 SHA 之后的文档/测试证据同步提交声明为被这些本地结果覆盖",
             "当前 Task 10 修复树",
             "最多 2,000 个 findings、4,000 条 evidence 和 2 MiB UTF-8",
-            "Task 10 最终 SHA 的 push/Draft PR CI 证据仍待执行",
+            "push run `31714716636` / job `94496371022`",
+            "Draft PR run `31714721274` / job `94496388008`",
+            "annotations：0/0",
         ),
         "Windows MVP hardening plan": (
             "Task 1-8 已在本地实现",
@@ -1759,7 +1760,8 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
             "独立规格复审和独立安全/质量复审均为零发现",
             "`1264 passed, 8 skipped, 0 failed`",
             "哈希锁定依赖临时隔离",
-            "Task 10 的最终 SHA 远程证据未执行",
+            "push run `31714716636`",
+            "Draft PR run `31714721274`",
             "规范 UTC 秒级 `evaluated_at`",
             "旧 schema 1 与 legacy schema 0 仅兼容全 `open` 报告",
             "长 basename 省略显示且 tooltip 不含目录",
@@ -1847,8 +1849,8 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
 
     assert re.findall(r"- \[x\] \*\*Step (\d):", task_9) == list("12345678")
     assert "- [ ] **Step" not in task_9
-    assert re.findall(r"- \[x\] \*\*Step (\d):", task_10) == list("1234")
-    assert re.findall(r"- \[ \] \*\*Step (\d):", task_10) == list("567")
+    assert re.findall(r"- \[x\] \*\*Step (\d):", task_10) == list("123456")
+    assert re.findall(r"- \[ \] \*\*Step (\d):", task_10) == list("7")
     normalized_task_10 = " ".join(task_10.split())
     for required in (
         "`https://github.com/yangjing6213-dev/AgentGuardian.git`",
@@ -1856,11 +1858,57 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
         "`origin` must match that exact URL",
         "upstream must be `origin/agent/founder-alpha`",
         "Never push to the retired `hqwzhu/AgentGuardian` remote",
+        "push run `31714716636` / job `94496371022`",
+        "Draft PR run `31714721274` / job `94496388008`",
+        "check-run annotations were 0/0",
     ):
         assert required in normalized_task_10
 
     assert "Task 9 的完整本地门禁" not in readme_status
     assert "尚待本节提交" not in report_status
+
+
+def test_batch_4_remote_evidence_is_bound_to_exact_sha_and_limits() -> None:
+    plans = PROJECT_ROOT / "docs" / "superpowers" / "plans"
+    current_status_files = {
+        "README": PROJECT_ROOT / "README.md",
+        "architecture": PROJECT_ROOT / "docs" / "architecture.md",
+        "stage report": (
+            PROJECT_ROOT / "docs" / "reports" / "alpha-0.1.0-stage-report.md"
+        ),
+        "Windows MVP hardening plan": (
+            plans / "2026-08-02-agentguardian-windows-mvp-hardening.md"
+        ),
+    }
+    implementation_sha = "a79995a7a6a950050d5628324f94a6b8a07e6308"
+
+    for document, path in current_status_files.items():
+        text = path.read_text(encoding="utf-8")
+        for required in (
+            implementation_sha,
+            "Batches 5-6 仍待完成",
+            "Windows MVP 尚未完成",
+            "未形成生产安全结论",
+        ):
+            assert required in text, f"{document} missing remote evidence: {required}"
+
+    detailed_evidence = (
+        current_status_files["stage report"].read_text(encoding="utf-8")
+        + (
+            plans / "2026-08-03-agentguardian-windows-workflow-report-hardening.md"
+        ).read_text(encoding="utf-8")
+    )
+    for required in (
+        "31714716636",
+        "94496371022",
+        "31714721274",
+        "94496388008",
+        "1277 passed",
+        "annotations：0/0",
+        "Install、Full test suite、Brand validator、Compile source、Verify clean tree 均通过",
+        "Draft PR #1 保持 `OPEN / DRAFT`",
+    ):
+        assert required in detailed_evidence
 
 
 def _replace_document_text(
@@ -1898,7 +1946,7 @@ def _replace_document_text(
         ),
         (
             "docs/superpowers/plans/2026-08-02-agentguardian-windows-mvp-hardening.md",
-            "Task 10 的最终 SHA 远程证据未执行",
+            "push run `31714716636` 和 Draft PR run `31714721274`",
             "Windows MVP hardening plan",
         ),
     ),
@@ -1930,7 +1978,7 @@ def test_batch_4_doc_contract_rejects_alternate_premature_claims(
     monkeypatch: pytest.MonkeyPatch,
     claim: str,
 ) -> None:
-    current = "当前 Batch 4 GitHub CI 尚未重新验证"
+    current = "远程实现与证据基线 `a79995a7a6a950050d5628324f94a6b8a07e6308`"
     _replace_document_text(monkeypatch, "README.md", current, f"{current}。{claim}")
     with pytest.raises(
         AssertionError,
@@ -1963,7 +2011,7 @@ def test_batch_4_doc_contract_rejects_premature_claim_in_task_10(
 def test_batch_4_doc_contract_rejects_multiline_premature_claim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    current = "当前 Batch 4 GitHub CI 尚未重新验证"
+    current = "远程实现与证据基线 `a79995a7a6a950050d5628324f94a6b8a07e6308`"
     _replace_document_text(
         monkeypatch,
         "README.md",

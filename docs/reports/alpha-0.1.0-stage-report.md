@@ -204,7 +204,10 @@ Batch 4 Task 1-8 已在本地实现。每次扫描都需要与当前范围绑定
 - 该 SHA 的 Python 3.14.0 完整门禁和使用 `requirements-dev.lock` 哈希锁定依赖临时隔离的 Python 3.12.2 完整门禁均为 `1264 passed, 8 skipped, 0 failed`；聚焦 `tests/test_self_audit.py tests/test_packaging.py` 门禁为 `152 passed`。
 - 两个解释器的品牌校验、`compileall -q src` 和 package-source self-audit 均通过；自审仍为 `findings=[]`、`local_only=true`、`network_capability=not_detected`。
 - 本节不把该 SHA 之后的文档/测试证据同步提交声明为被这些本地结果覆盖，也不形成自证循环。
-- 当前 Batch 4 GitHub CI 尚未重新验证；没有把 Batch 3 的历史远程运行当作当前 Batch 4 证据。
-- Task 10 最终 SHA 的 push/Draft PR CI 证据仍待执行。
+- 远程实现与证据基线为 `a79995a7a6a950050d5628324f94a6b8a07e6308`；本地与远端 `agent/founder-alpha` 在取证时均指向该 SHA。
+- push run `31714716636` / job `94496371022`：`SUCCESS`；Draft PR run `31714721274` / job `94496388008`：`SUCCESS`。两个 GitHub-hosted Windows Python 3.12 运行均为 `1277 passed`，Install、Full test suite、Brand validator、Compile source、Verify clean tree 均通过，annotations：0/0。
+- 取证时 Draft PR #1 保持 `OPEN / DRAFT`，base 为 `agent/design-baseline`，head 为 `agent/founder-alpha`。该 PR 未合并、未标记 ready，也未部署。
+- 实现基线 `a79995a7a6a950050d5628324f94a6b8a07e6308` 的本地 Python 3.14 与使用 `requirements-dev.lock` 哈希锁定依赖隔离的 Python 3.12 完整门禁均为 `1269 passed, 8 skipped, 0 failed`；品牌校验、源码编译、差异检查和干净树检查均通过。
+- 本节的后续文档/测试证据同步提交不由上述针对 `a79995a7a6a950050d5628324f94a6b8a07e6308` 的两次远程运行自动覆盖，必须在推送后单独验证。
 
 Batches 5-6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。

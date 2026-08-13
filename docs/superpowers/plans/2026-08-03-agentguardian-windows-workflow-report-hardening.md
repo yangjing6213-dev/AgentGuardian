@@ -709,9 +709,10 @@ with `1264 passed, 8 skipped, 0 failed`; focused self-audit/package tests passed
 `152 passed`. Brand validation, source compilation, diff check, and
 package-source self-audit passed. The evidence synchronization commit after that
 reviewed SHA is docs/tests-only and is not automatically covered by those local
-results. Steps 5-7 remain open; no remote CI or Batch 4 acceptance is claimed.
+results. This remains historical local evidence; current remote evidence is
+recorded separately below.
 
-- [ ] **Step 5: Push and verify both final-HEAD workflows**
+- [x] **Step 5: Push and verify both final-HEAD workflows**
 
 The exact publication target is
 `https://github.com/yangjing6213-dev/AgentGuardian.git`. For initial
@@ -728,11 +729,26 @@ workflows for the exact final HEAD. Record:
 - each named workflow step conclusion; and
 - check-run annotation counts.
 
-- [ ] **Step 6: Synchronize Batch 4 acceptance without evidence loops**
+The remotely accepted implementation/evidence baseline is
+`a79995a7a6a950050d5628324f94a6b8a07e6308`; local and remote feature refs were
+equal when evidence was captured. push run `31714716636` / job `94496371022`
+and Draft PR run `31714721274` / job `94496388008` both concluded `SUCCESS` on
+GitHub-hosted Windows Python 3.12 with `1277 passed`. Detect testable tree,
+Install, Full test suite, Brand validator, Compile source, and Verify clean tree
+all succeeded in both runs; check-run annotations were 0/0. Draft PR #1 remains
+`OPEN / DRAFT`. Local Python 3.14 and hash-locked isolated Python 3.12 gates at
+that implementation baseline both passed `1269 passed, 8 skipped, 0 failed`.
+
+- [x] **Step 6: Synchronize Batch 4 acceptance without evidence loops**
 
 Record the remotely accepted implementation/evidence baseline in the stage
 report. If a later docs-only evidence commit is needed, state exactly which runs
 cover which SHA, then verify that final docs-only HEAD separately in the handoff.
+
+The stage report records the remotely accepted implementation/evidence baseline
+and its exact run/job evidence. This later docs/tests-only synchronization commit
+is not claimed as covered by the two runs cited for `a79995a7a6a950050d5628324f94a6b8a07e6308`;
+its remote verification must be reported separately after it is pushed.
 
 - [ ] **Step 7: Final boundary check**
 
