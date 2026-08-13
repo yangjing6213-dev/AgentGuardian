@@ -1,20 +1,30 @@
-from collections import Counter
-from dataclasses import dataclass
 import json
-from math import isfinite
 import os
-from pathlib import Path, PureWindowsPath
 import re
 import stat
+from collections import Counter
+from dataclasses import dataclass
+from datetime import datetime
+from math import isfinite
+from pathlib import Path, PureWindowsPath
 from typing import Callable, TypeVar
 
-from .dispositions import DispositionRecord, DispositionStatus
+from .dispositions import (
+    DispositionRecord,
+    DispositionStatus,
+    evaluate_disposition,
+    parse_utc,
+)
 from .domain import (
+    MAX_REPORT_EVIDENCE,
+    MAX_REPORT_FINDINGS,
+    MAX_REPORT_JSON_BYTES,
     Evidence,
     Finding,
     RiskDomain,
     Score,
     Severity,
+    validate_rule_id,
     validate_safe_annotation,
 )
 from .scoring import score as calculate_score
@@ -24,16 +34,11 @@ from .workflow import (
     classify_coverage,
 )
 
-
 _ERROR = "REPORT_COMPARISON_INVALID"
 _PRODUCT = "AgentGuardian"
-_MAX_FINDINGS = 2_000
-_MAX_EVIDENCE = 4_000
 _MAX_SCORE_ITEMS = 2_000
-_MAX_BASELINE_BYTES = 2 * 1024 * 1024
 _PATH_TYPE = type(Path())
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-_RULE_ID = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 _WINDOWS_DRIVE = re.compile(r"[A-Za-z]:")
 _WINDOWS_RESERVED_DEVICE_NAMES = frozenset(
     {"con", "nul", "prn", "aux", "conin$", "conout$"}
@@ -88,6 +93,11 @@ class _ParsedScore:
 def parse_report_summary(json_text: str) -> ReportSummary:
     if type(json_text) is not str:
         raise ValueError(_ERROR)
+    try:
+        if len(json_text.encode("utf-8")) > MAX_REPORT_JSON_BYTES:
+            raise ValueError(_ERROR)
+    except UnicodeError:
+        raise
     parse_failed = False
     try:
         payload = json.loads(
@@ -176,9 +186,9 @@ def _load_report_text(path: str | Path) -> str:
         with open(target, "rb") as stream:
             opened = os.fstat(stream.fileno())
             _validate_open_file(initial, opened)
-            data = stream.read(_MAX_BASELINE_BYTES + 1)
+            data = stream.read(MAX_REPORT_JSON_BYTES + 1)
             final_opened = os.fstat(stream.fileno())
-        if type(data) is not bytes or len(data) > _MAX_BASELINE_BYTES:
+        if type(data) is not bytes or len(data) > MAX_REPORT_JSON_BYTES:
             raise _InvalidReport
         _validate_open_file(initial, final_opened, expected_size=len(data))
         final_path = _checked_file_state(target)
@@ -249,7 +259,7 @@ def _validate_regular_file(path_state: os.stat_result) -> None:
         not stat.S_ISREG(path_state.st_mode)
         or _is_reparse(path_state)
         or type(path_state.st_size) is not int
-        or not 0 <= path_state.st_size <= _MAX_BASELINE_BYTES
+        or not 0 <= path_state.st_size <= MAX_REPORT_JSON_BYTES
     ):
         raise _InvalidReport
 
@@ -280,10 +290,15 @@ def _report_summary(payload: object) -> ReportSummary:
     }
     if type(payload) is not dict:
         raise _InvalidReport
-    if set(payload) == common_keys | {"report_schema"}:
+    if set(payload) == common_keys | {"report_schema", "evaluated_at"}:
         legacy = False
+        evaluated_at = _domain_call(parse_utc, payload["evaluated_at"])
+    elif set(payload) == common_keys | {"report_schema"}:
+        legacy = False
+        evaluated_at = None
     elif set(payload) == common_keys:
         legacy = True
+        evaluated_at = None
     else:
         raise _InvalidReport
     report = payload
@@ -317,6 +332,7 @@ def _report_summary(payload: object) -> ReportSummary:
         report["findings"],
         technical_score,
         reviewed_score,
+        evaluated_at,
     )
     return ReportSummary(
         technical_score=technical_score.total,
@@ -395,8 +411,9 @@ def _aggregate_findings(
     value: object,
     technical_score: Score,
     reviewed_score: Score,
+    evaluated_at: object,
 ) -> tuple[int, Counter[str], Counter[str], Counter[str]]:
-    findings = _exact_list(value, _MAX_FINDINGS)
+    findings = _exact_list(value, MAX_REPORT_FINDINGS)
     rules: Counter[str] = Counter()
     severities: Counter[str] = Counter()
     dispositions: Counter[str] = Counter()
@@ -415,17 +432,15 @@ def _aggregate_findings(
                 "disposition",
             },
         )
-        rule_id = finding["rule_id"]
-        if type(rule_id) is not str or _RULE_ID.fullmatch(rule_id) is None:
-            raise _InvalidReport
+        rule_id = _domain_call(validate_rule_id, finding["rule_id"])
         domain = _enum_value(RiskDomain, finding["domain"])
         severity = _enum_value(Severity, finding["severity"])
         root_fingerprint = finding["root_hmac_fingerprint"]
         if type(root_fingerprint) is not str:
             raise _InvalidReport
-        evidence_values = _exact_list(finding["evidence"], _MAX_EVIDENCE)
+        evidence_values = _exact_list(finding["evidence"], MAX_REPORT_EVIDENCE)
         evidence_count += len(evidence_values)
-        if evidence_count > _MAX_EVIDENCE:
+        if evidence_count > MAX_REPORT_EVIDENCE:
             raise _InvalidReport
         evidence_items: list[Evidence] = []
         for evidence_value in evidence_values:
@@ -455,7 +470,7 @@ def _aggregate_findings(
             tuple(evidence_items),
         )
         disposition_state = _validated_disposition(
-            finding["disposition"], rule_id
+            finding["disposition"], validated_finding, evaluated_at
         )
         technical_findings.append(validated_finding)
         if disposition_state != DispositionStatus.FALSE_POSITIVE.value:
@@ -483,7 +498,11 @@ def _aggregate_findings(
     return len(findings), rules, severities, dispositions
 
 
-def _validated_disposition(value: object, rule_id: str) -> str:
+def _validated_disposition(
+    value: object,
+    finding: Finding,
+    evaluated_at: object,
+) -> str:
     if type(value) is not dict:
         raise _InvalidReport
     status = value.get("status")
@@ -492,6 +511,8 @@ def _validated_disposition(value: object, rule_id: str) -> str:
     if status == "open":
         _exact_object(value, {"status"})
         return status
+    if type(evaluated_at) is not datetime:
+        raise _InvalidReport
     keys = {"status", "reason", "reviewer", "created_at", "expires_at"}
     if status == "expired":
         keys.add("last_status")
@@ -501,16 +522,34 @@ def _validated_disposition(value: object, rule_id: str) -> str:
             raise _InvalidReport
     raw_status = disposition.get("last_status", status)
     record_status = _enum_value(DispositionStatus, raw_status)
-    _domain_call(
+    disposition_ref = "0" * 64
+    record = _domain_call(
         DispositionRecord,
-        "0" * 64,
-        rule_id,
+        disposition_ref,
+        finding.rule_id,
         record_status,
         disposition["reason"],
         disposition["reviewer"],
         disposition["created_at"],
         disposition["expires_at"],
     )
+    evaluated_finding = _domain_call(
+        Finding,
+        finding.rule_id,
+        finding.domain,
+        finding.severity,
+        finding.root_fingerprint,
+        finding.evidence,
+        disposition_ref,
+    )
+    evaluation = _domain_call(
+        evaluate_disposition,
+        evaluated_finding,
+        {disposition_ref: record},
+        now=evaluated_at,
+    )
+    if evaluation.state != status or evaluation.record is not record:
+        raise _InvalidReport
     return status
 
 
@@ -574,10 +613,14 @@ def _enum_value(enum_type: Callable[[object], _T], value: object) -> _T:
     return _domain_call(enum_type, value)
 
 
-def _domain_call(call: Callable[..., _T], *args: object) -> _T:
+def _domain_call(
+    call: Callable[..., _T],
+    *args: object,
+    **kwargs: object,
+) -> _T:
     failed = False
     try:
-        return call(*args)
+        return call(*args, **kwargs)
     except UnicodeError:
         raise
     except ValueError:
@@ -615,7 +658,7 @@ def _validate_summary(value: object) -> None:
         or not 0 <= coverage <= 1
         or type(coverage_state) is not CoverageState
         or type(finding_count) is not int
-        or not 0 <= finding_count <= _MAX_FINDINGS
+        or not 0 <= finding_count <= MAX_REPORT_FINDINGS
     ):
         raise _InvalidReport
     _validate_counts(rule_counts, _valid_rule_id, finding_count)
@@ -680,7 +723,10 @@ def _validate_counts(
 
 
 def _valid_rule_id(value: str) -> bool:
-    return _RULE_ID.fullmatch(value) is not None
+    try:
+        return validate_rule_id(value) == value
+    except ValueError:
+        return False
 
 
 def _valid_severity(value: str) -> bool:

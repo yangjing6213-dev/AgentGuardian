@@ -1,7 +1,7 @@
+import json
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from html import escape
-import json
 
 from . import __version__
 from .dispositions import (
@@ -9,7 +9,18 @@ from .dispositions import (
     disposition_index,
     evaluate_disposition,
 )
-from .domain import Evidence, Finding, RiskDomain, Score, Severity
+from .domain import (
+    MAX_REPORT_EVIDENCE,
+    MAX_REPORT_FINDINGS,
+    MAX_REPORT_JSON_BYTES,
+    Evidence,
+    Finding,
+    RiskDomain,
+    Score,
+    Severity,
+    validate_rule_id,
+    validate_safe_annotation,
+)
 from .workflow import (
     COVERAGE_LIMIT_LABELS,
     COVERAGE_STATE_LABELS,
@@ -17,10 +28,8 @@ from .workflow import (
     classify_coverage,
 )
 
-
 _PRODUCT = "AgentGuardian"
 _ERROR = "REPORT_INVALID"
-_MAX_REPORT_ITEMS = 2_000
 
 _CanonicalEvidence = tuple[str, str, str]
 _CanonicalFinding = tuple[
@@ -43,7 +52,7 @@ def render_json(
     evaluated_at: datetime | None = None,
 ) -> str:
     try:
-        rule_version, technical, reviewed, prepared = _prepare_report(
+        rule_version, evaluated_timestamp, technical, reviewed, prepared = _prepare_report(
             score,
             findings,
             rule_version=rule_version,
@@ -55,6 +64,7 @@ def render_json(
             "product": _PRODUCT,
             "version": __version__,
             "report_schema": 1,
+            "evaluated_at": evaluated_timestamp,
             "rule_version": rule_version,
             "score": technical,
             "reviewed_score": reviewed,
@@ -63,7 +73,10 @@ def render_json(
                 for finding, disposition in prepared
             ],
         }
-        return json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False)
+        rendered = json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False)
+        if len(rendered.encode("utf-8")) > MAX_REPORT_JSON_BYTES:
+            raise ValueError(_ERROR)
+        return rendered
     except Exception:
         pass
     raise ValueError(_ERROR) from None
@@ -79,7 +92,7 @@ def render_html(
     evaluated_at: datetime | None = None,
 ) -> str:
     try:
-        rule_version, technical, reviewed, prepared = _prepare_report(
+        rule_version, evaluated_timestamp, technical, reviewed, prepared = _prepare_report(
             score,
             findings,
             rule_version=rule_version,
@@ -98,6 +111,7 @@ def render_html(
             f"<h1>{_text(_PRODUCT)}</h1>",
             f"<p>Version: {_text(__version__)}</p>",
             f"<p>Rule version: {_text(rule_version)}</p>",
+            f"<p>Evaluated at: {_text(evaluated_timestamp)}</p>",
         ]
         for label, current_score in (
             ("Technical", technical),
@@ -202,6 +216,7 @@ def _prepare_report(
     evaluated_at: datetime | None,
 ) -> tuple[
     str,
+    str,
     dict[str, object],
     dict[str, object],
     tuple[_PreparedFinding, ...],
@@ -220,19 +235,23 @@ def _prepare_report(
         or technical["coverage_state"] != reviewed["coverage_state"]
     ):
         raise ValueError(_ERROR)
-    if type(rule_version) is not str:
-        raise ValueError(_ERROR)
+    rule_version = validate_safe_annotation("rule_version", rule_version, 32)
     now = _validated_report_time(evaluated_at)
     records = disposition_index(
-        _validated_dispositions(_bounded_items(dispositions))
+        _validated_dispositions(_bounded_items(dispositions, MAX_REPORT_FINDINGS))
     )
     prepared: list[_PreparedFinding] = []
-    for candidate in _bounded_items(findings):
+    evidence_count = 0
+    for candidate in _bounded_items(findings, MAX_REPORT_FINDINGS):
         validated_finding, canonical = _validated_finding(candidate)
+        evidence_count += len(canonical[4])
+        if evidence_count > MAX_REPORT_EVIDENCE:
+            raise ValueError(_ERROR)
         disposition = _disposition_data(validated_finding, records, now)
         prepared.append((canonical, disposition))
     return (
         rule_version,
+        now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         technical,
         reviewed,
         tuple(
@@ -263,6 +282,8 @@ def _validated_score_data(score: Score) -> dict[str, object]:
     limits = score.limits
     incomplete = score.incomplete
     deduction_data: list[dict[str, object]] = []
+    if cap_reason is not None:
+        cap_reason = validate_safe_annotation("cap_reason", cap_reason, 80)
     for deduction in deductions:
         domain, amount = deduction
         deduction_data.append({"domain": domain.value, "amount": amount})
@@ -287,15 +308,22 @@ def _validated_report_time(evaluated_at: datetime | None) -> datetime:
     if type(now) is not datetime:
         raise ValueError(_ERROR)
     offset = now.utcoffset()
-    if type(offset) is not timedelta or offset != timedelta(0):
+    if (
+        type(offset) is not timedelta
+        or offset != timedelta(0)
+        or (evaluated_at is not None and now.microsecond != 0)
+    ):
         raise ValueError(_ERROR)
-    return now.replace(tzinfo=timezone.utc)
+    return now.replace(tzinfo=timezone.utc, microsecond=0)
 
 
-def _bounded_items(values: Iterable[object]) -> Iterable[object]:
+def _bounded_items(
+    values: Iterable[object],
+    maximum: int,
+) -> Iterable[object]:
     count = 0
     for item in values:
-        if count >= _MAX_REPORT_ITEMS:
+        if count >= maximum:
             raise ValueError(_ERROR)
         count += 1
         yield item
@@ -330,15 +358,14 @@ def _validated_finding(
 ) -> tuple[Finding, _CanonicalFinding]:
     if type(finding) is not Finding:
         raise ValueError(_ERROR)
-    rule_id = finding.rule_id
+    rule_id = validate_rule_id(finding.rule_id)
     domain = finding.domain
     severity = finding.severity
     root_fingerprint = finding.root_fingerprint
     evidence = finding.evidence
     disposition_ref = finding.disposition_ref
     if (
-        type(rule_id) is not str
-        or type(domain) is not RiskDomain
+        type(domain) is not RiskDomain
         or type(severity) is not Severity
         or type(root_fingerprint) is not str
         or type(evidence) is not tuple

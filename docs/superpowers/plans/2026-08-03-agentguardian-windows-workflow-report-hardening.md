@@ -167,13 +167,15 @@ Commit: `Add workflow consent contracts`
 
 - [x] **Step 1: Write failing JSON schema tests**
 
-Require top-level `report_schema == 1` and require both score objects to contain
-the same exact `coverage_state`. Replace historical arbitrary synthetic limit
-strings in report fixtures with canonical codes.
+Require top-level `report_schema == 1`, canonical UTC-seconds `evaluated_at`,
+and both score objects to contain the same exact `coverage_state`. Replace
+historical arbitrary synthetic limit strings in report fixtures with canonical
+codes.
 
 ```python
 payload = json.loads(render_json(score, findings, rule_version="rules-1"))
 assert payload["report_schema"] == 1
+assert payload["evaluated_at"] == "2026-08-03T12:00:00Z"
 assert payload["score"]["coverage_state"] == "limited"
 assert payload["reviewed_score"]["coverage_state"] == "limited"
 ```
@@ -301,10 +303,11 @@ Discard item-level values after aggregation.
 
 - [x] **Step 4: Write failing legacy-schema tests**
 
-Create an exact legacy report by removing `report_schema` and score
-`coverage_state` from a valid rendered payload. Require derived coverage state
-and the same aggregate summary. Reject partial legacy/new hybrids and unknown
-schema versions.
+Create exact all-open compatibility reports by removing `evaluated_at` for old
+schema 1, then removing `report_schema` and score `coverage_state` for legacy
+schema 0. Require derived coverage state and independently recomputed equal
+scores. Reject any old-format non-open disposition, partial legacy/new hybrids,
+and unknown schema versions.
 
 - [x] **Step 5: Implement only exact legacy compatibility**
 

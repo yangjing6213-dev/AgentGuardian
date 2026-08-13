@@ -148,7 +148,11 @@ def collect_self_audit() -> dict[str, object]:
     network_capability = _network_capability(findings)
     return {
         "version": __version__,
-        "executable_path": sys.executable,
+        "python_version": (
+            f"{sys.version_info.major}."
+            f"{sys.version_info.minor}."
+            f"{sys.version_info.micro}"
+        ),
         "rules_sha256": _rules_sha256(),
         "local_only": network_capability == "not_detected" and not findings,
         "network_capability": network_capability,

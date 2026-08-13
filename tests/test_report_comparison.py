@@ -1,8 +1,8 @@
+import json
+import subprocess
 from dataclasses import FrozenInstanceError, fields, replace
 from datetime import datetime, timezone
-import json
 from pathlib import Path
-import subprocess
 
 import pytest
 
@@ -13,7 +13,13 @@ from agentguardian.dispositions import (
     disposition_index,
     reviewed_findings,
 )
-from agentguardian.domain import Evidence, Finding, RiskDomain, Severity
+from agentguardian.domain import (
+    MAX_REPORT_JSON_BYTES,
+    Evidence,
+    Finding,
+    RiskDomain,
+    Severity,
+)
 from agentguardian.report_comparison import (
     ReportSummary,
     compare_report_summaries,
@@ -24,10 +30,9 @@ from agentguardian.reporting import render_json
 from agentguardian.scoring import score
 from agentguardian.workflow import CoverageState
 
-
 EVALUATED_AT = datetime(2026, 8, 3, 12, tzinfo=timezone.utc)
 ATTACKER_MARKER = r"C:\Synthetic\private\comparison-marker.txt"
-MAX_BASELINE_BYTES = 2 * 1024 * 1024
+MAX_BASELINE_BYTES = MAX_REPORT_JSON_BYTES
 
 
 class _LimitStr(str):
@@ -336,16 +341,103 @@ def test_score_recomputation_rejects_independent_contradictions(
     _assert_comparison_invalid(json.dumps(payload))
 
 
+def test_schema_1_evaluated_at_verifies_declared_disposition_state() -> None:
+    payload = json.loads(_report_json())
+    payload["evaluated_at"] = "2026-08-03T12:00:00Z"
+
+    assert parse_report_summary(json.dumps(payload)).reviewed_score == 99
+
+
+def test_old_schema_1_non_open_disposition_fails_closed() -> None:
+    payload = json.loads(_report_json())
+    del payload["evaluated_at"]
+    disposition = payload["findings"][1]["disposition"]
+    disposition["created_at"] = "2020-01-01T00:00:00Z"
+    disposition["expires_at"] = "2020-01-02T00:00:00Z"
+
+    _assert_comparison_invalid(json.dumps(payload))
+
+
+def test_legacy_schema_0_non_open_disposition_fails_closed() -> None:
+    payload = json.loads(_report_json())
+    del payload["report_schema"]
+    del payload["evaluated_at"]
+    del payload["score"]["coverage_state"]
+    del payload["reviewed_score"]["coverage_state"]
+
+    _assert_comparison_invalid(json.dumps(payload))
+
+
+@pytest.mark.parametrize(
+    ("evaluated_at", "status", "created_at", "expires_at"),
+    (
+        (
+            "2026-08-03T12:00:00Z",
+            "false_positive",
+            "2026-08-04T08:00:00Z",
+            "2026-08-05T08:00:00Z",
+        ),
+        (
+            "2026-08-03T12:00:00Z",
+            "false_positive",
+            "2026-08-01T08:00:00Z",
+            "2026-08-02T08:00:00Z",
+        ),
+        (
+            "2026-08-03T12:00:00.1Z",
+            "false_positive",
+            "2026-08-03T08:00:00Z",
+            "2026-08-04T08:00:00Z",
+        ),
+        (
+            "2026-08-03T12:00:00Z",
+            "expired",
+            "2026-08-03T08:00:00Z",
+            "2026-08-04T08:00:00Z",
+        ),
+    ),
+    ids=(
+        "future-created",
+        "expired-as-active",
+        "noncanonical-time",
+        "active-as-expired",
+    ),
+)
+def test_schema_1_rejects_unverifiable_disposition_time_claims(
+    evaluated_at: str,
+    status: str,
+    created_at: str,
+    expires_at: str,
+) -> None:
+    payload = json.loads(_report_json())
+    payload["evaluated_at"] = evaluated_at
+    disposition = payload["findings"][1]["disposition"]
+    disposition["status"] = status
+    if status == "expired":
+        disposition["last_status"] = "false_positive"
+    disposition["created_at"] = created_at
+    disposition["expires_at"] = expires_at
+
+    _assert_comparison_invalid(json.dumps(payload))
+
+
 def test_legacy_report_derives_coverage_state_and_matches_schema_1() -> None:
-    schema_1_text = _report_json()
+    schema_1 = json.loads(_report_json())
+    for finding in schema_1["findings"]:
+        finding["disposition"] = {"status": "open"}
+    schema_1["reviewed_score"] = schema_1["score"]
+    schema_1_text = json.dumps(schema_1)
+    old_schema_1 = json.loads(schema_1_text)
+    del old_schema_1["evaluated_at"]
     legacy = json.loads(schema_1_text)
     del legacy["report_schema"]
+    del legacy["evaluated_at"]
     del legacy["score"]["coverage_state"]
     del legacy["reviewed_score"]["coverage_state"]
 
-    assert parse_report_summary(json.dumps(legacy)) == parse_report_summary(
-        schema_1_text
-    )
+    current = parse_report_summary(schema_1_text)
+    assert parse_report_summary(json.dumps(old_schema_1)) == current
+    assert parse_report_summary(json.dumps(legacy)) == current
 
 
 @pytest.mark.parametrize("hybrid", ("legacy_with_states", "schema_without_states"))
@@ -698,6 +790,17 @@ def test_exact_finding_and_evidence_limits_are_accepted() -> None:
     assert summary.rule_counts == (("A_RULE", 2_000),)
     assert summary.severity_counts == (("low", 2_000),)
     assert summary.disposition_counts == (("open", 2_000),)
+
+
+def test_parser_accepts_exact_utf8_budget_and_rejects_one_byte_over() -> None:
+    report = _report_json()
+    padding = " " * (MAX_BASELINE_BYTES - len(report.encode("utf-8")))
+
+    exact = padding + report
+    assert len(exact.encode("utf-8")) == MAX_BASELINE_BYTES
+    assert parse_report_summary(exact) == parse_report_summary(report)
+
+    _assert_comparison_invalid(" " + exact)
 
 
 def test_public_parser_rejects_non_text_without_file_access() -> None:

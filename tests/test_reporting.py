@@ -1,12 +1,13 @@
 import ast
-from datetime import datetime, timedelta, timezone, tzinfo
-from html import escape
 import json
 import math
+from datetime import datetime, timedelta, timezone, tzinfo
+from html import escape
 from pathlib import Path
 
 import pytest
 
+import agentguardian.reporting as reporting_module
 from agentguardian.detectors import detect_text
 from agentguardian.dispositions import (
     DispositionRecord,
@@ -14,16 +15,26 @@ from agentguardian.dispositions import (
     disposition_index,
     reviewed_findings,
 )
-from agentguardian.domain import Evidence, Finding, RiskDomain, Score, Severity
+from agentguardian.domain import (
+    MAX_REPORT_EVIDENCE,
+    MAX_REPORT_FINDINGS,
+    MAX_REPORT_JSON_BYTES,
+    Evidence,
+    Finding,
+    RiskDomain,
+    Score,
+    Severity,
+)
 from agentguardian.reporting import render_html, render_json
 from agentguardian.scoring import score as calculate_score
 from agentguardian.workflow import classify_coverage
 
-
 EVALUATED_AT = datetime(2026, 8, 2, 12, tzinfo=timezone.utc)
 REPORT_MARKER = r"C:\Synthetic\private\report-marker.txt"
 SECRET_MARKER = "sk-proj-abcdefghijklmnopqrstuv"
-REPORT_LIMIT = 2_000
+REPORT_LIMIT = MAX_REPORT_FINDINGS
+REPORT_EVIDENCE_LIMIT = MAX_REPORT_EVIDENCE
+REPORT_JSON_BYTES = MAX_REPORT_JSON_BYTES
 
 
 class _LeakyStr(str):
@@ -458,6 +469,56 @@ def test_renderers_reject_string_subclasses_without_leaking_paths(
 
 
 @pytest.mark.parametrize("renderer", (render_json, render_html))
+@pytest.mark.parametrize("target", ("rule_version", "cap_reason", "rule_id"))
+@pytest.mark.parametrize(
+    "hostile",
+    (
+        REPORT_MARKER,
+        "https://example.invalid/private",
+        SECRET_MARKER,
+        "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima",
+        "unsafe\nvalue",
+    ),
+    ids=("path", "url", "api-key", "seed-phrase", "control"),
+)
+def test_renderers_reject_unsafe_report_metadata_without_leaking_values(
+    renderer: object,
+    target: str,
+    hostile: str,
+) -> None:
+    score = _score()
+    findings = _findings()
+    rule_version = "rules-1"
+    if target == "rule_version":
+        rule_version = hostile
+    elif target == "cap_reason":
+        score = _unchecked_score(cap_reason=hostile)
+        findings = ()
+    else:
+        findings = (_unchecked_finding(rule_id=hostile),)
+
+    _assert_report_invalid(
+        renderer,
+        score,
+        findings,
+        rule_version=rule_version,
+    )
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
+@pytest.mark.parametrize("rule_id", ("lowercase", "A" * 65, "BAD-RULE"))
+def test_renderers_require_parser_compatible_rule_ids(
+    renderer: object,
+    rule_id: str,
+) -> None:
+    _assert_report_invalid(
+        renderer,
+        _score(),
+        (_unchecked_finding(rule_id=rule_id),),
+    )
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
 @pytest.mark.parametrize(
     "finding",
     (
@@ -613,6 +674,46 @@ def test_renderers_bound_one_pass_inputs_without_length_hints(
 
 
 @pytest.mark.parametrize("renderer", (render_json, render_html))
+def test_renderers_reject_more_than_total_evidence_budget(renderer: object) -> None:
+    evidence = Evidence("safe.txt", "a" * 64, "safe masked evidence")
+    finding = Finding(
+        "EVIDENCE_LIMIT",
+        RiskDomain.EXPOSURE,
+        Severity.LOW,
+        "b" * 64,
+        (evidence,) * (REPORT_EVIDENCE_LIMIT + 1),
+    )
+
+    _assert_report_invalid(renderer, _score(), (finding,))
+
+
+def test_render_json_rejects_output_over_utf8_byte_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    oversized = "é" * (REPORT_JSON_BYTES // 2) + "x"
+    monkeypatch.setattr(
+        reporting_module.json,
+        "dumps",
+        lambda *args, **kwargs: oversized,
+    )
+
+    _assert_report_invalid(render_json, _score(), ())
+
+
+def test_render_json_accepts_output_at_exact_utf8_byte_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exact = "é" * (REPORT_JSON_BYTES // 2)
+    monkeypatch.setattr(
+        reporting_module.json,
+        "dumps",
+        lambda *args, **kwargs: exact,
+    )
+
+    assert render_json(_score(), (), rule_version="rules-1") == exact
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
 @pytest.mark.parametrize("target", ("findings", "dispositions", "mapping"))
 def test_renderers_normalize_iterator_and_mapping_failures(
     renderer: object,
@@ -697,15 +798,36 @@ def test_renderers_validate_evaluated_at_once(
     assert counting_utc.calls == 1
 
 
+@pytest.mark.parametrize("renderer", (render_json, render_html))
+def test_renderers_reject_subsecond_evaluated_at(renderer: object) -> None:
+    _assert_report_invalid(
+        renderer,
+        _score(),
+        (),
+        evaluated_at=EVALUATED_AT.replace(microsecond=1),
+    )
+
+
 def test_render_json_contains_safe_complete_deterministic_report() -> None:
-    first = render_json(_score(), _findings(), rule_version="规则-1")
-    second = render_json(_score(), tuple(reversed(_findings())), rule_version="规则-1")
+    first = render_json(
+        _score(),
+        _findings(),
+        rule_version="规则-1",
+        evaluated_at=EVALUATED_AT,
+    )
+    second = render_json(
+        _score(),
+        tuple(reversed(_findings())),
+        rule_version="规则-1",
+        evaluated_at=EVALUATED_AT,
+    )
     report = json.loads(first)
 
     assert first == second
     assert first == json.dumps(report, ensure_ascii=False, indent=2)
     assert report["product"] == "AgentGuardian"
     assert report["version"] == "0.1.0"
+    assert report["evaluated_at"] == "2026-08-02T12:00:00Z"
     assert report["rule_version"] == "规则-1"
     assert report["score"] == {
         "total": 39,
@@ -1030,32 +1152,31 @@ def test_renderers_reject_malformed_technical_and_reviewed_scores(
 
 
 def test_render_html_escapes_every_dynamic_text_field() -> None:
-    malicious = "<svg onload='alert(1)'>"
+    source_html = "<img onerror='x'>"
+    masked_html = "<b onclick='x'>已脱敏"
     finding = Finding(
-        malicious,
+        "SAFE_RULE",
         RiskDomain.PRIVACY,
         Severity.MEDIUM,
         "f" * 64,
-        (Evidence("<img onerror='x'>", "e" * 64, "<b onclick='x'>已脱敏"),),
+        (Evidence(source_html, "e" * 64, masked_html),),
     )
     audit_score = Score(
         97,
         tuple((domain, 3 if domain is RiskDomain.PRIVACY else 0) for domain in RiskDomain),
-        malicious,
+        None,
         1.0,
         0.5,
         ("file_scan_limited",),
         True,
     )
 
-    rendered = render_html(audit_score, (finding,), rule_version=malicious)
+    rendered = render_html(audit_score, (finding,), rule_version="rules-1")
 
-    assert malicious not in rendered
-    assert "<img onerror='x'>" not in rendered
-    assert "<b onclick='x'>已脱敏" not in rendered
-    assert escape(malicious, quote=True) in rendered
-    assert escape("<img onerror='x'>", quote=True) in rendered
-    assert escape("<b onclick='x'>已脱敏", quote=True) in rendered
+    assert source_html not in rendered
+    assert masked_html not in rendered
+    assert escape(source_html, quote=True) in rendered
+    assert escape(masked_html, quote=True) in rendered
     assert "HMAC fingerprint" in rendered
 
 
@@ -1113,8 +1234,12 @@ def test_render_html_uses_fixed_coverage_state_and_reason_labels(
     reason_label: str | None,
     incomplete: bool,
 ) -> None:
-    first = render_html(score, (), rule_version="rules-1")
-    second = render_html(score, (), rule_version="rules-1")
+    first = render_html(
+        score, (), rule_version="rules-1", evaluated_at=EVALUATED_AT
+    )
+    second = render_html(
+        score, (), rule_version="rules-1", evaluated_at=EVALUATED_AT
+    )
     disclaimer = "本次结果不能证明系统、账户、提供商或端点安全。"
     completion = "已完成配置范围扫描。"
 
@@ -1231,10 +1356,18 @@ def test_renderers_sort_identical_finding_keys_by_evidence() -> None:
         (Evidence("a.txt", "a" * 64, "脱敏证据A"),),
     )
 
-    forward_json = render_json(_score(), (first, second), rule_version="规则-1")
-    reverse_json = render_json(_score(), (second, first), rule_version="规则-1")
-    forward_html = render_html(_score(), (first, second), rule_version="规则-1")
-    reverse_html = render_html(_score(), (second, first), rule_version="规则-1")
+    forward_json = render_json(
+        _score(), (first, second), rule_version="规则-1", evaluated_at=EVALUATED_AT
+    )
+    reverse_json = render_json(
+        _score(), (second, first), rule_version="规则-1", evaluated_at=EVALUATED_AT
+    )
+    forward_html = render_html(
+        _score(), (first, second), rule_version="规则-1", evaluated_at=EVALUATED_AT
+    )
+    reverse_html = render_html(
+        _score(), (second, first), rule_version="规则-1", evaluated_at=EVALUATED_AT
+    )
 
     assert forward_json == reverse_json
     assert forward_html == reverse_html
@@ -1381,11 +1514,16 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
                 1,
                 "domain",
                 (
+                    ("MAX_REPORT_EVIDENCE", None),
+                    ("MAX_REPORT_FINDINGS", None),
+                    ("MAX_REPORT_JSON_BYTES", None),
                     ("Evidence", None),
                     ("Finding", None),
                     ("RiskDomain", None),
                     ("Score", None),
                     ("Severity", None),
+                    ("validate_rule_id", None),
+                    ("validate_safe_annotation", None),
                 ),
             ),
             (
@@ -1431,11 +1569,14 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
             "disposition_index",
             "escape",
             "evaluate_disposition",
+            "len",
             "sorted",
             "str",
             "timedelta",
             "tuple",
             "type",
+            "validate_rule_id",
+            "validate_safe_annotation",
         },
     }
     allowed_attribute_calls = {
@@ -1443,11 +1584,13 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
         "reporting.py": {
             "append",
             "dumps",
+            "encode",
             "extend",
             "join",
             "lower",
             "now",
             "replace",
+            "strftime",
             "utcoffset",
         },
     }

@@ -1,6 +1,10 @@
+import re
 from dataclasses import dataclass, field
 from enum import Enum
-import re
+
+MAX_REPORT_FINDINGS = 2_000
+MAX_REPORT_EVIDENCE = 4_000
+MAX_REPORT_JSON_BYTES = 2 * 1024 * 1024
 
 
 _UNMASKED_SECRET_PATTERNS = (
@@ -20,6 +24,7 @@ _UNMASKED_SECRET_PATTERNS = (
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
 )
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+_RULE_ID = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 _URL = re.compile(r"\b[a-z][a-z0-9+.-]*://\S+", re.IGNORECASE)
 _WINDOWS_PATH = re.compile(r"(?<![A-Za-z0-9+.-])[A-Za-z]:[\\/]")
 _UNC_PATH = re.compile(r"\\\\[^\\/\s]+[\\/][^\\/\s]+")
@@ -189,6 +194,13 @@ def validate_safe_annotation(name: str, value: object, max_length: int) -> str:
     ):
         raise ValueError(f"{name} contains unsafe content")
     return trimmed
+
+
+def validate_rule_id(value: object) -> str:
+    validated = validate_safe_annotation("rule_id", value, 64)
+    if _RULE_ID.fullmatch(validated) is None:
+        raise ValueError("rule_id contains unsafe content")
+    return validated
 
 
 def _require_tuple(name: str, value: object) -> None:

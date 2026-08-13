@@ -186,7 +186,7 @@ Batch 3 本地实现、自动门禁、独立安全复审和最终 SHA 远程验�
 
 Batch 4 Task 1-8 已在本地实现。每次扫描都需要与当前范围绑定的明确同意；范围预览不遍历目录，扫描回调会重新校验并消费同意。覆盖状态固定为 `complete`、`limited` 和 `no_supported_files`，不完整结果不能用于确认安全。严重性、风险领域和处置状态筛选仅影响界面可见行，导出仍包含完整当前审计，不改变分数、报告、处置或受保护状态。
 
-基线比较仅支持 JSON。用户必须显式选择一个不超过 2 MiB 的本地 AgentGuardian 报告；加载器拒绝 UNC、reparse、非普通文件和超限读取。解析器只接受精确的 legacy schema 0 和 report schema 1，且校验不证明报告真实性。比较仅保留类别聚合；聚合比较结果只在内存中瞬态保留，不匹配单个 finding，不导出稳定的跨扫描 finding 标识符，也不保留完整路径、原始 JSON、证据、指纹或处置详情。显式读取一个基线文件不会增加环境目录扫描、网络、API 调用或写入能力。
+基线比较仅支持 JSON。用户必须显式选择一个不超过 2 MiB 的本地 AgentGuardian 报告；加载器拒绝 UNC、reparse、非普通文件和超限读取。当前 Task 10 修复树已让 JSON 生成与导入共享最多 2,000 个 findings、4,000 条 evidence 和 2 MiB UTF-8 的预算；HTML 只共享两项数量上限。新 report schema 1 写入规范 UTC 秒级 `evaluated_at`，解析器按该时点重新验证非 `open` 处置和复核分；缺少该时点的旧 schema 1 与 legacy schema 0 只接受所有处置均为 `open` 的可独立重算报告。规则版本、cap reason 和规则 ID 使用同一安全元数据契约；长基线 basename 省略显示，tooltip 不含目录。上述实现仍待 Task 10 独立复审和完整门禁，不构成验收。校验不证明报告真实性。比较仅保留类别聚合；聚合比较结果只在内存中瞬态保留，不匹配单个 finding，不导出稳定的跨扫描 finding 标识符，也不保留完整路径、原始 JSON、证据、指纹或处置详情。显式读取一个基线文件不会增加环境目录扫描、网络、API 调用或写入能力。
 
 残余限制仍包括 DPAPI 无法抵御同一用户控制、文件检查后的路径竞态、主机时钟与路径别名影响、类别聚合碰撞，以及静态自审计不覆盖依赖和二进制。OpenAI Provider 仍仅做本地适配、检测与人工指引，不默认调用 API。
 
@@ -194,8 +194,8 @@ Batch 4 Task 1-8 已在本地实现。每次扫描都需要与当前范围绑定
 
 - 2026-08-03 的 Task 9 证据提交为 `991bf81bb520e7f2ec12f331fbbe714f03212507`，其父提交为 Task 8 的 `71cdc81fdf372f3deace33005137d69e5a0cd6bc`；Task 9 只修改文档、文档断言和精确源码清单，不修改运行时 `.py` 代码。
 - 文档 RED：`rtk pytest -q -p no:cacheprovider tests/test_self_audit.py -k batch_4` 首次为 `1 failed`，缺少 README Batch 4 状态；文档更新后为 `1 passed`。
-- 该提交的 Python 3.14 门禁：`D:\python3.14\python.exe`，`3.14.0`；`rtk pytest -q -p no:cacheprovider` 为 `1174 passed, 8 skipped, 0 failed`。
-- 该提交的 Python 3.12 门禁：`C:\Users\HU\AppData\Local\Programs\Python\Python312\python.exe`，`3.12.2`；现有本地 wheelhouse 先通过 `--dry-run --no-index --require-hashes` 与 `requirements-dev.lock` 校验，再只解压到临时目录，并用 `-S` 禁用系统 site-packages。未安装或混用 Python 3.14 包。完整测试为 `1174 passed, 8 skipped, 0 failed`，测试后已删除临时解压目录。
+- 该提交的 Python 3.14 门禁：Python `3.14.0`；`rtk pytest -q -p no:cacheprovider` 为 `1174 passed, 8 skipped, 0 failed`。
+- 该提交的 Python 3.12 门禁：Python `3.12.2`，使用隔离的本地锁定 wheelhouse；先通过 `--dry-run --no-index --require-hashes` 与 `requirements-dev.lock` 校验，再只解压到临时目录，并用 `-S` 禁用系统 site-packages。未安装或混用 Python 3.14 包。完整测试为 `1174 passed, 8 skipped, 0 failed`，测试后已删除临时解压目录。
 - 8 项 skip 均因当前 Windows 用户缺少 symlink 创建权限：app smoke 目录/文件 symlink 2 项、discovery 3 项、report comparison 2 项、state store 1 项。junction 已测试；skip 不构成对应 symlink 场景通过证据。
 - 该提交的 `tests/test_self_audit.py tests/test_packaging.py` 聚焦门禁：`132 passed`；精确清单包含全部 16 个包内 `.py` 模块和 `workflow.py`、`report_comparison.py`。
 - Python 3.14 与隔离 Python 3.12 的品牌校验、`compileall -q src` 均退出 0；`git diff --check` 退出 0，无输出。

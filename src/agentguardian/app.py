@@ -15,12 +15,12 @@ from PySide6.QtCore import (
     QObject,
     Qt,
     QThread,
-    QTimeZone,
     QTimer,
+    QTimeZone,
     Signal,
     Slot,
 )
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QResizeEvent
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -59,7 +59,15 @@ from .dispositions import (
     upsert_disposition,
     withdraw_disposition,
 )
-from .domain import Finding, RiskDomain, Score, Severity, validate_safe_annotation
+from .domain import (
+    MAX_REPORT_EVIDENCE,
+    MAX_REPORT_FINDINGS,
+    Finding,
+    RiskDomain,
+    Score,
+    Severity,
+    validate_safe_annotation,
+)
 from .evidence_state import (
     MAX_STATE_EVIDENCE,
     MAX_STATE_FINDINGS,
@@ -113,8 +121,8 @@ SUPPORTED_SUFFIXES = (
     ".yaml",
     ".yml",
 )
-MAX_AUDIT_FINDINGS = 2000
-MAX_AUDIT_EVIDENCE = 4000
+MAX_AUDIT_FINDINGS = MAX_REPORT_FINDINGS
+MAX_AUDIT_EVIDENCE = MAX_REPORT_EVIDENCE
 MAX_AUDIT_FILES = 10_000
 MAX_AUDIT_ENTRIES = 50_000
 MAX_AUDIT_BYTES = 512 * 1024 * 1024
@@ -491,7 +499,7 @@ def _validated_evaluation_time(value: datetime | None) -> datetime:
         offset = evaluated_at.utcoffset()
         if type(offset) is not timedelta or offset != timedelta(0):
             raise ValueError
-        return evaluated_at.replace(tzinfo=timezone.utc)
+        return evaluated_at.replace(tzinfo=timezone.utc, microsecond=0)
     except Exception:
         pass
     raise ValueError(_CONTEXT_ERROR) from None
@@ -907,6 +915,16 @@ class AgentGuardianWindow(QMainWindow):
         self._expiry_timer.timeout.connect(self._handle_expiry_timeout)
         self._build_ui()
         self.setStyleSheet(_stylesheet())
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        if self._comparison_state is not None and hasattr(
+            self, "baseline_name_label"
+        ):
+            try:
+                self._render_baseline_name(self._comparison_state.baseline_name)
+            except Exception:
+                pass
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -1344,6 +1362,10 @@ class AgentGuardianWindow(QMainWindow):
         except Exception:
             pass
         try:
+            self.baseline_name_label.setToolTip("")
+        except Exception:
+            pass
+        try:
             self.comparison_browser.setPlainText(_COMPARISON_EMPTY_MESSAGE)
         except Exception:
             pass
@@ -1382,9 +1404,19 @@ class AgentGuardianWindow(QMainWindow):
     def _render_comparison(self, state: _ComparisonState) -> None:
         text = _comparison_text(state.comparison)
         self._comparison_state = state
-        self.baseline_name_label.setText(f"基线：{state.baseline_name}")
+        self._render_baseline_name(state.baseline_name)
         self.comparison_browser.setPlainText(text)
         self._sync_comparison_commands()
+
+    def _render_baseline_name(self, basename: str) -> None:
+        label = self.baseline_name_label
+        visible = label.fontMetrics().elidedText(
+            f"基线：{basename}",
+            Qt.TextElideMode.ElideRight,
+            max(0, label.contentsRect().width()),
+        )
+        label.setText(visible)
+        label.setToolTip(basename)
 
     def _show_comparison_failure(self) -> None:
         try:

@@ -131,10 +131,12 @@ must include the statement that the result cannot establish safety. A complete
 scan may say only that the configured scope completed; it must not say the
 system, account, provider, or endpoint is safe.
 
-New reports declare `report_schema: 1` and include the explicit coverage state
-alongside the existing score coverage, incomplete flag, and limit codes. JSON
-and HTML render the same state and reasons deterministically. The technical and
-reviewed scores continue to share coverage and limits.
+New reports declare `report_schema: 1`, include the explicit coverage state,
+and record canonical UTC-seconds `evaluated_at`. The same validated instant
+drives disposition evaluation, reviewed scoring, and serialization. Explicit
+sub-second input fails closed. JSON and HTML render the same state, reasons,
+safe metadata, and evaluation time. The technical and reviewed scores continue
+to share coverage and limits.
 
 ### 4. Finding Filters
 
@@ -181,8 +183,16 @@ The parser accepts only exact built-in JSON types, bounded strings and lists,
 `product == "AgentGuardian"`, and one of these schemas:
 
 - the exact pre-Batch-4 Founder Alpha report shape, treated as legacy schema 0;
-  or
-- `report_schema == 1` from this batch.
+- the exact original schema 1 shape without `evaluated_at`; or
+- current `report_schema == 1` with canonical UTC-seconds `evaluated_at`.
+
+Legacy schema 0 and original schema 1 are accepted only when every disposition
+is `open` and both scores independently recompute. Any unverifiable non-open
+legacy disposition fails closed. Current schema 1 reconstructs each non-open
+record and re-evaluates it at `evaluated_at`; future-created, expired-as-active,
+active-as-expired, invalid last-status, timestamp, or reviewed-score
+contradictions fail closed. This verifies internal consistency, not report
+authenticity.
 
 Required and allowed keys are fixed for the top level, both score objects,
 findings, evidence, deductions, and each disposition-state shape. Unknown keys
@@ -195,7 +205,9 @@ validators even though comparison discards their item-level values.
 Missing required fields, unknown schema versions, non-finite or boolean numeric
 values, oversized collections, invalid enum values, unknown limit codes,
 contradictory score data, more than 2,000 findings, or more than 4,000 total
-evidence entries fail closed. These bounds match the existing audit caps. The
+evidence entries fail closed. JSON rendering and parsing also share a 2 MiB
+UTF-8 limit; HTML shares only the collection bounds. These bounds match the
+existing audit caps. The
 parser does not retain evidence sources,
 masked evidence, fingerprints, disposition reasons, reviewers, timestamps, or
 the selected full path after validation.

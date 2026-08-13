@@ -44,7 +44,7 @@ DPAPI 不能抵御已经控制同一 Windows 用户会话的程序；主机时�
 
 Task 1-8 已在本地实现。每次扫描都需要与当前范围绑定的明确同意，范围预览不遍历目录，扫描启动会再次校验并消费同意。覆盖状态固定为 `complete`、`limited` 和 `no_supported_files`，不完整结果不能用于确认安全。筛选仅影响界面可见行，导出仍包含完整当前审计，不改变 finding、分数、报告、处置或受保护状态。
 
-报告比较仅支持 JSON 和用户显式选择的不超过 2 MiB 的本地普通文件。解析器只接受精确的 legacy schema 0 和 report schema 1，校验不证明报告真实性。聚合比较结果只在内存中瞬态保留，不匹配单个 finding，不导出稳定的跨扫描 finding 标识符，也不保留完整路径或逐项证据。显式读取一个基线文件不会增加环境目录扫描、网络、API 调用或写入能力。
+报告比较仅支持 JSON 和用户显式选择的不超过 2 MiB 的本地普通文件。JSON 导出与导入共享最多 2,000 个 findings、4,000 条 evidence 和 2 MiB UTF-8 的预算。新 report schema 1 使用规范 UTC 秒级 `evaluated_at` 绑定处置状态和复核分；缺少该字段的旧 schema 1 与 legacy schema 0 仅兼容全 `open` 报告，不可验证的非 `open` 处置失败关闭。规则版本、cap reason 和规则 ID 使用解析器兼容的安全校验；长 basename 省略显示且 tooltip 不含目录。校验不证明报告真实性。聚合比较结果只在内存中瞬态保留，不匹配单个 finding，不导出稳定的跨扫描 finding 标识符，也不保留完整路径或逐项证据。显式读取一个基线文件不会增加环境目录扫描、网络、API 调用或写入能力。
 
 已知残余限制包括同一用户控制、路径竞态、主机时钟、路径别名、聚合碰撞，以及静态自审计不覆盖依赖和二进制。2026-08-03 的 Task 9 证据提交 `991bf81bb520e7f2ec12f331fbbe714f03212507` 在 Python 3.14 和以锁定 wheel 临时隔离的 Python 3.12 环境中均记录为 `1174 passed, 8 skipped, 0 failed`；自审均为 `findings=[]`、`local_only=true`、`network_capability=not_detected`。2026-08-13，截至仅断言提交 `9d87f972df6c5021482cf6dfc01b0ecf8ced86c9` 的聚焦门禁为 `143 passed`，不修改运行时或包源码；该结果不覆盖后续文档/测试同步提交。Task 10 仍需在当前复审 HEAD 重新运行 Python 3.14 和 Python 3.12 完整门禁。当前 Batch 4 GitHub CI 尚未重新验证，Task 10 的独立复审和最终 SHA 远程证据未执行。Batches 5-6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。
 

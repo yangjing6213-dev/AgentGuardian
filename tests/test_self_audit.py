@@ -85,7 +85,11 @@ def test_collect_self_audit_is_transparent_and_keeps_environment_private(
 
     assert audit == {
         "version": __version__,
-        "executable_path": sys.executable,
+        "python_version": (
+            f"{sys.version_info.major}."
+            f"{sys.version_info.minor}."
+            f"{sys.version_info.micro}"
+        ),
         "rules_sha256": hashlib.sha256(
             (PROJECT_ROOT / "rules" / "default.json").read_bytes()
         ).hexdigest(),
@@ -104,6 +108,8 @@ def test_collect_self_audit_is_transparent_and_keeps_environment_private(
     }
     assert secret_name not in serialized
     assert secret_value not in serialized
+    assert "executable_path" not in audit
+    assert sys.executable not in serialized
 
 
 def test_current_package_has_no_prohibited_static_capabilities() -> None:
@@ -1365,6 +1371,29 @@ def _extract_unique_current_section(
     return text[start_index:end_index]
 
 
+_MACHINE_SPECIFIC_ABSOLUTE_PATH = re.compile(
+    r"(?i)(?:\b[A-Z]:[\\/]|\\\\[^\\/\s]+[\\/][^\\/\s]+)"
+)
+
+
+def _assert_no_machine_specific_paths(document: str, text: str) -> None:
+    match = _MACHINE_SPECIFIC_ABSOLUTE_PATH.search(text)
+    assert match is None, f"{document} contains machine-specific path"
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        r"C:\Users\Synthetic\Python\python.exe",
+        r"\\server\share\Users\Synthetic\python.exe",
+    ),
+    ids=("drive-qualified", "unc"),
+)
+def test_publishable_status_path_contract_rejects_machine_paths(path: str) -> None:
+    with pytest.raises(AssertionError, match="contains machine-specific path"):
+        _assert_no_machine_specific_paths("synthetic current status", path)
+
+
 def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
     architecture = (PROJECT_ROOT / "docs" / "architecture.md").read_text(
@@ -1429,6 +1458,12 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
         "stage report": report_status,
         "Windows MVP hardening plan": hardening_status,
     }
+    for document, status in {
+        **statuses,
+        "Task 9 plan": task_9,
+        "Task 10 plan": task_10,
+    }.items():
+        _assert_no_machine_specific_paths(document, status)
     owned_details = {
         "README": (
             "Task 10 的独立复审和最终 SHA 远程验收尚未完成",
@@ -1447,10 +1482,14 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
             "不修改运行时或包源码",
             "后续文档/测试同步提交不由该结果自动覆盖",
             "Task 10 仍需在当前复审 HEAD 重新运行 Python 3.14 和 Python 3.12 完整门禁",
+            "规范 UTC 秒级 `evaluated_at`",
+            "最多 2,000 个 findings、4,000 条 evidence 和 2 MiB UTF-8",
+            "旧 schema 1 和 legacy schema 0 仅在所有处置均为 `open`",
+            "tooltip 仅含完整 basename",
         ),
         "architecture": (
-            "只接受精确的 legacy schema 0 和 report schema 1",
-            "校验不证明报告真实性",
+            "缺少 `evaluated_at` 的精确旧 schema 1 和 legacy schema 0",
+            "不证明报告来源、内容真实性",
             "不匹配单个 finding",
             "不导出稳定的跨扫描 finding 标识符",
             "不会增加环境目录扫描、网络、API 调用或写入能力",
@@ -1466,6 +1505,10 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
             "`143 passed`",
             "不是当前复审 HEAD 的完整门禁",
             "Task 10 仍需重新运行 Python 3.14 和 Python 3.12 完整门禁",
+            "最多 2,000 个 findings、4,000 条 evidence 和 2 MiB UTF-8",
+            "生成器用同一个已验证时点计算处置状态、复核分并序列化",
+            "任何不可验证的非 `open` 处置失败关闭",
+            "tooltip 仅保留 basename，不包含目录",
         ),
         "stage report": (
             "OpenAI Provider 仍仅做本地适配、检测与人工指引",
@@ -1489,6 +1532,9 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
             "不把后续文档/测试同步提交声明为被该结果覆盖",
             "Task 10 仍需在当前复审 HEAD 重新运行两个 Python 版本的完整门禁",
             "Task 10 的独立规格、安全和质量复审",
+            "当前 Task 10 修复树",
+            "最多 2,000 个 findings、4,000 条 evidence 和 2 MiB UTF-8",
+            "上述实现仍待 Task 10 独立复审和完整门禁",
         ),
         "Windows MVP hardening plan": (
             "Task 1-8 已在本地实现",
@@ -1499,6 +1545,9 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
             "`143 passed`",
             "Task 10 仍需在当前复审 HEAD 重新运行 Python 3.14 和 Python 3.12 完整门禁",
             "Task 10 的独立复审和最终 SHA 远程证据未执行",
+            "规范 UTC 秒级 `evaluated_at`",
+            "旧 schema 1 与 legacy schema 0 仅兼容全 `open` 报告",
+            "长 basename 省略显示且 tooltip 不含目录",
         ),
     }
     for document, status in statuses.items():
@@ -1563,7 +1612,7 @@ def _replace_document_text(
         ("README.md", "2026-08-03 的 Task 9 证据提交", "README"),
         (
             "docs/architecture.md",
-            "只接受精确的 legacy schema 0 和 report schema 1",
+            "缺少 `evaluated_at` 的精确旧 schema 1 和 legacy schema 0",
             "architecture",
         ),
         (

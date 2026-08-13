@@ -51,7 +51,7 @@ DPAPI 不能抵御已经控制同一 Windows 用户会话的程序，状态也�
 
 覆盖结果明确分为 `complete`、`limited` 和 `no_supported_files`。不完整结果不能用于确认安全；`complete` 也只表示配置范围完成，不能证明系统、账户、Provider 或端点安全。严重性、风险领域和处置状态筛选仅影响界面可见行，导出仍包含完整当前审计，分数、受保护状态和报告内容不会因筛选改变。
 
-报告比较仅支持 JSON，由用户显式选择不超过 2 MiB 的本地 AgentGuardian 报告。聚合比较结果只在内存中瞬态保留，不保存完整路径、原始 JSON、证据、指纹或处置详情。解析器只接受精确的 legacy schema 0 和 report schema 1；校验不证明报告真实性，也不匹配单个 finding，不导出稳定的跨扫描 finding 标识符。显式读取一个基线文件不会增加环境目录扫描、网络、API 调用或写入能力。
+报告比较仅支持 JSON，由用户显式选择不超过 2 MiB 的本地 AgentGuardian 报告。JSON 导出与导入共享最多 2,000 个 findings、4,000 条 evidence 和 2 MiB UTF-8 的预算；HTML 共享前两项数量上限。新 report schema 1 写入规范 UTC 秒级 `evaluated_at`，导入时按该时点重新验证每项非 `open` 处置及复核分。缺少 `evaluated_at` 的旧 schema 1 和 legacy schema 0 仅在所有处置均为 `open`、复核分可独立重算时兼容；不可验证的非 `open` 状态失败关闭。规则版本、cap reason 和规则 ID 使用与解析器一致的安全元数据契约。聚合比较结果只在内存中瞬态保留，不保存完整路径、原始 JSON、证据、指纹或处置详情；长基线文件名只在界面省略显示，tooltip 仅含完整 basename。校验不证明报告真实性，也不匹配单个 finding，不导出稳定的跨扫描 finding 标识符。显式读取一个基线文件不会增加环境目录扫描、网络、API 调用或写入能力。
 
 残余限制包括同一用户控制、路径竞态、主机时钟、路径别名、聚合碰撞，以及静态自审计不覆盖依赖和二进制。2026-08-03 的 Task 9 证据提交 `991bf81bb520e7f2ec12f331fbbe714f03212507` 记录了 Python 3.14 和隔离的 Python 3.12 完整门禁均为 `1174 passed, 8 skipped, 0 failed`；该结果是绑定该提交的历史证据，不是当前 HEAD 的新鲜完整门禁。8 项真实 symlink 用例当时因本机 symlink 创建权限不足而跳过，junction 已测试；这些 skip 不算对应 symlink 场景通过。
 

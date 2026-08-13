@@ -1,9 +1,9 @@
 import ast
-from dataclasses import FrozenInstanceError
-from datetime import datetime, timedelta, timezone, tzinfo
 import json
 import os
 import time
+from dataclasses import FrozenInstanceError
+from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,10 +15,10 @@ from PySide6.QtCore import (
     QDateTime,
     QPoint,
     QRect,
-    QTime,
-    QTimeZone,
-    QTimer,
     Qt,
+    QTime,
+    QTimer,
+    QTimeZone,
 )
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
@@ -44,7 +44,14 @@ from agentguardian.dispositions import (
     disposition_index,
     reviewed_findings,
 )
-from agentguardian.domain import Evidence, Finding, RiskDomain, Severity
+from agentguardian.domain import (
+    MAX_REPORT_EVIDENCE,
+    MAX_REPORT_FINDINGS,
+    Evidence,
+    Finding,
+    RiskDomain,
+    Severity,
+)
 from agentguardian.evidence_state import (
     EvidenceReference,
     EvidenceSnapshot,
@@ -53,11 +60,10 @@ from agentguardian.evidence_state import (
     decode_snapshot,
     encode_snapshot,
 )
-from agentguardian.state_store import StateStoreError
-from agentguardian.reporting import render_html, render_json
 from agentguardian.report_comparison import ReportSummary, compare_report_summaries
+from agentguardian.reporting import render_html, render_json
 from agentguardian.scoring import score
-
+from agentguardian.state_store import StateStoreError
 
 EVALUATED_AT = datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
 DISPOSITION_KEY = b"d" * 32
@@ -1335,6 +1341,50 @@ def test_report_page_comparison_controls_fit_at_minimum_size(
     window.close()
 
 
+def test_report_page_elides_long_baseline_name_and_keeps_basename_tooltip(
+    qapp,
+) -> None:
+    basename = "a" * 240 + ".json"
+    current = _audit_outcome((_disposition_finding(73),))
+    summary = app_module.parse_report_summary(current.report_json)
+    state = app_module._ComparisonState(
+        basename,
+        compare_report_summaries(summary, summary),
+    )
+    window = create_window()
+    window._scan_completed(current)
+    window._switch_view(2)
+    window.resize(1600, 640)
+    window.show()
+    qapp.processEvents()
+
+    window._render_comparison(state)
+    qapp.processEvents()
+    wide_text = window.baseline_name_label.text()
+
+    window.resize(960, 640)
+    qapp.processEvents()
+    narrow_text = window.baseline_name_label.text()
+    label = window.baseline_name_label
+    assert narrow_text != f"基线：{basename}"
+    assert narrow_text.endswith("…")
+    assert len(narrow_text) < len(wide_text)
+    assert label.fontMetrics().horizontalAdvance(narrow_text) <= label.contentsRect().width()
+    assert label.toolTip() == basename
+    assert "/" not in label.toolTip()
+    assert "\\" not in label.toolTip()
+
+    window._clear_comparison_callback()
+    assert label.text() == "基线：未选择"
+    assert label.toolTip() == ""
+    window.close()
+
+
+def test_audit_scan_and_report_collection_budgets_are_shared() -> None:
+    assert app_module.MAX_AUDIT_FINDINGS == MAX_REPORT_FINDINGS
+    assert app_module.MAX_AUDIT_EVIDENCE == MAX_REPORT_EVIDENCE
+
+
 def test_finding_disposition_controls_are_stable_private_and_selection_driven(qapp):
     finding = _disposition_finding()
     outcome = _audit_outcome((finding,))
@@ -2110,7 +2160,7 @@ def test_disposition_status_and_controls_fit_at_minimum_size(
 
 
 def test_long_valid_finding_values_are_elided_without_hiding_disposition(qapp):
-    rule_id = "R" * 80
+    rule_id = "R" * 64
     source = "s" * 80
     masked = "m" * 80
     finding = Finding(
