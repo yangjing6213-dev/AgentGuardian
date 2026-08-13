@@ -77,6 +77,7 @@ class Evidence:
         if (
             not self.masked
             or len(self.masked) > 80
+            or _has_non_printable_or_surrogate(self.masked)
             or any(pattern.search(self.masked) for pattern in _UNMASKED_SECRET_PATTERNS)
             or _URL.search(self.masked)
             or _looks_like_path(self.masked)
@@ -179,6 +180,13 @@ def _looks_like_seed_phrase(value: str) -> bool:
     )
 
 
+def _has_non_printable_or_surrogate(value: str) -> bool:
+    return any(
+        0xD800 <= ord(character) <= 0xDFFF or not character.isprintable()
+        for character in value
+    )
+
+
 def validate_safe_annotation(name: str, value: object, max_length: int) -> str:
     if type(value) is not str or type(max_length) is not int or max_length < 1:
         raise ValueError(f"{name} contains unsafe content")
@@ -186,7 +194,7 @@ def validate_safe_annotation(name: str, value: object, max_length: int) -> str:
     if (
         not trimmed
         or len(trimmed) > max_length
-        or any(not character.isprintable() for character in trimmed)
+        or _has_non_printable_or_surrogate(trimmed)
         or any(pattern.search(trimmed) for pattern in _UNMASKED_SECRET_PATTERNS)
         or _URL.search(trimmed)
         or _looks_like_path(trimmed)
@@ -213,6 +221,6 @@ def _validate_display_name(name: str, value: str) -> None:
         not value
         or len(value) > 80
         or any(separator in value for separator in ("/", "\\", ":"))
-        or any(not character.isprintable() for character in value)
+        or _has_non_printable_or_surrogate(value)
     ):
         raise ValueError(f"{name} must be a short display name, not a path")

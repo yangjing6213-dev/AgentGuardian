@@ -814,6 +814,26 @@ def test_public_parser_normalizes_real_unpaired_surrogate() -> None:
     _assert_comparison_invalid(hostile)
 
 
+def test_public_parser_rejects_escaped_unpaired_surrogate_in_masked_evidence() -> None:
+    hostile = chr(0xD800)
+    payload = json.loads(_report_json())
+    payload["findings"][0]["evidence"][0]["masked"] = hostile
+    json_text = json.dumps(payload)
+
+    assert r"\ud800" in json_text
+    with pytest.raises(ValueError) as caught:
+        parse_report_summary(json_text)
+
+    assert caught.value.args == ("REPORT_COMPARISON_INVALID",)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    rendered_error = repr(
+        (caught.value, caught.value.__cause__, caught.value.__context__)
+    )
+    assert hostile not in rendered_error
+    assert r"\ud800" not in rendered_error
+
+
 def test_public_comparison_normalizes_forged_missing_summary_slots() -> None:
     forged = object.__new__(ReportSummary)
 
@@ -893,26 +913,33 @@ def test_summary_validation_propagates_internal_classifier_defects(
     "masked",
     ("masked\x00value", "masked\nvalue", "masked\u202evalue"),
 )
-def test_renderer_round_trip_accepts_domain_valid_masked_text(
+def test_parser_rejects_non_printable_masked_text(
     masked: str,
 ) -> None:
+    payload = json.loads(_report_json())
+    payload["findings"][0]["evidence"][0]["masked"] = masked
+
+    _assert_comparison_invalid(json.dumps(payload))
+
+
+def test_renderer_round_trip_preserves_printable_chinese_masked_text() -> None:
     findings = (
         Finding(
             "A_RULE",
             RiskDomain.EXPOSURE,
             Severity.LOW,
             "a" * 64,
-            (Evidence("notes.txt", "b" * 64, masked),),
+            (Evidence("记录.txt", "b" * 64, "已脱敏内容"),),
         ),
     )
-    report = render_json(
-        score(findings, coverage=1.0),
-        findings,
-        rule_version="rules-1",
-        evaluated_at=EVALUATED_AT,
+    summary = parse_report_summary(
+        render_json(
+            score(findings, coverage=1.0),
+            findings,
+            rule_version="rules-1",
+            evaluated_at=EVALUATED_AT,
+        )
     )
-
-    summary = parse_report_summary(report)
 
     assert summary.technical_score == 99
     assert summary.reviewed_score == 99

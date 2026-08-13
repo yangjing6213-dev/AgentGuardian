@@ -178,7 +178,17 @@ historical arbitrary synthetic limit strings in report fixtures with canonical
 codes.
 
 ```python
-payload = json.loads(render_json(score, findings, rule_version="rules-1"))
+import json
+from datetime import datetime, timezone
+
+payload = json.loads(
+    render_json(
+        score,
+        findings,
+        rule_version="rules-1",
+        evaluated_at=datetime(2026, 8, 3, 12, tzinfo=timezone.utc),
+    )
+)
 assert payload["report_schema"] == 1
 assert payload["evaluated_at"] == "2026-08-03T12:00:00Z"
 assert payload["score"]["coverage_state"] == "limited"

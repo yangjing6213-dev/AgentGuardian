@@ -297,9 +297,27 @@ def _prepare_report(
 
 
 def _validated_score_data(score: Score) -> dict[str, object]:
+    if type(score) is not Score:
+        raise ValueError(_ERROR)
+    deductions = score.deductions
+    expected_domains = tuple(RiskDomain)
+    if type(deductions) is not tuple or len(deductions) != len(expected_domains):
+        raise ValueError(_ERROR)
+    position = 0
+    for deduction in deductions:
+        if type(deduction) is not tuple or len(deduction) != 2:
+            raise ValueError(_ERROR)
+        domain, amount = deduction
+        if (
+            domain is not expected_domains[position]
+            or type(amount) is not int
+            or amount < 0
+        ):
+            raise ValueError(_ERROR)
+        position += 1
+
     coverage_state = classify_coverage(score)
     total = score.total
-    deductions = score.deductions
     cap_reason = score.cap_reason
     coverage = score.coverage
     confidence = score.confidence

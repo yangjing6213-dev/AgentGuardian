@@ -1416,6 +1416,20 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
         / "specs"
         / "2026-08-03-agentguardian-windows-workflow-report-hardening-design.md"
     ).read_text(encoding="utf-8")
+    task_2_sample = re.search(
+        r"## Task 2:.*?```python\n(.*?)```",
+        workflow_plan,
+        flags=re.DOTALL,
+    )
+
+    assert task_2_sample is not None
+    sample = task_2_sample.group(1)
+    assert "import json" in sample
+    assert "from datetime import datetime, timezone" in sample
+    assert (
+        "evaluated_at=datetime(2026, 8, 3, 12, tzinfo=timezone.utc)"
+        in sample
+    )
 
     readme_status = _extract_unique_current_section(
         "README",

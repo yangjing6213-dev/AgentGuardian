@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import agentguardian.reporting as reporting_module
 from agentguardian.detectors import detect_text
 from agentguardian.dispositions import (
     DispositionRecord,
@@ -561,6 +562,39 @@ def test_renderers_reject_noncanonical_finding_and_evidence_fields(
 
 @pytest.mark.parametrize("renderer", (render_json, render_html))
 @pytest.mark.parametrize(
+    "masked",
+    ("masked\x00value", "masked\nvalue", "masked\u202evalue"),
+    ids=("null", "newline", "bidi-control"),
+)
+def test_renderers_reject_non_printable_masked_evidence(
+    renderer: object,
+    masked: str,
+) -> None:
+    finding = _unchecked_finding(
+        evidence=(_unchecked_evidence(masked=masked),),
+    )
+
+    _assert_report_invalid(
+        renderer,
+        calculate_score((finding,), coverage=1.0),
+        (finding,),
+    )
+
+
+def test_render_html_rejects_unpaired_surrogate_masked_evidence() -> None:
+    finding = _unchecked_finding(
+        evidence=(_unchecked_evidence(masked=chr(0xD800)),),
+    )
+
+    _assert_report_invalid(
+        render_html,
+        calculate_score((finding,), coverage=1.0),
+        (finding,),
+    )
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
+@pytest.mark.parametrize(
     ("field", "value"),
     (
         ("reason", REPORT_MARKER),
@@ -819,6 +853,28 @@ def test_render_json_rejects_excessive_declared_deductions() -> None:
     )
 
     _assert_report_invalid(render_json, excessive, ())
+
+
+@pytest.mark.parametrize("renderer", (render_json, render_html))
+def test_renderers_bound_deduction_shape_before_classifying(
+    renderer: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    excessive = _unchecked_score(
+        deductions=((RiskDomain.EXPOSURE, 0),) * 2_001,
+    )
+    classifier_calls = 0
+
+    def fail_if_called(_score: object) -> object:
+        nonlocal classifier_calls
+        classifier_calls += 1
+        raise RuntimeError(REPORT_MARKER)
+
+    monkeypatch.setattr(reporting_module, "classify_coverage", fail_if_called)
+
+    _assert_report_invalid(renderer, excessive, ())
+
+    assert classifier_calls == 0
 
 
 @pytest.mark.parametrize("renderer", (render_json, render_html))
