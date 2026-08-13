@@ -19,6 +19,24 @@ from agentguardian.self_audit import collect_self_audit, static_capability_findi
 PROJECT_ROOT = Path(__file__).parents[1]
 PACKAGE_ROOT = PROJECT_ROOT / "src" / "agentguardian"
 SOURCE_POLICY_PATH = PACKAGE_ROOT / "source_policy.json"
+EXPECTED_REVIEWED_SOURCE_MODULES = (
+    "__init__.py",
+    "__main__.py",
+    "app.py",
+    "detectors.py",
+    "discovery.py",
+    "dispositions.py",
+    "domain.py",
+    "evidence_state.py",
+    "guidance.py",
+    "report_comparison.py",
+    "reporting.py",
+    "scoring.py",
+    "self_audit.py",
+    "state_store.py",
+    "windows_dpapi.py",
+    "workflow.py",
+)
 
 
 def _canonical_source_digest(path: Path) -> str:
@@ -96,25 +114,45 @@ def test_source_policy_manifest_exactly_matches_current_package() -> None:
     assert SOURCE_POLICY_PATH.is_file()
     policy = json.loads(SOURCE_POLICY_PATH.read_text(encoding="utf-8"))
     modules = policy["modules"]
-    names = [
+    package_names = tuple(
         path.relative_to(PACKAGE_ROOT).as_posix()
         for path in sorted(PACKAGE_ROOT.rglob("*.py"))
-    ]
+    )
 
     assert list(policy) == ["schema", "modules"]
     assert policy["schema"] == 1
-    assert list(modules) == names
+    assert len(EXPECTED_REVIEWED_SOURCE_MODULES) == 16
+    assert package_names == EXPECTED_REVIEWED_SOURCE_MODULES
+    assert tuple(modules) == EXPECTED_REVIEWED_SOURCE_MODULES
+    assert len(modules) == 16
     assert modules == {
-        name: _canonical_source_digest(PACKAGE_ROOT / name) for name in names
+        name: _canonical_source_digest(PACKAGE_ROOT / name)
+        for name in EXPECTED_REVIEWED_SOURCE_MODULES
     }
+
+
+def test_source_policy_contract_rejects_an_accepted_seventeenth_module(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = _copy_reviewed_package(tmp_path)
+    (package / "unexpected.py").write_text("value = 1\n", encoding="utf-8")
+    modules = {
+        path.relative_to(package).as_posix(): _canonical_source_digest(path)
+        for path in sorted(package.rglob("*.py"))
+    }
+    manifest = tmp_path / "source-policy.json"
+    _write_manifest(manifest, modules)
+    monkeypatch.setattr(sys.modules[__name__], "PACKAGE_ROOT", package)
+    monkeypatch.setattr(sys.modules[__name__], "SOURCE_POLICY_PATH", manifest)
+
+    with pytest.raises(AssertionError):
+        test_source_policy_manifest_exactly_matches_current_package()
 
 
 @pytest.mark.parametrize(
     "module_name",
-    tuple(
-        path.relative_to(PACKAGE_ROOT).as_posix()
-        for path in sorted(PACKAGE_ROOT.rglob("*.py"))
-    ),
+    EXPECTED_REVIEWED_SOURCE_MODULES,
 )
 def test_source_policy_rejects_source_change_in_every_reviewed_module(
     tmp_path: Path, module_name: str
@@ -1282,6 +1320,29 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         )
 
 
+_PREMATURE_BATCH_4_STATUS_PATTERNS = (
+    r"GitHub CI.{0,16}(?:已通过|已验证|已重新验证|成功)",
+    r"Batch 4.{0,16}(?:已完成|已验收|已接受|accepted|completed?)",
+    r"Windows MVP.{0,16}(?:已完成|已就绪|ready|completed?)",
+    r"(?:已通过|已达到).{0,8}生产安全|"
+    r"生产安全.{0,8}(?:已通过|已验证|验证通过|已完成|已就绪|verified|ready)",
+)
+
+
+def _assert_current_batch_4_status(
+    document: str,
+    status: str,
+    required_phrases: tuple[str, ...],
+) -> None:
+    for required in required_phrases:
+        assert required in status, f"{document} missing Batch 4 status: {required}"
+    for pattern in _PREMATURE_BATCH_4_STATUS_PATTERNS:
+        match = re.search(pattern, status, re.IGNORECASE)
+        assert match is None, (
+            f"{document} contains premature Batch 4 status: {match.group(0)}"
+        )
+
+
 def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
     architecture = (PROJECT_ROOT / "docs" / "architecture.md").read_text(
@@ -1290,13 +1351,12 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
     report = (
         PROJECT_ROOT / "docs" / "reports" / "alpha-0.1.0-stage-report.md"
     ).read_text(encoding="utf-8")
+    plans = PROJECT_ROOT / "docs" / "superpowers" / "plans"
     hardening_plan = (
-        PROJECT_ROOT / "docs" / "superpowers" / "plans"
-        / "2026-08-02-agentguardian-windows-mvp-hardening.md"
+        plans / "2026-08-02-agentguardian-windows-mvp-hardening.md"
     ).read_text(encoding="utf-8")
     workflow_plan = (
-        PROJECT_ROOT / "docs" / "superpowers" / "plans"
-        / "2026-08-03-agentguardian-windows-workflow-report-hardening.md"
+        plans / "2026-08-03-agentguardian-windows-workflow-report-hardening.md"
     ).read_text(encoding="utf-8")
 
     readme_status = readme.split(
@@ -1319,152 +1379,150 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
     )
     task_10 = task_10.split("## Plan Completion Gate", 1)[0]
 
-    common_status = (
-        "Python 3.14",
-        "Python 3.12",
-        "1174 passed, 8 skipped, 0 failed",
+    incomplete_boundary = (
         "当前 Batch 4 GitHub CI 尚未重新验证",
         "Batches 5-6 仍待完成",
         "Windows MVP 尚未完成",
         "未形成生产安全结论",
     )
-    document_contracts = {
+    statuses = {
+        "README": readme_status,
+        "architecture": architecture_status,
+        "stage report": report_status,
+        "Windows MVP hardening plan": hardening_status,
+    }
+    owned_details = {
         "README": (
-            readme_status,
-            common_status
-            + (
-                "Task 9 完整本地门禁已重新通过",
-                "每次扫描都需要与当前范围绑定的明确同意",
-                "`complete`、`limited` 和 `no_supported_files`",
-                "不完整结果不能用于确认安全",
-                "筛选仅影响界面可见行，导出仍包含完整当前审计",
-                "2 MiB",
-                "仅支持 JSON",
-                "聚合比较结果只在内存中瞬态保留",
-                "不会增加环境目录扫描、网络、API 调用或写入能力",
-            ),
+            "Task 9 完整本地门禁已重新通过",
+            "Task 10 的独立复审和最终 SHA 远程验收尚未完成",
+            "每次扫描都需要与当前范围绑定的明确同意",
+            "`complete`、`limited` 和 `no_supported_files`",
+            "不完整结果不能用于确认安全",
+            "筛选仅影响界面可见行，导出仍包含完整当前审计",
+            "仅支持 JSON",
+            "2 MiB",
+            "聚合比较结果只在内存中瞬态保留",
         ),
         "architecture": (
-            architecture_status,
-            common_status
-            + (
-                "每次扫描都需要与当前范围绑定的明确同意",
-                "`complete`、`limited` 和 `no_supported_files`",
-                "筛选仅影响界面可见行，导出仍包含完整当前审计",
-                "只接受精确的 legacy schema 0 和 report schema 1",
-                "校验不证明报告真实性",
-                "不匹配单个 finding",
-                "不导出稳定的跨扫描 finding 标识符",
-                "不会增加环境目录扫描、网络、API 调用或写入能力",
-                "同一用户控制",
-                "路径竞态",
-                "主机时钟",
-                "聚合碰撞",
-                "依赖和二进制",
-                "symlink 创建权限",
-                "junction 已测试",
-            ),
+            "只接受精确的 legacy schema 0 和 report schema 1",
+            "校验不证明报告真实性",
+            "不匹配单个 finding",
+            "不导出稳定的跨扫描 finding 标识符",
+            "不会增加环境目录扫描、网络、API 调用或写入能力",
+            "同一用户控制",
+            "路径竞态",
+            "主机时钟",
+            "聚合碰撞",
+            "依赖和二进制",
         ),
         "stage report": (
-            report_status,
-            common_status
-            + (
-                "每次扫描都需要与当前范围绑定的明确同意",
-                "`complete`、`limited` 和 `no_supported_files`",
-                "不完整结果不能用于确认安全",
-                "聚合比较结果只在内存中瞬态保留",
-                "OpenAI Provider 仍仅做本地适配、检测与人工指引",
-                "不默认调用 API",
-                "全部 16 个包内 `.py` 模块",
-                "findings=[]",
-                "local_only=true",
-                "network_capability=not_detected",
-                "Task 10 的独立规格、安全和质量复审",
-            ),
+            "OpenAI Provider 仍仅做本地适配、检测与人工指引",
+            "不默认调用 API",
+            "Python 3.14",
+            "Python 3.12",
+            "1174 passed, 8 skipped, 0 failed",
+            "全部 16 个包内 `.py` 模块",
+            "findings=[]",
+            "local_only=true",
+            "network_capability=not_detected",
+            "symlink 创建权限",
+            "junction 已测试",
+            "Task 10 的独立规格、安全和质量复审",
         ),
         "Windows MVP hardening plan": (
-            hardening_status,
-            common_status
-            + (
-                "每次扫描都需要与当前范围绑定的明确同意",
-                "`complete`、`limited` 和 `no_supported_files`",
-                "不完整结果不能用于确认安全",
-                "聚合比较结果只在内存中瞬态保留",
-                "不会增加环境目录扫描、网络、API 调用或写入能力",
-                "local_only=true",
-                "network_capability=not_detected",
-                "Task 10 的独立复审和最终 SHA 远程证据未执行",
-            ),
+            "Task 1-8 已在本地实现",
+            "Task 10 的独立复审和最终 SHA 远程证据未执行",
         ),
     }
-    for document, (status, required_phrases) in document_contracts.items():
-        for required in required_phrases:
-            assert required in status, f"{document} missing Batch 4 status: {required}"
+    for document, status in statuses.items():
+        _assert_current_batch_4_status(
+            document, status, incomplete_boundary + owned_details[document]
+        )
 
     assert "不默认访问 OpenAI API" in readme
     assert "不默认访问 OpenAI API" in architecture
+    assert "不默认调用 API" in report_status
     assert "free of default API calls" in hardening_plan
     assert "zero default OpenAI API access" in workflow_plan
+    assert (
+        "Task 1-9 local implementation and evidence recorded. Task 10 independent "
+        "review and final-SHA remote evidence remain pending."
+    ) in hardening_plan
 
-    for step in range(1, 9):
-        assert f"- [x] **Step {step}:" in task_9
-    assert task_9.count("- [x] **Step") == 8
+    assert re.findall(r"- \[x\] \*\*Step (\d):", task_9) == list("12345678")
     assert "- [ ] **Step" not in task_9
-    for step in range(1, 8):
-        assert f"- [ ] **Step {step}:" in task_10
-    assert task_10.count("- [ ] **Step") == 7
+    assert re.findall(r"- \[ \] \*\*Step (\d):", task_10) == list("1234567")
     assert "- [x] **Step" not in task_10
-
-    current_statuses = tuple(
-        status for status, _required_phrases in document_contracts.values()
-    ) + (task_9, task_10)
-    for premature in (
-        "Batch 4 已完成",
-        "Batch 4 accepted",
-        "当前 Batch 4 GitHub CI 已重新验证",
-        "Task 10 已完成",
-        "Windows MVP 已完成",
-        "已达到生产安全",
-    ):
-        for status in current_statuses:
-            assert premature not in status, (
-                f"current Batch 4 status contains premature claim: {premature}"
-            )
 
     assert "Task 9 的完整本地门禁" not in readme_status
     assert "尚待本节提交" not in report_status
 
 
+def _replace_document_text(
+    monkeypatch: pytest.MonkeyPatch,
+    relative_path: str,
+    current: str,
+    replacement: str,
+) -> None:
+    original_read_text = Path.read_text
+    target = PROJECT_ROOT / relative_path
+
+    def replaced(path: Path, *args: object, **kwargs: object) -> str:
+        text = original_read_text(path, *args, **kwargs)
+        if path == target:
+            assert current in text
+            return text.replace(current, replacement, 1)
+        return text
+
+    monkeypatch.setattr(Path, "read_text", replaced)
+
+
 @pytest.mark.parametrize(
-    "replacement",
+    ("relative_path", "marker", "document"),
     (
-        pytest.param("", id="omitted-current-remote-status"),
-        pytest.param(
-            "当前 Batch 4 GitHub CI 已重新验证",
-            id="contradictory-remote-status",
+        ("README.md", "Task 9 完整本地门禁已重新通过", "README"),
+        (
+            "docs/architecture.md",
+            "只接受精确的 legacy schema 0 和 report schema 1",
+            "architecture",
+        ),
+        (
+            "docs/reports/alpha-0.1.0-stage-report.md",
+            "全部 16 个包内 `.py` 模块",
+            "stage report",
+        ),
+        (
+            "docs/superpowers/plans/2026-08-02-agentguardian-windows-mvp-hardening.md",
+            "Task 10 的独立复审和最终 SHA 远程证据未执行",
+            "Windows MVP hardening plan",
         ),
     ),
 )
 def test_batch_4_doc_contract_rejects_cross_document_masking(
     monkeypatch: pytest.MonkeyPatch,
-    replacement: str,
+    relative_path: str,
+    marker: str,
+    document: str,
 ) -> None:
-    original_read_text = Path.read_text
-    readme_path = PROJECT_ROOT / "README.md"
+    _replace_document_text(monkeypatch, relative_path, marker, "")
+    with pytest.raises(AssertionError, match=re.escape(document)):
+        test_docs_track_batch_4_workflow_and_report_boundaries()
 
-    def read_text_with_stale_readme(
-        path: Path,
-        *args: object,
-        **kwargs: object,
-    ) -> str:
-        text = original_read_text(path, *args, **kwargs)
-        if path == readme_path:
-            current = "当前 Batch 4 GitHub CI 尚未重新验证"
-            assert current in text
-            return text.replace(current, replacement, 1)
-        return text
 
-    monkeypatch.setattr(Path, "read_text", read_text_with_stale_readme)
-
+@pytest.mark.parametrize(
+    "claim",
+    (
+        "GitHub CI 已通过",
+        "Batch 4 已验收",
+        "Windows MVP 已就绪",
+        "已通过生产安全验证",
+    ),
+)
+def test_batch_4_doc_contract_rejects_alternate_premature_claims(
+    monkeypatch: pytest.MonkeyPatch,
+    claim: str,
+) -> None:
+    current = "当前 Batch 4 GitHub CI 尚未重新验证"
+    _replace_document_text(monkeypatch, "README.md", current, f"{current}。{claim}")
     with pytest.raises(AssertionError, match="README"):
         test_docs_track_batch_4_workflow_and_report_boundaries()
