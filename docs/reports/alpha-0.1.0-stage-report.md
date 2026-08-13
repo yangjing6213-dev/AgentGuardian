@@ -212,8 +212,8 @@ Batch 4 Task 1-8 已在本地实现。每次扫描都需要与当前范围绑定
 
 ## 12. Windows MVP 硬化 Batch 5：便携开发包层
 
-Batch 5 便携开发包层已完成本地验证。实现证据绑定 `d310608b4c7f19f19a6089a1d0c15d6560391fa2`。构建使用独立的哈希锁定 Windows Python 3.12 环境，产物为 PyInstaller `onedir` 未签名开发产物；包内包含 CycloneDX 1.6 SBOM、载荷清单、构建元数据、Apache-2.0 许可证、第三方声明和 SHA-256 校验和。机器可读 SBOM 将嵌入 `AgentGuardian.exe` 的 PyInstaller Bootloader 6.16.0 记录为 `required` 运行时依赖，并把 PyInstaller 打包工具记录为 `excluded` 构建时组件。Qt 商业许可证没有被验证，PySide6/Qt 的 LGPL/GPL/商业许可选择仍须由发布方确认；Microsoft Visual C++ Runtime 和 Universal C Runtime 在当前 SBOM 中为 `NOASSERTION`。
+Batch 5 便携开发包层已完成本地验证。实现证据绑定 `10e65322cd590f2028fb5946fff7125afd2e101d`。构建使用独立的哈希锁定 Windows Python 3.12 环境，产物为 PyInstaller `onedir` 未签名开发产物；包内包含 CycloneDX 1.6 SBOM、载荷清单、构建元数据、Apache-2.0 许可证、第三方声明和 SHA-256 校验和。机器可读 SBOM 将嵌入 `AgentGuardian.exe` 的 PyInstaller Bootloader 6.16.0 记录为 `required` 运行时依赖，并把 PyInstaller 打包工具记录为 `excluded` 构建时组件。Qt 商业许可证没有被验证，PySide6/Qt 的 LGPL/GPL/商业许可选择仍须由发布方确认；Microsoft Visual C++ Runtime 和 Universal C Runtime 在当前 SBOM 中为 `NOASSERTION`。
 
-同一源码 SHA 与固定时间 `2026-08-14T08:00:00Z` 在两个全新输出目录生成 208 个文件，逐项 SHA-256 完全一致；两个 ZIP SHA-256 均为 `985dc8f5777f2914611f14234ef21ae96c23e4e99eea0697f370076eba6fb0b6`。产物含 206 个载荷清单条目，总目录约 92.87 MB、ZIP 约 36.03 MB。隔离复制后的 GUI 在 `QT_QPA_PLATFORM=offscreen` 下存活 4 秒，随后受控终止；隔离的 `APPDATA`、`LOCALAPPDATA`、`TEMP`、`TMP` 与包副本已删除，声明目录零残留。该冒烟只证明本机受控存活和声明目录清理，不是干净机器验收或卸载器证明。
+同一源码 SHA 与固定时间 `2026-08-14T08:00:00Z` 在两个全新输出目录生成 208 个文件，逐项 SHA-256 完全一致；两个 ZIP SHA-256 均为 `216936f89d9a8b8352e3a58ce8c2602dbb26e7d450ddfcb0959d289e0755ef7b`。产物含 206 个载荷清单条目，总目录约 92.87 MB、ZIP 约 36.03 MB。隔离复制后的 GUI 在 `QT_QPA_PLATFORM=offscreen` 下存活 4 秒，随后受控终止；隔离的 `APPDATA`、`LOCALAPPDATA`、`TEMP`、`TMP` 与包副本已删除，声明目录零残留。过早退出负向探针同样失败关闭并删除测试目录，原始包保持不变。该冒烟只证明本机受控存活和声明目录清理，不是干净机器验收或卸载器证明。
 
 当前本地提交尚未获得 GitHub CI 验证。可信代码签名、原生安装、干净机器验收和卸载残留检查仍未完成；Batch 6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。

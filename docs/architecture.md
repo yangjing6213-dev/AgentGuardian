@@ -127,7 +127,7 @@ Batch 4 Task 1-8 的本地实现把交互状态放在两个独立边界中：`wo
 
 证据边界：2026-08-03 的 Task 9 提交 `991bf81bb520e7f2ec12f331fbbe714f03212507` 在 Python 3.14 和隔离的 Python 3.12 环境中均记录为 `1174 passed, 8 skipped, 0 failed`；这是绑定该 SHA 的历史证据。2026-08-13，当前复审实现 `d1c3e9caa856812d0bdd3221b0c6a7083da937ff` 的独立规格复审和独立安全/质量复审均为零发现。Python 3.14.0 和使用 `requirements-dev.lock` 哈希锁定依赖临时隔离的 Python 3.12.2 完整门禁均为 `1264 passed, 8 skipped, 0 failed`，聚焦 package/source-policy 门禁为 `152 passed`。远程实现与证据基线 `a79995a7a6a950050d5628324f94a6b8a07e6308` 在本地 Python 3.14 与哈希锁定的隔离 Python 3.12 中均为 `1269 passed, 8 skipped, 0 failed`，并由成功的 push run `31714716636` 和 Draft PR run `31714721274` 覆盖；两个远程 Windows 运行均为 `1277 passed`。该实现基线之后的文档/测试证据同步提交不由上述运行自动覆盖。
 
-Batch 5 便携开发包层已完成本地验证。实现证据绑定 `d310608b4c7f19f19a6089a1d0c15d6560391fa2`：哈希锁定的 Windows Python 3.12 构建生成 PyInstaller `onedir` 未签名开发产物，并在包内固定携带 CycloneDX 1.6 SBOM、载荷清单、构建元数据、第三方声明和校验和。SBOM 将嵌入 EXE 的 PyInstaller Bootloader 记录为运行时依赖，将 PyInstaller 工具记录为构建时组件。两次独立构建的 208 个文件及最终 ZIP 逐字节一致，ZIP SHA-256 均为 `985dc8f5777f2914611f14234ef21ae96c23e4e99eea0697f370076eba6fb0b6`；隔离副本的 4 秒 GUI 存活、受控终止和零声明残留已通过。当前本地提交尚未获得 GitHub CI 验证。可信代码签名、原生安装、干净机器验收和卸载残留检查仍未完成；Batch 6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。
+Batch 5 便携开发包层已完成本地验证。实现证据绑定 `10e65322cd590f2028fb5946fff7125afd2e101d`：哈希锁定的 Windows Python 3.12 构建生成 PyInstaller `onedir` 未签名开发产物，并在包内固定携带 CycloneDX 1.6 SBOM、载荷清单、构建元数据、第三方声明和校验和。SBOM 将嵌入 EXE 的 PyInstaller Bootloader 记录为运行时依赖，将 PyInstaller 工具记录为构建时组件。两次独立构建的 208 个文件及最终 ZIP 逐字节一致，ZIP SHA-256 均为 `216936f89d9a8b8352e3a58ce8c2602dbb26e7d450ddfcb0959d289e0755ef7b`；隔离副本的 4 秒 GUI 存活、受控终止和零声明残留已通过。当前本地提交尚未获得 GitHub CI 验证。可信代码签名、原生安装、干净机器验收和卸载残留检查仍未完成；Batch 6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。
 
 ## 后续可信性要求（未实现门禁）
 
