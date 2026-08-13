@@ -1,4 +1,5 @@
 import ast
+import builtins
 import dataclasses
 import hashlib
 import io
@@ -37,6 +38,100 @@ EXPECTED_REVIEWED_SOURCE_MODULES = (
     "windows_dpapi.py",
     "workflow.py",
 )
+_APPROVED_TASK_2_EXAMPLE = """import json
+from datetime import datetime, timezone
+
+from agentguardian.reporting import render_json
+from agentguardian.scoring import score
+
+findings = ()
+technical_score = score(
+    findings,
+    coverage=0.75,
+    limits=("file_scan_limited",),
+)
+payload = json.loads(
+    render_json(
+        technical_score,
+        findings,
+        rule_version="rules-1",
+        evaluated_at=datetime(2026, 8, 3, 12, tzinfo=timezone.utc),
+    )
+)
+assert payload["report_schema"] == 1
+assert payload["evaluated_at"] == "2026-08-03T12:00:00Z"
+assert payload["score"]["coverage_state"] == "limited"
+assert payload["reviewed_score"]["coverage_state"] == "limited"
+"""
+_APPROVED_TASK_2_AST = ast.dump(
+    ast.parse(_APPROVED_TASK_2_EXAMPLE),
+    include_attributes=False,
+)
+_APPROVED_TASK_2_IMPORTS = frozenset(
+    {
+        "json",
+        "datetime",
+        "agentguardian.reporting",
+        "agentguardian.scoring",
+    }
+)
+
+
+def _task_2_example_source(workflow_plan: str) -> str:
+    match = re.search(
+        r"## Task 2:.*?```python\n(.*?)```",
+        workflow_plan,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    return match.group(1)
+
+
+def _current_task_2_example_source() -> str:
+    path = (
+        PROJECT_ROOT
+        / "docs"
+        / "superpowers"
+        / "plans"
+        / "2026-08-03-agentguardian-windows-workflow-report-hardening.md"
+    )
+    return _task_2_example_source(path.read_text(encoding="utf-8"))
+
+
+def _approved_task_2_import(
+    name: str,
+    globals: dict[str, object] | None = None,
+    locals: dict[str, object] | None = None,
+    fromlist: tuple[str, ...] = (),
+    level: int = 0,
+) -> object:
+    assert level == 0 and name in _APPROVED_TASK_2_IMPORTS
+    return builtins.__import__(name, globals, locals, fromlist, level)
+
+
+def _execute_task_2_example(source: str) -> dict[str, object]:
+    filename = "<task-2-report-example>"
+    tree = ast.parse(source, filename=filename)
+    if ast.dump(tree, include_attributes=False) != _APPROVED_TASK_2_AST:
+        raise AssertionError("Task 2 example is not approved")
+    namespace: dict[str, object] = {
+        "__builtins__": {"__import__": _approved_task_2_import}
+    }
+    exec(compile(tree, filename, "exec"), namespace)
+    return namespace
+
+
+class _Task2SideEffectProbe:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, *args: object, **kwargs: object) -> None:
+        self.calls += 1
+        raise RuntimeError("TASK_2_SIDE_EFFECT")
+
+    def __setitem__(self, key: object, value: object) -> None:
+        self.calls += 1
+        raise RuntimeError("TASK_2_SIDE_EFFECT")
 
 
 def _canonical_source_digest(path: Path) -> str:
@@ -1394,6 +1489,62 @@ def test_publishable_status_path_contract_rejects_machine_paths(path: str) -> No
         _assert_no_machine_specific_paths("synthetic current status", path)
 
 
+@pytest.mark.parametrize(
+    ("target", "attribute", "mutation"),
+    (
+        (
+            builtins,
+            "open",
+            'open("agentguardian-task-2-probe.txt", "w").write("changed")',
+        ),
+        (socket, "socket", "import socket\nsocket.socket()"),
+        (
+            subprocess,
+            "run",
+            'import subprocess\nsubprocess.run(("echo", "changed"))',
+        ),
+        (builtins, "print", 'print("unexpected call")'),
+    ),
+    ids=("file-write", "socket", "subprocess", "arbitrary-call"),
+)
+def test_task_2_example_rejects_side_effects_before_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    target: object,
+    attribute: str,
+    mutation: str,
+) -> None:
+    probe = _Task2SideEffectProbe()
+    monkeypatch.setattr(target, attribute, probe)
+    mutated = f"{mutation}\n{_current_task_2_example_source()}"
+
+    try:
+        with pytest.raises(AssertionError):
+            _execute_task_2_example(mutated)
+    finally:
+        monkeypatch.undo()
+
+    assert probe.calls == 0
+
+
+def test_task_2_example_rejects_environment_mutation_before_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe = _Task2SideEffectProbe()
+    monkeypatch.setattr(sys.modules["os"], "environ", probe)
+    mutated = (
+        'import os\nos.environ["AGENTGUARDIAN_TASK_2_PROBE"] = "changed"\n'
+        f"{_current_task_2_example_source()}"
+    )
+
+    try:
+        with pytest.raises(AssertionError):
+            _execute_task_2_example(mutated)
+    finally:
+        monkeypatch.undo()
+
+    assert probe.calls == 0
+
+
 def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
     architecture = (PROJECT_ROOT / "docs" / "architecture.md").read_text(
@@ -1416,16 +1567,21 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
         / "specs"
         / "2026-08-03-agentguardian-windows-workflow-report-hardening-design.md"
     ).read_text(encoding="utf-8")
-    task_2_sample = re.search(
-        r"## Task 2:.*?```python\n(.*?)```",
-        workflow_plan,
-        flags=re.DOTALL,
-    )
-
-    assert task_2_sample is not None
-    sample = task_2_sample.group(1)
-    namespace: dict[str, object] = {}
-    exec(compile(sample, "<task-2-report-example>", "exec"), namespace)
+    sample = _task_2_example_source(workflow_plan)
+    namespace = _execute_task_2_example(sample)
+    assert set(namespace) == {
+        "__builtins__",
+        "datetime",
+        "findings",
+        "json",
+        "payload",
+        "render_json",
+        "score",
+        "technical_score",
+        "timezone",
+    }
+    assert type(namespace["__builtins__"]) is dict
+    assert set(namespace["__builtins__"]) == {"__import__"}
     payload = namespace["payload"]
     expected_score = {
         "total": 100,
