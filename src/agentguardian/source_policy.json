@@ -2,7 +2,7 @@
   "schema": 1,
   "modules": {
     "__init__.py": "6bcb0e775f831e3d6acf1e8611abf9a7d54875ef1eb94032be1c0bd68ae0f92a",
-    "__main__.py": "a67c172046323b0efcafe92cb83abc266d5dd4bc931d9312cde1b7bed50643db",
+    "__main__.py": "832caf5ea96c681db924078e0f5551c574e566cd34feb1298c9e34f82f48f673",
     "app.py": "02f7dbfa2b012328a9118526a1337048e4bb0c402dc3aef36f9765ac8775d9c9",
     "detectors.py": "49f2ec4e85918039b5bd824fb9d383b6c72d149dd093ac2a84a406d0a82d4815",
     "discovery.py": "8bf16692f71d798c449c0a7760b06baa56fa2f07eee40ff513ece5e880604141",

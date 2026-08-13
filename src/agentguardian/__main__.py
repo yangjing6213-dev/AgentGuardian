@@ -1,3 +1,3 @@
-from .app import main
+from agentguardian.app import main
 
 raise SystemExit(main())
