@@ -210,4 +210,10 @@ Batch 4 Task 1-8 已在本地实现。每次扫描都需要与当前范围绑定
 - 实现基线 `a79995a7a6a950050d5628324f94a6b8a07e6308` 的本地 Python 3.14 与使用 `requirements-dev.lock` 哈希锁定依赖隔离的 Python 3.12 完整门禁均为 `1269 passed, 8 skipped, 0 failed`；品牌校验、源码编译、差异检查和干净树检查均通过。
 - 本节的后续文档/测试证据同步提交不由上述针对 `a79995a7a6a950050d5628324f94a6b8a07e6308` 的两次远程运行自动覆盖，必须在推送后单独验证。
 
-Batches 5-6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。
+## 12. Windows MVP 硬化 Batch 5：便携开发包层
+
+Batch 5 便携开发包层已完成本地验证。实现证据绑定 `c9161e46170a4f0f1aceb6c0de62989f62e90729`。构建使用独立的哈希锁定 Windows Python 3.12 环境，产物为 PyInstaller `onedir` 未签名开发产物；包内包含 CycloneDX 1.6 SBOM、载荷清单、构建元数据、Apache-2.0 许可证、第三方声明和 SHA-256 校验和。Qt 商业许可证没有被验证，PySide6/Qt 的 LGPL/GPL/商业许可选择仍须由发布方确认；Microsoft Visual C++ Runtime 和 Universal C Runtime 在当前 SBOM 中为 `NOASSERTION`。
+
+同一源码 SHA 与固定时间 `2026-08-14T08:00:00Z` 在两个全新输出目录生成 208 个文件，逐项 SHA-256 完全一致；两个 ZIP SHA-256 均为 `c5dc2d164f70fb0e5e1e5cc8c464589213be72b9f32420eeeeb60e4c6a664de2`。首个产物含 206 个载荷清单条目，总目录约 92.87 MB、ZIP 约 36.03 MB。隔离复制后的 GUI 在 `QT_QPA_PLATFORM=offscreen` 下存活 4 秒，随后受控终止；隔离的 `APPDATA`、`LOCALAPPDATA`、`TEMP`、`TMP` 与包副本已删除，声明目录零残留。该冒烟只证明本机受控存活和声明目录清理，不是干净机器验收或卸载器证明。
+
+当前本地提交尚未获得 GitHub CI 验证。可信代码签名、原生安装、干净机器验收和卸载残留检查仍未完成；Batch 6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。

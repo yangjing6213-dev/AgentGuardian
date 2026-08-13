@@ -44,7 +44,7 @@ Update only the canonical hash for `__main__.py`, then run the focused test and 
 
 - [x] **Step 1: Write a failing lock contract test**
 
-Require the build lock to include `requirements-dev.lock`, exact versions and SHA-256 hashes for PyInstaller and its direct Windows dependencies, and no index URL, editable install, VCS URL, or unhashed requirement.
+Require a self-contained build-only lock with exact versions and SHA-256 hashes for PyInstaller, CycloneDX generation, PySide6, and their required Windows dependencies. Do not include the development lock, index URLs, editable installs, VCS URLs, or unhashed requirements.
 
 - [x] **Step 2: Generate the Windows Python 3.12 lock evidence**
 
@@ -92,7 +92,7 @@ Require the SBOM to identify AgentGuardian, Python, PySide6, shiboken6, PyInstal
 
 Pin the selected CycloneDX tool and all transitive dependencies with hashes in `requirements-build.lock`. Do not add them to `pyproject.toml` runtime dependencies.
 
-- [ ] **Step 3: Generate and validate evidence**
+- [x] **Step 3: Generate and validate evidence**
 
 Generate CycloneDX JSON from the isolated build environment, copy project and third-party notices, validate component coverage, then include them before creating the artifact manifest and ZIP.
 
@@ -105,17 +105,17 @@ Generate CycloneDX JSON from the isolated build environment, copy project and th
 
 - [x] **Step 1: Create an isolated hash-locked build environment**
 
-Create it under ignored `.analysis`, install `requirements-build.lock` with `--require-hashes`, and install AgentGuardian editable with `--no-build-isolation --no-deps` only for analysis.
+Create it under ignored `.analysis` and install only `requirements-build.lock` with `--require-hashes`. The build command consumes the reviewed source tree directly; it does not require an editable AgentGuardian install.
 
-- [ ] **Step 2: Build from a clean commit twice**
+- [x] **Step 2: Build from a clean commit twice**
 
 Run the build in two separate ignored directories with the same source commit and environment. No build output is committed.
 
-- [ ] **Step 3: Verify the frozen package**
+- [x] **Step 3: Verify the frozen package**
 
 Check the executable, reviewed sources, rules, policy, licenses, SBOM, manifest, and hashes. Run package-source self-audit from the frozen layout and ensure it remains `findings=[]`, `local_only=true`, and `network_capability=not_detected`.
 
-- [ ] **Step 4: Compare rebuilds**
+- [x] **Step 4: Compare rebuilds**
 
 Require identical relative file sets, file hashes, and ZIP hashes. A mismatch blocks Batch 5 layer 1 and is reported rather than waived.
 
@@ -125,11 +125,11 @@ Require identical relative file sets, file hashes, and ZIP hashes. A mismatch bl
 - Create: `scripts/verify_windows_portable.ps1`
 - Modify: `tests/test_windows_packaging.py`
 
-- [ ] **Step 1: Add a verifier contract test**
+- [x] **Step 1: Add a verifier contract test**
 
 Require isolated `APPDATA`, `LOCALAPPDATA`, `TEMP`, and `TMP`; launch only the copied package; detect immediate exit; terminate the bounded smoke process; remove the package and isolated state; and fail when any declared path remains.
 
-- [ ] **Step 2: Run the verifier on one rebuilt artifact**
+- [x] **Step 2: Run the verifier on one rebuilt artifact**
 
 Record process startup, bounded liveness, termination, and zero declared residue. This is a local smoke, not clean-machine acceptance.
 
@@ -142,15 +142,17 @@ Record process startup, bounded liveness, termination, and zero declared residue
 - Modify: `docs/superpowers/plans/2026-08-02-agentguardian-windows-mvp-hardening.md`
 - Modify: `tests/test_self_audit.py`
 
-- [ ] **Step 1: Add failing documentation assertions**
+- [x] **Step 1: Add failing documentation assertions**
 
 Require documents to distinguish the accepted portable layer from pending trusted signing, native installation, fresh-runner acceptance, Batch 6, and production safety.
 
-- [ ] **Step 2: Run local gates**
+- [x] **Step 2: Run local gates**
 
 Run focused packaging/self-audit tests, the complete Python 3.12 and 3.14 suites, brand validation, compile, package-source self-audit, `git diff --check`, and the Ponytail/YAGNI review.
 
-- [ ] **Step 3: Commit only verified local changes**
+Local evidence at the documentation-sync tree: both complete Python suites recorded `1295 passed, 8 skipped`; brand validation, source/script compilation, frozen package-source self-audit, and `git diff --check` passed. The frozen self-audit returned `findings=[]`, `local_only=true`, and `network_capability=not_detected`. This evidence remains local and does not cover a later GitHub push or remote CI run.
+
+- [x] **Step 3: Commit only verified local changes**
 
 Stage an explicit file list and create an atomic local commit. Do not push, modify GitHub workflows, publish artifacts, mark the PR ready, merge, tag, release, or claim Windows MVP completion.
 

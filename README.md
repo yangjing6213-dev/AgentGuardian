@@ -55,7 +55,9 @@ DPAPI 不能抵御已经控制同一 Windows 用户会话的程序，状态也�
 
 残余限制包括同一用户控制、路径竞态、主机时钟、路径别名、聚合碰撞，以及静态自审计不覆盖依赖和二进制。2026-08-03 的 Task 9 证据提交 `991bf81bb520e7f2ec12f331fbbe714f03212507` 记录了 Python 3.14 和隔离的 Python 3.12 完整门禁均为 `1174 passed, 8 skipped, 0 failed`；该结果是绑定该提交的历史证据，不是当前 HEAD 的新鲜完整门禁。8 项真实 symlink 用例当时因本机 symlink 创建权限不足而跳过，junction 已测试；这些 skip 不算对应 symlink 场景通过。
 
-2026-08-13，`d1c3e9caa856812d0bdd3221b0c6a7083da937ff` 在 Python 3.14.0 和使用 `requirements-dev.lock` 哈希锁定依赖临时隔离的 Python 3.12.2 中均重新验证为 `1264 passed, 8 skipped, 0 failed`；`tests/test_self_audit.py tests/test_packaging.py` 聚焦门禁为 `152 passed`。两个解释器的品牌校验、源码编译和 package-source self-audit 均通过。该 SHA 之后的文档/测试证据同步提交不由这些本地结果自动覆盖。远程实现与证据基线 `a79995a7a6a950050d5628324f94a6b8a07e6308` 的 push run `31714716636` 与 Draft PR run `31714721274` 均为 `SUCCESS`；该实现基线的本地 Python 3.14/3.12 门禁均为 `1269 passed, 8 skipped, 0 failed`。Batches 5-6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。
+2026-08-13，`d1c3e9caa856812d0bdd3221b0c6a7083da937ff` 在 Python 3.14.0 和使用 `requirements-dev.lock` 哈希锁定依赖临时隔离的 Python 3.12.2 中均重新验证为 `1264 passed, 8 skipped, 0 failed`；`tests/test_self_audit.py tests/test_packaging.py` 聚焦门禁为 `152 passed`。两个解释器的品牌校验、源码编译和 package-source self-audit 均通过。该 SHA 之后的文档/测试证据同步提交不由这些本地结果自动覆盖。远程实现与证据基线 `a79995a7a6a950050d5628324f94a6b8a07e6308` 的 push run `31714716636` 与 Draft PR run `31714721274` 均为 `SUCCESS`；该实现基线的本地 Python 3.14/3.12 门禁均为 `1269 passed, 8 skipped, 0 failed`。
+
+**Batch 5 便携开发包层已完成本地验证。** 实现证据绑定 `c9161e46170a4f0f1aceb6c0de62989f62e90729`：使用哈希锁定的 Windows Python 3.12 构建环境生成 PyInstaller `onedir` 未签名开发产物、CycloneDX 1.6 SBOM、载荷清单、构建元数据、第三方声明、校验和与确定性 ZIP。两个全新输出目录的 208 个文件逐项一致，ZIP SHA-256 均为 `c5dc2d164f70fb0e5e1e5cc8c464589213be72b9f32420eeeeb60e4c6a664de2`；复制后的 GUI 离屏存活 4 秒、受控终止且声明目录零残留。当前本地提交尚未获得 GitHub CI 验证。可信代码签名、原生安装、干净机器验收和卸载残留检查仍未完成；Batch 6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。
 
 ## 开发与验证
 

@@ -1659,7 +1659,6 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
 
     incomplete_boundary = (
         "`a79995a7a6a950050d5628324f94a6b8a07e6308`",
-        "Batches 5-6 仍待完成",
         "Windows MVP 尚未完成",
         "未形成生产安全结论",
     )
@@ -1773,6 +1772,8 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
         )
     _assert_current_batch_4_status("Task 9 plan", task_9, ())
     _assert_current_batch_4_status("Task 10 plan", task_10, ())
+    assert "Batches 5-6, Windows MVP, and production safety remain open" in task_9
+    assert "Keep Batches 5-6 pending" in task_10
 
     assert "不默认访问 OpenAI API" in readme
     assert "不默认访问 OpenAI API" in architecture
@@ -1886,7 +1887,7 @@ def test_batch_4_remote_evidence_is_bound_to_exact_sha_and_limits() -> None:
         text = path.read_text(encoding="utf-8")
         for required in (
             implementation_sha,
-            "Batches 5-6 仍待完成",
+            "Batch 5 便携开发包层已完成本地验证",
             "Windows MVP 尚未完成",
             "未形成生产安全结论",
         ):
@@ -1909,6 +1910,38 @@ def test_batch_4_remote_evidence_is_bound_to_exact_sha_and_limits() -> None:
         "Draft PR #1 保持 `OPEN / DRAFT`",
     ):
         assert required in detailed_evidence
+
+
+def test_docs_track_batch_5_portable_layer_and_remaining_gates() -> None:
+    current_status_files = (
+        PROJECT_ROOT / "README.md",
+        PROJECT_ROOT / "docs" / "architecture.md",
+        PROJECT_ROOT / "docs" / "reports" / "alpha-0.1.0-stage-report.md",
+        PROJECT_ROOT
+        / "docs"
+        / "superpowers"
+        / "plans"
+        / "2026-08-02-agentguardian-windows-mvp-hardening.md",
+    )
+    required = (
+        "Batch 5 便携开发包层已完成本地验证",
+        "c9161e46170a4f0f1aceb6c0de62989f62e90729",
+        "c5dc2d164f70fb0e5e1e5cc8c464589213be72b9f32420eeeeb60e4c6a664de2",
+        "未签名开发产物",
+        "可信代码签名",
+        "原生安装",
+        "干净机器验收",
+        "卸载残留检查",
+        "当前本地提交尚未获得 GitHub CI 验证",
+        "Batch 6 仍待完成",
+        "Windows MVP 尚未完成",
+        "未形成生产安全结论",
+    )
+
+    for path in current_status_files:
+        text = path.read_text(encoding="utf-8")
+        for marker in required:
+            assert marker in text, f"{path.name} missing Batch 5 status: {marker}"
 
 
 def _replace_document_text(
