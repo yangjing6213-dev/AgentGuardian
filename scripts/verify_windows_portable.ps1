@@ -92,18 +92,26 @@ catch {
     $smokeError = $_
 }
 finally {
-    if ($null -ne $process) {
-        $process.Refresh()
-        if (-not $process.HasExited) {
-            Stop-Process -Id $process.Id -Force
-            $process.WaitForExit()
+    try {
+        if ($null -ne $process) {
+            $process.Refresh()
+            if (-not $process.HasExited) {
+                Stop-Process -Id $process.Id -Force
+                $process.WaitForExit()
+            }
         }
     }
-    foreach ($name in $isolatedEnvironment.Keys) {
-        [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name], "Process")
-    }
-    if (Test-Path -LiteralPath $resolvedTestRoot) {
-        Remove-Item -LiteralPath $resolvedTestRoot -Recurse -Force
+    finally {
+        try {
+            foreach ($name in $originalEnvironment.Keys) {
+                [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name], "Process")
+            }
+        }
+        finally {
+            if (Test-Path -LiteralPath $resolvedTestRoot) {
+                Remove-Item -LiteralPath $resolvedTestRoot -Recurse -Force
+            }
+        }
     }
 }
 

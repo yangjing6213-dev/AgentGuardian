@@ -548,3 +548,5 @@ def test_windows_portable_verifier_enforces_isolated_smoke_and_cleanup() -> None
 
     assert "Invoke-WebRequest" not in text
     assert "Invoke-RestMethod" not in text
+    assert "foreach ($name in $originalEnvironment.Keys)" in text
+    assert text.count("finally {") >= 3

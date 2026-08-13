@@ -1925,8 +1925,9 @@ def test_docs_track_batch_5_portable_layer_and_remaining_gates() -> None:
     )
     required = (
         "Batch 5 便携开发包层已完成本地验证",
-        "c9161e46170a4f0f1aceb6c0de62989f62e90729",
-        "c5dc2d164f70fb0e5e1e5cc8c464589213be72b9f32420eeeeb60e4c6a664de2",
+        "d310608b4c7f19f19a6089a1d0c15d6560391fa2",
+        "985dc8f5777f2914611f14234ef21ae96c23e4e99eea0697f370076eba6fb0b6",
+        "PyInstaller Bootloader",
         "未签名开发产物",
         "可信代码签名",
         "原生安装",

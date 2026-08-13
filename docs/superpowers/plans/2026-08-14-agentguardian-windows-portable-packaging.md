@@ -150,7 +150,7 @@ Require documents to distinguish the accepted portable layer from pending truste
 
 Run focused packaging/self-audit tests, the complete Python 3.12 and 3.14 suites, brand validation, compile, package-source self-audit, `git diff --check`, and the Ponytail/YAGNI review.
 
-Local evidence at the documentation-sync tree: both complete Python suites recorded `1295 passed, 8 skipped`; brand validation, source/script compilation, frozen package-source self-audit, and `git diff --check` passed. The frozen self-audit returned `findings=[]`, `local_only=true`, and `network_capability=not_detected`. This evidence remains local and does not cover a later GitHub push or remote CI run.
+Local evidence after the bootloader SBOM correction: Python 3.14 recorded `1296 passed, 8 skipped`; the hash-locked Python 3.12 development environment recorded `1295 passed, 9 skipped`. The additional skip is the CycloneDX integration test because CycloneDX is intentionally build-only; the separate hash-locked build environment generated and asserted the actual SBOM dependency edge. Brand validation, source/script compilation, frozen package-source self-audit, and `git diff --check` passed. The frozen self-audit returned `findings=[]`, `local_only=true`, and `network_capability=not_detected`. This evidence remains local and does not cover a later GitHub push or remote CI run.
 
 - [x] **Step 3: Commit only verified local changes**
 
