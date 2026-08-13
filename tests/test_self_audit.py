@@ -1087,6 +1087,11 @@ def test_windows_ci_runs_required_local_checks_without_uploads() -> None:
 
     for required in (
         "windows-latest",
+        "id: testable_tree",
+        '"ready=$($ready.ToString().ToLowerInvariant())"',
+        '"refs/heads/main"',
+        '"refs/heads/agent/design-baseline"',
+        "if: steps.testable_tree.outputs.ready == 'true'",
         "python-version: '3.12'",
         "python -m pip install --require-hashes -r requirements-dev.lock",
         "python -m pip install --no-build-isolation --no-deps -e .",
@@ -1109,6 +1114,7 @@ def test_windows_ci_runs_required_local_checks_without_uploads() -> None:
     assert "upload-artifact" not in lowered
     assert "telemetry" not in lowered
     assert 'pip install -e ".[dev]"' not in workflow
+    assert workflow.count("if: steps.testable_tree.outputs.ready == 'true'") == 6
 
 
 def test_python_dependencies_are_hash_locked_for_windows_ci() -> None:
