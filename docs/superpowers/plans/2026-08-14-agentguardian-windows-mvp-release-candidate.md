@@ -79,7 +79,7 @@ Require exact local implementation SHA, security and performance command results
 
 Run selected security, performance, full dual-Python, self-audit, packaging, brand, compile, and diff checks without changing source between evidence runs.
 
-Unified local evidence baseline `392ff64f3bcb3f978874e668a97e5a3f013b762e` passed the isolated selected security gate (`47 passed, 1 skipped`, with one declared AG-T09 environment skip), both fixed performance gates, both supported Python full suites, two reproducible portable builds, two isolated launch/cleanup smokes with durable evidence, package-source self-audit, brand validation, compilation, and diff checks. This is local evidence only; later documentation synchronization is not automatically covered.
+Unified local evidence baseline `90e6edad53bee48adca58d508d193fc855c1db7d` passed the isolated selected security gate (`47 passed, 1 skipped`, with one declared AG-T09 environment skip), both fixed performance gates, both supported Python full suites, two reproducible portable builds, two durable isolated smoke records with post-termination process-tree checks, package-source self-audit, brand validation, compilation, and diff checks. This is local evidence only; later documentation synchronization is not automatically covered.
 
 - [x] **Step 3: Write the evidence report and synchronize status documents**
 
@@ -98,7 +98,7 @@ The reviewer inspects the exact diff, threat coverage, test selection, performan
 
 Use a new failing regression test for each code defect, rerun affected gates, and preserve unresolved findings as blockers.
 
-The review of `d197203be69cceac151e60beee3754a88ec66fdc` found 7 Important and 2 Minor findings. The Important findings were addressed in `392ff64f3bcb3f978874e668a97e5a3f013b762e`; a fresh independent re-review is still required before this task is accepted.
+The review of `d197203be69cceac151e60beee3754a88ec66fdc` found 7 Important and 2 Minor findings. A second independent review of `305eeb4e1a143a245323a9b54d8fe27314a4e16c` found 2 Important and 3 Minor findings. The collection-skip and process-tree findings were addressed in `90e6edad53bee48adca58d508d193fc855c1db7d`; a third independent re-review is still required before this task is accepted.
 
 ### Task 5: External Release Evidence
 

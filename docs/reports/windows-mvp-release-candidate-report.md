@@ -8,9 +8,9 @@ Windows MVP remains incomplete. Production safety is not established.
 
 ## Candidate Boundary
 
-- Local gate implementation and unified local evidence baseline: `392ff64f3bcb3f978874e668a97e5a3f013b762e`.
+- Local gate implementation and unified local evidence baseline: `90e6edad53bee48adca58d508d193fc855c1db7d`.
 - The implementation adds release-support scripts, tests, a threat model, and plans. It does not modify `src/agentguardian`.
-- The independent review of the previous evidence-sync HEAD found 7 Important and 2 Minor findings. The Important findings were locally remediated in this baseline; a fresh independent re-review remains pending.
+- The first independent review of the previous evidence-sync HEAD found 7 Important and 2 Minor findings. A second independent review of `305eeb4e1a143a245323a9b54d8fe27314a4e16c` found 2 further Important findings; both were remediated in `90e6eda`, and a third independent re-review remains pending.
 - OpenAI Provider remains local detection and manual guidance only; the default product path makes no provider API call and performs no endpoint verification.
 - The local remote-tracking reference was `9577a85fb107a7de506fd67ce48ce795bc707678` when this report was prepared. That local reference is not live GitHub verification and does not cover the candidate baseline.
 
@@ -18,14 +18,14 @@ Windows MVP remains incomplete. Production safety is not established.
 
 | Gate | Current revalidation | Scope |
 | --- | --- | --- |
-| Security gate contract | `21 passed` | Threat IDs, test-node resolution, isolated pytest environment, timeout, explicit skip allowlist, performance evidence contract, and documentation boundaries. |
+| Security gate contract | `22 passed` | Threat IDs, test-node resolution, isolated pytest environment, timeout, collection- and runtime-skip handling, performance evidence contract, and documentation boundaries. |
 | Selected negative security gate | `47 passed, 1 skipped` | AG-T01 through AG-T11 selected tests. The only allowed skip is AG-T09 directory symlink unavailable; it is not reported as a full pass. |
-| Python 3.14 full suite | `1321 passed, 8 skipped` | Current implementation and evidence-synchronization documentation. |
-| Hash-locked Python 3.12 full suite | `1320 passed, 9 skipped` | Current implementation and evidence-synchronization documentation. The additional skip is the build-only CycloneDX integration. |
+| Python 3.14 full suite | `1322 passed, 8 skipped` | Current implementation and evidence-synchronization documentation. |
+| Hash-locked Python 3.12 full suite | `1321 passed, 9 skipped` | Current implementation and evidence-synchronization documentation. The additional skip is the build-only CycloneDX integration. |
 | Brand validation | Exit 0 | Existing brand-asset contract. |
 | Source and script compilation | Exit 0 | `python -B -m compileall -q src scripts`. |
-| Portable reproducibility | `208 files` and `92,870,198 bytes` in each bundle; Bundle diff count: `0`; both ZIPs were `36,033,202 bytes` with SHA-256 `d18d2cb0ced769b4878a75767a40149033fdf08ce968c04797a77b4f1590d368` | Two new build roots, one hash-locked Python 3.12.2/PyInstaller 6.16.0 environment, actual lock dependency versions recorded with lock SHA `75be59ee054a75d556cc89099f571d9826fa272aef656124fa75dc535731cdd5`, the same source SHA, and the same explicit canonical build time. PyInstaller work/spec intermediates are excluded. |
-| Portable isolation smoke | Both copied bundles reported `process_startup=true`, `bounded_liveness=true`, `termination=forced_after_bounded_smoke`, `process_tree_terminated=true`, and `declared_residue=false` | Four-second offscreen local smoke with isolated `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP`, `USERPROFILE`, and `PROGRAMDATA`; durable evidence binds source, bundle, ZIP, and verifier hashes. Evidence JSON SHA-256: L `84444754a34b60d91f7fef9b94c9f95a036768ec0be4dee101942fb841000b36`, M `ae5dd51e1cd4e0e7fb90ba3814f24573e1d2fa25a1dedf91e597c13f92022cf5`. This is not clean-machine acceptance. |
+| Portable reproducibility | `208 files` and `92,870,198 bytes` in each bundle; Bundle diff count: `0`; both ZIPs were `36,033,202 bytes` with SHA-256 `4f7e9ffdd347fddf67ffb7544ab84e777ff7b93e2ed1bf546ed87e6e9517bad1` | Two new build roots, one hash-locked Python 3.12.2/PyInstaller 6.16.0 environment, actual lock dependency versions recorded with lock SHA `75be59ee054a75d556cc89099f571d9826fa272aef656124fa75dc535731cdd5`, source SHA `90e6eda`, and fixed build time `2026-08-15T00:00:00Z`. PyInstaller work/spec intermediates are excluded. |
+| Portable isolation smoke | Both copied bundles reported `process_startup=true`, `bounded_liveness=true`, `termination=forced_after_bounded_smoke`, `process_tree_terminated=true`, and `declared_residue=false` | Four-second offscreen local smoke with isolated `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP`, `USERPROFILE`, and `PROGRAMDATA`; the verifier enumerates the process tree before termination and confirms the captured process IDs are gone after taskkill. Durable evidence binds source, bundle, ZIP, and verifier hashes. Evidence JSON SHA-256: L `8ed7fe9a1e9fc43ee7fcf0c32cc4de3bceb9042695080d11c59451ae163cf034`, M `cd4317b9881aec914efe7090cf9d7324c4adf5803931ad4704e1776986a433c9`. This is not clean-machine acceptance. |
 | Package-source self-audit | Both bundles returned `findings=[]`, `local_only=true`, `network_capability=not_detected`, `ordinary_user_mode=true` | Reviewed copied source policy only; dependencies and binaries are not scanned. |
 
 ## Performance Evidence
@@ -34,8 +34,8 @@ Both files are ignored local artifacts under `.analysis` and bind the clean exac
 
 | Interpreter | Evidence SHA-256 | Worst scan | Worst report | Report bytes | Result |
 | --- | --- | ---: | ---: | ---: | --- |
-| CPython 3.14.0 | `0c9a0ee0d8a853d7f955da199f44375bfbf751b64eab11a6b9d8486e5d7d2347` | 5.389549 s / 11,683,217 traced bytes | 0.307798 s / 2,689,051 traced bytes | 468,300 | `passed=true` |
-| CPython 3.12.2 | `920cef81c155b2f660d491f86d703d0f8bd6b8f1fd387767bba8baded6e33e6e` | 7.285332 s / 11,194,609 traced bytes | 0.332064 s / 3,867,160 traced bytes | 468,300 | `passed=true` |
+| CPython 3.14.0 | `fe4689ae792246e6d48a51e5018b8125f64a3a2e2b3f83cf85c755bb9bc8cdd3` | 3.334307 s / 11,683,193 traced bytes | 0.210019 s / 2,694,251 traced bytes | 468,300 | `passed=true` |
+| CPython 3.12.2 | `fa77cf277736912ccfe4d8c36635d557b6803bbeff95a5c116b1fe3e41d617fd` | 3.502715 s / 11,206,948 traced bytes | 0.256567 s / 3,867,352 traced bytes | 468,300 | `passed=true` |
 
 The scan workload audits 1,000 synthetic harmless files three times with limits of 15.0 seconds and 48 MiB traced Python allocation per run. The report workload renders and parses 1,000 synthetic findings three times with limits of 3.0 seconds, 16 MiB traced Python allocation, and 1 MiB UTF-8 output per run.
 
@@ -43,8 +43,9 @@ This evidence does not cover the 10,000-file functional maximum, whole-process r
 
 ## Pending Gates
 
-- Independent read-only review: `COMPLETED WITH 7 IMPORTANT FINDINGS` on the prior evidence-sync HEAD; local remediation is bound to the current baseline.
-- Independent re-review: `PENDING`.
+- Independent read-only review: `COMPLETED WITH 7 IMPORTANT AND 2 MINOR FINDINGS` on the prior evidence-sync HEAD; those findings were remediated locally.
+- Second independent re-review: `COMPLETED WITH 2 IMPORTANT AND 3 MINOR FINDINGS` on `305eeb4`; both Important findings were remediated in `90e6eda`.
+- Third independent re-review: `PENDING`.
 - Current exact-SHA GitHub CI: `PENDING`.
 - Fresh-runner provenance: `PENDING`.
 - Trusted code signing: `PENDING`.
@@ -56,4 +57,4 @@ Workflow changes remain blocked until exact `APPROVE_GITHUB_WORKFLOW_SCOPE_REFRE
 
 ## Decision
 
-The local threat-model, selected security, fixed performance, reproducible portable build, isolated launch/cleanup, dependency-lock, and package-source increments are supported by the current local evidence baseline. The first independent review found 7 Important and 2 Minor findings; the Important items were remediated locally, but independent re-review is absent. Batch 5 external release controls and Batch 6 remote and external gates are absent. Therefore the release-candidate decision remains `NO-GO`.
+The local threat-model, selected security, fixed performance, reproducible portable build, isolated launch/cleanup, dependency-lock, and package-source increments are supported by the current local evidence baseline. The first independent review found 7 Important and 2 Minor findings; the second found 2 Important and 3 Minor findings; all currently identified Important findings have local remediation, but the third independent re-review is absent. Batch 5 external release controls and Batch 6 remote and external gates are absent. Therefore the release-candidate decision remains `NO-GO`.

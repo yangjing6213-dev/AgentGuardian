@@ -36,7 +36,7 @@ The runtime must not call OpenAI or another provider API, verify a remote endpoi
 
 ## Local Gate
 
-Run `python -B scripts/run_windows_mvp_security_gate.py`. The script invokes only the selected existing pytest node IDs for AG-T01 through AG-T11, clears `PYTEST_ADDOPTS` and `PYTEST_PLUGINS`, disables pytest plugin autoload and cache writes, enforces a 120-second process timeout, and fails on any skip outside the explicit AG-T09 directory-symlink allowlist. It performs no network or provider API call.
+  Run `python -B scripts/run_windows_mvp_security_gate.py`. The script invokes only the selected existing pytest node IDs for AG-T01 through AG-T11, clears `PYTEST_ADDOPTS` and `PYTEST_PLUGINS`, disables pytest plugin autoload and cache writes, enforces a 120-second process timeout, and fails on any runtime or collection-time skip outside the explicit AG-T09 directory-symlink allowlist. It performs no network or provider API call.
 
 Passing this selected gate is necessary local evidence only. The full test suites, performance gate, independent read-only review, current GitHub CI, AG-T12 external evidence, and a release-candidate report remain separate gates.
 

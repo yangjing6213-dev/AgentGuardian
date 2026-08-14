@@ -59,7 +59,7 @@ DPAPI 不能抵御已经控制同一 Windows 用户会话的程序，状态也�
 
 **Batch 5 便携开发包层已完成本地验证。** 实现证据绑定 `10e65322cd590f2028fb5946fff7125afd2e101d`：使用哈希锁定的 Windows Python 3.12 构建环境生成 PyInstaller `onedir` 未签名开发产物、CycloneDX 1.6 SBOM、载荷清单、构建元数据、第三方声明、校验和与确定性 ZIP；SBOM 将嵌入 EXE 的 PyInstaller Bootloader 记录为运行时依赖，并把 PyInstaller 工具保留为构建时组件。两个全新输出目录的 208 个文件逐项一致，ZIP SHA-256 均为 `216936f89d9a8b8352e3a58ce8c2602dbb26e7d450ddfcb0959d289e0755ef7b`；复制后的 GUI 离屏存活 4 秒、受控终止且声明目录零残留。当前本地提交尚未获得 GitHub CI 验证。可信代码签名、原生安装、干净机器验收和卸载残留检查仍未完成；Batch 6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。
 
-**Batch 6 local gate status.** 修复后的实现与统一本地证据基线为 `392ff64f3bcb3f978874e668a97e5a3f013b762e`；该提交强化了门禁环境隔离、允许 skip 规则、性能/构建 SHA 复核、lock 依赖绑定和 portable smoke 证据。独立只读复审已完成，发现 7 项 Important，修复已在该基线完成，独立复审仍待重新执行。该增量未修改 `src/agentguardian`，OpenAI Provider 仍只做本地检测与人工指引，不默认调用 API。当前精确 SHA 的 GitHub CI、fresh-runner provenance、可信签名、原生安装/卸载和许可复核仍待完成。Release-candidate decision: `NO-GO`. Windows MVP remains incomplete. Production safety is not established. 7 Important findings remain subject to independent re-review.
+**Batch 6 local gate status.** 当前实现与统一本地证据基线为 `90e6edad53bee48adca58d508d193fc855c1db7d`；它补强了门禁环境隔离、collection/runtime skip fail-closed、性能/构建 SHA 复核、lock 依赖绑定和 portable smoke 进程树确认。首轮独立只读复审发现 7 项 Important findings、2 项 Minor；第二轮又发现 2 项 Important findings、3 项 Minor，当前已识别的 Important 均已修复，第三轮独立复审仍待执行。该增量未修改 `src/agentguardian`，OpenAI Provider 仍只做本地检测与人工指引，不默认调用 API。当前精确 SHA 的 GitHub CI、fresh-runner provenance、可信签名、原生安装/卸载和许可复核仍待完成。Release-candidate decision: `NO-GO`. Windows MVP remains incomplete. Production safety is not established.
 
 ## 开发与验证
 

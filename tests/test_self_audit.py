@@ -2105,8 +2105,8 @@ def test_docs_track_batch_6_local_gates_without_premature_release_claim() -> Non
         PROJECT_ROOT / "docs" / "reports" / "alpha-0.1.0-stage-report.md",
         plans / "2026-08-02-agentguardian-windows-mvp-hardening.md",
     )
-    implementation_sha = "392ff64f3bcb3f978874e668a97e5a3f013b762e"
-    evidence_sha = "392ff64f3bcb3f978874e668a97e5a3f013b762e"
+    implementation_sha = "90e6edad53bee48adca58d508d193fc855c1db7d"
+    evidence_sha = "90e6edad53bee48adca58d508d193fc855c1db7d"
 
     for path in status_files:
         text = path.read_text(encoding="utf-8")
@@ -2131,20 +2131,21 @@ def test_docs_track_batch_6_local_gates_without_premature_release_claim() -> Non
         implementation_sha,
         evidence_sha,
         "47 passed, 1 skipped",
-        "1321 passed, 8 skipped",
-        "1320 passed, 9 skipped",
-        "0c9a0ee0d8a853d7f955da199f44375bfbf751b64eab11a6b9d8486e5d7d2347",
-        "920cef81c155b2f660d491f86d703d0f8bd6b8f1fd387767bba8baded6e33e6e",
-        "d18d2cb0ced769b4878a75767a40149033fdf08ce968c04797a77b4f1590d368",
-        "84444754a34b60d91f7fef9b94c9f95a036768ec0be4dee101942fb841000b36",
-        "ae5dd51e1cd4e0e7fb90ba3814f24573e1d2fa25a1dedf91e597c13f92022cf5",
+            "1322 passed, 8 skipped",
+            "1321 passed, 9 skipped",
+            "fe4689ae792246e6d48a51e5018b8125f64a3a2e2b3f83cf85c755bb9bc8cdd3",
+            "fa77cf277736912ccfe4d8c36635d557b6803bbeff95a5c116b1fe3e41d617fd",
+            "4f7e9ffdd347fddf67ffb7544ab84e777ff7b93e2ed1bf546ed87e6e9517bad1",
+            "8ed7fe9a1e9fc43ee7fcf0c32cc4de3bceb9042695080d11c59451ae163cf034",
+            "cd4317b9881aec914efe7090cf9d7324c4adf5803931ad4704e1776986a433c9",
         "208 files",
         "92,870,198 bytes",
         "Bundle diff count: `0`",
         "declared_residue=false",
         "process_tree_terminated=true",
-        "Independent read-only review: `COMPLETED WITH 7 IMPORTANT FINDINGS`",
-        "Independent re-review: `PENDING`",
+            "Independent read-only review: `COMPLETED WITH 7 IMPORTANT AND 2 MINOR FINDINGS`",
+            "Second independent re-review: `COMPLETED WITH 2 IMPORTANT AND 3 MINOR FINDINGS`",
+            "Third independent re-review: `PENDING`",
         "Current exact-SHA GitHub CI: `PENDING`",
         "Fresh-runner provenance: `PENDING`",
         "Trusted code signing: `PENDING`",
