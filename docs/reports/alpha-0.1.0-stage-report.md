@@ -217,3 +217,9 @@ Batch 5 便携开发包层已完成本地验证。实现证据绑定 `10e65322cd
 同一源码 SHA 与固定时间 `2026-08-14T08:00:00Z` 在两个全新输出目录生成 208 个文件，逐项 SHA-256 完全一致；两个 ZIP SHA-256 均为 `216936f89d9a8b8352e3a58ce8c2602dbb26e7d450ddfcb0959d289e0755ef7b`。产物含 206 个载荷清单条目，总目录约 92.87 MB、ZIP 约 36.03 MB。隔离复制后的 GUI 在 `QT_QPA_PLATFORM=offscreen` 下存活 4 秒，随后受控终止；隔离的 `APPDATA`、`LOCALAPPDATA`、`TEMP`、`TMP` 与包副本已删除，声明目录零残留。过早退出负向探针同样失败关闭并删除测试目录，原始包保持不变。该冒烟只证明本机受控存活和声明目录清理，不是干净机器验收或卸载器证明。
 
 当前本地提交尚未获得 GitHub CI 验证。可信代码签名、原生安装、干净机器验收和卸载残留检查仍未完成；Batch 6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。
+
+## 13. Windows MVP 硬化 Batch 6：本地发布候选门禁
+
+**Batch 6 local gate status.** 威胁模型、精选负向安全门禁和固定合成性能门禁的实现基线为 `f42a56d8cc20632e12ea6e21e8f64ffbf7be6cd8`。精选安全门禁当前重新验证为 `42 passed, 1 skipped`；完整 Python 3.14 门禁为 `1315 passed, 8 skipped`，哈希锁定 Python 3.12 开发环境为 `1314 passed, 9 skipped`。Python 3.12 的额外 skip 仍来自仅存在于构建锁中的 CycloneDX 集成。
+
+性能证据只覆盖固定合成工作负载，不覆盖 10,000 文件功能上限、整进程 RSS、慢盘、杀毒软件差异、原生安装器启动或 fresh runner。独立只读复审、当前精确 SHA 的 GitHub CI、fresh-runner provenance、可信签名、原生安装/卸载、干净机器和许可/再分发复核仍待完成。详细证据见 `windows-mvp-release-candidate-report.md`。Release-candidate decision: `NO-GO`. Windows MVP remains incomplete. Production safety is not established.

@@ -59,6 +59,8 @@ DPAPI 不能抵御已经控制同一 Windows 用户会话的程序，状态也�
 
 **Batch 5 便携开发包层已完成本地验证。** 实现证据绑定 `10e65322cd590f2028fb5946fff7125afd2e101d`：使用哈希锁定的 Windows Python 3.12 构建环境生成 PyInstaller `onedir` 未签名开发产物、CycloneDX 1.6 SBOM、载荷清单、构建元数据、第三方声明、校验和与确定性 ZIP；SBOM 将嵌入 EXE 的 PyInstaller Bootloader 记录为运行时依赖，并把 PyInstaller 工具保留为构建时组件。两个全新输出目录的 208 个文件逐项一致，ZIP SHA-256 均为 `216936f89d9a8b8352e3a58ce8c2602dbb26e7d450ddfcb0959d289e0755ef7b`；复制后的 GUI 离屏存活 4 秒、受控终止且声明目录零残留。当前本地提交尚未获得 GitHub CI 验证。可信代码签名、原生安装、干净机器验收和卸载残留检查仍未完成；Batch 6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。
 
+**Batch 6 local gate status.** 威胁模型、精选负向安全门禁和固定合成性能门禁已在本地实现并绑定 `f42a56d8cc20632e12ea6e21e8f64ffbf7be6cd8`。该增量未修改 `src/agentguardian`，OpenAI Provider 仍只做本地检测与人工指引，不默认调用 API。独立只读复审、当前精确 SHA 的 GitHub CI、fresh-runner provenance、可信签名、原生安装/卸载和许可复核仍待完成。Release-candidate decision: `NO-GO`. Windows MVP remains incomplete. Production safety is not established.
+
 ## 开发与验证
 
 ```powershell
@@ -74,6 +76,9 @@ python -m agentguardian
 
 - [Founder Alpha 实施计划](docs/superpowers/plans/2026-08-01-agentguardian-founder-alpha.md)
 - [Windows MVP 硬化实施计划](docs/superpowers/plans/2026-08-02-agentguardian-windows-mvp-hardening.md)
+- [Windows MVP 威胁模型](docs/security/windows-mvp-threat-model.md)
+- [Windows MVP release-candidate 报告](docs/reports/windows-mvp-release-candidate-report.md)
+- [Windows MVP Batch 6 实施计划](docs/superpowers/plans/2026-08-14-agentguardian-windows-mvp-release-candidate.md)
 - [DPAPI 证据状态实施计划](docs/superpowers/plans/2026-08-02-agentguardian-protected-evidence-state.md)
 - [DPAPI 证据状态设计](docs/superpowers/specs/2026-08-02-agentguardian-protected-evidence-state-design.md)
 - [发现处置实施计划](docs/superpowers/plans/2026-08-02-agentguardian-finding-dispositions.md)

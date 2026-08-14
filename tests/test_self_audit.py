@@ -1435,8 +1435,8 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
 
 _PREMATURE_BATCH_4_STATUS_PATTERNS = (
     r"GitHub CI.{0,16}(?:已通过|已验证|已重新验证|成功)",
-    r"Batch 4.{0,16}(?:已完成|已验收|已接受|accepted|completed?)",
-    r"Windows MVP.{0,16}(?:已完成|已就绪|ready|completed?)",
+    r"Batch 4.{0,16}(?:已完成|已验收|已接受|\baccepted\b|\bcompleted?\b)",
+    r"Windows MVP.{0,16}(?:已完成|已就绪|\bready\b|\bcompleted?\b)",
     r"(?:已通过|已达到).{0,8}生产安全|"
     r"生产安全.{0,8}(?:已通过|已验证|验证通过|已完成|已就绪|verified|ready)",
 )
@@ -1454,6 +1454,20 @@ def _assert_current_batch_4_status(
         match = re.search(pattern, normalized_status, re.IGNORECASE)
         assert match is None, (
             f"{document} contains premature Batch 4 status: {match.group(0)}"
+        )
+
+
+def test_batch_4_status_guard_allows_incomplete_but_rejects_complete() -> None:
+    _assert_current_batch_4_status(
+        "synthetic",
+        "Windows MVP remains incomplete",
+        (),
+    )
+    with pytest.raises(AssertionError, match="premature Batch 4 status"):
+        _assert_current_batch_4_status(
+            "synthetic",
+            "Windows MVP complete",
+            (),
         )
 
 
@@ -2081,3 +2095,51 @@ def test_batch_4_doc_contract_reports_missing_current_section(
     _replace_document_text(monkeypatch, "docs/architecture.md", heading, "")
     with pytest.raises(AssertionError, match="architecture missing section start"):
         test_docs_track_batch_4_workflow_and_report_boundaries()
+
+
+def test_docs_track_batch_6_local_gates_without_premature_release_claim() -> None:
+    plans = PROJECT_ROOT / "docs" / "superpowers" / "plans"
+    status_files = (
+        PROJECT_ROOT / "README.md",
+        PROJECT_ROOT / "docs" / "architecture.md",
+        PROJECT_ROOT / "docs" / "reports" / "alpha-0.1.0-stage-report.md",
+        plans / "2026-08-02-agentguardian-windows-mvp-hardening.md",
+    )
+    implementation_sha = "f42a56d8cc20632e12ea6e21e8f64ffbf7be6cd8"
+
+    for path in status_files:
+        text = path.read_text(encoding="utf-8")
+        for required in (
+            "Batch 6 local gate",
+            implementation_sha,
+            "Release-candidate decision: `NO-GO`",
+            "Windows MVP remains incomplete",
+            "Production safety is not established",
+        ):
+            assert required in text, f"{path.name} missing Batch 6 status: {required}"
+
+    report = (
+        PROJECT_ROOT
+        / "docs"
+        / "reports"
+        / "windows-mvp-release-candidate-report.md"
+    ).read_text(encoding="utf-8")
+    for required in (
+        implementation_sha,
+        "42 passed, 1 skipped",
+        "1315 passed, 8 skipped",
+        "1314 passed, 9 skipped",
+        "6784865c45594b1b1f1d2c5694ae096a1763fd6549359a9c7bf45a86a6b0f1fa",
+        "7c78bd688670e1a39594e7ebba5761ad4298b79db60ee259e0048660ba25ab64",
+        "Independent read-only review: `PENDING`",
+        "Current exact-SHA GitHub CI: `PENDING`",
+        "Fresh-runner provenance: `PENDING`",
+        "Trusted code signing: `PENDING`",
+        "Native install and uninstall: `PENDING`",
+        "License and redistribution review: `PENDING`",
+        "APPROVE_GITHUB_WORKFLOW_SCOPE_REFRESH",
+        "OpenAI Provider remains local detection and manual guidance only",
+        "Release-candidate decision: `NO-GO`",
+        "Production safety is not established",
+    ):
+        assert required in report, f"release-candidate report missing: {required}"

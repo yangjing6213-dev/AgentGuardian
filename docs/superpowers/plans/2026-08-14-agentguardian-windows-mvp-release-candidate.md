@@ -58,7 +58,7 @@ Run each workload repeatedly on Python 3.12 and 3.14 from ignored temporary dire
 
 Use synthetic files, `time.perf_counter`, `tracemalloc`, and the existing public or package-local audit/report functions. Write evidence only to an explicit ignored output path and reject an existing destination.
 
-- [ ] **Step 4: Run focused tests and both performance gates**
+- [x] **Step 4: Run focused tests and both performance gates**
 
 Run the focused contract tests, then the command on Python 3.12 and 3.14. Expected: tests pass, both measurements remain within fixed budgets, and both evidence files identify the exact local commit.
 
@@ -71,7 +71,7 @@ Run the focused contract tests, then the command on Python 3.12 and 3.14. Expect
 - Modify: `docs/reports/alpha-0.1.0-stage-report.md`
 - Modify: `docs/superpowers/plans/2026-08-02-agentguardian-windows-mvp-hardening.md`
 
-- [ ] **Step 1: Write failing documentation assertions**
+- [x] **Step 1: Write failing documentation assertions**
 
 Require exact local implementation SHA, security and performance command results, dual-Python full-suite results, self-audit result, remote evidence status, independent-review status, AG-T12 status, and an explicit `NO-GO` decision whenever one is absent.
 
@@ -79,7 +79,7 @@ Require exact local implementation SHA, security and performance command results
 
 Run selected security, performance, full dual-Python, self-audit, packaging, brand, compile, and diff checks without changing source between evidence runs.
 
-- [ ] **Step 3: Write the evidence report and synchronize status documents**
+- [x] **Step 3: Write the evidence report and synchronize status documents**
 
 Record only current observations. Historical CI remains historical. Keep Founder Alpha, Windows MVP incomplete, and non-production-safe language until every gate passes.
 
