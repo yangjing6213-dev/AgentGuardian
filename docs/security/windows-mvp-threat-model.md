@@ -36,7 +36,7 @@ The runtime must not call OpenAI or another provider API, verify a remote endpoi
 
 ## Local Gate
 
-Run `python -B scripts/run_windows_mvp_security_gate.py`. The script invokes only the selected existing pytest node IDs for AG-T01 through AG-T11, uses the current interpreter, disables pytest cache writes, and performs no network or provider API call.
+Run `python -B scripts/run_windows_mvp_security_gate.py`. The script invokes only the selected existing pytest node IDs for AG-T01 through AG-T11, clears `PYTEST_ADDOPTS` and `PYTEST_PLUGINS`, disables pytest plugin autoload and cache writes, enforces a 120-second process timeout, and fails on any skip outside the explicit AG-T09 directory-symlink allowlist. It performs no network or provider API call.
 
 Passing this selected gate is necessary local evidence only. The full test suites, performance gate, independent read-only review, current GitHub CI, AG-T12 external evidence, and a release-candidate report remain separate gates.
 
@@ -49,6 +49,6 @@ The fixed workloads and local budgets are:
 - scan 1,000 synthetic files three times: no more than 15.0 seconds and 48 MiB peak traced Python allocation per run;
 - render and parse a report containing 1,000 synthetic findings three times: no more than 3.0 seconds, 16 MiB peak traced Python allocation, and 1 MiB UTF-8 output per run.
 
-The command records all samples, worst observations, budgets, interpreter version, explicit measurement time, and exact source SHA in canonical JSON. Any malformed observation or exceeded budget fails closed.
+The command imports the package only after the initial clean-SHA check, records all samples, worst observations, budgets, interpreter version, explicit measurement time, exact source SHA, and a source snapshot SHA-256 in canonical JSON, then rechecks HEAD, worktree status, and the source snapshot before writing. Any malformed observation, exceeded budget, or source drift fails closed.
 
 This representative local workload does not cover the 10,000-file functional maximum, native installer startup, whole-process resident memory, antivirus variance, slow disks, or a fresh Windows runner. Existing functional caps, portable launch smoke, fresh-runner performance, and clean-machine acceptance remain separate evidence.

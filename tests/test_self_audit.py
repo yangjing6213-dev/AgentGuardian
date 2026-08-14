@@ -2105,8 +2105,8 @@ def test_docs_track_batch_6_local_gates_without_premature_release_claim() -> Non
         PROJECT_ROOT / "docs" / "reports" / "alpha-0.1.0-stage-report.md",
         plans / "2026-08-02-agentguardian-windows-mvp-hardening.md",
     )
-    implementation_sha = "f42a56d8cc20632e12ea6e21e8f64ffbf7be6cd8"
-    evidence_sha = "62de8ae81c27e146e3a2e8b831d85c41ac9f71d4"
+    implementation_sha = "392ff64f3bcb3f978874e668a97e5a3f013b762e"
+    evidence_sha = "392ff64f3bcb3f978874e668a97e5a3f013b762e"
 
     for path in status_files:
         text = path.read_text(encoding="utf-8")
@@ -2117,6 +2117,7 @@ def test_docs_track_batch_6_local_gates_without_premature_release_claim() -> Non
             "Release-candidate decision: `NO-GO`",
             "Windows MVP remains incomplete",
             "Production safety is not established",
+            "Important findings",
         ):
             assert required in text, f"{path.name} missing Batch 6 status: {required}"
 
@@ -2129,17 +2130,21 @@ def test_docs_track_batch_6_local_gates_without_premature_release_claim() -> Non
     for required in (
         implementation_sha,
         evidence_sha,
-        "42 passed, 1 skipped",
-        "1315 passed, 8 skipped",
-        "1314 passed, 9 skipped",
-        "33831121efbc1f8cbf5771e0a03428784769c94677456eabe54ef003ceafbbb4",
-        "ed9bd8f801cc360e0a088ece36219f17ae17f098a92035a4a121e898e96abeda",
-        "48a05bab1cdd93b7ec3264b6e506a9df55fc004b82a7f4f262a3567aed5e97fb",
+        "47 passed, 1 skipped",
+        "1321 passed, 8 skipped",
+        "1320 passed, 9 skipped",
+        "0c9a0ee0d8a853d7f955da199f44375bfbf751b64eab11a6b9d8486e5d7d2347",
+        "920cef81c155b2f660d491f86d703d0f8bd6b8f1fd387767bba8baded6e33e6e",
+        "d18d2cb0ced769b4878a75767a40149033fdf08ce968c04797a77b4f1590d368",
+        "84444754a34b60d91f7fef9b94c9f95a036768ec0be4dee101942fb841000b36",
+        "ae5dd51e1cd4e0e7fb90ba3814f24573e1d2fa25a1dedf91e597c13f92022cf5",
         "208 files",
-        "92,869,602 bytes",
+        "92,870,198 bytes",
         "Bundle diff count: `0`",
         "declared_residue=false",
-        "Independent read-only review: `PENDING`",
+        "process_tree_terminated=true",
+        "Independent read-only review: `COMPLETED WITH 7 IMPORTANT FINDINGS`",
+        "Independent re-review: `PENDING`",
         "Current exact-SHA GitHub CI: `PENDING`",
         "Fresh-runner provenance: `PENDING`",
         "Trusted code signing: `PENDING`",
@@ -2160,3 +2165,5 @@ def test_docs_track_batch_6_local_gates_without_premature_release_claim() -> Non
         "- [x] **Step 2: Run all local gates on one clean exact baseline**"
         in candidate_plan
     )
+    assert "- [x] **Step 1: Commission a separate read-only review**" in candidate_plan
+    assert "- [x] **Step 2: Resolve all important findings locally**" in candidate_plan

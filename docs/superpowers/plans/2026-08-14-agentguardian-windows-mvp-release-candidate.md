@@ -79,7 +79,7 @@ Require exact local implementation SHA, security and performance command results
 
 Run selected security, performance, full dual-Python, self-audit, packaging, brand, compile, and diff checks without changing source between evidence runs.
 
-Unified local evidence baseline `62de8ae81c27e146e3a2e8b831d85c41ac9f71d4` passed the selected security gate, both fixed performance gates, both supported Python full suites, two reproducible portable builds, two isolated launch/cleanup smokes, package-source self-audit, brand validation, compilation, and diff checks. This is local evidence only; later documentation synchronization is not automatically covered.
+Unified local evidence baseline `392ff64f3bcb3f978874e668a97e5a3f013b762e` passed the isolated selected security gate (`47 passed, 1 skipped`, with one declared AG-T09 environment skip), both fixed performance gates, both supported Python full suites, two reproducible portable builds, two isolated launch/cleanup smokes with durable evidence, package-source self-audit, brand validation, compilation, and diff checks. This is local evidence only; later documentation synchronization is not automatically covered.
 
 - [x] **Step 3: Write the evidence report and synchronize status documents**
 
@@ -90,13 +90,15 @@ Record only current observations. Historical CI remains historical. Keep Founder
 **Files:**
 - Modify after review: `docs/reports/windows-mvp-release-candidate-report.md`
 
-- [ ] **Step 1: Commission a separate read-only review**
+- [x] **Step 1: Commission a separate read-only review**
 
 The reviewer inspects the exact diff, threat coverage, test selection, performance methodology, local evidence, residual risks, and release claims. The reviewer does not edit the implementation.
 
-- [ ] **Step 2: Resolve all important findings locally**
+- [x] **Step 2: Resolve all important findings locally**
 
 Use a new failing regression test for each code defect, rerun affected gates, and preserve unresolved findings as blockers.
+
+The review of `d197203be69cceac151e60beee3754a88ec66fdc` found 7 Important and 2 Minor findings. The Important findings were addressed in `392ff64f3bcb3f978874e668a97e5a3f013b762e`; a fresh independent re-review is still required before this task is accepted.
 
 ### Task 5: External Release Evidence
 
