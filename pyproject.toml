@@ -27,6 +27,9 @@ Issues = "https://github.com/yangjing6213-dev/AgentGuardian/issues"
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "performance: fixed synthetic performance-gate contract tests",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
