@@ -2145,7 +2145,7 @@ def test_docs_track_batch_6_local_gates_without_premature_release_claim() -> Non
         "process_tree_terminated=true",
             "Independent read-only review: `COMPLETED WITH 7 IMPORTANT AND 2 MINOR FINDINGS`",
             "Second independent re-review: `COMPLETED WITH 2 IMPORTANT AND 3 MINOR FINDINGS`",
-            "Third independent re-review: `PENDING`",
+            "Third independent re-review: `COMPLETED WITH NO CRITICAL/IMPORTANT FINDINGS AND 1 MINOR`",
         "Current exact-SHA GitHub CI: `PENDING`",
         "Fresh-runner provenance: `PENDING`",
         "Trusted code signing: `PENDING`",

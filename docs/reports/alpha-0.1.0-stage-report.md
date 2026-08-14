@@ -220,6 +220,6 @@ Batch 5 便携开发包层已完成本地验证。实现证据绑定 `10e65322cd
 
 ## 13. Windows MVP 硬化 Batch 6：本地发布候选门禁
 
-**Batch 6 local gate status.** 当前实现与统一本地证据基线为 `90e6edad53bee48adca58d508d193fc855c1db7d`。精选安全门禁当前重新验证为 `47 passed, 1 skipped`；唯一允许的 skip 是 AG-T09 目录 symlink 不可用，不能计入完整通过。完整 Python 3.14 门禁为 `1322 passed, 8 skipped`，哈希锁定 Python 3.12 开发环境为 `1321 passed, 9 skipped`。Python 3.12 的额外 skip 仍来自仅存在于构建锁中的 CycloneDX 集成。首轮独立只读复审发现 7 项 Important findings、2 项 Minor，第二轮发现 2 项 Important findings、3 项 Minor；当前已识别的 Important 均已修复，第三轮独立复审仍待完成。
+**Batch 6 local gate status.** 当前实现与统一本地证据基线为 `90e6edad53bee48adca58d508d193fc855c1db7d`。精选安全门禁当前重新验证为 `47 passed, 1 skipped`；唯一允许的 skip 是 AG-T09 目录 symlink 不可用，不能计入完整通过。完整 Python 3.14 门禁为 `1322 passed, 8 skipped`，哈希锁定 Python 3.12 开发环境为 `1321 passed, 9 skipped`。Python 3.12 的额外 skip 仍来自仅存在于构建锁中的 CycloneDX 集成。首轮独立只读复审发现 7 项 Important findings、2 项 Minor，第二轮发现 2 项 Important findings、3 项 Minor；聚焦第三轮复审未发现 Critical/Important、记录 1 项 Minor，当前已识别的 Important 均已修复。
 
 性能证据只覆盖固定合成工作负载，不覆盖 10,000 文件功能上限、整进程 RSS、慢盘、杀毒软件差异、原生安装器启动或 fresh runner。独立复审、当前精确 SHA 的 GitHub CI、fresh-runner provenance、可信签名、原生安装/卸载、干净机器和许可/再分发复核仍待完成。详细证据见 `windows-mvp-release-candidate-report.md`。Release-candidate decision: `NO-GO`. Windows MVP remains incomplete. Production safety is not established.

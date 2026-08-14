@@ -10,7 +10,7 @@ Windows MVP remains incomplete. Production safety is not established.
 
 - Local gate implementation and unified local evidence baseline: `90e6edad53bee48adca58d508d193fc855c1db7d`.
 - The implementation adds release-support scripts, tests, a threat model, and plans. It does not modify `src/agentguardian`.
-- The first independent review of the previous evidence-sync HEAD found 7 Important and 2 Minor findings. A second independent review of `305eeb4e1a143a245323a9b54d8fe27314a4e16c` found 2 further Important findings; both were remediated in `90e6eda`, and a third independent re-review remains pending.
+- The first independent review of the previous evidence-sync HEAD found 7 Important and 2 Minor findings. A second independent review of `305eeb4e1a143a245323a9b54d8fe27314a4e16c` found 2 further Important findings; both were remediated in `90e6eda`. A focused third independent re-review found no Critical or Important findings and one Minor; it did not execute tests independently.
 - OpenAI Provider remains local detection and manual guidance only; the default product path makes no provider API call and performs no endpoint verification.
 - The local remote-tracking reference was `9577a85fb107a7de506fd67ce48ce795bc707678` when this report was prepared. That local reference is not live GitHub verification and does not cover the candidate baseline.
 
@@ -45,7 +45,7 @@ This evidence does not cover the 10,000-file functional maximum, whole-process r
 
 - Independent read-only review: `COMPLETED WITH 7 IMPORTANT AND 2 MINOR FINDINGS` on the prior evidence-sync HEAD; those findings were remediated locally.
 - Second independent re-review: `COMPLETED WITH 2 IMPORTANT AND 3 MINOR FINDINGS` on `305eeb4`; both Important findings were remediated in `90e6eda`.
-- Third independent re-review: `PENDING`.
+- Third independent re-review: `COMPLETED WITH NO CRITICAL/IMPORTANT FINDINGS AND 1 MINOR`; the reviewer did not execute tests independently, so runtime confirmation remains the separately recorded local-gate evidence.
 - Current exact-SHA GitHub CI: `PENDING`.
 - Fresh-runner provenance: `PENDING`.
 - Trusted code signing: `PENDING`.
@@ -57,4 +57,4 @@ Workflow changes remain blocked until exact `APPROVE_GITHUB_WORKFLOW_SCOPE_REFRE
 
 ## Decision
 
-The local threat-model, selected security, fixed performance, reproducible portable build, isolated launch/cleanup, dependency-lock, and package-source increments are supported by the current local evidence baseline. The first independent review found 7 Important and 2 Minor findings; the second found 2 Important and 3 Minor findings; all currently identified Important findings have local remediation, but the third independent re-review is absent. Batch 5 external release controls and Batch 6 remote and external gates are absent. Therefore the release-candidate decision remains `NO-GO`.
+The local threat-model, selected security, fixed performance, reproducible portable build, isolated launch/cleanup, dependency-lock, and package-source increments are supported by the current local evidence baseline. The first independent review found 7 Important and 2 Minor findings; the second found 2 Important and 3 Minor findings; the focused third review found no Critical or Important findings and one Minor. All currently identified Important findings have local remediation. Batch 5 external release controls and Batch 6 remote and external gates are absent. Therefore the release-candidate decision remains `NO-GO`.
