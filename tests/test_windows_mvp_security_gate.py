@@ -1,6 +1,7 @@
 import ast
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
 import scripts.run_windows_mvp_security_gate as security_gate
 import scripts.security_gate_pytest_plugin as security_plugin
@@ -108,6 +109,25 @@ def test_security_gate_plugin_fails_unexpected_skips(monkeypatch) -> None:
         security_plugin,
         "_skips",
         [("tests/test_app_smoke.py::test_unexpected", "Skipped: not declared")],
+    )
+
+    class Session:
+        exitstatus = 0
+
+    session = Session()
+    security_plugin.pytest_sessionfinish(session, 0)
+
+    assert session.exitstatus == 1
+
+
+def test_security_gate_plugin_fails_unexpected_collection_skips(monkeypatch) -> None:
+    monkeypatch.setattr(security_plugin, "_skips", [])
+    security_plugin.pytest_collectreport(
+        SimpleNamespace(
+            skipped=True,
+            nodeid="tests/test_collected.py",
+            longrepr="Skipped: collection failure",
+        )
     )
 
     class Session:

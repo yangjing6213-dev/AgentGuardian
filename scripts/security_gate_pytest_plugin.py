@@ -13,6 +13,11 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         _skips.append((report.nodeid, str(report.longrepr)))
 
 
+def pytest_collectreport(report: pytest.CollectReport) -> None:
+    if report.skipped:
+        _skips.append((report.nodeid, str(report.longrepr)))
+
+
 def _is_allowed(nodeid: str, reason: str) -> bool:
     return any(
         nodeid == allowed_node and marker in reason

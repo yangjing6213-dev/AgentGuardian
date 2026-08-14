@@ -612,6 +612,8 @@ def test_windows_portable_verifier_enforces_isolated_smoke_and_cleanup() -> None
         "Stop-Process",
         "taskkill.exe",
         '"/T"',
+        "Get-CimInstance -ClassName Win32_Process",
+        "Confirm-ProcessTreeStopped",
         "process_tree_terminated",
         "verifier_script_sha256",
         "source_commit",

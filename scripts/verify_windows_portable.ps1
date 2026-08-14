@@ -96,6 +96,39 @@ function Stop-ProcessTree([int]$ProcessId) {
     }
 }
 
+function Get-ProcessTreeIds([int]$RootId) {
+    $processes = @(Get-CimInstance -ClassName Win32_Process)
+    $tree = [Collections.Generic.HashSet[int]]::new()
+    $pending = [Collections.Generic.Queue[int]]::new()
+    [void]$tree.Add($RootId)
+    $pending.Enqueue($RootId)
+    while ($pending.Count -gt 0) {
+        $parentId = $pending.Dequeue()
+        foreach ($child in @($processes | Where-Object { $_.ParentProcessId -eq $parentId })) {
+            $childId = [int]$child.ProcessId
+            if ($tree.Add($childId)) {
+                $pending.Enqueue($childId)
+            }
+        }
+    }
+    return @($tree)
+}
+
+function Confirm-ProcessTreeStopped([int[]]$ProcessIds) {
+    $deadline = (Get-Date).AddSeconds(10)
+    do {
+        $live = @(
+            Get-CimInstance -ClassName Win32_Process |
+                Where-Object { $ProcessIds -contains [int]$_.ProcessId }
+        )
+        if ($live.Count -eq 0) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 200
+    } while ((Get-Date) -lt $deadline)
+    return $false
+}
+
 $resolvedTestRoot = [IO.Path]::GetFullPath($TestRoot)
 $driveRoot = [IO.Path]::GetPathRoot($resolvedTestRoot)
 if ([string]::Equals(
@@ -133,6 +166,7 @@ $processStartup = $false
 $boundedLiveness = $false
 $termination = "not_started"
 $processTreeTerminated = $false
+$processTreeIds = @()
 $smokeError = $null
 $startedAt = Get-UtcSecond
 
@@ -154,6 +188,7 @@ try {
         -WindowStyle Hidden `
         -PassThru
     $processStartup = $true
+    $processTreeIds = @(Get-ProcessTreeIds -RootId $process.Id)
     Start-Sleep -Seconds $SmokeSeconds
     $process.Refresh()
     if ($process.HasExited) {
@@ -163,6 +198,9 @@ try {
     $boundedLiveness = $true
     Stop-ProcessTree -ProcessId $process.Id
     $process.WaitForExit()
+    if (-not (Confirm-ProcessTreeStopped -ProcessIds $processTreeIds)) {
+        throw "process tree remained alive after taskkill"
+    }
     $processTreeTerminated = $true
     $termination = "forced_after_bounded_smoke"
 }
@@ -176,6 +214,9 @@ finally {
             if (-not $process.HasExited) {
                 Stop-ProcessTree -ProcessId $process.Id
                 $process.WaitForExit()
+            }
+            if ($processTreeIds.Count -gt 0 -and
+                (Confirm-ProcessTreeStopped -ProcessIds $processTreeIds)) {
                 $processTreeTerminated = $true
             }
         }
