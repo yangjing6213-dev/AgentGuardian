@@ -48,7 +48,7 @@ from PySide6.QtWidgets import (
 )
 
 from .detectors import MAX_FILE_BYTES, detect_file, detect_mcp_config, load_rules
-from .discovery import discover_files
+from .discovery import discover_files, known_config_roots
 from .dispositions import (
     DispositionRecord,
     DispositionStatus,
@@ -224,6 +224,18 @@ def _scope_preview_for(roots: tuple[Path, ...]) -> ScopePreview:
         max_findings=MAX_AUDIT_FINDINGS,
         max_evidence=MAX_AUDIT_EVIDENCE,
     )
+
+
+def _dedupe_scope_roots(roots: Iterable[Path]) -> tuple[Path, ...]:
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        path = Path(root)
+        key = os.path.normcase(os.path.abspath(path))
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return tuple(unique)
 
 
 def _validated_audit_preview(
@@ -1051,6 +1063,14 @@ class AgentGuardianWindow(QMainWindow):
             self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
         )
         self.folder_button.clicked.connect(self._select_folder)
+        self.known_config_button = QPushButton("添加已知配置")
+        self.known_config_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon)
+        )
+        self.known_config_button.setToolTip(
+            "将允许列表中已存在的本地 AI 配置目录加入当前审计范围"
+        )
+        self.known_config_button.clicked.connect(self._add_known_config_roots)
         self.scan_button = QPushButton("开始审计")
         self.scan_button.setObjectName("primaryAction")
         self.scan_button.setIcon(
@@ -1060,6 +1080,7 @@ class AgentGuardianWindow(QMainWindow):
         self.scan_button.setEnabled(False)
         self.scan_button.clicked.connect(self._start_scan)
         actions.addWidget(self.folder_button)
+        actions.addWidget(self.known_config_button)
         actions.addWidget(self.scan_button)
         actions.addStretch()
         layout.addLayout(actions)
@@ -1268,20 +1289,57 @@ class AgentGuardianWindow(QMainWindow):
             return
         try:
             root = Path(selected)
-            preview = _scope_preview_for((root,))
+            self._set_scope_roots(
+                (root,),
+                status="请核对范围并明确同意后开始审计。",
+            )
         except Exception:  # noqa: BLE001 - fixed folder-selection boundary
             self._clear_scope("无法建立有效的审计范围。")
             return
+
+    def _add_known_config_roots(self) -> None:
+        if self.is_scanning:
+            return
+        try:
+            known_roots = tuple(known_config_roots(os.environ))
+            merged_roots = _dedupe_scope_roots((*self._roots, *known_roots))
+        except Exception:  # noqa: BLE001 - fixed allowlist boundary
+            self.status_label.setText("无法读取已知本地 AI 配置范围。")
+            return
+        if merged_roots == self._roots:
+            self.status_label.setText("当前范围已包含可用的已知 AI 配置目录。")
+            return
+        try:
+            added_count = len(merged_roots) - len(self._roots)
+            self._set_scope_roots(
+                merged_roots,
+                status=(
+                    f"已添加 {added_count} 个已知本地 AI 配置目录；"
+                    "请核对范围并明确同意后开始审计。"
+                ),
+            )
+        except Exception:  # noqa: BLE001 - fixed allowlist boundary
+            self.status_label.setText("无法建立已知本地 AI 配置范围。")
+
+    def _set_scope_roots(self, roots: Iterable[Path], *, status: str) -> None:
+        normalized_roots = _dedupe_scope_roots(roots)
+        if not normalized_roots:
+            raise ValueError("scope roots must not be empty")
+        preview = _scope_preview_for(normalized_roots)
         self._invalidate_report()
         self._clear_comparison_if_present()
         self._revoke_scope_consent()
-        self._roots = (root,)
+        self._roots = normalized_roots
         self._scope_preview = preview
-        self.root_display_label.setText(root.name or "所选文件夹")
+        self.root_display_label.setText(
+            preview.root_names[0]
+            if preview.root_count == 1
+            else f"{preview.root_count} 个本地根目录"
+        )
         self._render_scope_preview(preview)
         self.scope_consent_checkbox.setEnabled(True)
         self._update_scan_enabled()
-        self.status_label.setText("请核对范围并明确同意后开始审计。")
+        self.status_label.setText(status)
 
     def _render_scope_preview(self, preview: ScopePreview) -> None:
         selectors = ", ".join(preview.selectors)

@@ -4562,6 +4562,42 @@ def test_folder_selection_shows_only_short_name(qapp, monkeypatch, tmp_path):
     window.close()
 
 
+def test_known_config_button_adds_allowlisted_roots_without_exposing_paths(
+    qapp, monkeypatch, tmp_path
+):
+    selected = tmp_path / "selected-root"
+    known = tmp_path / "known-config"
+    selected.mkdir()
+    known.mkdir()
+    monkeypatch.setattr(
+        app_module,
+        "known_config_roots",
+        lambda environ: [known],
+    )
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: str(selected),
+    )
+
+    window = create_window()
+    window.folder_button.click()
+    window.known_config_button.click()
+
+    assert window._roots == (selected, known)
+    assert window._scope_preview.root_count == 2
+    assert set(window._scope_preview.root_names) == {
+        "selected-root",
+        "known-config",
+    }
+    assert not window.scope_consent_checkbox.isChecked()
+    assert not window.scan_button.isEnabled()
+    assert str(known).casefold() not in repr(window._scope_preview).casefold()
+    assert str(known).casefold() not in window.root_display_label.text().casefold()
+    assert "known-config" in window.scope_roots_label.text()
+    window.close()
+
+
 def test_scope_change_and_rejected_selection_revoke_consent_and_results(
     qapp, monkeypatch, tmp_path
 ):
