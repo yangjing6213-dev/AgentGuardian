@@ -75,9 +75,11 @@ Run the focused contract tests, then the command on Python 3.12 and 3.14. Expect
 
 Require exact local implementation SHA, security and performance command results, dual-Python full-suite results, self-audit result, remote evidence status, independent-review status, AG-T12 status, and an explicit `NO-GO` decision whenever one is absent.
 
-- [ ] **Step 2: Run all local gates on one clean exact baseline**
+- [x] **Step 2: Run all local gates on one clean exact baseline**
 
 Run selected security, performance, full dual-Python, self-audit, packaging, brand, compile, and diff checks without changing source between evidence runs.
+
+Unified local evidence baseline `62de8ae81c27e146e3a2e8b831d85c41ac9f71d4` passed the selected security gate, both fixed performance gates, both supported Python full suites, two reproducible portable builds, two isolated launch/cleanup smokes, package-source self-audit, brand validation, compilation, and diff checks. This is local evidence only; later documentation synchronization is not automatically covered.
 
 - [x] **Step 3: Write the evidence report and synchronize status documents**
 

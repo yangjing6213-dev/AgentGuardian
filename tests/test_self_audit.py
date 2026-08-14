@@ -2106,12 +2106,14 @@ def test_docs_track_batch_6_local_gates_without_premature_release_claim() -> Non
         plans / "2026-08-02-agentguardian-windows-mvp-hardening.md",
     )
     implementation_sha = "f42a56d8cc20632e12ea6e21e8f64ffbf7be6cd8"
+    evidence_sha = "62de8ae81c27e146e3a2e8b831d85c41ac9f71d4"
 
     for path in status_files:
         text = path.read_text(encoding="utf-8")
         for required in (
             "Batch 6 local gate",
             implementation_sha,
+            evidence_sha,
             "Release-candidate decision: `NO-GO`",
             "Windows MVP remains incomplete",
             "Production safety is not established",
@@ -2126,11 +2128,17 @@ def test_docs_track_batch_6_local_gates_without_premature_release_claim() -> Non
     ).read_text(encoding="utf-8")
     for required in (
         implementation_sha,
+        evidence_sha,
         "42 passed, 1 skipped",
         "1315 passed, 8 skipped",
         "1314 passed, 9 skipped",
-        "6784865c45594b1b1f1d2c5694ae096a1763fd6549359a9c7bf45a86a6b0f1fa",
-        "7c78bd688670e1a39594e7ebba5761ad4298b79db60ee259e0048660ba25ab64",
+        "33831121efbc1f8cbf5771e0a03428784769c94677456eabe54ef003ceafbbb4",
+        "ed9bd8f801cc360e0a088ece36219f17ae17f098a92035a4a121e898e96abeda",
+        "48a05bab1cdd93b7ec3264b6e506a9df55fc004b82a7f4f262a3567aed5e97fb",
+        "208 files",
+        "92,869,602 bytes",
+        "Bundle diff count: `0`",
+        "declared_residue=false",
         "Independent read-only review: `PENDING`",
         "Current exact-SHA GitHub CI: `PENDING`",
         "Fresh-runner provenance: `PENDING`",
@@ -2143,3 +2151,12 @@ def test_docs_track_batch_6_local_gates_without_premature_release_claim() -> Non
         "Production safety is not established",
     ):
         assert required in report, f"release-candidate report missing: {required}"
+
+    candidate_plan = (
+        plans
+        / "2026-08-14-agentguardian-windows-mvp-release-candidate.md"
+    ).read_text(encoding="utf-8")
+    assert (
+        "- [x] **Step 2: Run all local gates on one clean exact baseline**"
+        in candidate_plan
+    )

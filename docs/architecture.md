@@ -129,7 +129,7 @@ Batch 4 Task 1-8 的本地实现把交互状态放在两个独立边界中：`wo
 
 Batch 5 便携开发包层已完成本地验证。实现证据绑定 `10e65322cd590f2028fb5946fff7125afd2e101d`：哈希锁定的 Windows Python 3.12 构建生成 PyInstaller `onedir` 未签名开发产物，并在包内固定携带 CycloneDX 1.6 SBOM、载荷清单、构建元数据、第三方声明和校验和。SBOM 将嵌入 EXE 的 PyInstaller Bootloader 记录为运行时依赖，将 PyInstaller 工具记录为构建时组件。两次独立构建的 208 个文件及最终 ZIP 逐字节一致，ZIP SHA-256 均为 `216936f89d9a8b8352e3a58ce8c2602dbb26e7d450ddfcb0959d289e0755ef7b`；隔离副本的 4 秒 GUI 存活、受控终止和零声明残留已通过。当前本地提交尚未获得 GitHub CI 验证。可信代码签名、原生安装、干净机器验收和卸载残留检查仍未完成；Batch 6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。
 
-**Batch 6 local gate status.** 新增发布辅助层位于 `scripts`、`tests` 和 `docs`，不进入产品运行时。威胁模型将 AG-T01 至 AG-T11 绑定到固定 pytest node IDs；性能门禁在干净精确 SHA 上测量 1,000 文件完整审计和 1,000 finding 报告回读，并输出忽略的机器可读证据。实现基线为 `f42a56d8cc20632e12ea6e21e8f64ffbf7be6cd8`。独立复审、当前远程 CI 和 AG-T12 外部门禁仍未完成。Release-candidate decision: `NO-GO`. Windows MVP remains incomplete. Production safety is not established.
+**Batch 6 local gate status.** 新增发布辅助层位于 `scripts`、`tests` 和 `docs`，不进入产品运行时。威胁模型将 AG-T01 至 AG-T11 绑定到固定 pytest node IDs；性能门禁在干净精确 SHA 上测量 1,000 文件完整审计和 1,000 finding 报告回读，并输出忽略的机器可读证据。实现基线为 `f42a56d8cc20632e12ea6e21e8f64ffbf7be6cd8`，统一的本地证据基线为 `62de8ae81c27e146e3a2e8b831d85c41ac9f71d4`。独立复审、当前远程 CI 和 AG-T12 外部门禁仍未完成。Release-candidate decision: `NO-GO`. Windows MVP remains incomplete. Production safety is not established.
 
 ## 后续可信性要求（未实现门禁）
 

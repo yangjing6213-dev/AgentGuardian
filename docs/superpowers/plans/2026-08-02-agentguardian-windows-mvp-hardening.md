@@ -28,7 +28,7 @@
 | 3 | [Finding disposition and exceptions](../specs/2026-08-02-agentguardian-finding-dispositions-design.md) | Remotely accepted Batch 3 implementation/evidence baseline: `50b74e6cc50dd7a4681a26b3084e7f312c096c47`. Exact local cross-scan false-positive/accepted-risk states use mandatory expiry, preserve technical scoring, add reviewed scoring, and keep report and local HMAC purposes separate. |
 | 4 | Windows workflow and report hardening | Task 1-8 implementation is local; Task 9 historical evidence is bound to `991bf81bb520e7f2ec12f331fbbe714f03212507`. Task 10 independent review and dual-Python local gates are bound to `d1c3e9caa856812d0bdd3221b0c6a7083da937ff`; remote implementation/evidence baseline `a79995a7a6a950050d5628324f94a6b8a07e6308` has successful push and Draft PR CI evidence. |
 | 5 | Packaging and release provenance | Portable development layer locally verified at `10e65322cd590f2028fb5946fff7125afd2e101d`: reproducible PyInstaller `onedir`, SBOM with the embedded bootloader as a runtime dependency, manifests, checksums, deterministic ZIP, and isolated launch/cleanup smoke. Trusted signing, native installation, clean-machine acceptance, and uninstall-residue evidence remain pending. |
-| 6 | Windows MVP release candidate | Local threat model, selected negative security gate, and fixed synthetic performance gate are implemented at `f42a56d8cc20632e12ea6e21e8f64ffbf7be6cd8`. Independent review, current exact-SHA GitHub CI, fresh-runner provenance, signing, native install/uninstall, clean-machine acceptance, and license review remain pending. Release-candidate decision: `NO-GO`. |
+| 6 | Windows MVP release candidate | Local threat model, selected negative security gate, and fixed synthetic performance gate are implemented at `f42a56d8cc20632e12ea6e21e8f64ffbf7be6cd8`; the unified local evidence baseline is `62de8ae81c27e146e3a2e8b831d85c41ac9f71d4`. Independent review, current exact-SHA GitHub CI, fresh-runner provenance, signing, native install/uninstall, clean-machine acceptance, and license review remain pending. Release-candidate decision: `NO-GO`. |
 
 Deferred beyond Windows MVP: default API calls, remote share verification, browser database or clipboard collection, runtime interception, automatic credential revocation, arbitrary command execution, dynamic plugins, macOS, enterprise control plane, and production-safety claims.
 
@@ -50,7 +50,7 @@ Task 1-8 已在本地实现。每次扫描都需要与当前范围绑定的明�
 
 Batch 5 便携开发包层已完成本地验证。实现证据绑定 `10e65322cd590f2028fb5946fff7125afd2e101d`：两个全新输出目录中的 208 个文件逐项一致，确定性 ZIP SHA-256 均为 `216936f89d9a8b8352e3a58ce8c2602dbb26e7d450ddfcb0959d289e0755ef7b`；SBOM 将嵌入 EXE 的 PyInstaller Bootloader 记录为运行时依赖，隔离副本的 GUI 存活、受控终止与声明目录零残留已通过。该产物是附带 SBOM、清单和校验和的未签名开发产物。当前本地提交尚未获得 GitHub CI 验证。可信代码签名、原生安装、干净机器验收和卸载残留检查仍未完成；Batch 6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。
 
-**Batch 6 local gate status.** 实现基线 `f42a56d8cc20632e12ea6e21e8f64ffbf7be6cd8` 新增了 AG-T01 至 AG-T12 威胁模型、固定精选负向安全门禁和双 Python 固定合成性能门禁。该提交不修改产品运行时。当前本地证据只支持这些门禁的实现和运行，不支持远程、独立或外部发布验收。Release-candidate decision: `NO-GO`. Windows MVP remains incomplete. Production safety is not established.
+**Batch 6 local gate status.** 实现基线 `f42a56d8cc20632e12ea6e21e8f64ffbf7be6cd8` 新增了 AG-T01 至 AG-T12 威胁模型、固定精选负向安全门禁和双 Python 固定合成性能门禁；统一的本地证据基线为 `62de8ae81c27e146e3a2e8b831d85c41ac9f71d4`。该增量不修改产品运行时。当前本地证据只支持这些门禁的实现和运行，不支持远程、独立或外部发布验收。Release-candidate decision: `NO-GO`. Windows MVP remains incomplete. Production safety is not established.
 
 ## Completed Batch: OpenAI Local Provider Hardening
 
