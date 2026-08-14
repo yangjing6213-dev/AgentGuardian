@@ -123,6 +123,7 @@ def test_performance_evidence_is_canonical_and_contains_no_machine_path(
         observations=observations,
         python_implementation="CPython",
         python_version="3.12.2",
+        source_snapshot_sha256="b" * 64,
     )
 
     performance_gate.write_evidence(output, evidence)
@@ -135,8 +136,47 @@ def test_performance_evidence_is_canonical_and_contains_no_machine_path(
     assert evidence["source_sha"] == "a" * 40
     assert evidence["measured_at"] == "2026-08-14T10:00:00Z"
     assert evidence["passed"] is True
+    assert evidence["source_snapshot_sha256"] == "b" * 64
     with pytest.raises(FileExistsError):
         performance_gate.write_evidence(output, evidence)
+
+
+def test_performance_main_rechecks_git_context_before_writing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_sha = "a" * 40
+    observations = {
+        "scan_1000_files": _samples(seconds=1.0, peak_bytes=1024),
+        "report_1000_findings": _samples(
+            seconds=1.0,
+            peak_bytes=1024,
+            output_bytes=1024,
+        ),
+    }
+    git_values = iter((source_sha, "", source_sha, " M README.md"))
+    monkeypatch.setattr(performance_gate, "_git", lambda *args: next(git_values))
+    monkeypatch.setattr(performance_gate, "run_workloads", lambda: observations)
+    monkeypatch.setattr(
+        performance_gate,
+        "source_snapshot_sha256",
+        lambda: "b" * 64,
+    )
+
+    output = tmp_path / "evidence.json"
+    monkeypatch.setattr(performance_gate, "_validated_output_path", lambda _: output)
+    with pytest.raises(ValueError, match="worktree must be clean"):
+        performance_gate.main(
+            (
+                "--source-sha",
+                source_sha,
+                "--measured-at",
+                "2026-08-14T10:00:00Z",
+                "--output",
+                str(output),
+            )
+        )
+    assert not output.exists()
 
 
 @pytest.mark.parametrize(

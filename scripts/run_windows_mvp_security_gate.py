@@ -2,16 +2,25 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import os
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PYTEST_TIMEOUT_SECONDS = 120
+ALLOWED_SKIPS = {
+    (
+        "tests/test_app_smoke.py::test_export_rejects_resolved_parent_symlink_into_scanned_root",
+        "directory symlink unavailable",
+    )
+}
 
 SECURITY_CASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "AG-T01",
         (
             "tests/test_app_smoke.py::test_start_scan_rejects_missing_stale_or_forged_consent_before_side_effects",
+            "tests/test_app_smoke.py::test_start_scan_consumes_valid_consent_before_worker_construction",
         ),
     ),
     (
@@ -19,6 +28,7 @@ SECURITY_CASES: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
             "tests/test_app_smoke.py::test_unc_paths_are_rejected_before_filesystem_access",
             "tests/test_discovery.py::test_discovery_rejects_windows_roots_before_filesystem_access",
+            "tests/test_workflow.py::test_scope_root_anchor_rejects_unqualified_windows_roots",
         ),
     ),
     (
@@ -103,16 +113,31 @@ def build_pytest_command(python_executable: str = sys.executable) -> tuple[str, 
         "-q",
         "-p",
         "no:cacheprovider",
+        "-p",
+        "scripts.security_gate_pytest_plugin",
         *selectors,
     )
 
 
 def main() -> int:
-    completed = subprocess.run(
-        build_pytest_command(),
-        cwd=ROOT,
-        check=False,
-    )
+    environment = os.environ.copy()
+    environment.pop("PYTEST_ADDOPTS", None)
+    environment.pop("PYTEST_PLUGINS", None)
+    environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    try:
+        completed = subprocess.run(
+            build_pytest_command(),
+            cwd=ROOT,
+            check=False,
+            env=environment,
+            timeout=PYTEST_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            f"security gate timed out after {PYTEST_TIMEOUT_SECONDS} seconds",
+            file=sys.stderr,
+        )
+        return 124
     return completed.returncode
 
 

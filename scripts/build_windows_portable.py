@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+from importlib import metadata
 import json
 import hashlib
 import os
@@ -208,6 +209,7 @@ def write_portable_evidence(
     component_specs: tuple[dict[str, str], ...],
     source_commit: str,
     built_at: str,
+    build_dependencies: dict[str, object],
     forbidden_texts: tuple[str, ...],
 ) -> None:
     if len(source_commit) != 40 or any(character not in "0123456789abcdef" for character in source_commit):
@@ -232,6 +234,7 @@ def write_portable_evidence(
     metadata = {
         "artifact_status": "unsigned_development_only",
         "build_mode": "pyinstaller_onedir",
+        "build_dependencies": build_dependencies,
         "built_at": built_at,
         "source_commit": source_commit,
     }
@@ -328,6 +331,7 @@ def build_portable(
     status = _git(project_root, "status", "--porcelain=v1", "--untracked-files=all")
     validate_git_build_context(head, status, source_commit)
     build_time = validate_build_time(built_at)
+    build_dependencies = validate_build_dependency_snapshot()
     if output_root.exists():
         raise ValueError("output root already exists")
     output_root.mkdir(parents=True)
@@ -345,6 +349,14 @@ def build_portable(
         env=environment,
         check=True,
     )
+    final_head = _git(project_root, "rev-parse", "HEAD")
+    final_status = _git(
+        project_root,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+    )
+    validate_git_build_context(final_head, final_status, source_commit)
     bundle_root = output_root / "dist" / "AgentGuardian"
     validate_frozen_layout(bundle_root, project_root)
     internal = bundle_root / "_internal"
@@ -361,6 +373,7 @@ def build_portable(
         component_specs=components,
         source_commit=source_commit,
         built_at=built_at,
+        build_dependencies=build_dependencies,
         forbidden_texts=(str(project_root), str(output_root)),
     )
     deterministic_zip(
@@ -447,6 +460,31 @@ def _locked_versions(lock_path: Path) -> dict[str, str]:
             raise ValueError("invalid build lock")
         versions[name] = version
     return versions
+
+
+def validate_build_dependency_snapshot(
+    lock_path: Path | None = None,
+) -> dict[str, object]:
+    resolved_lock = lock_path or Path(__file__).parents[1] / "requirements-build.lock"
+    lock_bytes = resolved_lock.read_bytes()
+    locked = _locked_versions(resolved_lock)
+    installed: dict[str, str] = {}
+    for name in sorted(locked):
+        try:
+            installed[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            raise ValueError(f"build dependency is not installed: {name}") from None
+    if installed != locked:
+        mismatches = [
+            name
+            for name in sorted(locked)
+            if installed.get(name) != locked[name]
+        ]
+        raise ValueError(f"build dependency version drift: {mismatches[0]}")
+    return {
+        "lock_sha256": hashlib.sha256(lock_bytes).hexdigest(),
+        "versions": installed,
+    }
 
 
 def canonical_json_bytes(value: object) -> bytes:

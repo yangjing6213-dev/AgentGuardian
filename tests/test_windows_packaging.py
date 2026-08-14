@@ -19,6 +19,7 @@ from scripts.build_windows_portable import (
     portable_component_specs,
     reviewed_source_paths,
     runtime_library_versions,
+    validate_build_dependency_snapshot,
     validate_relative_paths,
     write_portable_evidence,
     validate_frozen_layout,
@@ -175,6 +176,21 @@ def test_build_dependencies_are_exactly_hash_locked() -> None:
     assert {name: version for name, (version, _) in requirements.items()} == (
         BUILD_PACKAGES
     )
+
+
+def test_build_dependency_snapshot_rejects_installed_version_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_version(name: str) -> str:
+        return "0.0.0" if name == "pyinstaller" else BUILD_PACKAGES[name]
+
+    monkeypatch.setattr(
+        "scripts.build_windows_portable.metadata.version",
+        fake_version,
+    )
+
+    with pytest.raises(ValueError, match="pyinstaller"):
+        validate_build_dependency_snapshot()
 
 
 def test_artifact_manifest_is_canonical_and_hashes_sorted_files(
@@ -383,6 +399,10 @@ def test_portable_evidence_is_canonical_and_excludes_its_own_checksums(
         component_specs=components,
         source_commit="a" * 40,
         built_at="2026-08-14T00:00:00Z",
+        build_dependencies={
+            "lock_sha256": "c" * 64,
+            "versions": BUILD_PACKAGES,
+        },
         forbidden_texts=(str(PROJECT_ROOT),),
     )
 
@@ -390,6 +410,10 @@ def test_portable_evidence_is_canonical_and_excludes_its_own_checksums(
     assert metadata == {
         "artifact_status": "unsigned_development_only",
         "build_mode": "pyinstaller_onedir",
+        "build_dependencies": {
+            "lock_sha256": "c" * 64,
+            "versions": BUILD_PACKAGES,
+        },
         "built_at": "2026-08-14T00:00:00Z",
         "source_commit": "a" * 40,
     }
@@ -482,6 +506,47 @@ def test_git_build_context_requires_clean_exact_head() -> None:
         validate_git_build_context(commit, " M README.md", commit)
 
 
+def test_portable_build_rechecks_git_context_after_pyinstaller(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import scripts.build_windows_portable as build_module
+
+    commit = "a" * 40
+    git_calls: list[tuple[str, ...]] = []
+
+    def fake_git(_project_root: Path, *arguments: str) -> str:
+        git_calls.append(arguments)
+        return commit if arguments == ("rev-parse", "HEAD") else ""
+
+    monkeypatch.setattr(build_module.sys, "platform", "win32")
+    monkeypatch.setattr(build_module.sys, "version_info", (3, 12))
+    monkeypatch.setattr(build_module, "_git", fake_git)
+    monkeypatch.setattr(build_module, "validate_build_dependency_snapshot", lambda: {})
+    monkeypatch.setattr(build_module, "build_pyinstaller_command", lambda *args: ("fake",))
+    monkeypatch.setattr(build_module.subprocess, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(build_module, "validate_frozen_layout", lambda *args: None)
+    monkeypatch.setattr(build_module, "runtime_library_versions", lambda: ("3.12.2", "3.0.13"))
+    monkeypatch.setattr(build_module, "_pe_version", lambda path: "14.0.0.0")
+    monkeypatch.setattr(build_module, "portable_component_specs", lambda **kwargs: ())
+    monkeypatch.setattr(build_module, "write_portable_evidence", lambda *args, **kwargs: None)
+    monkeypatch.setattr(build_module, "deterministic_zip", lambda *args: None)
+
+    build_module.build_portable(
+        tmp_path,
+        tmp_path / "output",
+        source_commit=commit,
+        built_at="2026-08-14T00:00:00Z",
+    )
+
+    assert git_calls == [
+        ("rev-parse", "HEAD"),
+        ("status", "--porcelain=v1", "--untracked-files=all"),
+        ("rev-parse", "HEAD"),
+        ("status", "--porcelain=v1", "--untracked-files=all"),
+    ]
+
+
 def test_build_time_requires_canonical_utc_seconds() -> None:
     assert validate_build_time("2026-08-14T00:00:00Z") == datetime(
         2026,
@@ -532,15 +597,26 @@ def test_windows_portable_verifier_enforces_isolated_smoke_and_cleanup() -> None
     for required in (
         "$BundleRoot",
         "$TestRoot",
+        "$ZipPath",
+        "$EvidencePath",
         '"APPDATA"',
         '"LOCALAPPDATA"',
         '"TEMP"',
         '"TMP"',
+        '"USERPROFILE"',
+        '"PROGRAMDATA"',
         '"QT_QPA_PLATFORM"',
         "Copy-Item",
         "Start-Process",
         ".HasExited",
         "Stop-Process",
+        "taskkill.exe",
+        '"/T"',
+        "process_tree_terminated",
+        "verifier_script_sha256",
+        "source_commit",
+        "Get-FileHash",
+        "ConvertTo-Json -Compress",
         "Remove-Item",
         "declared_residue",
     ):

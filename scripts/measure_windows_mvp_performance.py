@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import gc
+import hashlib
 import json
 import math
 import os
@@ -19,13 +20,6 @@ from typing import Callable, TypeVar
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-
-from agentguardian import app  # noqa: E402
-from agentguardian.domain import Evidence, Finding, RiskDomain, Severity  # noqa: E402
-from agentguardian.report_comparison import parse_report_summary  # noqa: E402
-from agentguardian.reporting import render_json  # noqa: E402
-from agentguardian.scoring import score  # noqa: E402
-
 
 RUNS = 3
 SCAN_FILE_COUNT = 1_000
@@ -143,11 +137,14 @@ def build_evidence(
     observations: object,
     python_implementation: str,
     python_version: str,
+    source_snapshot_sha256: str,
 ) -> dict[str, object]:
     validate_git_context(source_sha, "", source_sha)
     validate_measured_at(measured_at)
     if python_implementation != "CPython" or _VERSION.fullmatch(python_version) is None:
         raise ValueError("unsupported Python identity")
+    if not re.fullmatch(r"[0-9a-f]{64}", source_snapshot_sha256):
+        raise ValueError("source snapshot must be a SHA-256")
     evaluated = evaluate_observations(observations)
     return {
         "measured_at": measured_at,
@@ -160,6 +157,7 @@ def build_evidence(
         },
         "schema_version": 1,
         "source_sha": source_sha,
+        "source_snapshot_sha256": source_snapshot_sha256,
         "workloads": evaluated["workloads"],
     }
 
@@ -198,6 +196,8 @@ def _create_scan_fixture(root: Path) -> None:
 
 
 def _scan_samples(root: Path) -> tuple[dict[str, int | float], ...]:
+    from agentguardian import app
+
     roots = (Path(os.path.abspath(root)),)
     preview = app._scope_preview_for(roots)
     samples: list[dict[str, int | float]] = []
@@ -217,6 +217,9 @@ def _scan_samples(root: Path) -> tuple[dict[str, int | float], ...]:
 
 
 def _report_fixture() -> tuple[tuple[Finding, ...], object]:
+    from agentguardian.domain import Evidence, Finding, RiskDomain, Severity
+    from agentguardian.scoring import score
+
     findings = tuple(
         Finding(
             rule_id="TEST_RULE",
@@ -237,6 +240,9 @@ def _report_fixture() -> tuple[tuple[Finding, ...], object]:
 
 
 def _report_samples() -> tuple[dict[str, int | float], ...]:
+    from agentguardian.report_comparison import parse_report_summary
+    from agentguardian.reporting import render_json
+
     findings, audit_score = _report_fixture()
     samples: list[dict[str, int | float]] = []
     for _ in range(RUNS):
@@ -281,6 +287,27 @@ def _git(*arguments: str) -> str:
     return completed.stdout.strip()
 
 
+def source_snapshot_sha256(
+    package_root: Path = ROOT / "src" / "agentguardian",
+) -> str:
+    digest = hashlib.sha256()
+    files = sorted(
+        (
+            path
+            for path in package_root.rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts
+        ),
+        key=lambda path: path.relative_to(package_root).as_posix(),
+    )
+    for path in files:
+        relative = path.relative_to(package_root).as_posix().encode("utf-8")
+        digest.update(relative)
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def _validated_output_path(value: str) -> Path:
     output = Path(value).resolve()
     analysis_root = (ROOT / ".analysis").resolve()
@@ -309,13 +336,23 @@ def main(argv: tuple[str, ...] | None = None) -> int:
     status = _git("status", "--porcelain=v1", "--untracked-files=all")
     validate_git_context(head, status, arguments.source_sha)
     validate_measured_at(arguments.measured_at)
+    source_snapshot = source_snapshot_sha256()
+
+    observations = run_workloads()
+    final_head = _git("rev-parse", "HEAD")
+    final_status = _git("status", "--porcelain=v1", "--untracked-files=all")
+    validate_git_context(final_head, final_status, arguments.source_sha)
+    final_snapshot = source_snapshot_sha256()
+    if final_snapshot != source_snapshot:
+        raise ValueError("source snapshot changed during measurement")
 
     evidence = build_evidence(
         source_sha=arguments.source_sha,
         measured_at=arguments.measured_at,
-        observations=run_workloads(),
+        observations=observations,
         python_implementation=platform.python_implementation(),
         python_version=platform.python_version(),
+        source_snapshot_sha256=final_snapshot,
     )
     write_evidence(output, evidence)
     return 0 if evidence["passed"] is True else 1

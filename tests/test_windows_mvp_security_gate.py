@@ -1,7 +1,9 @@
 import ast
 from pathlib import Path
+import subprocess
 
 import scripts.run_windows_mvp_security_gate as security_gate
+import scripts.security_gate_pytest_plugin as security_plugin
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,9 +59,64 @@ def test_security_gate_command_is_local_bounded_and_plugin_stable() -> None:
         "-q",
         "-p",
         "no:cacheprovider",
+        "-p",
+        "scripts.security_gate_pytest_plugin",
         *selectors,
     )
     assert not any(value.startswith(("http://", "https://")) for value in command)
+
+
+def test_security_gate_sanitizes_pytest_environment_and_sets_timeout(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PYTEST_ADDOPTS", "--collect-only")
+    monkeypatch.setenv("PYTEST_PLUGINS", "untrusted_plugin")
+    observed: dict[str, object] = {}
+
+    def fake_run(command, *, cwd, check, env, timeout):
+        observed.update(
+            command=command,
+            cwd=cwd,
+            check=check,
+            env=env,
+            timeout=timeout,
+        )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(security_gate.subprocess, "run", fake_run)
+
+    assert security_gate.main() == 0
+    environment = observed["env"]
+    assert isinstance(environment, dict)
+    assert environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+    assert "PYTEST_ADDOPTS" not in environment
+    assert "PYTEST_PLUGINS" not in environment
+    assert observed["timeout"] == security_gate.PYTEST_TIMEOUT_SECONDS
+
+
+def test_security_gate_allows_only_the_declared_environment_skip() -> None:
+    assert security_gate.ALLOWED_SKIPS == {
+        (
+            "tests/test_app_smoke.py::test_export_rejects_resolved_parent_symlink_into_scanned_root",
+            "directory symlink unavailable",
+        )
+    }
+
+
+def test_security_gate_plugin_fails_unexpected_skips(monkeypatch) -> None:
+    monkeypatch.setattr(
+        security_plugin,
+        "_skips",
+        [("tests/test_app_smoke.py::test_unexpected", "Skipped: not declared")],
+    )
+
+    class Session:
+        exitstatus = 0
+
+    session = Session()
+    security_plugin.pytest_sessionfinish(session, 0)
+
+    assert session.exitstatus == 1
 
 
 def test_threat_model_tracks_local_controls_and_external_release_blockers() -> None:
@@ -81,3 +138,6 @@ def test_threat_model_tracks_local_controls_and_external_release_blockers() -> N
     assert "license and redistribution review" in text
     assert "does not establish a release candidate" in text
     assert "does not establish production safety" in text
+    for threat_id in ("AG-T04", "AG-T06", "AG-T07"):
+        row = next(line for line in text.splitlines() if f"| {threat_id} |" in line)
+        assert "| partial-local |" in row
