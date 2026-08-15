@@ -56,7 +56,10 @@ unit tests. The native Windows path also rechecks the executable SHA-256,
 requires a locally trusted embedded Authenticode signature, and requires an
 explicit exact-match X.500 publisher-subject allowlist before launch. The
 signature check and subject extraction are local and cache-only; no certificate
-data is fetched. Empty or non-matching allowlists are denied. Unexpected
+data is fetched. Native policy requires both an exact X.500 subject allowlist and
+an exact signer-certificate DER SHA-256 pin. The validated executable is held
+open without write/delete sharing through process creation. Empty or non-matching
+allowlists are denied. Unexpected
 ordinary exceptions from either native launcher are converted to the fixed
 `sandbox_launch_failed` result instead of escaping into the desktop boundary.
 

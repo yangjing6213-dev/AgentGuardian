@@ -9,27 +9,28 @@ Windows MVP remains incomplete. Production safety is not established.
 ## Candidate Boundary
 
 - Local gate implementation and unified local evidence baseline: historical `90e6edad53bee48adca58d508d193fc855c1db7d`.
-- The current code-bearing hardening slice is `e5c279abab984a801c066ff459f6f1387fe40758`; it modifies `src/agentguardian` and adds the dynamic-MCP publisher attestation contract.
+- The current code-bearing hardening slice is `e8013dc37d030a90c95c8f8f990a430937de91d0`; it modifies `src/agentguardian` and adds certificate-pinned dynamic-MCP publisher attestation plus a launch-time executable handle lock.
 - The first independent review of the previous evidence-sync HEAD found 7 Important and 2 Minor findings. A second independent review of `305eeb4e1a143a245323a9b54d8fe27314a4e16c` found 2 further Important findings; both were remediated in `90e6eda`. A focused third independent re-review found no Critical or Important findings and one Minor; it did not execute tests independently.
 - OpenAI Provider remains local detection and manual guidance only; the default product path makes no provider API call and performs no endpoint verification.
 - The local remote-tracking reference was `9577a85fb107a7de506fd67ce48ce795bc707678` when this report was prepared. That local reference is not live GitHub verification and does not cover the candidate baseline.
 
 ## Current Follow-up Evidence
 
-The current code-bearing hardening SHA is `e5c279abab984a801c066ff459f6f1387fe40758`.
-Its local full regression is `1436 passed, 11 skipped`, and the local selected
+The current code-bearing hardening SHA is `e8013dc37d030a90c95c8f8f990a430937de91d0`.
+Its local full regression is `1438 passed, 11 skipped`, and the local selected
 security gate is `47 passed, 1 skipped`. Exact-SHA GitHub revalidation completed
-successfully: push CI `31890969434`, push Windows `31890969501`, Draft PR CI
-`31890971629`, and Draft PR Windows `31890971646`. This SHA includes the native
+successfully: push CI `31892391687`, push Windows `31892391681`, Draft PR CI
+`31892393406`, and Draft PR Windows `31892393403`. This SHA includes the native
 MCP fail-closed launcher behavior, browser SQLite WAL/SHM/journal snapshot
 handling with a total size cap, explicit clipboard consent/cancel behavior,
 the sanitized `--sample-root` acceptance path, and an exact X.500 publisher
-subject allowlist checked through local Windows Crypt32 APIs. The Windows
+subject plus signer-certificate SHA-256 pin checked through local Windows Crypt32
+APIs, with the validated executable held open through process creation. The Windows
 AppContainer integration proves loopback connection denial and transient
 profile cleanup; the native MCP path rejects unsigned, untrusted, or
 non-allowlisted adapters.
 
-The latest repository HEAD is the same `e5c279abab984a801c066ff459f6f1387fe40758`.
+The latest repository HEAD is the same `e8013dc37d030a90c95c8f8f990a430937de91d0`.
 The trusted-release workflow gate, license-review evidence gate, and
 release-evidence path hardening remain in its history. The current CI results
 are code and CI evidence only; they do not establish trusted signing,
@@ -63,8 +64,8 @@ change the release decision.
 | --- | --- | --- |
 | Security gate contract | `22 passed` | Threat IDs, test-node resolution, isolated pytest environment, timeout, collection- and runtime-skip handling, performance evidence contract, and documentation boundaries. |
 | Selected negative security gate | `47 passed, 1 skipped` | AG-T01 through AG-T11 selected tests. The only allowed skip is AG-T09 directory symlink unavailable; it is not reported as a full pass. |
-| Python 3.14 full suite | `1436 passed, 11 skipped` | Current implementation at `e5c279a`; includes publisher allowlist policy and native Crypt32 subject attestation. |
-| Hash-locked Python 3.12 full suite | Exact-SHA GitHub Windows job `success` | The job is bound to `e5c279abab984a801c066ff459f6f1387fe40758`; its raw log count is not used as local evidence. |
+| Python 3.14 full suite | `1438 passed, 11 skipped` | Current implementation at `e8013dc`; includes certificate-pinned publisher policy, native Crypt32 identity extraction, and launch-time executable handle locking. |
+| Hash-locked Python 3.12 full suite | Exact-SHA GitHub Windows job `success` | The job `31892391681` is bound to `e8013dc37d030a90c95c8f8f990a430937de91d0`; its raw log count is not used as local evidence. |
 | Brand validation | Exit 0 | Existing brand-asset contract. |
 | Source and script compilation | Exit 0 | `python -B -m compileall -q src scripts`. |
 | Portable reproducibility | `208 files` and `92,870,198 bytes` in each bundle; Bundle diff count: `0`; both ZIPs were `36,033,202 bytes` with SHA-256 `4f7e9ffdd347fddf67ffb7544ab84e777ff7b93e2ed1bf546ed87e6e9517bad1` | Two new build roots, one hash-locked Python 3.12.2/PyInstaller 6.16.0 environment, actual lock dependency versions recorded with lock SHA `75be59ee054a75d556cc89099f571d9826fa272aef656124fa75dc535731cdd5`, source SHA `90e6eda`, and fixed build time `2026-08-15T00:00:00Z`. PyInstaller work/spec intermediates are excluded. |
@@ -95,12 +96,12 @@ This evidence does not cover the 10,000-file functional maximum, whole-process r
 - Independent read-only review: `COMPLETED WITH 7 IMPORTANT AND 2 MINOR FINDINGS` on the prior evidence-sync HEAD; those findings were remediated locally.
 - Second independent re-review: `COMPLETED WITH 2 IMPORTANT AND 3 MINOR FINDINGS` on `305eeb4`; both Important findings were remediated in `90e6eda`.
 - Third independent re-review: `COMPLETED WITH NO CRITICAL/IMPORTANT FINDINGS AND 1 MINOR`; the reviewer did not execute tests independently, so runtime confirmation remains the separately recorded local-gate evidence.
-- Current exact-SHA GitHub CI: `VERIFIED` for repository HEAD `e5c279a`; push/PR CI and Windows workflow checks all succeeded. This is CI evidence only and does not satisfy trusted signing or clean-machine gates.
+- Current exact-SHA GitHub CI: `VERIFIED` for repository HEAD `e8013dc37d030a90c95c8f8f990a430937de91d0`; push/PR CI and Windows workflow checks all succeeded. This is CI evidence only and does not satisfy trusted signing or clean-machine gates.
 - GitHub-hosted Windows runner provenance: `VERIFIED AS CI EVIDENCE ONLY`; this does not replace an independent clean Windows machine.
 - Trusted code signing: `PENDING`.
 - Trusted-signature workflow final gate: `IMPLEMENTED AND FAIL-CLOSED`; it now requires `trusted_release` bundle metadata, fresh-user-state evidence, trusted signer evidence, and complete SBOM/license notices. The current notices still contain unresolved `NOASSERTION` runtime licenses, so this gate has not passed.
 - Structured license-review evidence: `IMPLEMENTED`; the final gate binds an approved review record to the exact source SHA and SBOM SHA-256 and cross-checks every SBOM component. The committed worksheet is intentionally `pending`, so no legal/redistribution approval is claimed.
-- Dynamic MCP publisher attestation: `IMPLEMENTED`; policy construction rejects malformed or duplicate publisher subjects, and the native Windows path requires a non-empty exact-match X.500 subject allowlist after Authenticode verification. Organization-signed adapter configuration and real packaged-adapter acceptance remain pending.
+- Dynamic MCP publisher attestation: `IMPLEMENTED`; policy construction rejects malformed or duplicate publisher subjects and certificate pins, and the native Windows path requires a non-empty exact-match X.500 subject allowlist plus signer-certificate SHA-256 pin after Authenticode verification. Launch holds the validated executable open without write/delete sharing. Organization-signed adapter configuration and real packaged-adapter acceptance remain pending.
 - Release evidence path hardening: `IMPLEMENTED`; bundle, smoke evidence, and license-review inputs reject relative paths, symlinks, UNC paths, and reparse/junction components before reading.
 - Unsigned CI native install, upgrade, launch, termination and uninstall smoke: `VERIFIED`; trusted-package and independent acceptance remain pending.
 - Strict fresh-user-state verifier: `IMPLEMENTED`; independent clean Windows machine acceptance and residue review: `PENDING`.
