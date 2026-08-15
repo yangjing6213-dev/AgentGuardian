@@ -11,8 +11,10 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import re
+import threading
 
 from .enterprise_control_plane import EnterpriseControlPlane
 from .enterprise_signing import PolicyVerifier
@@ -191,6 +193,111 @@ class EnterpriseService:
         }
         if role not in allowed[operation]:
             raise ValueError("ROLE_FORBIDDEN")
+
+
+class EnterpriseLoopbackServer:
+    """Explicit development adapter; it never binds a non-loopback address."""
+
+    _ALLOWED_HOSTS = frozenset({"127.0.0.1"})
+
+    def __init__(self, service: EnterpriseService, *, host: str, port: int = 0) -> None:
+        if type(service) is not EnterpriseService:
+            raise ValueError("ENTERPRISE_SERVICE_INVALID")
+        if host not in self._ALLOWED_HOSTS:
+            raise ValueError("ENTERPRISE_NETWORK_BIND_DENIED")
+        if type(port) is not int or not 0 <= port <= 65535:
+            raise ValueError("ENTERPRISE_PORT_INVALID")
+        self._service = service
+        self._host = host
+        self._port = port
+        self._request_lock = threading.RLock()
+        self._server: HTTPServer | None = None
+        self._thread: threading.Thread | None = None
+
+    @property
+    def address(self) -> tuple[str, int]:
+        if self._server is None:
+            raise RuntimeError("ENTERPRISE_SERVER_NOT_STARTED")
+        host, port = self._server.server_address[:2]
+        return str(host), int(port)
+
+    def start(self) -> None:
+        if self._server is not None:
+            raise RuntimeError("ENTERPRISE_SERVER_ALREADY_STARTED")
+        handler = _handler_for(self._service, self._request_lock)
+        self._server = HTTPServer((self._host, self._port), handler)
+        self._thread = threading.Thread(
+            target=self._server.serve_forever,
+            name="agentguardian-enterprise-loopback",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def close(self) -> None:
+        server = self._server
+        thread = self._thread
+        self._server = None
+        self._thread = None
+        if server is None:
+            return
+        server.shutdown()
+        server.server_close()
+        if thread is not None:
+            thread.join(timeout=3)
+
+
+def _handler_for(
+    service: EnterpriseService, request_lock: threading.RLock
+) -> type[BaseHTTPRequestHandler]:
+    class RequestHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+
+        def do_DELETE(self) -> None:  # noqa: N802 - stdlib handler contract
+            self._dispatch("DELETE")
+
+        def do_GET(self) -> None:  # noqa: N802 - stdlib handler contract
+            self._dispatch("GET")
+
+        def do_POST(self) -> None:  # noqa: N802 - stdlib handler contract
+            self._dispatch("POST")
+
+        def _dispatch(self, method: str) -> None:
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                self._write(_error(400, "REQUEST_BODY_INVALID"))
+                return
+            if not 0 <= content_length <= MAX_SERVICE_BODY_BYTES:
+                self._write(_error(413, "REQUEST_BODY_TOO_LARGE"))
+                return
+            body = self.rfile.read(content_length)
+            try:
+                with request_lock:
+                    response = service.handle(
+                        ServiceRequest(
+                            method,
+                            self.path,
+                            {str(key): str(value) for key, value in self.headers.items()},
+                            body,
+                        )
+                    )
+            except Exception:  # noqa: BLE001 - do not expose adapter internals.
+                response = _error(500, "CONTROL_PLANE_UNAVAILABLE")
+            self._write(response)
+
+        def _write(self, response: ServiceResponse) -> None:
+            self.send_response(response.status)
+            for key, value in response.headers.items():
+                self.send_header(key, value)
+            self.send_header("Content-Length", str(len(response.body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(response.body)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    return RequestHandler
 
 
 def _headers(headers: Mapping[str, str]) -> dict[str, str] | None:

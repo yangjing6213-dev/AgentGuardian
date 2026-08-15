@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 
 from agentguardian.enterprise_control_plane import EnterpriseControlPlane
-from agentguardian.enterprise_service import EnterpriseService, ServiceRequest
+from agentguardian.enterprise_service import (
+    EnterpriseLoopbackServer,
+    EnterpriseService,
+    ServiceRequest,
+)
 from agentguardian.enterprise_signing import (
     Ed25519PolicySigner,
     Ed25519PolicyVerifier,
@@ -187,3 +191,52 @@ def test_service_exports_bounded_audit_metadata_and_rejects_revoked_token(
         )
     )
     assert invalid.status == 401
+
+
+def test_http_adapter_is_explicit_loopback_only_and_serves_requests(tmp_path: Path) -> None:
+    service, admin_token, _auditor_token, _signer_value = _service(tmp_path)
+    for host in ("0.0.0.0", "localhost", "192.0.2.1"):
+        with pytest.raises(ValueError, match="ENTERPRISE_NETWORK_BIND_DENIED"):
+            EnterpriseLoopbackServer(service, host=host)
+
+    import http.client
+
+    server = EnterpriseLoopbackServer(service, host="127.0.0.1", port=0)
+    server.start()
+    try:
+        connection = http.client.HTTPConnection(*server.address, timeout=3)
+        connection.request(
+            "GET",
+            "/v1/tenants/tenant-alpha/summary",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        response = connection.getresponse()
+        body = response.read()
+        connection.close()
+        assert response.status == 200
+        assert json.loads(body)["tenants"][0]["tenant_id"] == "tenant-alpha"
+    finally:
+        server.close()
+
+
+def test_http_adapter_returns_fixed_error_when_control_plane_fails(tmp_path: Path) -> None:
+    service, admin_token, _auditor_token, _signer_value = _service(tmp_path)
+    service._control_plane.close()
+    import http.client
+
+    server = EnterpriseLoopbackServer(service, host="127.0.0.1", port=0)
+    server.start()
+    try:
+        connection = http.client.HTTPConnection(*server.address, timeout=3)
+        connection.request(
+            "GET",
+            "/v1/tenants/tenant-alpha/summary",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        response = connection.getresponse()
+        body = response.read()
+        connection.close()
+        assert response.status == 500
+        assert json.loads(body) == {"schema": 1, "error": "CONTROL_PLANE_UNAVAILABLE"}
+    finally:
+        server.close()

@@ -25,8 +25,9 @@ passes. The cryptography dependency is opt-in and hash-locked; the default
 desktop path does not load it. This still does not provide remote policy
 distribution. The desktop now provides a local-only control-plane page backed by the same SQLite core for
 tenant/device/role registration, offline policy import, device revocation, and
-bounded operational summaries. It is not a tenant service, administrator
-authentication flow, or remote administrator console.
+bounded operational summaries. Administrator token authentication is available
+only through the separate service boundary below; this is not a remote
+administrator console or a tenant-isolated hosted service.
 
 ## Dynamic MCP supervisor
 
@@ -65,12 +66,18 @@ production isolation or processing of highly sensitive real data.
 
 ## Network-neutral enterprise service boundary
 
-`src/agentguardian/enterprise_service.py` now provides an in-process request
+`src/agentguardian/enterprise_service.py` provides an in-process request
 boundary for tenant-scoped summaries, device/policy metadata, bounded audit
 export, signed-policy provisioning, device revocation, and admin-token
 rotation. Tokens are prefixed by an opaque token id and only their salted
 PBKDF2-HMAC digest is stored. Every request is tenant-bound and role-checked;
-policy writes require the Ed25519 verifier. The module deliberately opens no
-socket. A future HTTP adapter still needs TLS, deployment authentication,
-rate limiting, key rotation, remote device enrollment, and an independent
-security review before it can be called an enterprise console.
+policy writes require the Ed25519 verifier.
+
+`EnterpriseLoopbackServer` is an explicit development/test adapter. It is not
+started by the desktop, accepts only the literal IPv4 loopback address
+`127.0.0.1`, serializes requests over the SQLite control plane, and returns
+fixed errors without internal exception details. It has no TLS, remote
+enrollment, deployment authentication, rate limiting, key rotation, or
+enterprise-console deployment contract. A future remote adapter needs all of
+those controls plus independent security review before it can be exposed
+beyond the local host.

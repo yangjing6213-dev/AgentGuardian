@@ -19,6 +19,8 @@ import pathlib
 import re
 import secrets
 import sqlite3
+import threading
+from functools import wraps
 from typing import Self
 import uuid
 
@@ -43,6 +45,15 @@ _FORBIDDEN_METADATA_TERMS = frozenset(
     {"raw", "content", "secret", "token", "password", "cookie", "url", "path", "prompt", "chat"}
 )
 _CONTROL_PLANE_FILENAME = "control-plane-v1.sqlite3"
+
+
+def _serialized(method):
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
 
 
 def default_control_plane_path() -> pathlib.Path:
@@ -100,7 +111,8 @@ class EnterpriseControlPlane:
         if not path.is_absolute() or path.exists() and path.is_symlink():
             raise ValueError("CONTROL_PLANE_DATABASE_INVALID")
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(path)
+        self._lock = threading.RLock()
+        self._connection = sqlite3.connect(path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA foreign_keys = ON")
         self._connection.executescript(
@@ -170,9 +182,11 @@ class EnterpriseControlPlane:
             """
         )
 
+    @_serialized
     def close(self) -> None:
         self._connection.close()
 
+    @_serialized
     def issue_admin_token(
         self,
         tenant_id: str,
@@ -210,6 +224,7 @@ class EnterpriseControlPlane:
             )
         return token_id, token
 
+    @_serialized
     def authenticate_admin_token(
         self,
         token: str,
@@ -239,6 +254,7 @@ class EnterpriseControlPlane:
             return row["tenant_id"], row["role"]
         return None
 
+    @_serialized
     def revoke_admin_token(self, tenant_id: str, token_id: str, *, now: datetime) -> None:
         tenant_id = _identifier(tenant_id, "tenant_id")
         token_id = _identifier(token_id, "token_id")
@@ -253,6 +269,7 @@ class EnterpriseControlPlane:
         if result.rowcount != 1:
             raise ValueError("ADMIN_TOKEN_NOT_FOUND")
 
+    @_serialized
     def list_tenant_summaries(self) -> tuple[TenantSummary, ...]:
         rows = self._connection.execute(
             "SELECT t.tenant_id, t.display_name, "
@@ -278,6 +295,7 @@ class EnterpriseControlPlane:
             for row in rows
         )
 
+    @_serialized
     def list_device_summaries(self, tenant_id: str) -> tuple[DeviceSummary, ...]:
         tenant_id = _identifier(tenant_id, "tenant_id")
         self._require_tenant(tenant_id)
@@ -288,6 +306,7 @@ class EnterpriseControlPlane:
         ).fetchall()
         return tuple(DeviceSummary(**dict(row)) for row in rows)
 
+    @_serialized
     def list_policy_summaries(self, tenant_id: str) -> tuple[PolicySummary, ...]:
         tenant_id = _identifier(tenant_id, "tenant_id")
         self._require_tenant(tenant_id)
@@ -305,6 +324,7 @@ class EnterpriseControlPlane:
     def __exit__(self, *_args: object) -> None:
         self.close()
 
+    @_serialized
     def register_tenant(self, tenant_id: str, display_name: str, *, now: datetime) -> None:
         tenant_id = _identifier(tenant_id, "tenant_id")
         display_name = _display_name(display_name)
@@ -318,6 +338,7 @@ class EnterpriseControlPlane:
         except sqlite3.IntegrityError:
             raise ValueError("TENANT_ALREADY_REGISTERED") from None
 
+    @_serialized
     def register_device(self, tenant_id: str, device_id: str, *, now: datetime) -> None:
         tenant_id = _identifier(tenant_id, "tenant_id")
         device_id = _identifier(device_id, "device_id")
@@ -333,6 +354,7 @@ class EnterpriseControlPlane:
         except sqlite3.IntegrityError:
             raise ValueError("DEVICE_ALREADY_REGISTERED") from None
 
+    @_serialized
     def revoke_device(self, tenant_id: str, device_id: str, *, now: datetime) -> None:
         tenant_id = _identifier(tenant_id, "tenant_id")
         device_id = _identifier(device_id, "device_id")
@@ -346,6 +368,7 @@ class EnterpriseControlPlane:
         if result.rowcount != 1:
             raise ValueError("DEVICE_NOT_REGISTERED")
 
+    @_serialized
     def grant_role(self, tenant_id: str, subject_id: str, role: str) -> None:
         tenant_id = _identifier(tenant_id, "tenant_id")
         subject_id = _identifier(subject_id, "subject_id")
@@ -358,6 +381,7 @@ class EnterpriseControlPlane:
                 (tenant_id, subject_id, role),
             )
 
+    @_serialized
     def revoke_role(self, tenant_id: str, subject_id: str, role: str) -> None:
         tenant_id = _identifier(tenant_id, "tenant_id")
         subject_id = _identifier(subject_id, "subject_id")
@@ -372,6 +396,7 @@ class EnterpriseControlPlane:
         if result.rowcount != 1:
             raise ValueError("RBAC_BINDING_NOT_FOUND")
 
+    @_serialized
     def provision_policy(self, document: bytes, *, now: datetime) -> str:
         policy = parse_enterprise_policy(document)
         timestamp = _timestamp(now)
@@ -416,6 +441,7 @@ class EnterpriseControlPlane:
             )
         return digest
 
+    @_serialized
     def provision_signed_policy(
         self,
         document: bytes,
@@ -426,6 +452,7 @@ class EnterpriseControlPlane:
         policy_document = verify_signed_policy(document, verifier)
         return self.provision_policy(policy_document, now=now)
 
+    @_serialized
     def revoke_policy(self, tenant_id: str, policy_id: str, version: int, *, now: datetime) -> None:
         tenant_id = _identifier(tenant_id, "tenant_id")
         policy_id = _identifier(policy_id, "policy_id")
@@ -442,6 +469,7 @@ class EnterpriseControlPlane:
         if result.rowcount != 1:
             raise ValueError("POLICY_NOT_FOUND")
 
+    @_serialized
     def evaluate_capability(
         self,
         *,
@@ -508,6 +536,7 @@ class EnterpriseControlPlane:
                 return decision
         return decisions[0]
 
+    @_serialized
     def record_event(
         self,
         *,
@@ -550,6 +579,7 @@ class EnterpriseControlPlane:
             )
         return event_id
 
+    @_serialized
     def export_events(self, tenant_id: str, *, now: datetime) -> str:
         tenant_id = _identifier(tenant_id, "tenant_id")
         current = _timestamp(now)
@@ -575,6 +605,7 @@ class EnterpriseControlPlane:
             sort_keys=True,
         )
 
+    @_serialized
     def purge_expired_events(self, now: datetime) -> int:
         current = _timestamp(now)
         with self._connection:
@@ -584,6 +615,7 @@ class EnterpriseControlPlane:
             )
         return result.rowcount
 
+    @_serialized
     def _require_tenant(
         self,
         tenant_id: str,
