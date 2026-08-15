@@ -1,0 +1,299 @@
+"""Default-deny supervisor contract for dynamic MCP adapters.
+
+The portable package does not claim to provide a native network sandbox.  A
+real attestation must come from a platform provider (for example an
+AppContainer-backed Windows launcher).  Without it, no adapter process starts.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+import hashlib
+import os
+import pathlib
+import re
+import stat
+import subprocess
+import tempfile
+
+from .discovery import _has_reparse_component
+
+
+MAX_MCP_REQUEST_BYTES = 64 * 1024
+MAX_MCP_OUTPUT_BYTES = 64 * 1024
+MAX_MCP_RUNTIME_SECONDS = 30.0
+_ADAPTER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+_ALLOWED_ADAPTER_CAPABILITIES = frozenset({"tools", "resources", "prompts"})
+
+
+class SandboxStatus(str, Enum):
+    NOT_PERFORMED = "not_performed"
+    DENIED = "denied"
+    COMPLETED = "completed"
+    TIMED_OUT = "timed_out"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class McpSandboxPolicy:
+    adapter_id: str
+    executable: pathlib.Path
+    executable_sha256: str
+    arguments: tuple[str, ...]
+    capabilities: tuple[str, ...]
+    network_access: str
+    max_runtime_seconds: float
+    max_output_bytes: int
+
+    @classmethod
+    def from_command(
+        cls,
+        *,
+        adapter_id: str,
+        executable: str | pathlib.Path,
+        executable_sha256: str,
+        arguments: tuple[str, ...] = (),
+        capabilities: tuple[str, ...] = (),
+        max_runtime_seconds: float = 5.0,
+        max_output_bytes: int = MAX_MCP_OUTPUT_BYTES,
+    ) -> "McpSandboxPolicy":
+        if type(adapter_id) is not str or _ADAPTER_ID.fullmatch(adapter_id) is None:
+            raise ValueError("MCP_ADAPTER_ID_INVALID")
+        if (
+            type(executable_sha256) is not str
+            or len(executable_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in executable_sha256)
+        ):
+            raise ValueError("MCP_EXECUTABLE_HASH_INVALID")
+        if type(arguments) is not tuple or len(arguments) > 32:
+            raise ValueError("MCP_ARGUMENT_INVALID")
+        if any(
+            type(argument) is not str
+            or not argument
+            or len(argument) > 512
+            or "\x00" in argument
+            for argument in arguments
+        ):
+            raise ValueError("MCP_ARGUMENT_INVALID")
+        if type(capabilities) is not tuple or any(
+            type(capability) is not str for capability in capabilities
+        ) or len(set(capabilities)) != len(capabilities):
+            raise ValueError("MCP_CAPABILITY_INVALID")
+        if any(capability not in _ALLOWED_ADAPTER_CAPABILITIES for capability in capabilities):
+            raise ValueError("MCP_CAPABILITY_INVALID")
+        if (
+            type(max_runtime_seconds) not in (int, float)
+            or not 0.1 <= max_runtime_seconds <= MAX_MCP_RUNTIME_SECONDS
+            or type(max_output_bytes) is not int
+            or not 1 <= max_output_bytes <= MAX_MCP_OUTPUT_BYTES
+        ):
+            raise ValueError("MCP_LIMIT_INVALID")
+        path = pathlib.Path(executable)
+        if (
+            not path.is_absolute()
+            or _is_unc(path)
+            or path.is_symlink()
+            or _has_reparse_component(path)
+        ):
+            raise ValueError("MCP_EXECUTABLE_INVALID")
+        try:
+            target_stat = os.lstat(path)
+        except OSError:
+            raise ValueError("MCP_EXECUTABLE_INVALID") from None
+        if not stat.S_ISREG(target_stat.st_mode):
+            raise ValueError("MCP_EXECUTABLE_INVALID")
+        return cls(
+            adapter_id=adapter_id,
+            executable=path,
+            executable_sha256=executable_sha256,
+            arguments=arguments,
+            capabilities=capabilities,
+            network_access="deny",
+            max_runtime_seconds=float(max_runtime_seconds),
+            max_output_bytes=max_output_bytes,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _SandboxAttestation:
+    provider: str
+    network_isolated: bool
+    process_tree_isolated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxAssessment:
+    status: SandboxStatus
+    provider: str
+    network_isolation: str
+    process_tree_isolation: str
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class McpSandboxResult:
+    status: SandboxStatus
+    adapter_id: str
+    reason: str
+    response_bytes: int
+    raw_response_retained: bool
+    limits: tuple[str, ...]
+
+
+def assess_mcp_sandbox(
+    policy: McpSandboxPolicy,
+) -> SandboxAssessment:
+    if type(policy) is not McpSandboxPolicy:
+        raise ValueError("MCP_POLICY_INVALID")
+    attestation = probe_native_sandbox()
+    if attestation is None:
+        return SandboxAssessment(
+            status=SandboxStatus.DENIED,
+            provider="none",
+            network_isolation="unavailable",
+            process_tree_isolation="unavailable",
+            reasons=(
+                "native_network_isolation_required",
+                "native_process_tree_isolation_required",
+            ),
+        )
+    reasons: list[str] = []
+    if not attestation.network_isolated:
+        reasons.append("native_network_isolation_required")
+    if not attestation.process_tree_isolated:
+        reasons.append("native_process_tree_isolation_required")
+    if reasons:
+        return SandboxAssessment(
+            status=SandboxStatus.DENIED,
+            provider=attestation.provider,
+            network_isolation="unavailable" if not attestation.network_isolated else "enforced",
+            process_tree_isolation=(
+                "unavailable" if not attestation.process_tree_isolated else "enforced"
+            ),
+            reasons=tuple(reasons),
+        )
+    return SandboxAssessment(
+        status=SandboxStatus.COMPLETED,
+        provider=attestation.provider,
+        network_isolation="enforced",
+        process_tree_isolation="enforced",
+        reasons=(),
+    )
+
+
+def run_mcp_sandbox(
+    policy: McpSandboxPolicy,
+    request: bytes,
+    *,
+    confirmed: bool,
+    temp_root: pathlib.Path | None = None,
+) -> McpSandboxResult:
+    if type(policy) is not McpSandboxPolicy:
+        raise ValueError("MCP_POLICY_INVALID")
+    if type(request) is not bytes:
+        raise ValueError("MCP_REQUEST_INVALID")
+    if len(request) > MAX_MCP_REQUEST_BYTES:
+        raise ValueError("MCP_REQUEST_SIZE_LIMIT")
+    if type(confirmed) is not bool:
+        raise ValueError("MCP_CONFIRMATION_INVALID")
+    if not confirmed:
+        return _result(policy, SandboxStatus.NOT_PERFORMED, "confirmation_required")
+    assessment = assess_mcp_sandbox(policy)
+    if assessment.status is not SandboxStatus.COMPLETED:
+        return _result(policy, SandboxStatus.DENIED, assessment.reasons[0])
+    try:
+        current_sha256 = hashlib.sha256(policy.executable.read_bytes()).hexdigest()
+    except OSError:
+        return _result(policy, SandboxStatus.FAILED, "executable_unavailable")
+    if current_sha256 != policy.executable_sha256:
+        return _result(policy, SandboxStatus.DENIED, "executable_hash_mismatch")
+    root = _validated_temp_root(temp_root)
+    try:
+        with tempfile.TemporaryDirectory(dir=root) as workdir:
+            process = subprocess.Popen(
+                [os.fspath(policy.executable), *policy.arguments],
+                shell=False,
+                cwd=workdir,
+                env={"PYTHONNOUSERSITE": "1"},
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+            )
+            try:
+                output, _ = process.communicate(
+                    input=request,
+                    timeout=policy.max_runtime_seconds,
+                )
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                return _result(
+                    policy,
+                    SandboxStatus.TIMED_OUT,
+                    "runtime_limit",
+                    limits=("process_tree_isolation_enforced",),
+                )
+            if len(output) > policy.max_output_bytes:
+                return _result(
+                    policy,
+                    SandboxStatus.FAILED,
+                    "output_size_limit",
+                    response_bytes=policy.max_output_bytes,
+                )
+            if process.returncode != 0:
+                return _result(
+                    policy,
+                    SandboxStatus.FAILED,
+                    "adapter_failed",
+                    response_bytes=len(output),
+                )
+            return _result(
+                policy,
+                SandboxStatus.COMPLETED,
+                "completed",
+                response_bytes=len(output),
+            )
+    except (OSError, ValueError):
+        return _result(policy, SandboxStatus.FAILED, "sandbox_launch_failed")
+
+
+def probe_native_sandbox() -> _SandboxAttestation | None:
+    """Return a platform attestation only when native controls are proven.
+
+    The current portable and MSIX full-trust launchers do not prove outbound
+    network denial for child processes, so this intentionally returns None.
+    """
+    return None
+
+
+def _validated_temp_root(value: pathlib.Path | None) -> str | None:
+    if value is None:
+        return None
+    root = pathlib.Path(value)
+    if not root.is_dir() or root.is_symlink() or _has_reparse_component(root):
+        raise ValueError("MCP_TEMP_ROOT_INVALID")
+    return os.fspath(root)
+
+
+def _result(
+    policy: McpSandboxPolicy,
+    status: SandboxStatus,
+    reason: str,
+    *,
+    response_bytes: int = 0,
+    limits: tuple[str, ...] = (),
+) -> McpSandboxResult:
+    return McpSandboxResult(
+        status=status,
+        adapter_id=policy.adapter_id,
+        reason=reason,
+        response_bytes=response_bytes,
+        raw_response_retained=False,
+        limits=limits,
+    )
+
+
+def _is_unc(path: pathlib.Path) -> bool:
+    return os.fspath(path).startswith(("\\\\", "//"))

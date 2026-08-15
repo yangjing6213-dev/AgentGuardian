@@ -11,6 +11,10 @@ param(
 
     [switch]$AllowUnsigned,
 
+    [string]$ExpectedPublisher,
+
+    [switch]$RequireTrustedSignature,
+
     [ValidateRange(1, 30)]
     [int]$SmokeSeconds = 4
 )
@@ -43,6 +47,30 @@ if (Test-Path -LiteralPath $resolvedEvidence) {
 }
 if (-not $resolvedPackage.EndsWith(".msix", [StringComparison]::OrdinalIgnoreCase)) {
     throw "PackagePath must point to an MSIX package"
+}
+if ($RequireTrustedSignature -and $AllowUnsigned) {
+    throw "RequireTrustedSignature cannot be combined with AllowUnsigned"
+}
+if ($RequireTrustedSignature -and [string]::IsNullOrWhiteSpace($ExpectedPublisher)) {
+    throw "ExpectedPublisher is required for a trusted signature gate"
+}
+
+$signature = Get-AuthenticodeSignature -FilePath $resolvedPackage
+$signerCertificate = $signature.SignerCertificate
+$timestampCertificate = $signature.TimeStamperCertificate
+if ($RequireTrustedSignature) {
+    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+        throw "MSIX signature is not trusted: $($signature.Status)"
+    }
+    if ($null -eq $signerCertificate) {
+        throw "MSIX signer certificate is missing"
+    }
+    if ($signerCertificate.Subject -ne $ExpectedPublisher) {
+        throw "MSIX signer subject does not match ExpectedPublisher"
+    }
+    if ($null -eq $timestampCertificate) {
+        throw "MSIX trusted timestamp certificate is missing"
+    }
 }
 
 $startedAt = Get-UtcSecond
@@ -146,7 +174,14 @@ $evidence = [ordered]@{
     started_at = $startedAt
     completed_at = Get-UtcSecond
     smoke_seconds = $SmokeSeconds
-    signature_mode = if ($AllowUnsigned) { "unsigned_ci_smoke" } else { "signed" }
+    signature_mode = if ($AllowUnsigned) { "unsigned_ci_smoke" } elseif ($RequireTrustedSignature) { "trusted_signed" } else { "signed" }
+    signature = [ordered]@{
+        status = $signature.Status.ToString()
+        signer_subject = if ($null -ne $signerCertificate) { $signerCertificate.Subject } else { $null }
+        signer_thumbprint = if ($null -ne $signerCertificate) { $signerCertificate.Thumbprint } else { $null }
+        timestamp_subject = if ($null -ne $timestampCertificate) { $timestampCertificate.Subject } else { $null }
+        timestamp_thumbprint = if ($null -ne $timestampCertificate) { $timestampCertificate.Thumbprint } else { $null }
+    }
     result = [ordered]@{
         process_startup = $processStartup
         bounded_liveness = $boundedLiveness

@@ -30,8 +30,10 @@ EXPECTED_REVIEWED_SOURCE_MODULES = (
     "discovery.py",
     "dispositions.py",
     "domain.py",
+    "enterprise_policy.py",
     "evidence_state.py",
     "guidance.py",
+    "mcp_sandbox.py",
     "remediation.py",
     "report_comparison.py",
     "reporting.py",
@@ -197,7 +199,11 @@ def test_collect_self_audit_is_transparent_and_keeps_environment_private(
         "network_capability": "detected",
         "ordinary_user_mode": True,
         "alpha_status": "Founder Alpha",
-        "findings": ["NETWORK_MODULE_IMPORT", "USER_DATA_WRITE"],
+        "findings": [
+            "NETWORK_MODULE_IMPORT",
+            "SHELL_EXECUTION",
+            "USER_DATA_WRITE",
+        ],
         "scope": {
             "capabilities": "package_source_policy",
             "semantic_analysis": "not_performed",
@@ -213,7 +219,11 @@ def test_collect_self_audit_is_transparent_and_keeps_environment_private(
 
 
 def test_current_package_reports_its_constrained_network_adapter() -> None:
-    assert static_capability_findings() == ("NETWORK_MODULE_IMPORT", "USER_DATA_WRITE")
+    assert static_capability_findings() == (
+        "NETWORK_MODULE_IMPORT",
+        "SHELL_EXECUTION",
+        "USER_DATA_WRITE",
+    )
 
 
 def test_source_policy_manifest_exactly_matches_current_package() -> None:
@@ -227,10 +237,10 @@ def test_source_policy_manifest_exactly_matches_current_package() -> None:
 
     assert list(policy) == ["schema", "modules"]
     assert policy["schema"] == 1
-    assert len(EXPECTED_REVIEWED_SOURCE_MODULES) == 21
+    assert len(EXPECTED_REVIEWED_SOURCE_MODULES) == 23
     assert package_names == EXPECTED_REVIEWED_SOURCE_MODULES
     assert tuple(modules) == EXPECTED_REVIEWED_SOURCE_MODULES
-    assert len(modules) == 21
+    assert len(modules) == 23
     assert modules == {
         name: _canonical_source_digest(PACKAGE_ROOT / name)
         for name in EXPECTED_REVIEWED_SOURCE_MODULES

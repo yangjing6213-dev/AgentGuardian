@@ -2,6 +2,12 @@
 
 # AgentGuardian
 
+## Current control-core status
+
+- Offline enterprise policy enforcement is implemented: canonical policy parsing, role/capability allowlists, expiry, operator-provisioned SHA-256 pinning, and high-sensitivity confirmation. This is not a signed policy service or an enterprise console.
+- Dynamic MCP now has a default-deny supervisor contract with fixed argv, bounded request/output/runtime, temporary working directory, explicit confirmation, and no raw output retention. Because the current portable/MSIX runtime has no native network-deny attestation, adapter processes are refused by default.
+- A native Windows AppContainer-or-equivalent provider, signed adapters, device registration, remote policy distribution, and administrator console remain required before those capabilities can be called complete.
+
 **AI Agent 守护者（AG）** 是一款面向 Windows 个人用户和小团队的本地优先 AI Agent 数据安全审计工具。
 
 当前版本为 `0.1.0 Founder Alpha`。Windows 本地只读发现、敏感数据与 MCP 静态检测、可解释评分、脱敏 JSON/HTML 报告、人工修复指引、桌面界面和保守自审计已经形成合成数据闭环。本版本仍是内部 Alpha，不代表生产安全等级。

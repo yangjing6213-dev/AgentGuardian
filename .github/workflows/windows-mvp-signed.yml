@@ -1,0 +1,98 @@
+name: Windows MVP trusted-signature acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  signed-msix-fresh-runner:
+    runs-on: windows-latest
+    env:
+      SIGNING_PFX_B64: ${{ secrets.AGENTGUARDIAN_SIGNING_PFX_B64 }}
+      SIGNING_PFX_PASSWORD: ${{ secrets.AGENTGUARDIAN_SIGNING_PFX_PASSWORD }}
+      SIGNING_PUBLISHER: ${{ secrets.AGENTGUARDIAN_SIGNING_PUBLISHER }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Fail closed when trusted signing material is absent
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_PFX_B64) -or
+              [string]::IsNullOrWhiteSpace($env:SIGNING_PFX_PASSWORD) -or
+              [string]::IsNullOrWhiteSpace($env:SIGNING_PUBLISHER)) {
+            throw "Trusted signing secrets are required; unsigned fallback is forbidden"
+          }
+
+      - name: Install hash-locked build dependencies
+        shell: pwsh
+        run: python -m pip install --require-hashes -r requirements-build.lock
+
+      - name: Locate Windows SDK tools
+        shell: pwsh
+        run: |
+          $makeappx = Get-ChildItem -LiteralPath "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter MakeAppx.exe -Recurse -File | Sort-Object FullName | Select-Object -Last 1
+          $signtool = Get-ChildItem -LiteralPath "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter SignTool.exe -Recurse -File | Sort-Object FullName | Select-Object -Last 1
+          if ($null -eq $makeappx -or $null -eq $signtool) { throw "MakeAppx.exe and SignTool.exe are required" }
+          "MAKEAPPX=$($makeappx.FullName)" >> $env:GITHUB_ENV
+          "SIGNTOOL=$($signtool.FullName)" >> $env:GITHUB_ENV
+
+      - name: Build and stage signed package
+        shell: pwsh
+        run: |
+          $sha = (git rev-parse HEAD).Trim()
+          $commitEpoch = [int64](git show -s --format=%ct HEAD)
+          $builtAt = [DateTimeOffset]::FromUnixTimeSeconds($commitEpoch).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+          python scripts/build_windows_portable.py `
+            --output-root "$pwd\.analysis\signed-portable" `
+            --source-commit $sha `
+            --built-at $builtAt
+          python scripts/build_windows_msix.py `
+            --bundle-root "$pwd\.analysis\signed-portable\dist\AgentGuardian" `
+            --stage-root "$pwd\.analysis\signed-msix-stage" `
+            --project-root "$pwd" `
+            --identity-name "yangjing6213dev.AgentGuardian" `
+            --publisher "$env:SIGNING_PUBLISHER" `
+            --version "0.1.0.0"
+          & $env:MAKEAPPX pack `
+            /d "$pwd\.analysis\signed-msix-stage" `
+            /p "$pwd\.analysis\AgentGuardian-signed.msix"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Sign with organization certificate and trusted timestamp
+        shell: pwsh
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP "agentguardian-signing.pfx"
+          try {
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:SIGNING_PFX_B64))
+            $securePassword = ConvertTo-SecureString $env:SIGNING_PFX_PASSWORD -AsPlainText -Force
+            $certificate = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword
+            if ($null -eq $certificate) { throw "Signing certificate import failed" }
+            # signtool sign /fd SHA256 /sha1 /tr /td SHA256
+            & $env:SIGNTOOL sign /fd SHA256 /sha1 $certificate.Thumbprint /tr "http://timestamp.digicert.com" /td SHA256 "$pwd\.analysis\AgentGuardian-signed.msix"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          finally {
+            Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Install launch and uninstall trusted signed MSIX on fresh runner
+        shell: pwsh
+        run: |
+          .\scripts\verify_windows_msix.ps1 `
+            -PackagePath "$pwd\.analysis\AgentGuardian-signed.msix" `
+            -PackageName "yangjing6213dev.AgentGuardian" `
+            -EvidencePath "$pwd\.analysis\signed-msix-smoke.json" `
+            -ExpectedPublisher "$env:SIGNING_PUBLISHER" `
+            -RequireTrustedSignature `
+            -SmokeSeconds 4
+          Get-Content -LiteralPath "$pwd\.analysis\signed-msix-smoke.json"
+
+      - name: Print signed package digest
+        shell: pwsh
+        run: Get-FileHash -Algorithm SHA256 -LiteralPath "$pwd\.analysis\AgentGuardian-signed.msix"

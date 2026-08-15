@@ -195,3 +195,32 @@ def test_windows_mvp_workflow_binds_tools_and_install_smoke() -> None:
     assert "-AllowUnsigned" in workflow
     assert "OID.2.25.311729368913984317654407730594956997722=1" in workflow
     assert "git show -s --format=%ct HEAD" in workflow
+
+
+def test_signed_msix_gate_is_fail_closed_and_checks_trusted_publisher() -> None:
+    verifier = (
+        PROJECT_ROOT / "scripts" / "verify_windows_msix.ps1"
+    ).read_text(encoding="utf-8")
+    for required in (
+        "Get-AuthenticodeSignature",
+        "RequireTrustedSignature",
+        "ExpectedPublisher",
+        "SignerCertificate",
+        "TimeStamperCertificate",
+    ):
+        assert required in verifier
+
+    workflow_path = PROJECT_ROOT / ".github" / "workflows" / "windows-mvp-signed.yml"
+    workflow = workflow_path.read_text(encoding="utf-8")
+    for required in (
+        "AGENTGUARDIAN_SIGNING_PFX_B64",
+        "AGENTGUARDIAN_SIGNING_PFX_PASSWORD",
+        "AGENTGUARDIAN_SIGNING_PUBLISHER",
+        "Import-PfxCertificate",
+        "signtool sign",
+        "RequireTrustedSignature",
+        "ExpectedPublisher",
+    ):
+        assert required in workflow
+    assert "New-SelfSignedCertificate" not in workflow
+    assert "-AllowUnsigned" not in workflow

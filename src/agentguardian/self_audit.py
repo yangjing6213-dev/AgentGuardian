@@ -37,7 +37,12 @@ _NETWORK_IMPORT_PREFIXES = (
     "pyside6.qtwebengine",
     "pyside6.qtwebsockets",
 )
-_AUDITED_CAPABILITY_MODULES = {"remediation.py", "share_verification.py"}
+_AUDITED_CAPABILITY_MODULES = {
+    "enterprise_policy.py",
+    "mcp_sandbox.py",
+    "remediation.py",
+    "share_verification.py",
+}
 _SAFE_DIRECT_IMPORTS = {
     "ast",
     "ctypes",
@@ -53,6 +58,7 @@ _SAFE_DIRECT_IMPORTS = {
     "secrets",
     "stat",
     "sys",
+    "tempfile",
     "unicodedata",
 }
 _SAFE_FROM_IMPORTS = {

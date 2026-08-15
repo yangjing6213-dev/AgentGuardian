@@ -34,6 +34,16 @@ The runtime must not call OpenAI or another provider API, verify a remote endpoi
 | AG-T11 | A dirty or mismatched source tree produces an untraceable or modified portable artifact. | The build requires a clean exact HEAD and creates canonical manifests, hashes, SBOM data, and deterministic ZIP output while rejecting reparse points. `tests/test_windows_packaging.py::test_artifact_manifest_rejects_reparse_points` `tests/test_windows_packaging.py::test_git_build_context_requires_clean_exact_head` | verified-local | The current portable artifact is unsigned and locally built. |
 | AG-T12 | A release artifact is substituted, built on an untrusted runner, signed by an unapproved identity, installed with unexpected privilege, or distributed without resolved rights. | Local manifests and hashes provide inspection evidence only. | blocked-external | Requires `APPROVE_GITHUB_WORKFLOW_SCOPE_REFRESH`, fresh-runner provenance, trusted code signing, a clean Windows machine, native install and uninstall evidence, and license and redistribution review. |
 
+## Extension Control Core (Not Release Evidence)
+
+| ID | Threat | Current control | Status | Boundary |
+| --- | --- | --- | --- | --- |
+| AG-T13 | A dynamic MCP adapter starts with an unreviewed executable, mutable bytes, shell expansion, unbounded output, or no process/network boundary. | `mcp_sandbox.py` requires an absolute regular executable, expected SHA-256, fixed argv, explicit confirmation, bounded request/output/runtime, temporary working directory, and an internal native-isolation attestation. Without a real provider, it refuses to start. | partial-local | The current portable/MSIX runtime has no proven network-deny provider or Job Object/AppContainer evidence; synthetic attestation is unit-test-only. |
+| AG-T14 | A locally modified enterprise policy grants capabilities to the wrong device, role, or version. | `enterprise_policy.py` rejects duplicate/unknown fields, validates tenant/device binding, expiry, role allowlists, high-sensitivity confirmation, SHA-256 pin mismatch, and version rollback. | partial-local | The pin is not a digital signature; there is no device registration, revocation, tenant isolation, remote distribution, or administrator console. |
+
+These rows are implementation evidence only. They do not change the AG-T12
+release gate and do not support a production-safety claim.
+
 ## Local Gate
 
   Run `python -B scripts/run_windows_mvp_security_gate.py`. The script invokes only the selected existing pytest node IDs for AG-T01 through AG-T11, clears `PYTEST_ADDOPTS` and `PYTEST_PLUGINS`, disables pytest plugin autoload and cache writes, enforces a 120-second process timeout, and fails on any runtime or collection-time skip outside the explicit AG-T09 directory-symlink allowlist. It performs no network or provider API call.
