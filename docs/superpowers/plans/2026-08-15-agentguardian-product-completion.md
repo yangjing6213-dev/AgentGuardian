@@ -12,7 +12,7 @@
 
 - [x] 增加 Windows MSIX 验证 workflow，固定 checkout 和 Python Action SHA。
 - [x] 使用 `requirements-dev.lock` 与 `requirements-build.lock` 哈希安装。
-- [x] 已将精确 SHA `2a5d89f3e95b14c7b20b407431d0e3b6aea1c58c` 推送到 `yangjing6213-dev/AgentGuardian` 并完成当前 PR runs：基础 CI `31866928342`、Windows MSIX smoke `31866928385`，两者均成功。
+- [x] 已将精确 SHA `b46d9d6f80d8094b05ea5a8e37ab7088cca8741b` 推送到 `yangjing6213-dev/AgentGuardian` 并完成当前 PR runs：基础 CI `31867330810`、Windows MSIX smoke `31867330804`，两者均成功。
 
 完成条件：当前候选 SHA 的完整测试、品牌校验、源码编译、便携构建和 MSIX 契约均在 GitHub-hosted Windows Runner 通过。
 
@@ -26,7 +26,7 @@
 - [ ] 在 Windows Runner 执行正式证书签名和签名包安装卸载烟测；依赖组织证书或 Trusted Signing secret。
 - [ ] 在独立干净 Windows 环境执行安装、升级、启动、卸载和残留验收。
 
-当前无签名 smoke 的 MSIX SHA-256：`54785F8A5D515BE3203A6F7ABA9EB0C4A5DCD4DE2D938473070F8D81A1726883`。该摘要只绑定测试包，不是发布包摘要。
+当前无签名 smoke 的 MSIX SHA-256：`6D853483B64176C51C0DEB04C4E74CF00EB29863711A5144FA2805F33B30F40A`。该摘要只绑定测试包，不是发布包摘要。
 
 完成条件：安装器在目标 Windows 版本上可由普通用户安装和卸载，验证结果绑定精确 SHA 与 MSIX SHA-256；所有声明状态清理完成。
 
