@@ -52,16 +52,18 @@ provider errors, nonzero adapters, timeouts, and output-limit violations do not
 fall back to an ordinary child process. A crashing/nonzero adapter returns a
 bounded failure, is not automatically restarted, retains no raw output, and
 leaves no temporary work directory. Synthetic attestation remains limited to
-unit tests. The native Windows path also rechecks the executable SHA-256 and
-requires a locally trusted embedded Authenticode signature before launch. The
-signature check is cache-only and does not fetch certificate data; a missing or
-invalid signature is denied. Unexpected ordinary exceptions from either native
-launcher are converted to the fixed `sandbox_launch_failed` result instead of
-escaping into the desktop boundary.
+unit tests. The native Windows path also rechecks the executable SHA-256,
+requires a locally trusted embedded Authenticode signature, and requires an
+explicit exact-match X.500 publisher-subject allowlist before launch. The
+signature check and subject extraction are local and cache-only; no certificate
+data is fetched. Empty or non-matching allowlists are denied. Unexpected
+ordinary exceptions from either native launcher are converted to the fixed
+`sandbox_launch_failed` result instead of escaping into the desktop boundary.
 
-This does not complete the release gate. An organization publisher allowlist,
-packaged-adapter filesystem accessibility, packaged crash/restart acceptance, clean-machine install and
-uninstall evidence, remote device registration, remote policy distribution,
+This does not complete the release gate. An organization-signed adapter and
+reviewed publisher allowlist, packaged-adapter filesystem accessibility,
+packaged crash/restart acceptance, clean-machine install and uninstall evidence,
+remote device registration, remote policy distribution,
 remote administrator authentication, and an administrator console remain outstanding.
 The current evidence supports a locally verified Windows MVP boundary, not
 production isolation or processing of highly sensitive real data.
