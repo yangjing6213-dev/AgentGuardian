@@ -76,9 +76,9 @@ DPAPI 不能抵御已经控制同一 Windows 用户会话的程序，状态也�
 
 2026-08-13，`d1c3e9caa856812d0bdd3221b0c6a7083da937ff` 在 Python 3.14.0 和使用 `requirements-dev.lock` 哈希锁定依赖临时隔离的 Python 3.12.2 中均重新验证为 `1264 passed, 8 skipped, 0 failed`；`tests/test_self_audit.py tests/test_packaging.py` 聚焦门禁为 `152 passed`。两个解释器的品牌校验、源码编译和 package-source self-audit 均通过。该 SHA 之后的文档/测试证据同步提交不由这些本地结果自动覆盖。远程实现与证据基线 `a79995a7a6a950050d5628324f94a6b8a07e6308` 的 push run `31714716636` 与 Draft PR run `31714721274` 均为 `SUCCESS`；该实现基线的本地 Python 3.14/3.12 门禁均为 `1269 passed, 8 skipped, 0 failed`。
 
-**Batch 5 便携开发包层历史快照。** 实现证据绑定 `10e65322cd590f2028fb5946fff7125afd2e101d`：使用哈希锁定的 Windows Python 3.12 构建环境生成 PyInstaller `onedir` 未签名开发产物、CycloneDX 1.6 SBOM、载荷清单、构建元数据、第三方声明、校验和与确定性 ZIP；SBOM 将嵌入 EXE 的 PyInstaller Bootloader 记录为运行时依赖，并把 PyInstaller 工具保留为构建时组件。该段记录的是旧批次状态；当前签名、许可证和真实发布门禁仍以最新计划与精确 SHA 证据为准。
+**Batch 5 便携开发包层已完成本地验证（历史快照）。** 实现证据绑定 `10e65322cd590f2028fb5946fff7125afd2e101d`：使用哈希锁定的 Windows Python 3.12 构建环境生成 PyInstaller `onedir` 未签名开发产物、CycloneDX 1.6 SBOM、载荷清单、构建元数据、第三方声明、校验和与确定性 ZIP；SBOM 将嵌入 EXE 的 PyInstaller Bootloader 记录为运行时依赖，并把 PyInstaller 工具保留为构建时组件。两个全新输出目录的 208 个文件逐项一致，ZIP SHA-256 均为 `216936f89d9a8b8352e3a58ce8c2602dbb26e7d450ddfcb0959d289e0755ef7b`；复制后的 GUI 离屏存活 4 秒、受控终止且声明目录零残留。当前本地提交尚未获得 GitHub CI 验证。可信代码签名、原生安装、干净机器验收和卸载残留检查仍未完成；Batch 6 仍待完成，Windows MVP 尚未完成，未形成生产安全结论。
 
-**Batch 6 local gate status（历史快照）。** 该段记录旧批次的门禁环境隔离、collection/runtime skip fail-closed、性能/构建 SHA 复核和 portable smoke 进程树确认。OpenAI Provider 仍只做本地检测与人工指引，不默认调用 API；当前精确 SHA、可信签名、真实数据、干净机器和动态网络隔离门禁以本页最新状态与产品计划为准。Release-candidate decision remains `NO-GO`; Windows MVP remains incomplete. Production safety is not established.
+**Batch 6 local gate status（历史快照）。** 当前实现与统一本地证据基线为 `90e6edad53bee48adca58d508d193fc855c1db7d`；它补强了门禁环境隔离、collection/runtime skip fail-closed、性能/构建 SHA 复核、lock 依赖绑定和 portable smoke 进程树确认。首轮独立只读复审发现 7 项 Important findings、2 项 Minor；第二轮又发现 2 项 Important findings、3 项 Minor；聚焦第三轮复审未发现 Critical/Important、记录 1 项 Minor，当前已识别的 Important 均已修复。该增量未修改 `src/agentguardian`，OpenAI Provider 仍只做本地检测与人工指引，不默认调用 API。当前精确 SHA 的 GitHub CI、fresh-runner provenance、可信签名、原生安装/卸载和许可复核仍待完成。Release-candidate decision: `NO-GO`. Windows MVP remains incomplete. Production safety is not established.
 
 ## 开发与验证
 
