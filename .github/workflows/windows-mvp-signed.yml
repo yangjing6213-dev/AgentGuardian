@@ -51,7 +51,8 @@ jobs:
           python scripts/build_windows_portable.py `
             --output-root "$pwd\.analysis\signed-portable" `
             --source-commit $sha `
-            --built-at $builtAt
+            --built-at $builtAt `
+            --artifact-status trusted_release
           python scripts/build_windows_msix.py `
             --bundle-root "$pwd\.analysis\signed-portable\dist\AgentGuardian" `
             --stage-root "$pwd\.analysis\signed-msix-stage" `
@@ -107,8 +108,20 @@ jobs:
             -EvidencePath "$pwd\.analysis\signed-msix-smoke.json" `
             -ExpectedPublisher "$env:SIGNING_PUBLISHER" `
             -RequireTrustedSignature `
+            -RequireFreshUserState `
             -SmokeSeconds 4
           Get-Content -LiteralPath "$pwd\.analysis\signed-msix-smoke.json"
+
+      - name: Enforce final trusted release evidence gate
+        shell: pwsh
+        run: |
+          $sha = (git rev-parse HEAD).Trim()
+          python scripts/verify_windows_release_candidate.py `
+            --bundle-root "$pwd\.analysis\signed-portable\dist\AgentGuardian" `
+            --smoke-evidence "$pwd\.analysis\signed-msix-smoke.json" `
+            --expected-source-commit $sha `
+            --require-trusted-signature `
+            --require-fresh-user-state
 
       - name: Print signed package digest
         shell: pwsh

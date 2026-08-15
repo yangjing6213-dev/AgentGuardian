@@ -247,6 +247,11 @@ def test_signed_msix_gate_is_fail_closed_and_checks_trusted_publisher() -> None:
         "AgentGuardian-signed-upgrade.msix",
         "-UpgradePackagePath",
         'version "0.1.0.1"',
+        "--artifact-status trusted_release",
+        "-RequireFreshUserState",
+        "scripts/verify_windows_release_candidate.py",
+        "--require-trusted-signature",
+        "--require-fresh-user-state",
     ):
         assert required in workflow
     assert "New-SelfSignedCertificate" not in workflow

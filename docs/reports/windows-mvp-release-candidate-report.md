@@ -91,6 +91,7 @@ This evidence does not cover the 10,000-file functional maximum, whole-process r
 - Current exact-SHA GitHub CI: `VERIFIED` for implementation HEAD `e55965d`; push/PR CI and Windows workflow checks all succeeded. This is CI evidence only and does not satisfy trusted signing or clean-machine gates.
 - GitHub-hosted Windows runner provenance: `VERIFIED AS CI EVIDENCE ONLY`; this does not replace an independent clean Windows machine.
 - Trusted code signing: `PENDING`.
+- Trusted-signature workflow final gate: `IMPLEMENTED AND FAIL-CLOSED`; it now requires `trusted_release` bundle metadata, fresh-user-state evidence, trusted signer evidence, and complete SBOM/license notices. The current notices still contain unresolved `NOASSERTION` runtime licenses, so this gate has not passed.
 - Unsigned CI native install, upgrade, launch, termination and uninstall smoke: `VERIFIED`; trusted-package and independent acceptance remain pending.
 - Strict fresh-user-state verifier: `IMPLEMENTED`; independent clean Windows machine acceptance and residue review: `PENDING`.
 - License and redistribution review: `PENDING`.
