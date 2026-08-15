@@ -18,9 +18,12 @@ Every capability decision is fail-closed unless:
 4. High-sensitivity confirmation is present when the policy requires it.
 5. `mcp_dynamic` additionally has an independently attested sandbox.
 
-The digest pin is an integrity check for a locally provisioned document. It is
-not a digital signature or remote policy distribution mechanism. The desktop
-now provides a local-only control-plane page backed by the same SQLite core for
+The digest pin is an integrity check for a locally provisioned document. The
+optional `enterprise_signing.py` module adds an Ed25519 envelope and the
+control plane accepts a policy only after the supplied public-key verifier
+passes. The cryptography dependency is opt-in and hash-locked; the default
+desktop path does not load it. This still does not provide remote policy
+distribution. The desktop now provides a local-only control-plane page backed by the same SQLite core for
 tenant/device/role registration, offline policy import, device revocation, and
 bounded operational summaries. It is not a tenant service, administrator
 authentication flow, or remote administrator console.

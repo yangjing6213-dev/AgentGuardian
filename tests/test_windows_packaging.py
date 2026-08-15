@@ -436,6 +436,37 @@ def test_portable_evidence_is_canonical_and_excludes_its_own_checksums(
     assert "SHA256SUMS" not in checksum_paths
 
 
+def test_portable_evidence_can_mark_a_release_build_only_explicitly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "AgentGuardian.exe").write_bytes(b"synthetic executable")
+    monkeypatch.setattr(
+        "scripts.build_windows_portable.cyclonedx_bom_bytes",
+        lambda *args, **kwargs: b'{"bomFormat":"CycloneDX","specVersion":"1.6"}\n',
+    )
+    write_portable_evidence(
+        bundle,
+        project_root=PROJECT_ROOT,
+        component_specs=portable_component_specs(
+            python_version="3.12.2",
+            openssl_version="3.0.13",
+            vc_runtime_version="14.38.33126.1",
+            ucrt_version="10.0.19041.1",
+        ),
+        source_commit="a" * 40,
+        built_at="2026-08-14T00:00:00Z",
+        build_dependencies={"lock_sha256": "c" * 64, "versions": BUILD_PACKAGES},
+        forbidden_texts=(str(PROJECT_ROOT),),
+        artifact_status="trusted_release",
+    )
+
+    metadata = json.loads((bundle / "BUILD-METADATA.json").read_bytes())
+    assert metadata["artifact_status"] == "trusted_release"
+
+
 def test_frozen_layout_requires_reviewed_sources_and_no_network_modules(
     tmp_path: Path,
 ) -> None:

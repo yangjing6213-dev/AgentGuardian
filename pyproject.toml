@@ -19,6 +19,9 @@ dev = [
     "Pillow>=11",
     "pytest>=8",
 ]
+enterprise = [
+    "cryptography==46.0.6",
+]
 
 [project.urls]
 Repository = "https://github.com/yangjing6213-dev/AgentGuardian"

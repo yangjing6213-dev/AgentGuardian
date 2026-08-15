@@ -26,6 +26,7 @@ from .enterprise_policy import (
     evaluate_capability,
     parse_enterprise_policy,
 )
+from .enterprise_signing import PolicyVerifier, verify_signed_policy
 
 
 MAX_DISPLAY_NAME = 120
@@ -320,6 +321,16 @@ class EnterpriseControlPlane:
                 ),
             )
         return digest
+
+    def provision_signed_policy(
+        self,
+        document: bytes,
+        *,
+        verifier: PolicyVerifier,
+        now: datetime,
+    ) -> str:
+        policy_document = verify_signed_policy(document, verifier)
+        return self.provision_policy(policy_document, now=now)
 
     def revoke_policy(self, tenant_id: str, policy_id: str, version: int, *, now: datetime) -> None:
         tenant_id = _identifier(tenant_id, "tenant_id")

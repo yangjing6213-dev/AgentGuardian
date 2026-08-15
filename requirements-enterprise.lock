@@ -1,0 +1,5 @@
+# Generated for Windows Python 3.12 enterprise policy signing/verification.
+# Install with: python -m pip install --require-hashes -r requirements-enterprise.lock
+cffi==2.1.1 --hash=sha256:f53e442b08449d42821fa4a4fba000095af9f62742a500f978a9f557ec44339a
+cryptography==46.0.6 --hash=sha256:6739d56300662c468fddb0e5e291f9b4d084bead381667b9e654c7dd81705124
+pycparser==3.0 --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992

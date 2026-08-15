@@ -211,11 +211,14 @@ def write_portable_evidence(
     built_at: str,
     build_dependencies: dict[str, object],
     forbidden_texts: tuple[str, ...],
+    artifact_status: str = "unsigned_development_only",
 ) -> None:
     if len(source_commit) != 40 or any(character not in "0123456789abcdef" for character in source_commit):
         raise ValueError("source commit must be a full lowercase SHA-1")
     if not built_at.endswith("Z"):
         raise ValueError("build time must be canonical UTC")
+    if artifact_status not in {"unsigned_development_only", "trusted_release"}:
+        raise ValueError("artifact status is invalid")
     shutil.copyfile(project_root / "LICENSE", bundle_root / "LICENSE")
     shutil.copyfile(
         project_root / "THIRD_PARTY_NOTICES.md",
@@ -232,7 +235,7 @@ def write_portable_evidence(
         )
     )
     metadata = {
-        "artifact_status": "unsigned_development_only",
+        "artifact_status": artifact_status,
         "build_mode": "pyinstaller_onedir",
         "build_dependencies": build_dependencies,
         "built_at": built_at,
@@ -322,6 +325,7 @@ def build_portable(
     *,
     source_commit: str,
     built_at: str,
+    artifact_status: str = "unsigned_development_only",
 ) -> Path:
     if sys.platform != "win32" or sys.version_info[:2] != (3, 12):
         raise RuntimeError("portable builds require Windows Python 3.12")
@@ -375,6 +379,7 @@ def build_portable(
         built_at=built_at,
         build_dependencies=build_dependencies,
         forbidden_texts=(str(project_root), str(output_root)),
+        artifact_status=artifact_status,
     )
     deterministic_zip(
         bundle_root,
@@ -416,17 +421,23 @@ def _pe_version(path: Path) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Build an unsigned AgentGuardian Windows portable artifact."
+        description="Build an AgentGuardian Windows portable artifact."
     )
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--built-at", required=True)
+    parser.add_argument(
+        "--artifact-status",
+        choices=("unsigned_development_only", "trusted_release"),
+        default="unsigned_development_only",
+    )
     arguments = parser.parse_args()
     build_portable(
         Path(__file__).parents[1],
         arguments.output_root,
         source_commit=arguments.source_commit,
         built_at=arguments.built_at,
+        artifact_status=arguments.artifact_status,
     )
     return 0
 
