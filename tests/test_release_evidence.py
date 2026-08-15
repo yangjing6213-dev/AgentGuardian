@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -22,6 +25,7 @@ NATIVE_LIMITS = [
     "network_isolation_enforced",
     "process_tree_isolation_enforced",
 ]
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _write_candidate(
@@ -157,6 +161,30 @@ def test_release_gate_accepts_only_trusted_fresh_evidence(tmp_path: Path) -> Non
         "fresh_user_state": True,
         "license_review": "complete",
     }
+
+
+def test_release_verifier_cli_help_runs_without_pythonpath(tmp_path: Path) -> None:
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    environment["PYTHONNOUSERSITE"] = "1"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(ROOT / "scripts" / "verify_windows_release_candidate.py"),
+            "--help",
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "--mcp-adapter-evidence" in completed.stdout
+    assert completed.stderr == ""
 
 
 @pytest.mark.parametrize(
@@ -301,6 +329,27 @@ def test_release_gate_rejects_mcp_source_mismatch(tmp_path: Path) -> None:
     mcp_evidence.write_text(json.dumps(acceptance), encoding="utf-8")
 
     with pytest.raises(ReleaseEvidenceError, match="RELEASE_MCP_SOURCE_COMMIT_MISMATCH"):
+        _validate_trusted_candidate(bundle, evidence, license_review, mcp_evidence)
+
+
+def test_release_gate_rejects_boolean_mcp_manifest_schema(tmp_path: Path) -> None:
+    bundle, evidence, license_review, mcp_evidence = _write_candidate(tmp_path)
+    manifest_path = bundle / "MCP-ADAPTER.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema"] = True
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ReleaseEvidenceError, match="RELEASE_MCP_ADAPTER_MANIFEST_INVALID"):
+        _validate_trusted_candidate(bundle, evidence, license_review, mcp_evidence)
+
+
+def test_release_gate_rejects_boolean_mcp_acceptance_schema(tmp_path: Path) -> None:
+    bundle, evidence, license_review, mcp_evidence = _write_candidate(tmp_path)
+    acceptance = json.loads(mcp_evidence.read_text(encoding="utf-8"))
+    acceptance["schema"] = True
+    mcp_evidence.write_text(json.dumps(acceptance), encoding="utf-8")
+
+    with pytest.raises(ReleaseEvidenceError, match="RELEASE_MCP_ADAPTER_EVIDENCE_INVALID"):
         _validate_trusted_candidate(bundle, evidence, license_review, mcp_evidence)
 
 

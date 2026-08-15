@@ -9,7 +9,12 @@ import json
 import os
 from pathlib import Path
 import stat
+import sys
 from typing import Any
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
 
 from agentguardian.discovery import _has_reparse_component
 
@@ -116,7 +121,8 @@ def _validate_mcp_adapter(
     }
     if (
         set(manifest) != manifest_fields
-        or manifest.get("schema") != 1
+        or type(manifest.get("schema")) is not int
+        or manifest["schema"] != 1
         or manifest.get("path") != _MCP_ADAPTER_PATH
         or manifest.get("name") != _MCP_ADAPTER_NAME
         or not _is_lower_hex(manifest.get("sha256"), 64)
@@ -153,7 +159,11 @@ def _validate_mcp_adapter(
         raise ReleaseEvidenceError("RELEASE_MCP_ADAPTER_EVIDENCE_INVALID")
     if evidence.get("source_commit") != expected_source_commit:
         raise ReleaseEvidenceError("RELEASE_MCP_SOURCE_COMMIT_MISMATCH")
-    if evidence.get("schema") != 1 or evidence.get("passed") is not True:
+    if (
+        type(evidence.get("schema")) is not int
+        or evidence["schema"] != 1
+        or evidence.get("passed") is not True
+    ):
         raise ReleaseEvidenceError("RELEASE_MCP_ADAPTER_EVIDENCE_INVALID")
 
     adapter_evidence = evidence.get("adapter")
