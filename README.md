@@ -9,6 +9,7 @@
 - The desktop flow now exposes one allowlisted fixed remediation for `OPENAI_BASE_URL_OVERRIDE`: preview, scope check, explicit confirmation, target hash recheck, atomic replacement, same-directory backup, and same-session rollback. It does not execute arbitrary commands or generate edits with an LLM.
 - A native Windows AppContainer-or-equivalent provider, signed adapters, device registration, remote policy distribution, and administrator console remain required before those capabilities can be called complete.
 - Fresh verification for code SHA `6c0043b5dc3551d4950f814a82a4c7484004d722`: local `1377 passed, 11 skipped`; push and Draft PR CI plus Windows package runs all succeeded (`31873363929`, `31873363921`, `31873365733`, `31873365732`). The Windows evidence remains unsigned CI smoke only.
+- Latest fixed-remediation slice SHA `20cac6c6b9c8384ba298e07b534d2186d9ec65ca`: local `1383 passed, 11 skipped`; push CI, push Windows, Draft PR CI and Draft PR Windows all succeeded (`31874528529`, `31874528521`, `31874530033`, `31874530037`). The Windows evidence remains unsigned CI smoke only.
 
 **AI Agent 守护者（AG）** 是一款面向 Windows 个人用户和小团队的本地优先 AI Agent 数据安全审计工具。
 

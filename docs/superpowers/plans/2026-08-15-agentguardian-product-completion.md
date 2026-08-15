@@ -20,6 +20,8 @@
 
 最新复核（2026-08-15）：功能代码提交 `6c0043b5dc3551d4950f814a82a4c7484004d722` 的 push CI run `31873363929` 与 Windows run `31873363921` 均为 `success`；Draft PR 同一 SHA 的 CI run `31873365733` 与 Windows run `31873365732` 也均为 `success`。本地当前完整回归为 `1377 passed, 11 skipped`；远程 job 日志数量仍不作为已验证数字。Windows 运行仍是 `signature_mode=unsigned_ci_smoke`，因此不能替代可信签名、干净机器验收或生产安全证据。
 
+最新复核（2026-08-15，固定修复桌面流程）：提交 `20cac6c6b9c8384ba298e07b534d2186d9ec65ca` 的本地完整回归为 `1383 passed, 11 skipped`；push CI `31874528529`、push Windows `31874528521`、Draft PR CI `31874530033` 和 Draft PR Windows `31874530037` 均为 `success`。Windows 运行仍是 `signature_mode=unsigned_ci_smoke`，只能证明仓库烟测，不替代可信签名、干净机器、真实 Windows 权限或生产安全证据。
+
 ### A2 原生安装器与安装/卸载验收
 
 - [x] 生成 MSIX manifest、资源、MakeAppx 命令和 SignTool 校验命令。
