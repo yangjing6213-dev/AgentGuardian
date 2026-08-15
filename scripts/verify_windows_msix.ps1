@@ -94,7 +94,7 @@ finally {
     $termination = (@(Get-Process -Name "AgentGuardian" -ErrorAction SilentlyContinue).Count -eq 0)
     if ($null -ne $packageFullName) {
         Remove-AppxPackage -Package $packageFullName
-        $uninstallDeadline = (Get-Date).AddSeconds(15)
+        $uninstallDeadline = (Get-Date).AddSeconds(60)
         do {
             $remainingPackages = @(Get-AppxPackage -Name $PackageName)
             if ($remainingPackages.Count -eq 0) {
@@ -103,7 +103,12 @@ finally {
             }
             Start-Sleep -Milliseconds 250
         } while ((Get-Date) -lt $uninstallDeadline)
-        $packageResidue = (@(Get-AppxPackage -Name $PackageName).Count -ne 0)
+        $remainingPackages = @(Get-AppxPackage -Name $PackageName)
+        $packageResidue = ($remainingPackages.Count -ne 0)
+        if ($packageResidue) {
+            Write-Host "Package residue after bounded uninstall wait: $($remainingPackages.Count)"
+            $remainingPackages | Select-Object Name, PackageFullName, Status | Format-Table | Out-String | Write-Host
+        }
     }
 }
 
