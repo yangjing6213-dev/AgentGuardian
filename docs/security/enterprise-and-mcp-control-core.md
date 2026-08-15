@@ -55,7 +55,9 @@ leaves no temporary work directory. Synthetic attestation remains limited to
 unit tests. The native Windows path also rechecks the executable SHA-256 and
 requires a locally trusted embedded Authenticode signature before launch. The
 signature check is cache-only and does not fetch certificate data; a missing or
-invalid signature is denied.
+invalid signature is denied. Unexpected ordinary exceptions from either native
+launcher are converted to the fixed `sandbox_launch_failed` result instead of
+escaping into the desktop boundary.
 
 This does not complete the release gate. An organization publisher allowlist,
 packaged-adapter filesystem accessibility, packaged crash/restart acceptance, clean-machine install and

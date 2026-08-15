@@ -16,19 +16,19 @@ Windows MVP remains incomplete. Production safety is not established.
 
 ## Current Follow-up Evidence
 
-The current code-bearing hardening SHA is `253b77d1f46b63f1761fd8ac56c9fb6f49555d22`.
-Its local full regression is `1404 passed, 11 skipped`; the Windows workflow
-reported `1414 passed, 1 skipped`, and the synthetic high-sensitivity gate
-reported `passed=true` with no raw markers in reports/findings, browser
-temporary-copy removal, and workspace cleanup. The Windows AppContainer
-integration proves loopback connection denial and transient profile cleanup;
-the native MCP path also rejects an adapter without a locally trusted embedded
-Authenticode signature.
+The current code-bearing hardening SHA is `ef571a1c2df6de806f5cb488979778bec6c5bd9f`.
+Its local full regression is `1426 passed, 11 skipped`, the local selected
+security gate is `47 passed, 1 skipped`, and the native MCP boundary now turns
+unexpected ordinary launcher exceptions into fixed `sandbox_launch_failed`
+metadata. Exact-SHA GitHub revalidation completed successfully: push CI
+`31887042189`, push Windows `31887042244`, Draft PR CI `31887043260`, and Draft
+PR Windows `31887043232`. The Windows AppContainer integration proves loopback
+connection denial and transient profile cleanup; the native MCP path also
+rejects an adapter without a locally trusted embedded Authenticode signature.
 
-The current documentation HEAD is `5a486118d45c27fe500b8dc5d903a9d5a3e741b7`.
-Its push and Draft PR CI plus Windows package checks all completed
-successfully. The Windows smoke evidence records install, same-identity
-upgrade `0.1.0.0 -> 0.1.0.1`, termination, uninstall, and
+The documentation update containing this report is a follow-up to the exact
+code-bearing SHA above. The Windows smoke evidence records install,
+same-identity upgrade `0.1.0.0 -> 0.1.0.1`, termination, uninstall, and
 `package_residue=false`. The package is explicitly `unsigned_ci_smoke` and
 must not be treated as a trusted release artifact.
 
@@ -41,15 +41,12 @@ verification mode. The latter requires trusted signing, an empty
 after uninstall; it has not yet been executed on an independent clean Windows
 machine.
 
-The latest code-bearing HEAD is `bd4f5cc4a2957e222beacd7b7b24c8fbd98e7ddb`.
-Its local full regression is `1424 passed, 11 skipped`; source compilation and
-`git diff --check` also passed before commit. The enterprise service now has an
-explicit development-only `127.0.0.1` adapter with serialized SQLite access,
-fixed error responses, and no default startup. GitHub revalidation for this
-exact SHA completed successfully: push CI `31885132072`, push Windows
-`31885132325`, Draft PR CI `31885130678`, and Draft PR Windows `31885130667`.
-The four check-runs all report `success` and all bind this exact head SHA. PR
-#1 remains open and Draft; this does not change the release decision.
+The previous code-bearing HEAD was `bd4f5cc4a2957e222beacd7b7b24c8fbd98e7ddb`.
+Its local full regression was `1424 passed, 11 skipped`; the enterprise service
+then had an explicit development-only `127.0.0.1` adapter with serialized
+SQLite access, fixed error responses, and no default startup. Its four exact-SHA
+check-runs completed successfully. PR #1 remains open and Draft; this does not
+change the release decision.
 
 ## Current Local Evidence
 
@@ -57,8 +54,8 @@ The four check-runs all report `success` and all bind this exact head SHA. PR
 | --- | --- | --- |
 | Security gate contract | `22 passed` | Threat IDs, test-node resolution, isolated pytest environment, timeout, collection- and runtime-skip handling, performance evidence contract, and documentation boundaries. |
 | Selected negative security gate | `47 passed, 1 skipped` | AG-T01 through AG-T11 selected tests. The only allowed skip is AG-T09 directory symlink unavailable; it is not reported as a full pass. |
-| Python 3.14 full suite | `1322 passed, 8 skipped` | Current implementation and evidence-synchronization documentation. |
-| Hash-locked Python 3.12 full suite | `1321 passed, 9 skipped` | Current implementation and evidence-synchronization documentation. The additional skip is the build-only CycloneDX integration. |
+| Python 3.14 full suite | `1426 passed, 11 skipped` | Current implementation after the native MCP fail-closed hardening. |
+| Hash-locked Python 3.12 full suite | Exact-SHA GitHub Windows job `success` | The job is bound to `ef571a1c2df6de806f5cb488979778bec6c5bd9f`; its raw log count is not used as local evidence. |
 | Brand validation | Exit 0 | Existing brand-asset contract. |
 | Source and script compilation | Exit 0 | `python -B -m compileall -q src scripts`. |
 | Portable reproducibility | `208 files` and `92,870,198 bytes` in each bundle; Bundle diff count: `0`; both ZIPs were `36,033,202 bytes` with SHA-256 `4f7e9ffdd347fddf67ffb7544ab84e777ff7b93e2ed1bf546ed87e6e9517bad1` | Two new build roots, one hash-locked Python 3.12.2/PyInstaller 6.16.0 environment, actual lock dependency versions recorded with lock SHA `75be59ee054a75d556cc89099f571d9826fa272aef656124fa75dc535731cdd5`, source SHA `90e6eda`, and fixed build time `2026-08-15T00:00:00Z`. PyInstaller work/spec intermediates are excluded. |
@@ -83,7 +80,7 @@ This evidence does not cover the 10,000-file functional maximum, whole-process r
 - Independent read-only review: `COMPLETED WITH 7 IMPORTANT AND 2 MINOR FINDINGS` on the prior evidence-sync HEAD; those findings were remediated locally.
 - Second independent re-review: `COMPLETED WITH 2 IMPORTANT AND 3 MINOR FINDINGS` on `305eeb4`; both Important findings were remediated in `90e6eda`.
 - Third independent re-review: `COMPLETED WITH NO CRITICAL/IMPORTANT FINDINGS AND 1 MINOR`; the reviewer did not execute tests independently, so runtime confirmation remains the separately recorded local-gate evidence.
-- Current exact-SHA GitHub CI: `VERIFIED` for implementation HEAD `bd4f5cc`; push/PR CI and Windows workflow checks all succeeded. This is CI evidence only and does not satisfy trusted signing or clean-machine gates.
+- Current exact-SHA GitHub CI: `VERIFIED` for implementation HEAD `ef571a1`; push/PR CI and Windows workflow checks all succeeded. This is CI evidence only and does not satisfy trusted signing or clean-machine gates.
 - GitHub-hosted Windows runner provenance: `VERIFIED AS CI EVIDENCE ONLY`; this does not replace an independent clean Windows machine.
 - Trusted code signing: `PENDING`.
 - Unsigned CI native install, upgrade, launch, termination and uninstall smoke: `VERIFIED`; trusted-package and independent acceptance remain pending.
