@@ -24,6 +24,8 @@
 
 最新复核（2026-08-15，高敏感网络边界）：提交 `f7ca1c5b8c1c1e896950d9998cbc5576dea72c5c` 的本地完整回归为 `1390 passed, 11 skipped`；push CI `31876302302`、push Windows `31876302334`、Draft PR CI `31876305303` 和 Draft PR Windows `31876305388` 均为 `success`。高敏感模式现在禁止联网分享验证；Windows 运行仍是 `signature_mode=unsigned_ci_smoke`，只能证明仓库烟测，不替代可信签名、干净机器、真实 Windows 权限或生产安全证据。
 
+最新复核（2026-08-15，MSIX 安装升级卸载）：提交 `0ac5ff748f16578a86a3662b8fddd8f6fb94def3` 的本地完整回归为 `1391 passed, 11 skipped`；push CI `31876853579`、push Windows `31876853553`、Draft PR CI `31876855289` 和 Draft PR Windows `31876855292` 均为 `success`。Windows job `94993768289` 的 smoke JSON 明确记录 `upgrade_attempted=true`、`upgraded=true`、版本 `0.1.0.0 -> 0.1.0.1`、`termination=true`、`uninstalled=true`、`package_residue=false`；签名模式仍为 `unsigned_ci_smoke`，不替代可信签名或独立干净机器证据。
+
 ### A2 原生安装器与安装/卸载验收
 
 - [x] 生成 MSIX manifest、资源、MakeAppx 命令和 SignTool 校验命令。
@@ -53,6 +55,7 @@
 - [x] 保持默认本地模式、无 OpenAI API 调用、无遥测、无自动云同步。
 - [x] 报告只输出脱敏证据，不保存原始匹配、完整路径、扫描密钥或完整聊天。
 - [x] 增加高敏感模式的显式开关和导出前二次确认；启用后策略强制关闭 API 访问、联网分享验证与原文持久化，切换模式会撤销当前范围同意并要求重新核对。
+- [x] 增加独立合成高敏感验收脚本并接入 Windows CI：验证 JSON/HTML/导出报告不含原始标记、剪贴板不留原文、浏览器临时副本删除和临时工作区清理。
 - [ ] 补充临时数据清理的独立证据与真实脱敏样本人工验收；当前实现没有把这两个条件伪装成已通过。
 - [ ] 用用户提供的脱敏验收样本执行人工验收，不把真实密钥、聊天或病历提交到仓库、CI 或报告。
 - [ ] 对依赖、冻结二进制和安装包执行独立供应链扫描与人工复核。

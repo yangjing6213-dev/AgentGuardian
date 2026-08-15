@@ -206,6 +206,8 @@ def test_windows_mvp_workflow_binds_tools_and_install_smoke() -> None:
         "requirements-build.lock",
         "MakeAppx.exe",
         "verify_windows_msix.ps1",
+        "run_sensitive_data_acceptance.py",
+        "sensitive-data-acceptance.json",
         "Install launch and uninstall unsigned MSIX CI smoke",
     ):
         assert required in workflow

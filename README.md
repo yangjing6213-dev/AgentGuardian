@@ -11,7 +11,8 @@
 - Fresh verification for code SHA `6c0043b5dc3551d4950f814a82a4c7484004d722`: local `1377 passed, 11 skipped`; push and Draft PR CI plus Windows package runs all succeeded (`31873363929`, `31873363921`, `31873365733`, `31873365732`). The Windows evidence remains unsigned CI smoke only.
 - Previous fixed-remediation slice SHA `20cac6c6b9c8384ba298e07b534d2186d9ec65ca`: local `1383 passed, 11 skipped`; its push CI, push Windows, Draft PR CI and Draft PR Windows all succeeded. The Windows evidence remains unsigned CI smoke only.
 - Previous Windows Job Object process-boundary slice SHA `fc025571b72c2cd3a8d5a8bcb5540d6e95df1242`: local `1389 passed, 11 skipped`; its push CI, push Windows, Draft PR CI and Draft PR Windows all succeeded. The Job Object process-tree layer is locally tested; the Windows evidence remains unsigned CI smoke only, and network isolation is still not attested.
-- Latest high-sensitivity network-boundary slice SHA `f7ca1c5b8c1c1e896950d9998cbc5576dea72c5c`: local `1390 passed, 11 skipped`; push CI, push Windows, Draft PR CI and Draft PR Windows all succeeded (`31876302302`, `31876302334`, `31876305303`, `31876305388`). High-sensitivity mode now disables the share-verification UI and rejects the call path; the Windows evidence remains unsigned CI smoke only.
+- Previous high-sensitivity network-boundary slice SHA `f7ca1c5b8c1c1e896950d9998cbc5576dea72c5c`: local `1390 passed, 11 skipped`; its push CI, push Windows, Draft PR CI and Draft PR Windows all succeeded. High-sensitivity mode disables the share-verification UI and rejects the call path.
+- Latest MSIX acceptance slice SHA `0ac5ff748f16578a86a3662b8fddd8f6fb94def3`: local `1391 passed, 11 skipped`; push CI, push Windows, Draft PR CI and Draft PR Windows all succeeded (`31876853579`, `31876853553`, `31876855289`, `31876855292`). Windows evidence records install, launch, same-identity upgrade `0.1.0.0 -> 0.1.0.1`, termination, uninstall, and `package_residue=false`; signature mode remains `unsigned_ci_smoke`.
 
 **AI Agent 守护者（AG）** 是一款面向 Windows 个人用户和小团队的本地优先 AI Agent 数据安全审计工具。
 
@@ -42,7 +43,7 @@
 - 用户逐项选择的 Chrome/Edge/Firefox 浏览器数据库元数据只读审计；只保留固定计数，不保留 URL、Cookie、密码或页面正文。
 - 用户一次性点击触发的剪贴板内存检测；只保留脱敏 findings，不写回、不保存原文。
 - 独立的公开 HTTP(S) 分享可达性验证；只读取受限公开响应，不发送扫描文件、凭据或聊天内容。
-- 高敏感模式：显式启用后禁止 API、联网分享验证和原文持久化；报告导出必须二次确认，切换模式会撤销当前范围同意。
+- 高敏感模式：显式启用后禁止 API、联网分享验证和原文持久化；报告导出必须二次确认，切换模式会撤销当前范围同意。独立合成验收还检查 JSON/HTML/导出报告脱敏、剪贴板不留原文、浏览器临时副本和临时工作区清理。
 - 受控自动修复内核的固定单文件替换动作：dry-run、显式确认、目标哈希重查、同目录备份、原子替换和条件回滚；不执行任意命令。
 - 桌面端对 `OPENAI_BASE_URL_OVERRIDE` 提供受限固定地址替换和同会话回滚；修改后旧报告失效，必须重新审计。
 

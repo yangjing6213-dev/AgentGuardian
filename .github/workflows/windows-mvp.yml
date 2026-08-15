@@ -26,6 +26,14 @@ jobs:
         shell: pwsh
         run: python -m pytest -q -p no:cacheprovider
 
+      - name: Run synthetic high-sensitivity data acceptance gate
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "$pwd\.analysis" -Force | Out-Null
+          python scripts/run_sensitive_data_acceptance.py `
+            --evidence-path "$pwd\.analysis\sensitive-data-acceptance.json"
+          Get-Content -LiteralPath "$pwd\.analysis\sensitive-data-acceptance.json"
+
       - name: Install hash-locked build dependencies
         shell: pwsh
         run: python -m pip install --require-hashes -r requirements-build.lock
