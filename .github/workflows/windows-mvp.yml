@@ -43,7 +43,8 @@ jobs:
         shell: pwsh
         run: |
           $sha = (git rev-parse HEAD).Trim()
-          $builtAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+          $commitEpoch = [int64](git show -s --format=%ct HEAD)
+          $builtAt = [DateTimeOffset]::FromUnixTimeSeconds($commitEpoch).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
           python scripts/build_windows_portable.py `
             --output-root "$pwd\.analysis\ci-portable" `
             --source-commit $sha `
