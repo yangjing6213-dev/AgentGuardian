@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "status": "pending",
+  "source_commit": "",
+  "sbom_sha256": "",
+  "reviewed_at": null,
+  "reviewer": "",
+  "components": [],
+  "required_actions": [
+    "Verify every CycloneDX component against its authoritative license source.",
+    "Confirm Microsoft Visual C++ and Universal CRT redistribution rights for the actual build environment.",
+    "Confirm Qt/PySide redistribution terms and required license text for the actual package.",
+    "Replace this worksheet with an approved record bound to the exact source commit and SBOM SHA-256."
+  ]
+}

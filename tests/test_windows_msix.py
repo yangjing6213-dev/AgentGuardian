@@ -252,6 +252,7 @@ def test_signed_msix_gate_is_fail_closed_and_checks_trusted_publisher() -> None:
         "scripts/verify_windows_release_candidate.py",
         "--require-trusted-signature",
         "--require-fresh-user-state",
+        "--license-review",
     ):
         assert required in workflow
     assert "New-SelfSignedCertificate" not in workflow

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -14,14 +15,17 @@ from scripts.verify_windows_release_candidate import (
 COMMIT = "a" * 40
 
 
-def _write_candidate(tmp_path: Path, *, trusted: bool = True, fresh: bool = True) -> tuple[Path, Path]:
+def _write_candidate(
+    tmp_path: Path, *, trusted: bool = True, fresh: bool = True
+) -> tuple[Path, Path, Path]:
     bundle = tmp_path / "bundle"
     bundle.mkdir()
     (bundle / "BUILD-METADATA.json").write_text(
         json.dumps({"artifact_status": "trusted_release", "source_commit": COMMIT}),
         encoding="utf-8",
     )
-    (bundle / "AgentGuardian.cdx.json").write_text(
+    sbom_path = bundle / "AgentGuardian.cdx.json"
+    sbom_path.write_text(
         json.dumps(
             {
                 "bomFormat": "CycloneDX",
@@ -34,6 +38,29 @@ def _write_candidate(tmp_path: Path, *, trusted: bool = True, fresh: bool = True
     )
     (bundle / "THIRD_PARTY_NOTICES.md").write_text(
         "PySide6 6.11.1\nLGPL-3.0-only\n",
+        encoding="utf-8",
+    )
+    license_review = tmp_path / "license-review.json"
+    license_review.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "approved",
+                "source_commit": COMMIT,
+                "sbom_sha256": hashlib.sha256(sbom_path.read_bytes()).hexdigest(),
+                "reviewed_at": "2026-08-15T00:00:00Z",
+                "reviewer": "synthetic-independent-reviewer",
+                "components": [
+                    {
+                        "name": "PySide6",
+                        "version": "6.11.1",
+                        "license_expression": "LGPL-3.0-only",
+                        "redistribution": "approved",
+                        "evidence_url": "https://doc.qt.io/qt-6/qtlicenses.html",
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
     )
     evidence = tmp_path / "smoke.json"
@@ -57,11 +84,11 @@ def _write_candidate(tmp_path: Path, *, trusted: bool = True, fresh: bool = True
         ),
         encoding="utf-8",
     )
-    return bundle, evidence
+    return bundle, evidence, license_review
 
 
 def test_release_gate_accepts_only_trusted_fresh_evidence(tmp_path: Path) -> None:
-    bundle, evidence = _write_candidate(tmp_path)
+    bundle, evidence, license_review = _write_candidate(tmp_path)
 
     result = validate_release_candidate(
         bundle,
@@ -69,6 +96,7 @@ def test_release_gate_accepts_only_trusted_fresh_evidence(tmp_path: Path) -> Non
         expected_source_commit=COMMIT,
         require_trusted_signature=True,
         require_fresh_user_state=True,
+        license_review_path=license_review,
     )
 
     assert result == {
@@ -90,7 +118,7 @@ def test_release_gate_rejects_unsigned_or_nonfresh_evidence(
     fresh: bool,
     expected: str,
 ) -> None:
-    bundle, evidence = _write_candidate(tmp_path, trusted=trusted, fresh=fresh)
+    bundle, evidence, license_review = _write_candidate(tmp_path, trusted=trusted, fresh=fresh)
 
     with pytest.raises(ReleaseEvidenceError, match=expected):
         validate_release_candidate(
@@ -99,11 +127,12 @@ def test_release_gate_rejects_unsigned_or_nonfresh_evidence(
             expected_source_commit=COMMIT,
             require_trusted_signature=True,
             require_fresh_user_state=True,
+            license_review_path=license_review,
         )
 
 
 def test_release_gate_rejects_unknown_license_and_source_mismatch(tmp_path: Path) -> None:
-    bundle, evidence = _write_candidate(tmp_path)
+    bundle, evidence, license_review = _write_candidate(tmp_path)
     (bundle / "AgentGuardian.cdx.json").write_text(
         json.dumps(
             {
@@ -123,6 +152,7 @@ def test_release_gate_rejects_unknown_license_and_source_mismatch(tmp_path: Path
             expected_source_commit=COMMIT,
             require_trusted_signature=True,
             require_fresh_user_state=True,
+            license_review_path=license_review,
         )
 
     (bundle / "AgentGuardian.cdx.json").write_text(
@@ -143,4 +173,22 @@ def test_release_gate_rejects_unknown_license_and_source_mismatch(tmp_path: Path
             expected_source_commit="b" * 40,
             require_trusted_signature=True,
             require_fresh_user_state=True,
+            license_review_path=license_review,
+        )
+
+
+def test_release_gate_rejects_license_review_source_or_sbom_drift(tmp_path: Path) -> None:
+    bundle, evidence, license_review = _write_candidate(tmp_path)
+    review = json.loads(license_review.read_text(encoding="utf-8"))
+    review["sbom_sha256"] = "0" * 64
+    license_review.write_text(json.dumps(review), encoding="utf-8")
+
+    with pytest.raises(ReleaseEvidenceError, match="RELEASE_LICENSE_REVIEW_REQUIRED"):
+        validate_release_candidate(
+            bundle,
+            evidence,
+            expected_source_commit=COMMIT,
+            require_trusted_signature=True,
+            require_fresh_user_state=True,
+            license_review_path=license_review,
         )

@@ -21,8 +21,9 @@ organization.
    show install, upgrade, launch, bounded liveness, termination, uninstall,
    `package_residue=false`, and `app_data_residue=false`.
 5. Run `scripts/verify_windows_release_candidate.py` against the exact bundle,
-   smoke evidence, and source SHA. This final gate rejects unsigned evidence,
-   source drift, unknown licenses, incomplete uninstall evidence, and an
+   smoke evidence, source SHA, and an approved license-review record. This
+   final gate rejects unsigned evidence, source drift, unknown licenses,
+   missing/stale license review, incomplete uninstall evidence, and an
    unsigned build metadata status.
 
 ## Final gate example
@@ -33,7 +34,8 @@ python scripts/verify_windows_release_candidate.py `
   --smoke-evidence .analysis\signed-msix-smoke.json `
   --expected-source-commit <40-character-lowercase-commit> `
   --require-trusted-signature `
-  --require-fresh-user-state
+  --require-fresh-user-state `
+  --license-review docs/security/windows-license-review.json
 ```
 
 Do not commit the package, PFX, password, private key, raw user data, or

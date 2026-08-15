@@ -121,7 +121,8 @@ jobs:
             --smoke-evidence "$pwd\.analysis\signed-msix-smoke.json" `
             --expected-source-commit $sha `
             --require-trusted-signature `
-            --require-fresh-user-state
+            --require-fresh-user-state `
+            --license-review "$pwd\docs\security\windows-license-review.json"
 
       - name: Print signed package digest
         shell: pwsh
