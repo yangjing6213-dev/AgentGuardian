@@ -58,8 +58,10 @@ explicit exact-match X.500 publisher-subject allowlist before launch. The
 signature check and subject extraction are local and cache-only; no certificate
 data is fetched. Native policy requires both an exact X.500 subject allowlist and
 an exact signer-certificate DER SHA-256 pin. The validated executable is held
-open without write/delete sharing through process creation. Empty or non-matching
-allowlists are denied. Unexpected
+open without write/delete sharing through process creation, and WinTrust receives
+that same native file handle. A real Windows test confirms that replacing the
+executable's parent directory fails while the handle is held and succeeds after
+release. Empty or non-matching allowlists are denied. Unexpected
 ordinary exceptions from either native launcher are converted to the fixed
 `sandbox_launch_failed` result instead of escaping into the desktop boundary.
 
@@ -101,11 +103,13 @@ real organization adapter/certificate. Required repository variables, signing
 material, an approved `windows-license-review.json`, real sanitized-sample human
 signoff, and independent clean-machine install/upgrade/run/uninstall evidence
 remain pending. Current normal GitHub CI for code-bearing SHA
-`75fd3d9f0f8c8921fecac13f6eec534c5094140f` was not revalidated when this
+`db56b30` was not revalidated when this
 documentation was prepared.
 
-Residual Minor/defense-in-depth items are runtime WinTrust handle binding and
-multi-signature signer-index binding, evidence-output parent-path TOCTOU,
+Residual Minor/defense-in-depth items are the non-atomic boundary between reparse
+validation and final executable `CreateFileW`, for which no same-user exploit was
+reproduced under the held-file assumptions; multi-signature signer-index binding;
+evidence-output parent-path TOCTOU,
 streaming/size bounds in acceptance and sandbox hashing, and synchronous AppX
 operations bounded only by the outer workflow timeout. Remote
 device enrollment, remote policy distribution, and a remote administrator

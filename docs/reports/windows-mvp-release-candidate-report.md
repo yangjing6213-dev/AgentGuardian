@@ -9,15 +9,15 @@ Windows MVP remains incomplete. Production safety is not established.
 ## Candidate Boundary
 
 - Local gate implementation and unified local evidence baseline: historical `90e6edad53bee48adca58d508d193fc855c1db7d`.
-- The current clean code-bearing hardening HEAD is `75fd3d9f0f8c8921fecac13f6eec534c5094140f`. It implements packaged MCP adapter build staging, bounded direct artifact acquisition, staged-adapter locking through evidence and ZIP generation, trusted MSIX adapter acceptance, final release-evidence binding, and fail-closed signing-material cleanup. This report is a documentation-only follow-up to that SHA.
+- The current clean code-bearing hardening HEAD is `db56b30`. It additionally binds runtime WinTrust verification to the same native executable handle held without write/delete sharing through process creation and adds a real Windows parent-directory replacement test. It retains packaged MCP adapter staging, bounded direct artifact acquisition, staged-adapter locking through evidence and ZIP generation, trusted MSIX adapter acceptance, final release-evidence binding, and fail-closed signing-material cleanup. This report is a documentation-only follow-up to that SHA.
 - The first independent review of the previous evidence-sync HEAD found 7 Important and 2 Minor findings. A second independent review of `305eeb4e1a143a245323a9b54d8fe27314a4e16c` found 2 further Important findings; both were remediated in `90e6eda`. A focused third independent re-review found no Critical or Important findings and one Minor; it did not execute tests independently.
 - OpenAI Provider remains local detection and manual guidance only; the default product path makes no provider API call and performs no endpoint verification.
-- The remote-tracking reference was `aabd6e828ea208d4e80951cb02ea5ead12750797` when this report was prepared. Its exact-SHA push and Draft PR CI plus both Windows package checks succeeded, but it predates the current candidate baseline.
+- The remote-tracking reference was `0f0acf1927ca130e729c439b22abe5f2213471e9` when this report was prepared. Its exact-SHA push and Draft PR CI plus both Windows package checks succeeded, but it predates the current candidate baseline.
 
 ## Current Follow-up Evidence
 
 Fresh local verification on clean code-bearing SHA
-`75fd3d9f0f8c8921fecac13f6eec534c5094140f` recorded `1529 passed, 11 skipped`
+`db56b30` recorded `1533 passed, 11 skipped`
 for the full suite and `47 passed, 1 skipped` for
 `scripts/run_windows_mvp_security_gate.py`. The command
 `python -m compileall src scripts tests` exited 0 and `git diff --check` was
@@ -50,8 +50,12 @@ fail-closed, and sets a real 30-minute outer timeout.
 
 Task 1, Task 2, and the trusted-artifact acquisition hardening passed independent
 specification or quality/security review with no remaining Critical or Important
-issues. Current normal GitHub CI for
-`75fd3d9f0f8c8921fecac13f6eec534c5094140f` had not been revalidated when this
+issues. The focused runtime handle-binding review initially raised one Important
+path-identity concern, then withdrew it after a real Windows test demonstrated
+that parent-directory replacement fails while the final executable handle is
+held and succeeds after release. Its final result was PASS with no Critical or
+Important findings. Current normal GitHub CI for
+`db56b30` had not been revalidated when this
 documentation was prepared. Historical successful CI remains evidence only for
 its exact historical SHA.
 
@@ -122,7 +126,7 @@ This evidence does not cover the 10,000-file functional maximum, whole-process r
 - License and redistribution review: `PENDING`.
 - Required repository variables, organization signing material, approved `windows-license-review.json`, real sanitized-sample human signoff, and independent clean-machine install/upgrade/run/uninstall evidence: `PENDING`.
 - Remote enterprise console, device enrollment, and distribution: `UNIMPLEMENTED`.
-- Residual Minor/defense-in-depth items: runtime WinTrust handle binding and multi-signature signer-index binding; evidence-output parent-path TOCTOU; streaming/size bounds in acceptance and sandbox hashing; and synchronous AppX operations bounded only by the outer workflow timeout.
+- Residual Minor/defense-in-depth items: reparse validation and the final executable `CreateFileW` are not atomic, although no same-user exploit was reproduced under the held-file assumptions; multi-signature signer-index binding; evidence-output parent-path TOCTOU; streaming/size bounds in acceptance and sandbox hashing; and synchronous AppX operations bounded only by the outer workflow timeout.
 
 The trusted-signature workflow remains fail-closed and has not been dispatched
 or passed with a real organization adapter/certificate. No certificate material
