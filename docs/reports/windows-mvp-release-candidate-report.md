@@ -30,8 +30,8 @@ AppContainer integration proves loopback connection denial and transient
 profile cleanup; the native MCP path rejects unsigned, untrusted, or
 non-allowlisted adapters.
 
-The latest repository HEAD is the same `e8013dc37d030a90c95c8f8f990a430937de91d0`.
-The trusted-release workflow gate, license-review evidence gate, and
+The code-bearing validation SHA is `e8013dc37d030a90c95c8f8f990a430937de91d0`;
+the current documentation follow-up HEAD is `18efc94`. The trusted-release workflow gate, license-review evidence gate, and
 release-evidence path hardening remain in its history. The current CI results
 are code and CI evidence only; they do not establish trusted signing,
 clean-machine acceptance, or production safety.
