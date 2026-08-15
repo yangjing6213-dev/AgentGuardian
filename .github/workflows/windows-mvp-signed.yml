@@ -167,7 +167,6 @@ jobs:
             -ExpectedMcpAdapterCertificateSha256 "$env:AGENTGUARDIAN_MCP_ADAPTER_CERTIFICATE_SHA256" `
             -McpAdapterEvidencePath $mcpAdapterEvidence `
             -SmokeSeconds 4
-          Get-Content -LiteralPath "$pwd\.analysis\signed-msix-smoke.json"
 
       - name: Enforce final trusted release evidence gate
         shell: pwsh

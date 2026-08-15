@@ -436,6 +436,18 @@ def test_task2_mcp_signed_workflow_downloads_and_binds_pinned_adapter() -> None:
     assert "-AllowUnsigned" not in workflow
 
 
+def test_task2_signed_workflow_does_not_dump_full_signature_evidence() -> None:
+    workflow = (
+        PROJECT_ROOT / ".github" / "workflows" / "windows-mvp-signed.yml"
+    ).read_text(encoding="utf-8")
+    verifier = (
+        PROJECT_ROOT / "scripts" / "verify_windows_msix.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert 'Get-Content -LiteralPath "$pwd\\.analysis\\signed-msix-smoke.json"' not in workflow
+    assert "$evidence.result | ConvertTo-Json -Compress" in verifier
+
+
 def test_task2_mcp_unsigned_workflow_is_byte_for_byte_unchanged() -> None:
     workflow = PROJECT_ROOT / ".github" / "workflows" / "windows-mvp.yml"
 
