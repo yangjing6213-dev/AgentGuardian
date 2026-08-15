@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from scripts.build_windows_msix import (
 
 
 PROJECT_ROOT = Path(__file__).parents[1]
+UNSIGNED_WORKFLOW_SHA256 = "4c48dec977fa7bc6eafbc6f1e06b295943dac097764a5bbbcc4e93cf6d0fc31d"
 
 
 def test_manifest_declares_full_trust_executable_and_required_logos() -> None:
@@ -273,3 +275,108 @@ def test_msix_verifier_has_a_strict_fresh_user_state_mode() -> None:
         assert required in verifier
     assert "RequireFreshUserState cannot be combined with AllowUnsigned" in verifier
     assert "RequireFreshUserState requires RequireTrustedSignature" in verifier
+
+
+def test_task2_mcp_msix_verifier_requires_source_commit_and_strict_acceptance_mode() -> None:
+    verifier = (
+        PROJECT_ROOT / "scripts" / "verify_windows_msix.ps1"
+    ).read_text(encoding="utf-8")
+
+    for required in (
+        "$ExpectedSourceCommit",
+        "source_commit = $ExpectedSourceCommit",
+        "^[0-9a-f]{40}$",
+        "$RequireMcpAdapterAcceptance",
+        "$McpAdapterRelativePath",
+        '"adapters/AgentGuardianMcpAdapter.exe"',
+        "$ExpectedMcpAdapterSha256",
+        "$ExpectedMcpAdapterPublisher",
+        "$ExpectedMcpAdapterCertificateSha256",
+        "$McpAdapterEvidencePath",
+        "RequireMcpAdapterAcceptance requires RequireTrustedSignature",
+        "RequireMcpAdapterAcceptance cannot be combined with AllowUnsigned",
+        "McpAdapterEvidencePath must be absolute",
+        "McpAdapterEvidencePath must be new",
+        "^[0-9a-f]{64}$",
+    ):
+        assert required in verifier
+
+
+def test_task2_mcp_msix_verifier_runs_fixed_installed_adapter_before_cleanup() -> None:
+    verifier = (
+        PROJECT_ROOT / "scripts" / "verify_windows_msix.ps1"
+    ).read_text(encoding="utf-8")
+
+    for required in (
+        "$Package.InstallLocation",
+        "Get-InstalledMcpAdapterPath -Package $installedPackages[0]",
+        "$installRootItem = Get-Item -LiteralPath $installLocation -Force",
+        "installed package InstallLocation is a reparse point",
+        "expected exactly one installed package for MCP adapter acceptance",
+        "Join-Path $installLocation $McpAdapterRelativePath",
+        "[IO.Path]::GetFullPath",
+        "[StringComparison]::OrdinalIgnoreCase",
+        "[IO.FileInfo]",
+        "[IO.FileAttributes]::ReparsePoint",
+        "run_windows_mcp_adapter_acceptance.py",
+        "--adapter-path",
+        "--evidence-path",
+        "--expected-source-commit",
+        "--expected-adapter-sha256",
+        "--expected-publisher-subject",
+        "--expected-certificate-sha256",
+        "MCP adapter acceptance failed",
+        "| Out-Null",
+    ):
+        assert required in verifier
+
+    acceptance = verifier.index("run_windows_mcp_adapter_acceptance.py")
+    assert verifier.index("$installedPackages = $upgradedPackages") < acceptance
+    assert acceptance < verifier.index("$appUserModelId")
+    assert acceptance < verifier.index("catch {") < verifier.index("finally {")
+    assert "request_bytes" not in verifier
+    assert "response_bytes" not in verifier
+
+
+def test_task2_mcp_signed_workflow_downloads_and_binds_pinned_adapter() -> None:
+    workflow = (
+        PROJECT_ROOT / ".github" / "workflows" / "windows-mvp-signed.yml"
+    ).read_text(encoding="utf-8")
+
+    for required in (
+        "AGENTGUARDIAN_MCP_ADAPTER_URL: ${{ vars.AGENTGUARDIAN_MCP_ADAPTER_URL }}",
+        "AGENTGUARDIAN_MCP_ADAPTER_SHA256: ${{ vars.AGENTGUARDIAN_MCP_ADAPTER_SHA256 }}",
+        "AGENTGUARDIAN_MCP_ADAPTER_PUBLISHER: ${{ vars.AGENTGUARDIAN_MCP_ADAPTER_PUBLISHER }}",
+        "AGENTGUARDIAN_MCP_ADAPTER_CERTIFICATE_SHA256: ${{ vars.AGENTGUARDIAN_MCP_ADAPTER_CERTIFICATE_SHA256 }}",
+        'Join-Path $env:RUNNER_TEMP "AgentGuardianMcpAdapter.exe"',
+        "[UriKind]::Absolute",
+        'Scheme -ne "https"',
+        "Invoke-WebRequest",
+        "Get-FileHash -Algorithm SHA256",
+        "--mcp-adapter-path",
+        "--mcp-adapter-sha256",
+        "--mcp-adapter-publisher",
+        "--mcp-adapter-certificate-sha256",
+        "-ExpectedSourceCommit $sha",
+        "-RequireMcpAdapterAcceptance",
+        "-McpAdapterRelativePath \"adapters/AgentGuardianMcpAdapter.exe\"",
+        "-ExpectedMcpAdapterSha256",
+        "-ExpectedMcpAdapterPublisher",
+        "-ExpectedMcpAdapterCertificateSha256",
+        "-McpAdapterEvidencePath",
+        "--mcp-adapter-evidence",
+    ):
+        assert required in workflow
+
+    assert workflow.index("Invoke-WebRequest") < workflow.index("Get-FileHash -Algorithm SHA256")
+    assert workflow.index("Get-FileHash -Algorithm SHA256") < workflow.index(
+        "python scripts/build_windows_portable.py"
+    )
+    assert "Get-Content -LiteralPath $mcpAdapterEvidence" not in workflow
+    assert "-AllowUnsigned" not in workflow
+
+
+def test_task2_mcp_unsigned_workflow_is_byte_for_byte_unchanged() -> None:
+    workflow = PROJECT_ROOT / ".github" / "workflows" / "windows-mvp.yml"
+
+    assert hashlib.sha256(workflow.read_bytes()).hexdigest() == UNSIGNED_WORKFLOW_SHA256

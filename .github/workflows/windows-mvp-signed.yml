@@ -13,6 +13,10 @@ jobs:
       SIGNING_PFX_B64: ${{ secrets.AGENTGUARDIAN_SIGNING_PFX_B64 }}
       SIGNING_PFX_PASSWORD: ${{ secrets.AGENTGUARDIAN_SIGNING_PFX_PASSWORD }}
       SIGNING_PUBLISHER: ${{ secrets.AGENTGUARDIAN_SIGNING_PUBLISHER }}
+      AGENTGUARDIAN_MCP_ADAPTER_URL: ${{ vars.AGENTGUARDIAN_MCP_ADAPTER_URL }}
+      AGENTGUARDIAN_MCP_ADAPTER_SHA256: ${{ vars.AGENTGUARDIAN_MCP_ADAPTER_SHA256 }}
+      AGENTGUARDIAN_MCP_ADAPTER_PUBLISHER: ${{ vars.AGENTGUARDIAN_MCP_ADAPTER_PUBLISHER }}
+      AGENTGUARDIAN_MCP_ADAPTER_CERTIFICATE_SHA256: ${{ vars.AGENTGUARDIAN_MCP_ADAPTER_CERTIFICATE_SHA256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
@@ -25,9 +29,49 @@ jobs:
         run: |
           if ([string]::IsNullOrWhiteSpace($env:SIGNING_PFX_B64) -or
               [string]::IsNullOrWhiteSpace($env:SIGNING_PFX_PASSWORD) -or
-              [string]::IsNullOrWhiteSpace($env:SIGNING_PUBLISHER)) {
-            throw "Trusted signing secrets are required; unsigned fallback is forbidden"
+              [string]::IsNullOrWhiteSpace($env:SIGNING_PUBLISHER) -or
+              [string]::IsNullOrWhiteSpace($env:AGENTGUARDIAN_MCP_ADAPTER_URL) -or
+              [string]::IsNullOrWhiteSpace($env:AGENTGUARDIAN_MCP_ADAPTER_SHA256) -or
+              [string]::IsNullOrWhiteSpace($env:AGENTGUARDIAN_MCP_ADAPTER_PUBLISHER) -or
+              [string]::IsNullOrWhiteSpace($env:AGENTGUARDIAN_MCP_ADAPTER_CERTIFICATE_SHA256)) {
+            throw "Trusted signing secrets and MCP adapter variables are required; unsigned fallback is forbidden"
           }
+          $adapterUri = $null
+          if (-not [Uri]::TryCreate(
+              $env:AGENTGUARDIAN_MCP_ADAPTER_URL,
+              [UriKind]::Absolute,
+              [ref]$adapterUri
+            ) -or $adapterUri.Scheme -ne "https") {
+            throw "AGENTGUARDIAN_MCP_ADAPTER_URL must be an absolute HTTPS URL"
+          }
+          foreach ($digest in @(
+              $env:AGENTGUARDIAN_MCP_ADAPTER_SHA256,
+              $env:AGENTGUARDIAN_MCP_ADAPTER_CERTIFICATE_SHA256
+            )) {
+            if ($digest -cnotmatch '^[0-9a-f]{64}$') {
+              throw "MCP adapter SHA-256 variables must be exact lowercase hex"
+            }
+          }
+          if (
+              $env:AGENTGUARDIAN_MCP_ADAPTER_PUBLISHER -cne $env:AGENTGUARDIAN_MCP_ADAPTER_PUBLISHER.Trim() -or
+              -not $env:AGENTGUARDIAN_MCP_ADAPTER_PUBLISHER.Contains("=")
+            ) {
+            throw "AGENTGUARDIAN_MCP_ADAPTER_PUBLISHER must be a trimmed X.500 subject"
+          }
+
+      - name: Download and verify trusted MCP adapter
+        shell: pwsh
+        run: |
+          $adapterPath = Join-Path $env:RUNNER_TEMP "AgentGuardianMcpAdapter.exe"
+          if (Test-Path -LiteralPath $adapterPath) {
+            throw "fixed MCP adapter download path must be new"
+          }
+          Invoke-WebRequest -Uri $env:AGENTGUARDIAN_MCP_ADAPTER_URL -OutFile $adapterPath
+          $actualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $adapterPath).Hash.ToLowerInvariant()
+          if ($actualSha256 -cne $env:AGENTGUARDIAN_MCP_ADAPTER_SHA256) {
+            throw "downloaded MCP adapter SHA-256 does not match"
+          }
+          "MCP_ADAPTER_PATH=$adapterPath" >> $env:GITHUB_ENV
 
       - name: Install hash-locked build dependencies
         shell: pwsh
@@ -52,7 +96,11 @@ jobs:
             --output-root "$pwd\.analysis\signed-portable" `
             --source-commit $sha `
             --built-at $builtAt `
-            --artifact-status trusted_release
+            --artifact-status trusted_release `
+            --mcp-adapter-path "$env:MCP_ADAPTER_PATH" `
+            --mcp-adapter-sha256 "$env:AGENTGUARDIAN_MCP_ADAPTER_SHA256" `
+            --mcp-adapter-publisher "$env:AGENTGUARDIAN_MCP_ADAPTER_PUBLISHER" `
+            --mcp-adapter-certificate-sha256 "$env:AGENTGUARDIAN_MCP_ADAPTER_CERTIFICATE_SHA256"
           python scripts/build_windows_msix.py `
             --bundle-root "$pwd\.analysis\signed-portable\dist\AgentGuardian" `
             --stage-root "$pwd\.analysis\signed-msix-stage" `
@@ -101,14 +149,23 @@ jobs:
       - name: Install launch and uninstall trusted signed MSIX on fresh runner
         shell: pwsh
         run: |
+          $sha = (git rev-parse HEAD).Trim()
+          $mcpAdapterEvidence = "$pwd\.analysis\mcp-adapter-acceptance.json"
           .\scripts\verify_windows_msix.ps1 `
             -PackagePath "$pwd\.analysis\AgentGuardian-signed.msix" `
             -PackageName "yangjing6213dev.AgentGuardian" `
+            -ExpectedSourceCommit $sha `
             -UpgradePackagePath "$pwd\.analysis\AgentGuardian-signed-upgrade.msix" `
             -EvidencePath "$pwd\.analysis\signed-msix-smoke.json" `
             -ExpectedPublisher "$env:SIGNING_PUBLISHER" `
             -RequireTrustedSignature `
             -RequireFreshUserState `
+            -RequireMcpAdapterAcceptance `
+            -McpAdapterRelativePath "adapters/AgentGuardianMcpAdapter.exe" `
+            -ExpectedMcpAdapterSha256 "$env:AGENTGUARDIAN_MCP_ADAPTER_SHA256" `
+            -ExpectedMcpAdapterPublisher "$env:AGENTGUARDIAN_MCP_ADAPTER_PUBLISHER" `
+            -ExpectedMcpAdapterCertificateSha256 "$env:AGENTGUARDIAN_MCP_ADAPTER_CERTIFICATE_SHA256" `
+            -McpAdapterEvidencePath $mcpAdapterEvidence `
             -SmokeSeconds 4
           Get-Content -LiteralPath "$pwd\.analysis\signed-msix-smoke.json"
 
@@ -119,6 +176,7 @@ jobs:
           python scripts/verify_windows_release_candidate.py `
             --bundle-root "$pwd\.analysis\signed-portable\dist\AgentGuardian" `
             --smoke-evidence "$pwd\.analysis\signed-msix-smoke.json" `
+            --mcp-adapter-evidence "$pwd\.analysis\mcp-adapter-acceptance.json" `
             --expected-source-commit $sha `
             --require-trusted-signature `
             --require-fresh-user-state `
