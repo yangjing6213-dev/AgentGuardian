@@ -41,6 +41,16 @@ verification mode. The latter requires trusted signing, an empty
 after uninstall; it has not yet been executed on an independent clean Windows
 machine.
 
+The latest code-bearing HEAD is `bd4f5cc4a2957e222beacd7b7b24c8fbd98e7ddb`.
+Its local full regression is `1424 passed, 11 skipped`; source compilation and
+`git diff --check` also passed before commit. The enterprise service now has an
+explicit development-only `127.0.0.1` adapter with serialized SQLite access,
+fixed error responses, and no default startup. GitHub revalidation for this
+exact SHA completed successfully: push CI `31885132072`, push Windows
+`31885132325`, Draft PR CI `31885130678`, and Draft PR Windows `31885130667`.
+The four check-runs all report `success` and all bind this exact head SHA. PR
+#1 remains open and Draft; this does not change the release decision.
+
 ## Current Local Evidence
 
 | Gate | Current revalidation | Scope |
@@ -73,7 +83,7 @@ This evidence does not cover the 10,000-file functional maximum, whole-process r
 - Independent read-only review: `COMPLETED WITH 7 IMPORTANT AND 2 MINOR FINDINGS` on the prior evidence-sync HEAD; those findings were remediated locally.
 - Second independent re-review: `COMPLETED WITH 2 IMPORTANT AND 3 MINOR FINDINGS` on `305eeb4`; both Important findings were remediated in `90e6eda`.
 - Third independent re-review: `COMPLETED WITH NO CRITICAL/IMPORTANT FINDINGS AND 1 MINOR`; the reviewer did not execute tests independently, so runtime confirmation remains the separately recorded local-gate evidence.
-- Current exact-SHA GitHub CI: `VERIFIED` for implementation HEAD `a6a75c2`; push/PR CI and Windows workflow checks all succeeded.
+- Current exact-SHA GitHub CI: `VERIFIED` for implementation HEAD `bd4f5cc`; push/PR CI and Windows workflow checks all succeeded. This is CI evidence only and does not satisfy trusted signing or clean-machine gates.
 - GitHub-hosted Windows runner provenance: `VERIFIED AS CI EVIDENCE ONLY`; this does not replace an independent clean Windows machine.
 - Trusted code signing: `PENDING`.
 - Unsigned CI native install, upgrade, launch, termination and uninstall smoke: `VERIFIED`; trusted-package and independent acceptance remain pending.
