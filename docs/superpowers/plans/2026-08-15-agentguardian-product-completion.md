@@ -26,6 +26,8 @@
 
 最新复核（2026-08-15，MSIX 安装升级卸载）：提交 `0ac5ff748f16578a86a3662b8fddd8f6fb94def3` 的本地完整回归为 `1391 passed, 11 skipped`；push CI `31876853579`、push Windows `31876853553`、Draft PR CI `31876855289` 和 Draft PR Windows `31876855292` 均为 `success`。Windows job `94993768289` 的 smoke JSON 明确记录 `upgrade_attempted=true`、`upgraded=true`、版本 `0.1.0.0 -> 0.1.0.1`、`termination=true`、`uninstalled=true`、`package_residue=false`；签名模式仍为 `unsigned_ci_smoke`，不替代可信签名或独立干净机器证据。
 
+最新复核（2026-08-15，高敏感数据与 Windows 发布门禁）：提交 `f41caecac32d28ef8b7a9d7fcbdbfe127bc955fa` 的本地完整回归为 `1392 passed, 11 skipped`；push CI `31877362969`、push Windows `31877362973`、Draft PR CI `31877364632` 和 Draft PR Windows `31877364625` 均为 `success`。Windows full suite 为 `1402 passed, 1 skipped`；合成高敏感 gate 记录 `passed=true`、JSON/HTML/导出/剪贴板无原始标记、浏览器临时副本删除和工作区清理通过；MSIX 安装升级卸载继续通过。签名模式仍为 `unsigned_ci_smoke`，不替代可信签名、真实脱敏样本或独立干净机器证据。
+
 ### A2 原生安装器与安装/卸载验收
 
 - [x] 生成 MSIX manifest、资源、MakeAppx 命令和 SignTool 校验命令。
