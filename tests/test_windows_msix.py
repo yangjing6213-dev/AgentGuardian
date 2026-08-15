@@ -19,6 +19,20 @@ PROJECT_ROOT = Path(__file__).parents[1]
 UNSIGNED_WORKFLOW_SHA256 = "4c48dec977fa7bc6eafbc6f1e06b295943dac097764a5bbbcc4e93cf6d0fc31d"
 
 
+def _git_text_sha256(path: Path) -> str:
+    content = path.read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(content).hexdigest()
+
+
+def test_git_text_sha256_ignores_checkout_line_endings(tmp_path: Path) -> None:
+    lf_path = tmp_path / "lf.yml"
+    crlf_path = tmp_path / "crlf.yml"
+    lf_path.write_bytes(b"name: CI\nsteps:\n  - run: test\n")
+    crlf_path.write_bytes(b"name: CI\r\nsteps:\r\n  - run: test\r\n")
+
+    assert _git_text_sha256(lf_path) == _git_text_sha256(crlf_path)
+
+
 def test_manifest_declares_full_trust_executable_and_required_logos() -> None:
     manifest = msix_manifest_bytes(
         identity_name="yangjing6213dev.AgentGuardian",
@@ -467,8 +481,7 @@ def test_task2_source_commit_contract_is_conditional_for_unsigned_compatibility(
     assert "source_commit = $ExpectedSourceCommit" not in verifier
     assert "-ExpectedSourceCommit" not in unsigned_workflow
     assert (
-        hashlib.sha256(unsigned_workflow_path.read_bytes()).hexdigest()
-        == UNSIGNED_WORKFLOW_SHA256
+        _git_text_sha256(unsigned_workflow_path) == UNSIGNED_WORKFLOW_SHA256
     )
 
 
@@ -692,7 +705,7 @@ def test_task2_calibrated_signing_cleanup_is_verified_and_job_bounded() -> None:
     )
 
 
-def test_task2_mcp_unsigned_workflow_is_byte_for_byte_unchanged() -> None:
+def test_task2_mcp_unsigned_workflow_git_text_is_unchanged() -> None:
     workflow = PROJECT_ROOT / ".github" / "workflows" / "windows-mvp.yml"
 
-    assert hashlib.sha256(workflow.read_bytes()).hexdigest() == UNSIGNED_WORKFLOW_SHA256
+    assert _git_text_sha256(workflow) == UNSIGNED_WORKFLOW_SHA256
