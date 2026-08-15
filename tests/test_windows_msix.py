@@ -185,6 +185,8 @@ def test_windows_mvp_workflow_binds_tools_and_install_smoke() -> None:
         "SignTool.exe",
         "CertificateRequest",
         "X509EnhancedKeyUsageExtension",
+        "Invoke-BoundedProcess",
+        "WaitForExit",
         "Cert:\\CurrentUser\\Root",
         "verify_windows_msix.ps1",
         "Install launch and uninstall MSIX as standard user",
@@ -195,4 +197,4 @@ def test_windows_mvp_workflow_binds_tools_and_install_smoke() -> None:
     assert "New-SelfSignedCertificate" not in workflow
     assert "Export-PfxCertificate" not in workflow
     assert "timeout-minutes: 5" in workflow
-    assert "/p $pfxPassword" in workflow
+    assert '"/p", $pfxPassword' in workflow

@@ -77,6 +77,30 @@ jobs:
           $rsa = $null
           $cert = $null
           try {
+            function Invoke-BoundedProcess {
+              param(
+                [Parameter(Mandatory = $true)][string]$FilePath,
+                [Parameter(Mandatory = $true)][string[]]$Arguments,
+                [int]$TimeoutMilliseconds = 120000
+              )
+              $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+              $startInfo.FileName = $FilePath
+              $startInfo.UseShellExecute = $false
+              foreach ($argument in $Arguments) {
+                [void]$startInfo.ArgumentList.Add($argument)
+              }
+              $process = [System.Diagnostics.Process]::new()
+              $process.StartInfo = $startInfo
+              if (-not $process.Start()) { throw "Unable to start $FilePath" }
+              if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+                $process.Kill($true)
+                throw "$FilePath exceeded the bounded timeout"
+              }
+              if ($process.ExitCode -ne 0) {
+                throw "$FilePath exited with code $($process.ExitCode)"
+              }
+            }
+
             Write-Host "Creating ephemeral signing certificate with .NET CertificateRequest"
             $rsa = [System.Security.Cryptography.RSA]::Create(2048)
             $request = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
@@ -108,11 +132,14 @@ jobs:
             Import-Certificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
             Import-Certificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
             Write-Host "Signing MSIX with ephemeral PFX"
-            & $env:SIGNTOOL sign /fd SHA256 /f $pfxPath /p $pfxPassword "$pwd\.analysis\AgentGuardian-ci.msix"
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Invoke-BoundedProcess $env:SIGNTOOL @(
+              "sign", "/fd", "SHA256", "/f", $pfxPath, "/p", $pfxPassword,
+              "$pwd\.analysis\AgentGuardian-ci.msix"
+            )
             Write-Host "Verifying MSIX signature"
-            & $env:SIGNTOOL verify /pa /all "$pwd\.analysis\AgentGuardian-ci.msix"
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Invoke-BoundedProcess $env:SIGNTOOL @(
+              "verify", "/pa", "/all", "$pwd\.analysis\AgentGuardian-ci.msix"
+            )
           }
           finally {
             if ($null -ne $cert) {
