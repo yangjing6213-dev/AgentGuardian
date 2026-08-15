@@ -16,7 +16,7 @@
 
 完成条件：当前候选 SHA 的完整测试、品牌校验、源码编译、便携构建和 MSIX 契约均在 GitHub-hosted Windows Runner 通过。
 
-当前记录（2026-08-15）：基础 CI 报告 `1339 passed, 1 skipped`；Windows Runner 完成 MakeAppx staging、无签名 OID namespace 包安装/启动/卸载和 SHA-256 摘要。该烟测证据为 `signature_mode=unsigned_ci_smoke`，不是可信签名或公开发布证据。
+当前记录（2026-08-15）：当前 SHA `a91119e0fee9b60a52b174d6ec30e6f246760045` 的基础 CI 报告 `1344 passed, 1 skipped`；Windows Runner 完成 MakeAppx staging、无签名 OID namespace 包安装/启动/卸载和残留检查，烟测结果全部为 `true`/`false` 预期值。该烟测证据为 `signature_mode=unsigned_ci_smoke`，本次 CI 包 SHA-256 为 `B9F642126EE25F0E66D028705028679BAE25214D4E1D3D3F29899301A16344DD`，不是可信签名或公开发布证据。
 
 ### A2 原生安装器与安装/卸载验收
 
