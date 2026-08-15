@@ -7,6 +7,9 @@ from agentguardian.remediation import (
     ACTION_REPLACE_FIXED_FILE,
     RemediationStatus,
     apply_fixed_replacement,
+    apply_openai_base_url_replacement,
+    build_openai_base_url_replacement,
+    preview_openai_base_url_replacement,
     preview_fixed_replacement,
     rollback_fixed_replacement,
 )
@@ -167,3 +170,74 @@ def test_reparse_target_is_rejected_before_read(tmp_path: Path) -> None:
             expected_sha256=_sha256(source.read_bytes()),
             replacement=b"provider = 'manual'\napi_access = false\n",
         )
+
+
+def test_openai_base_url_replacement_is_fixed_and_preserves_safe_line_shape() -> None:
+    original = (
+        b"# keep this comment\n"
+        b"export OPENAI_BASE_URL='https://synthetic-provider.invalid/v1' # review\n"
+    )
+
+    replacement = build_openai_base_url_replacement(original)
+
+    assert replacement == (
+        b"# keep this comment\n"
+        b"export OPENAI_BASE_URL='https://api.openai.com/v1' # review\n"
+    )
+    assert b"synthetic-provider.invalid" not in replacement
+
+
+def test_openai_base_url_replacement_requires_the_allowlisted_finding() -> None:
+    with pytest.raises(ValueError, match="ACTION_NOT_ALLOWED"):
+        build_openai_base_url_replacement(
+            b"OPENAI_BASE_URL=https://example.invalid\n",
+            action_id="run_command",
+        )
+
+
+def test_openai_base_url_preview_and_apply_recheck_the_target(tmp_path: Path) -> None:
+    target = tmp_path / ".env"
+    original = b"OPENAI_BASE_URL=https://synthetic-provider.invalid/v1\n"
+    target.write_bytes(original)
+
+    preview = preview_openai_base_url_replacement(target)
+    assert preview.status is RemediationStatus.DRY_RUN
+    assert preview.target_sha256 == _sha256(original)
+    assert preview.replacement_sha256 == _sha256(
+        b"OPENAI_BASE_URL=https://api.openai.com/v1\n"
+    )
+    assert target.read_bytes() == original
+
+    target.write_bytes(b"OPENAI_BASE_URL=https://changed.invalid/v1\n")
+    stale = apply_openai_base_url_replacement(
+        target,
+        expected_sha256=preview.target_sha256,
+        confirmed=True,
+    )
+    assert stale.status is RemediationStatus.NOT_PERFORMED
+    assert "target_changed" in stale.limits
+    assert not target.with_name(stale.backup_name).exists()
+
+
+def test_openai_base_url_apply_and_rollback_are_fixed_and_bounded(tmp_path: Path) -> None:
+    target = tmp_path / ".env"
+    original = b"OPENAI_BASE_URL=https://synthetic-provider.invalid/v1\n"
+    target.write_bytes(original)
+    preview = preview_openai_base_url_replacement(target)
+
+    applied = apply_openai_base_url_replacement(
+        target,
+        expected_sha256=preview.target_sha256,
+        confirmed=True,
+    )
+
+    assert applied.status is RemediationStatus.APPLIED
+    assert target.read_bytes() == b"OPENAI_BASE_URL=https://api.openai.com/v1\n"
+    assert target.with_name(applied.backup_name).read_bytes() == original
+
+    rolled_back = rollback_fixed_replacement(
+        target,
+        expected_replacement_sha256=applied.resulting_sha256,
+    )
+    assert rolled_back.status is RemediationStatus.ROLLED_BACK
+    assert target.read_bytes() == original

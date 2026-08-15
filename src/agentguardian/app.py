@@ -89,6 +89,12 @@ from .report_comparison import (
     parse_report_summary,
 )
 from .reporting import render_html, render_json
+from .remediation import (
+    RemediationStatus,
+    apply_openai_base_url_replacement,
+    preview_openai_base_url_replacement,
+    rollback_fixed_replacement,
+)
 from .scoring import score
 from .sensitive_mode import SensitiveModePolicy
 from .state_store import StateStoreError, load_protected_state, save_protected_state
@@ -131,6 +137,7 @@ MAX_AUDIT_EVIDENCE = MAX_REPORT_EVIDENCE
 MAX_AUDIT_FILES = 10_000
 MAX_AUDIT_ENTRIES = 50_000
 MAX_AUDIT_BYTES = 512 * 1024 * 1024
+_FIXED_REMEDIATION_RULES = frozenset({"OPENAI_BASE_URL_OVERRIDE"})
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
 _CONTEXT_ERROR = "invalid disposition context"
 _SAVE_FAILURE_TITLE = "保存失败"
@@ -939,6 +946,7 @@ class AgentGuardianWindow(QMainWindow):
         self.report_html = ""
         self._comparison_state: _ComparisonState | None = None
         self._refresh_failure_notified = False
+        self._last_remediation: tuple[Path, str] | None = None
         self._expiry_timer = QTimer(self)
         self._expiry_timer.setSingleShot(True)
         self._expiry_timer.timeout.connect(self._handle_expiry_timeout)
@@ -1259,6 +1267,30 @@ class AgentGuardianWindow(QMainWindow):
             disposition_actions.addWidget(button)
         disposition_actions.addStretch()
         layout.addLayout(disposition_actions)
+        remediation_actions = QHBoxLayout()
+        remediation_actions.setSpacing(8)
+        self.remediation_button = QPushButton("执行固定修复")
+        self.remediation_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
+        )
+        self.remediation_button.setToolTip(
+            "仅对允许的 OpenAI 地址规则执行固定替换；先预览，再二次确认"
+        )
+        self.remediation_button.clicked.connect(self._apply_fixed_remediation)
+        self.rollback_button = QPushButton("回滚固定修复")
+        self.rollback_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogResetButton)
+        )
+        self.rollback_button.setToolTip("仅回滚本次会话中已应用且未被改动的固定替换")
+        self.rollback_button.clicked.connect(self._rollback_fixed_remediation)
+        self.remediation_button.setFixedHeight(32)
+        self.rollback_button.setFixedHeight(32)
+        self.remediation_button.setEnabled(False)
+        self.rollback_button.setEnabled(False)
+        remediation_actions.addWidget(self.remediation_button)
+        remediation_actions.addWidget(self.rollback_button)
+        remediation_actions.addStretch()
+        layout.addLayout(remediation_actions)
         layout.addWidget(QLabel("人工修复步骤"))
         self.guidance_browser = QTextBrowser()
         self.guidance_browser.setMinimumHeight(120)
@@ -1839,7 +1871,7 @@ class AgentGuardianWindow(QMainWindow):
         self.status_label.setText("审计失败。")
         self.guidance_browser.setPlainText("无法生成修复步骤。")
 
-    def _invalidate_report(self) -> None:
+    def _invalidate_report(self, *, preserve_remediation: bool = False) -> None:
         self._expiry_timer.stop()
         self._audit_outcome = None
         self.report_json = ""
@@ -1852,6 +1884,8 @@ class AgentGuardianWindow(QMainWindow):
         self.save_button.setEnabled(False)
         self.protected_state_button.setEnabled(False)
         self.coverage_status_label.setText("覆盖状态：尚无结果。")
+        if not preserve_remediation:
+            self._last_remediation = None
         self._update_disposition_commands()
         self._refresh_report()
         self._clear_comparison_if_present()
@@ -2003,6 +2037,14 @@ class AgentGuardianWindow(QMainWindow):
             return None
         return finding if finding.disposition_ref is not None else None
 
+    def _selected_remediation_finding(self) -> Finding | None:
+        if self._audit_outcome is None or not self.findings_table.selectionModel().hasSelection():
+            return None
+        finding = self._current_row_finding()
+        if finding is None or finding.rule_id not in _FIXED_REMEDIATION_RULES:
+            return None
+        return finding
+
     def _update_disposition_commands(self) -> None:
         finding = self._selected_finding()
         selectable = finding is not None and self._audit_outcome is not None
@@ -2015,6 +2057,116 @@ class AgentGuardianWindow(QMainWindow):
             )
             matching = record is not None and record.rule_id == finding.rule_id
         self.withdraw_button.setEnabled(matching)
+        if hasattr(self, "remediation_button"):
+            self.remediation_button.setEnabled(
+                self._selected_remediation_finding() is not None
+            )
+        if hasattr(self, "rollback_button"):
+            self.rollback_button.setEnabled(self._last_remediation is not None)
+
+    def _remediation_target_is_in_scope(
+        self,
+        target: Path,
+        finding: Finding,
+    ) -> bool:
+        if _is_unc_path(target) or _is_reparse(target):
+            return False
+        allowed_names = {evidence.source for evidence in finding.evidence}
+        if target.name not in allowed_names:
+            return False
+        try:
+            resolved_target = target.resolve(strict=False)
+            resolved_roots = tuple(root.resolve(strict=True) for root in self._report_roots)
+        except OSError:
+            return False
+        return any(
+            resolved_target.is_relative_to(root)
+            for root in resolved_roots
+        )
+
+    def _apply_fixed_remediation(self) -> None:
+        finding = self._selected_remediation_finding()
+        if finding is None:
+            return
+        selected, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "选择已审计的 OpenAI 配置文件",
+            "",
+            "Configuration (*.env *.toml *.txt);;All files (*)",
+        )
+        if not selected:
+            return
+        target = Path(selected)
+        if not self._remediation_target_is_in_scope(target, finding):
+            self.status_label.setText("固定修复未执行：目标不在本次审计范围内。")
+            return
+        try:
+            preview = preview_openai_base_url_replacement(target)
+        except (OSError, TypeError, ValueError):
+            self.status_label.setText("固定修复预览失败：目标不是允许的 OpenAI 地址配置。")
+            return
+        answer = QMessageBox.question(
+            self,
+            "确认固定修复",
+            (
+                f"目标文件：{preview.target_name}\n"
+                f"原始 SHA-256：{preview.target_sha256}\n"
+                f"替换 SHA-256：{preview.replacement_sha256}\n"
+                "将创建同目录备份并原子替换。是否继续？"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        result = apply_openai_base_url_replacement(
+            target,
+            expected_sha256=preview.target_sha256,
+            confirmed=True,
+        )
+        if result.status is not RemediationStatus.APPLIED:
+            limits = "、".join(result.limits) or "unknown"
+            self.status_label.setText(f"固定修复未执行：{limits}。")
+            return
+        if result.resulting_sha256 is None:
+            self.status_label.setText("固定修复未执行：结果校验缺失。")
+            return
+        self._last_remediation = (target, result.resulting_sha256)
+        self._invalidate_report(preserve_remediation=True)
+        self.status_label.setText(
+            f"固定修复已应用：{result.target_name}；请重新审计。"
+        )
+        self.coverage_status_label.setText(
+            "原报告已失效；仅可回滚本次会话中未被改动的固定替换。"
+        )
+        self._update_disposition_commands()
+
+    def _rollback_fixed_remediation(self) -> None:
+        state = self._last_remediation
+        if state is None:
+            return
+        target, expected_replacement_sha256 = state
+        answer = QMessageBox.question(
+            self,
+            "确认回滚固定修复",
+            "将恢复同目录备份；如果目标文件已被改动，回滚会被拒绝。是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        result = rollback_fixed_replacement(
+            target,
+            expected_replacement_sha256=expected_replacement_sha256,
+        )
+        if result.status is RemediationStatus.ROLLED_BACK:
+            self._last_remediation = None
+            self.rollback_button.setEnabled(False)
+            self.status_label.setText(f"固定修复已回滚：{result.target_name}。")
+            self.coverage_status_label.setText("请重新审计以生成新的报告。")
+            return
+        limits = "、".join(result.limits) or "unknown"
+        self.status_label.setText(f"固定修复未回滚：{limits}。")
 
     def _refresh_disposition_ui(self, now: datetime) -> None:
         evaluation_time = _validated_evaluation_time(now)

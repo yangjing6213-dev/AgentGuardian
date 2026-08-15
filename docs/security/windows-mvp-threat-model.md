@@ -6,7 +6,7 @@ Status: Batch 6 local security gate in progress. This document does not establis
 
 The target is AgentGuardian 0.1.0 Founder Alpha running as a standard Windows user. The runtime may discover explicitly approved local configuration roots, read supported local files, produce redacted in-memory findings, save a new report only at a user-selected destination outside scanned roots, and store minimized evidence state protected by Windows DPAPI.
 
-The runtime must not call OpenAI or another provider API, verify a remote endpoint, open a network client, execute commands, read browser databases or the clipboard, load dynamic plugins, elevate privileges, update itself, or perform remediation. Tests use synthetic data only.
+The runtime must not call OpenAI or another provider API, verify a remote endpoint as part of the default scan, execute arbitrary commands, load dynamic plugins, elevate privileges, or update itself. Browser, clipboard, and share checks are separate explicit user actions; the only write action is the allowlisted fixed remediation flow, which requires preview and confirmation. Tests use synthetic data only.
 
 ## Trust Boundaries
 

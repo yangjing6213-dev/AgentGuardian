@@ -6,6 +6,7 @@
 
 - Offline enterprise policy enforcement is implemented: canonical policy parsing, role/capability allowlists, expiry, operator-provisioned SHA-256 pinning, and high-sensitivity confirmation. This is not a signed policy service or an enterprise console.
 - Dynamic MCP now has a default-deny supervisor contract with fixed argv, bounded request/output/runtime, temporary working directory, explicit confirmation, and no raw output retention. Because the current portable/MSIX runtime has no native network-deny attestation, adapter processes are refused by default.
+- The desktop flow now exposes one allowlisted fixed remediation for `OPENAI_BASE_URL_OVERRIDE`: preview, scope check, explicit confirmation, target hash recheck, atomic replacement, same-directory backup, and same-session rollback. It does not execute arbitrary commands or generate edits with an LLM.
 - A native Windows AppContainer-or-equivalent provider, signed adapters, device registration, remote policy distribution, and administrator console remain required before those capabilities can be called complete.
 - Fresh verification for code SHA `6c0043b5dc3551d4950f814a82a4c7484004d722`: local `1377 passed, 11 skipped`; push and Draft PR CI plus Windows package runs all succeeded (`31873363929`, `31873363921`, `31873365733`, `31873365732`). The Windows evidence remains unsigned CI smoke only.
 
@@ -20,7 +21,7 @@
 - 完整聊天、完整凭据、完整路径和完整分享链接不得进入普通报告。
 - 证据只保留短显示名、脱敏摘要和扫描级 HMAC 指纹。
 - 跨扫描处置使用独立的本地 HMAC 引用；该引用和密钥不进入报告或界面。
-- 修复仅提供人工步骤，验证状态明确显示为 `not_performed`。
+- 修复默认提供人工步骤；唯一桌面固定动作必须预览、确认、目标重查、备份和回滚，其他修复仍显示为人工步骤。
 - 自审计固定返回规则 SHA、Python 版本、权限状态、能力 findings 和未覆盖范围。
 - 扫描规则、评分、报告格式和安全边界在公开仓库中接受检查。
 
@@ -39,8 +40,9 @@
 - 用户一次性点击触发的剪贴板内存检测；只保留脱敏 findings，不写回、不保存原文。
 - 独立的公开 HTTP(S) 分享可达性验证；只读取受限公开响应，不发送扫描文件、凭据或聊天内容。
 - 受控自动修复内核的固定单文件替换动作：dry-run、显式确认、目标哈希重查、同目录备份、原子替换和条件回滚；不执行任意命令。
+- 桌面端对 `OPENAI_BASE_URL_OVERRIDE` 提供受限固定地址替换和同会话回滚；修改后旧报告失效，必须重新审计。
 
-明确不包含：面向普通用户的完整自动修复工作流、密钥自动撤销、云同步、企业控制台、动态 MCP 隔离和生产级安全承诺。浏览器数据库与剪贴板能力仍默认关闭且需要用户逐项触发；联网分享验证不判断链接内容、分享权限或搜索引擎收录安全。受控修复内核尚未作为发布级 Windows 修复体验完成独立验收。UNC 路径被拒绝；映射网络盘无法可靠识别，属于已知残余风险。
+明确不包含：密钥自动撤销、云同步、企业控制台、动态 MCP 隔离和生产级安全承诺。浏览器数据库与剪贴板能力仍默认关闭且需要用户逐项触发；联网分享验证不判断链接内容、分享权限或搜索引擎收录安全。固定修复桌面流程尚未完成签名包、独立干净机器、真实 Windows 权限和竞态验收。UNC 路径被拒绝；映射网络盘无法可靠识别，属于已知残余风险。
 
 ## Windows MVP 硬化进度
 

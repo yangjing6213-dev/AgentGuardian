@@ -1283,7 +1283,7 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "`mode` 固定为 `manual`",
         "`VerificationResult.status` 固定为 `not_performed`",
         "不表示通过/失败复审记录",
-        "路径、权限范围、动作 ID、前置条件、预览、批准、回滚和通过/失败复审字段均为未来未实现设想",
+        "动态 MCP 的原生隔离、企业服务端身份/策略分发和独立复审字段仍是未来能力",
         "Findings --> Guidance",
         "规则 ID、按 Windows 词法规则规范化的源路径，以及 NFKC 规范化的原始匹配",
         "本地处置 HMAC 密钥与每次扫描随机生成的报告 HMAC 密钥彼此独立",

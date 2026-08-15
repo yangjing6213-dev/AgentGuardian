@@ -3662,6 +3662,71 @@ def test_openai_env_override_is_masked_end_to_end(qapp, tmp_path: Path) -> None:
     window.close()
 
 
+def test_openai_fixed_remediation_is_explicit_and_reversible(
+    qapp,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / ".env"
+    original = b"OPENAI_BASE_URL=https://synthetic-provider.invalid/v1\n"
+    target.write_bytes(original)
+    finding = Finding(
+        rule_id="OPENAI_BASE_URL_OVERRIDE",
+        domain=RiskDomain.SUPPLY_CHAIN,
+        severity=Severity.LOW,
+        root_fingerprint="a" * 64,
+        evidence=(
+            Evidence(
+                ".env",
+                "b" * 64,
+                "OpenAI API base URL override configured",
+            ),
+        ),
+    )
+    window = create_window()
+    window._scan_completed(_audit_outcome((finding,), coverage=1.0, confidence=1.0, limits=()))
+    window._report_roots = (tmp_path,)
+    window.findings_table.selectRow(0)
+    qapp.processEvents()
+
+    assert window.remediation_button.isEnabled()
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        lambda *args, **kwargs: (str(target), "Configuration"),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: None)
+
+    window.remediation_button.click()
+
+    assert target.read_bytes() == b"OPENAI_BASE_URL=https://api.openai.com/v1\n"
+    assert target.with_name(".env.agentguardian.bak").read_bytes() == original
+    assert window.rollback_button.isEnabled()
+
+    window.rollback_button.click()
+
+    assert target.read_bytes() == original
+    assert not target.with_name(".env.agentguardian.bak").exists()
+    assert not window.rollback_button.isEnabled()
+    window.close()
+
+
+def test_fixed_remediation_stays_disabled_for_non_allowlisted_findings(qapp) -> None:
+    finding = _synthetic_finding(1)
+    window = create_window()
+    window._scan_completed(_audit_outcome((finding,), coverage=1.0, confidence=1.0, limits=()))
+    window.findings_table.selectRow(0)
+    qapp.processEvents()
+
+    assert not window.remediation_button.isEnabled()
+    window.close()
+
+
 def test_cross_scan_dispositions_keep_identity_and_reviewed_score_context(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

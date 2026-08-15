@@ -3,6 +3,7 @@ from enum import Enum
 import hashlib
 import os
 import pathlib
+import re
 import stat
 
 from .discovery import _has_reparse_component
@@ -11,6 +12,13 @@ from .discovery import _has_reparse_component
 ACTION_REPLACE_FIXED_FILE = "replace_fixed_file"
 MAX_REMEDIATION_BYTES = 2 * 1024 * 1024
 _SHA256_LENGTH = 64
+_OPENAI_BASE_URL = "https://api.openai.com/v1"
+_OPENAI_BASE_URL_LINE = re.compile(
+    r"(?im)^(?P<prefix>[ \t]*(?:export[ \t]+)?"
+    r"(?:OPENAI_BASE_URL|openai_base_url)[ \t]*[:=][ \t]*[\"']?)"
+    r"https?://[^\s\"'#]+"
+    r"(?P<suffix>[\"']?[^\r\n]*)$"
+)
 
 
 class RemediationStatus(str, Enum):
@@ -62,6 +70,63 @@ def preview_fixed_replacement(
         replacement_sha256=_sha256(replacement),
         backup_name=_backup_name(target),
         limits=(),
+    )
+
+
+def build_openai_base_url_replacement(
+    content: bytes,
+    *,
+    action_id: str = ACTION_REPLACE_FIXED_FILE,
+) -> bytes:
+    """Build the only endpoint replacement currently allowed by the product."""
+    _validate_action_id(action_id)
+    if type(content) is not bytes:
+        raise ValueError("TARGET_INVALID")
+    if len(content) > MAX_REMEDIATION_BYTES:
+        raise ValueError("TARGET_SIZE_LIMIT")
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("TARGET_ENCODING_UNSUPPORTED") from None
+    replacement, matches = _OPENAI_BASE_URL_LINE.subn(
+        lambda match: f"{match.group('prefix')}{_OPENAI_BASE_URL}{match.group('suffix')}",
+        text,
+    )
+    if matches == 0:
+        raise ValueError("FIXED_TARGET_NOT_MATCHED")
+    return replacement.encode("utf-8")
+
+
+def preview_openai_base_url_replacement(
+    path: pathlib.Path,
+) -> RemediationPreview:
+    target, current = _read_target(path)
+    replacement = build_openai_base_url_replacement(current)
+    return preview_fixed_replacement(
+        target,
+        expected_sha256=_sha256(current),
+        replacement=replacement,
+    )
+
+
+def apply_openai_base_url_replacement(
+    path: pathlib.Path,
+    *,
+    expected_sha256: str,
+    confirmed: bool,
+) -> RemediationResult:
+    target = pathlib.Path(path)
+    backup_name = _backup_name(target)
+    try:
+        target, current = _read_target(target)
+        replacement = build_openai_base_url_replacement(current)
+    except (OSError, ValueError) as error:
+        return _not_performed(target, backup_name, (_limit_from_error(error),))
+    return apply_fixed_replacement(
+        target,
+        expected_sha256=expected_sha256,
+        replacement=replacement,
+        confirmed=confirmed,
     )
 
 
