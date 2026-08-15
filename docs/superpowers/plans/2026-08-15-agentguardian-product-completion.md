@@ -28,6 +28,8 @@
 
 最新复核（2026-08-15，企业控制面与高敏感数据 Windows 发布门禁）：提交 `6829f25f70294161c6b4efe4392fa8417e0edc56` 的本地完整回归为 `1396 passed, 11 skipped`；push CI `31878697776`、push Windows `31878697703`、Draft PR CI `31878698579` 和 Draft PR Windows `31878698586` 均为 `success`。Windows full suite 为 `1406 passed, 1 skipped`；合成高敏感 gate 记录 `passed=true`、JSON/HTML/导出/剪贴板无原始标记、浏览器临时副本删除和工作区清理通过；MSIX 安装升级卸载继续通过。签名模式仍为 `unsigned_ci_smoke`，不替代可信签名、真实脱敏样本或独立干净机器证据。
 
+最新复核（2026-08-15，Windows AppContainer 与 MCP 适配器签名门禁）：提交 `253b77d1f46b63f1761fd8ac56c9fb6f49555d22` 的本地完整回归为 `1404 passed, 11 skipped`；push CI `31881025303`、push Windows `31881025442`、Draft PR CI `31881028230` 和 Draft PR Windows `31881028238` 均为 `success`。Windows full suite 为 `1414 passed, 1 skipped`；合成高敏感 gate 记录 `passed=true`、报告/剪贴板/浏览器临时副本/工作区无原始残留；MSIX 安装升级卸载继续通过。native MCP 适配器现在在启动前执行 SHA-256 和本地 Authenticode 校验，未通过时拒绝启动。签名包仍为 `unsigned_ci_smoke`，组织发布者白名单、正式签名、真实脱敏样本和独立干净机器证据仍未完成。
+
 ### A2 原生安装器与安装/卸载验收
 
 - [x] 生成 MSIX manifest、资源、MakeAppx 命令和 SignTool 校验命令。
