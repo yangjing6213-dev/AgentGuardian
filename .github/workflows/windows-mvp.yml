@@ -1,0 +1,108 @@
+name: Windows MVP package verification
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  msix-development-install:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install hash-locked development dependencies
+        shell: pwsh
+        run: python -m pip install --require-hashes -r requirements-dev.lock
+
+      - name: Run full test suite
+        shell: pwsh
+        run: python -m pytest -q -p no:cacheprovider
+
+      - name: Install hash-locked build dependencies
+        shell: pwsh
+        run: python -m pip install --require-hashes -r requirements-build.lock
+
+      - name: Locate Windows SDK packaging tools
+        shell: pwsh
+        run: |
+          $makeappx = Get-ChildItem -LiteralPath "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter MakeAppx.exe -Recurse -File | Sort-Object FullName | Select-Object -Last 1
+          $signtool = Get-ChildItem -LiteralPath "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter SignTool.exe -Recurse -File | Sort-Object FullName | Select-Object -Last 1
+          if ($null -eq $makeappx -or $null -eq $signtool) {
+            throw "Windows SDK MakeAppx.exe and SignTool.exe are required"
+          }
+          "MAKEAPPX=$($makeappx.FullName)" >> $env:GITHUB_ENV
+          "SIGNTOOL=$($signtool.FullName)" >> $env:GITHUB_ENV
+
+      - name: Build portable source package
+        shell: pwsh
+        run: |
+          $sha = (git rev-parse HEAD).Trim()
+          $builtAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+          python scripts/build_windows_portable.py `
+            --output-root "$pwd\.analysis\ci-portable" `
+            --source-commit $sha `
+            --built-at $builtAt
+
+      - name: Stage MSIX package
+        shell: pwsh
+        run: |
+          python scripts/build_windows_msix.py `
+            --bundle-root "$pwd\.analysis\ci-portable\dist\AgentGuardian" `
+            --stage-root "$pwd\.analysis\ci-msix-stage" `
+            --project-root "$pwd" `
+            --identity-name "yangjing6213dev.AgentGuardian" `
+            --publisher "CN=AgentGuardian CI Test" `
+            --version "0.1.0.0"
+          & $env:MAKEAPPX pack `
+            /d "$pwd\.analysis\ci-msix-stage" `
+            /p "$pwd\.analysis\AgentGuardian-ci.msix"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Sign with ephemeral CI certificate for install smoke only
+        shell: pwsh
+        run: |
+          $publisher = "CN=AgentGuardian CI Test"
+          $cert = $null
+          try {
+            $cert = New-SelfSignedCertificate `
+              -Type Custom `
+              -Subject $publisher `
+              -KeyUsage DigitalSignature `
+              -CertStoreLocation Cert:\CurrentUser\My `
+              -NotAfter (Get-Date).AddDays(1)
+            $certPath = "$pwd\.analysis\agentguardian-ci.cer"
+            Export-Certificate -Cert $cert -FilePath $certPath | Out-Null
+            Import-Certificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
+            & $env:SIGNTOOL sign /fd SHA256 /sha1 $cert.Thumbprint "$pwd\.analysis\AgentGuardian-ci.msix"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & $env:SIGNTOOL verify /pa /all "$pwd\.analysis\AgentGuardian-ci.msix"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          finally {
+            if ($null -ne $cert) {
+              Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue
+              Remove-Item -LiteralPath "Cert:\CurrentUser\TrustedPeople\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+      - name: Install launch and uninstall MSIX as standard user
+        shell: pwsh
+        run: |
+          .\scripts\verify_windows_msix.ps1 `
+            -PackagePath "$pwd\.analysis\AgentGuardian-ci.msix" `
+            -PackageName "yangjing6213dev.AgentGuardian" `
+            -EvidencePath "$pwd\.analysis\ci-msix-smoke.json" `
+            -SmokeSeconds 4
+          Get-Content -LiteralPath "$pwd\.analysis\ci-msix-smoke.json"
+
+      - name: Print exact package digest
+        shell: pwsh
+        run: Get-FileHash -Algorithm SHA256 -LiteralPath "$pwd\.analysis\AgentGuardian-ci.msix"

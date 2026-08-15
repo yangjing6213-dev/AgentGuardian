@@ -79,6 +79,7 @@ python -m agentguardian
 - [Windows MVP 威胁模型](docs/security/windows-mvp-threat-model.md)
 - [Windows MVP release-candidate 报告](docs/reports/windows-mvp-release-candidate-report.md)
 - [Windows MVP Batch 6 实施计划](docs/superpowers/plans/2026-08-14-agentguardian-windows-mvp-release-candidate.md)
+- [产品完成与交付计划](docs/superpowers/plans/2026-08-15-agentguardian-product-completion.md)
 - [DPAPI 证据状态实施计划](docs/superpowers/plans/2026-08-02-agentguardian-protected-evidence-state.md)
 - [DPAPI 证据状态设计](docs/superpowers/specs/2026-08-02-agentguardian-protected-evidence-state-design.md)
 - [发现处置实施计划](docs/superpowers/plans/2026-08-02-agentguardian-finding-dispositions.md)
