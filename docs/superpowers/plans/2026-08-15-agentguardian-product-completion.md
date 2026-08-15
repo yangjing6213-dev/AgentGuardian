@@ -30,12 +30,15 @@
 
 最新复核（2026-08-15，Windows AppContainer 与 MCP 适配器签名门禁）：提交 `253b77d1f46b63f1761fd8ac56c9fb6f49555d22` 的本地完整回归为 `1404 passed, 11 skipped`；push CI `31881025303`、push Windows `31881025442`、Draft PR CI `31881028230` 和 Draft PR Windows `31881028238` 均为 `success`。Windows full suite 为 `1414 passed, 1 skipped`；合成高敏感 gate 记录 `passed=true`、报告/剪贴板/浏览器临时副本/工作区无原始残留；MSIX 安装升级卸载继续通过。native MCP 适配器现在在启动前执行 SHA-256 和本地 Authenticode 校验，未通过时拒绝启动。签名包仍为 `unsigned_ci_smoke`，组织发布者白名单、正式签名、真实脱敏样本和独立干净机器证据仍未完成。
 
+最新复核（2026-08-15，本地管理控制面与严格用户状态门禁）：提交 `a6a75c27e20d329a32f9e1ef2473f35b23deb198` 的本地完整回归为 `1407 passed, 11 skipped`；push CI `31882264849`、push Windows `31882264755`、Draft PR CI `31882266953` 和 Draft PR Windows `31882266834` 均为 `success`。桌面新增离线本地管理页，可注册租户/设备、授予角色、导入经校验策略、撤销设备并展示无原文运营摘要；MSIX verifier 新增 `RequireFreshUserState`，要求可信签名、安装前空用户状态并检查卸载后的用户状态残留。该脚本尚未在独立干净 Windows 机器执行，签名模式仍未改变。
+
 ### A2 原生安装器与安装/卸载验收
 
 - [x] 生成 MSIX manifest、资源、MakeAppx 命令和 SignTool 校验命令。
 - [x] 编写不主动提权的安装、启动、有限存活、终止、卸载和包残留检查脚本；普通用户可用性仍需签名包和干净机复核。
 - [x] CI 执行无签名 MSIX 的安装、启动和卸载烟测；证据明确标记为 `unsigned_ci_smoke`，不代表签名或发布可信度。
 - [x] 验收器拒绝已有同名安装，并覆盖同身份高版本升级、升级后启动、终止、卸载和残留检查；正式签名 workflow 复用同一升级契约。
+- [x] 增加 `RequireFreshUserState` 严格模式：只允许可信签名包，安装前要求 `LOCALAPPDATA\AgentGuardian` 不存在，卸载后检查用户状态残留；该模式仍需独立干净 Windows 机器执行。
 - [ ] 在 Windows Runner 执行正式证书签名和签名包安装卸载烟测；依赖组织证书或 Trusted Signing secret。
 - [ ] 在独立干净 Windows 环境执行安装、升级、启动、卸载和残留验收。
 

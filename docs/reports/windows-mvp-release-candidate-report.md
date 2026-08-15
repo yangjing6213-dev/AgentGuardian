@@ -32,6 +32,15 @@ upgrade `0.1.0.0 -> 0.1.0.1`, termination, uninstall, and
 `package_residue=false`. The package is explicitly `unsigned_ci_smoke` and
 must not be treated as a trusted release artifact.
 
+The latest implementation HEAD is `a6a75c27e20d329a32f9e1ef2473f35b23deb198`.
+Its local full regression is `1407 passed, 11 skipped`; push and Draft PR CI
+plus both Windows package checks completed successfully. This HEAD adds the
+offline desktop control-plane page and a strict `RequireFreshUserState` MSIX
+verification mode. The latter requires trusted signing, an empty
+`LOCALAPPDATA\AgentGuardian` state before install, and no user-state residue
+after uninstall; it has not yet been executed on an independent clean Windows
+machine.
+
 ## Current Local Evidence
 
 | Gate | Current revalidation | Scope |
@@ -64,11 +73,11 @@ This evidence does not cover the 10,000-file functional maximum, whole-process r
 - Independent read-only review: `COMPLETED WITH 7 IMPORTANT AND 2 MINOR FINDINGS` on the prior evidence-sync HEAD; those findings were remediated locally.
 - Second independent re-review: `COMPLETED WITH 2 IMPORTANT AND 3 MINOR FINDINGS` on `305eeb4`; both Important findings were remediated in `90e6eda`.
 - Third independent re-review: `COMPLETED WITH NO CRITICAL/IMPORTANT FINDINGS AND 1 MINOR`; the reviewer did not execute tests independently, so runtime confirmation remains the separately recorded local-gate evidence.
-- Current exact-SHA GitHub CI: `VERIFIED` for documentation HEAD `5a48611`; the code-bearing parent `253b77d` has matching push/PR CI and Windows workflow success.
+- Current exact-SHA GitHub CI: `VERIFIED` for implementation HEAD `a6a75c2`; push/PR CI and Windows workflow checks all succeeded.
 - GitHub-hosted Windows runner provenance: `VERIFIED AS CI EVIDENCE ONLY`; this does not replace an independent clean Windows machine.
 - Trusted code signing: `PENDING`.
 - Unsigned CI native install, upgrade, launch, termination and uninstall smoke: `VERIFIED`; trusted-package and independent acceptance remain pending.
-- Clean Windows machine acceptance and residue review: `PENDING`.
+- Strict fresh-user-state verifier: `IMPLEMENTED`; independent clean Windows machine acceptance and residue review: `PENDING`.
 - License and redistribution review: `PENDING`.
 
 The trusted-signature workflow remains fail-closed and has not been run because
