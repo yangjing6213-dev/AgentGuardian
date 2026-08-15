@@ -102,9 +102,10 @@ release gate: `windows-mvp-signed.yml` has not been dispatched or passed with a
 real organization adapter/certificate. Required repository variables, signing
 material, an approved `windows-license-review.json`, real sanitized-sample human
 signoff, and independent clean-machine install/upgrade/run/uninstall evidence
-remain pending. Current normal GitHub CI for code-bearing SHA
-`db56b30` was not revalidated when this
-documentation was prepared.
+remain pending. Documentation follow-up
+`d22049dfdcfe177a760d3a3626d67a4fd020a825`, which contains code-bearing SHA
+`db56b30` unchanged, passed exact-SHA push and Draft PR CI plus both Windows
+package checks.
 
 Residual Minor/defense-in-depth items are the non-atomic boundary between reparse
 validation and final executable `CreateFileW`, for which no same-user exploit was

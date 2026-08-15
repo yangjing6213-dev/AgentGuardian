@@ -54,10 +54,10 @@ issues. The focused runtime handle-binding review initially raised one Important
 path-identity concern, then withdrew it after a real Windows test demonstrated
 that parent-directory replacement fails while the final executable handle is
 held and succeeds after release. Its final result was PASS with no Critical or
-Important findings. Current normal GitHub CI for
-`db56b30` had not been revalidated when this
-documentation was prepared. Historical successful CI remains evidence only for
-its exact historical SHA.
+Important findings. Documentation follow-up
+`d22049dfdcfe177a760d3a3626d67a4fd020a825`, containing `db56b30` unchanged,
+passed exact-SHA push and Draft PR CI plus both Windows package checks.
+Historical successful CI remains evidence only for its exact historical SHA.
 
 The earlier implementation HEAD was `a6a75c27e20d329a32f9e1ef2473f35b23deb198`.
 Its local full regression is `1407 passed, 11 skipped`; push and Draft PR CI
@@ -79,10 +79,10 @@ change the release decision.
 
 | Gate | Current revalidation | Scope |
 | --- | --- | --- |
-| Windows MVP security gate | `47 passed, 1 skipped` | Fresh run of `scripts/run_windows_mvp_security_gate.py` at `75fd3d9f0f8c8921fecac13f6eec534c5094140f`. The allowed skip is not reported as a pass. |
-| Python 3.14 full suite | `1529 passed, 11 skipped` | Fresh full-suite run at the clean code-bearing SHA above. |
-| Source, script, and test compilation | Exit 0 | Fresh `python -m compileall src scripts tests`. |
-| Current exact-SHA GitHub CI | `PENDING REVALIDATION` | No normal GitHub CI result for `75fd3d9f0f8c8921fecac13f6eec534c5094140f` was treated as current evidence at documentation time. |
+| Windows MVP security gate | `47 passed, 1 skipped` | Fresh run of `scripts/run_windows_mvp_security_gate.py` at `d22049dfdcfe177a760d3a3626d67a4fd020a825`. The allowed skip is not reported as a pass. |
+| Python 3.14 full suite | `1533 passed, 11 skipped` | Fresh full-suite run at the exact SHA above. |
+| Source, script, and test compilation | Exit 0 | Fresh `python -m compileall -q src scripts tests`. |
+| Latest completed exact-SHA GitHub CI | `VERIFIED` | At `d22049dfdcfe177a760d3a3626d67a4fd020a825`, push CI `31905761660`, push Windows `31905761648`, Draft PR CI `31905765603`, and Draft PR Windows `31905765606` all completed successfully. The Windows package remains unsigned CI smoke. |
 | Brand validation | Historical exit 0 | Existing brand-asset contract; not rerun for this documentation sync. |
 | Portable reproducibility | Historical: `208 files` and `92,870,198 bytes` in each bundle; Bundle diff count: `0`; both ZIPs were `36,033,202 bytes` with SHA-256 `4f7e9ffdd347fddf67ffb7544ab84e777ff7b93e2ed1bf546ed87e6e9517bad1` | Historical `90e6eda` evidence only. Two new build roots used a hash-locked Python 3.12.2/PyInstaller 6.16.0 environment, lock SHA `75be59ee054a75d556cc89099f571d9826fa272aef656124fa75dc535731cdd5`, and fixed build time `2026-08-15T00:00:00Z`. |
 | Portable isolation smoke | Historical: both copied bundles reported `process_startup=true`, `bounded_liveness=true`, `termination=forced_after_bounded_smoke`, `process_tree_terminated=true`, and `declared_residue=false` | Historical local smoke with evidence JSON SHA-256 L `8ed7fe9a1e9fc43ee7fcf0c32cc4de3bceb9042695080d11c59451ae163cf034` and M `cd4317b9881aec914efe7090cf9d7324c4adf5803931ad4704e1776986a433c9`; not clean-machine acceptance or current-SHA runtime evidence. |
@@ -92,7 +92,7 @@ For traceability, the earlier Batch 6 evidence baseline remains recorded as
 `1322 passed, 8 skipped` on Python 3.14 and `1321 passed, 9 skipped` on the
 hash-locked Python 3.12 environment. The prior `ef571a1` result was
 `1426 passed, 11 skipped`; neither historical count replaces the current
-`75fd3d9` local result above.
+`d22049d` local result above.
 
 ## Performance Evidence
 
@@ -112,8 +112,8 @@ This evidence does not cover the 10,000-file functional maximum, whole-process r
 - Independent read-only review: `COMPLETED WITH 7 IMPORTANT AND 2 MINOR FINDINGS` on the prior evidence-sync HEAD; those findings were remediated locally.
 - Second independent re-review: `COMPLETED WITH 2 IMPORTANT AND 3 MINOR FINDINGS` on `305eeb4`; both Important findings were remediated in `90e6eda`.
 - Third independent re-review: `COMPLETED WITH NO CRITICAL/IMPORTANT FINDINGS AND 1 MINOR`; the reviewer did not execute tests independently, so runtime confirmation remains the separately recorded local-gate evidence.
-- Task 1, Task 2, and trusted-artifact acquisition independent specification or quality/security review: `COMPLETED`; no Critical or Important issues remain. This does not provide external-material or runtime acceptance.
-- Current exact-SHA GitHub CI: `PENDING REVALIDATION` for repository HEAD `75fd3d9f0f8c8921fecac13f6eec534c5094140f`. Earlier successful CI is historical and remains bound only to its historical SHA.
+- Task 1, Task 2, trusted-artifact acquisition, and runtime WinTrust handle-binding independent specification or quality/security review: `COMPLETED`; no Critical or Important issues remain. This does not provide external-material or trusted-release acceptance.
+- Latest completed exact-SHA GitHub CI: `VERIFIED` for `d22049dfdcfe177a760d3a3626d67a4fd020a825`; push CI `31905761660`, push Windows `31905761648`, Draft PR CI `31905765603`, and Draft PR Windows `31905765606` all succeeded. A later documentation-only correction must earn its own exact-SHA result before being treated as current evidence.
 - Historical `e8013dc` label: Current exact-SHA GitHub CI: `VERIFIED`. It does not cover the current local SHA.
 - Historical label: GitHub-hosted Windows runner provenance: `VERIFIED AS CI EVIDENCE ONLY`. It does not cover the current local SHA or replace an independent clean Windows machine.
 - Trusted code signing: `PENDING`.
