@@ -50,7 +50,7 @@
 
 ## Windows MVP 硬化进度
 
-供应链基线批次已完成 GitHub Actions commit SHA 固定、Node.js 24 Action 运行时刷新和 Windows Python 依赖哈希锁定。**OpenAI Provider 本地适配批次**也已完成：覆盖 `%USERPROFILE%\.codex` 已知配置目录、`.env`/`.toml` 静态扫描、`OPENAI_API_KEY` 脱敏发现、`OPENAI_BASE_URL`/`openai_base_url` 覆盖配置提示，以及 OpenAI 专用人工修复指引。
+供应链基线批次已完成 GitHub Actions commit SHA 固定、Node.js 24 Action 运行时刷新和 Windows Python 依赖哈希锁定。Windows MSIX 验收器现已覆盖干净 runner 前置检查、安装、启动、同身份高版本升级、终止、卸载和残留检查；正式签名仍由独立 workflow fail-closed 门禁。**OpenAI Provider 本地适配批次**也已完成：覆盖 `%USERPROFILE%\.codex` 已知配置目录、`.env`/`.toml` 静态扫描、`OPENAI_API_KEY` 脱敏发现、`OPENAI_BASE_URL`/`openai_base_url` 覆盖配置提示，以及 OpenAI 专用人工修复指引。
 
 端点覆盖发现只表示该配置需要人工复核，不证明端点属于恶意第三方。AgentGuardian 只在用户授权的本地范围读取静态配置，不发起 API 调用或联网验证端点，也不自动修改 Provider、撤销密钥或轮换凭据。
 

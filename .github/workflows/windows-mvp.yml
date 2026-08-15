@@ -64,13 +64,25 @@ jobs:
             /d "$pwd\.analysis\ci-msix-stage" `
             /p "$pwd\.analysis\AgentGuardian-ci.msix"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/build_windows_msix.py `
+            --bundle-root "$pwd\.analysis\ci-portable\dist\AgentGuardian" `
+            --stage-root "$pwd\.analysis\ci-msix-upgrade-stage" `
+            --project-root "$pwd" `
+            --identity-name "yangjing6213dev.AgentGuardian" `
+            --publisher "CN=AgentGuardian CI Test, OID.2.25.311729368913984317654407730594956997722=1" `
+            --version "0.1.0.1"
+          & $env:MAKEAPPX pack `
+            /d "$pwd\.analysis\ci-msix-upgrade-stage" `
+            /p "$pwd\.analysis\AgentGuardian-ci-upgrade.msix"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Install launch and uninstall unsigned MSIX CI smoke
+      - name: Install launch and uninstall unsigned MSIX CI smoke (same-identity upgrade and uninstall)
         shell: pwsh
         run: |
           .\scripts\verify_windows_msix.ps1 `
             -PackagePath "$pwd\.analysis\AgentGuardian-ci.msix" `
             -PackageName "yangjing6213dev.AgentGuardian" `
+            -UpgradePackagePath "$pwd\.analysis\AgentGuardian-ci-upgrade.msix" `
             -EvidencePath "$pwd\.analysis\ci-msix-smoke.json" `
             -AllowUnsigned `
             -SmokeSeconds 4
@@ -78,4 +90,6 @@ jobs:
 
       - name: Print exact package digest
         shell: pwsh
-        run: Get-FileHash -Algorithm SHA256 -LiteralPath "$pwd\.analysis\AgentGuardian-ci.msix"
+        run: |
+          Get-FileHash -Algorithm SHA256 -LiteralPath "$pwd\.analysis\AgentGuardian-ci.msix"
+          Get-FileHash -Algorithm SHA256 -LiteralPath "$pwd\.analysis\AgentGuardian-ci-upgrade.msix"

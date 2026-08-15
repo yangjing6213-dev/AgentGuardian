@@ -63,6 +63,17 @@ jobs:
             /d "$pwd\.analysis\signed-msix-stage" `
             /p "$pwd\.analysis\AgentGuardian-signed.msix"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/build_windows_msix.py `
+            --bundle-root "$pwd\.analysis\signed-portable\dist\AgentGuardian" `
+            --stage-root "$pwd\.analysis\signed-upgrade-msix-stage" `
+            --project-root "$pwd" `
+            --identity-name "yangjing6213dev.AgentGuardian" `
+            --publisher "$env:SIGNING_PUBLISHER" `
+            --version "0.1.0.1"
+          & $env:MAKEAPPX pack `
+            /d "$pwd\.analysis\signed-upgrade-msix-stage" `
+            /p "$pwd\.analysis\AgentGuardian-signed-upgrade.msix"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Sign with organization certificate and trusted timestamp
         shell: pwsh
@@ -74,8 +85,13 @@ jobs:
             $certificate = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword
             if ($null -eq $certificate) { throw "Signing certificate import failed" }
             # signtool sign /fd SHA256 /sha1 /tr /td SHA256
-            & $env:SIGNTOOL sign /fd SHA256 /sha1 $certificate.Thumbprint /tr "http://timestamp.digicert.com" /td SHA256 "$pwd\.analysis\AgentGuardian-signed.msix"
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            foreach ($packagePath in @(
+                "$pwd\.analysis\AgentGuardian-signed.msix",
+                "$pwd\.analysis\AgentGuardian-signed-upgrade.msix"
+              )) {
+              & $env:SIGNTOOL sign /fd SHA256 /sha1 $certificate.Thumbprint /tr "http://timestamp.digicert.com" /td SHA256 $packagePath
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
           }
           finally {
             Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
@@ -87,6 +103,7 @@ jobs:
           .\scripts\verify_windows_msix.ps1 `
             -PackagePath "$pwd\.analysis\AgentGuardian-signed.msix" `
             -PackageName "yangjing6213dev.AgentGuardian" `
+            -UpgradePackagePath "$pwd\.analysis\AgentGuardian-signed-upgrade.msix" `
             -EvidencePath "$pwd\.analysis\signed-msix-smoke.json" `
             -ExpectedPublisher "$env:SIGNING_PUBLISHER" `
             -RequireTrustedSignature `
@@ -95,4 +112,6 @@ jobs:
 
       - name: Print signed package digest
         shell: pwsh
-        run: Get-FileHash -Algorithm SHA256 -LiteralPath "$pwd\.analysis\AgentGuardian-signed.msix"
+        run: |
+          Get-FileHash -Algorithm SHA256 -LiteralPath "$pwd\.analysis\AgentGuardian-signed.msix"
+          Get-FileHash -Algorithm SHA256 -LiteralPath "$pwd\.analysis\AgentGuardian-signed-upgrade.msix"

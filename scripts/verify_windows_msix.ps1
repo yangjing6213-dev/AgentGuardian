@@ -6,6 +6,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$PackageName,
 
+    [string]$UpgradePackagePath,
+
     [Parameter(Mandatory = $true)]
     [string]$EvidencePath,
 
@@ -48,6 +50,16 @@ if (Test-Path -LiteralPath $resolvedEvidence) {
 if (-not $resolvedPackage.EndsWith(".msix", [StringComparison]::OrdinalIgnoreCase)) {
     throw "PackagePath must point to an MSIX package"
 }
+$resolvedUpgradePackage = $null
+if (-not [string]::IsNullOrWhiteSpace($UpgradePackagePath)) {
+    $resolvedUpgradePackage = (Resolve-Path -LiteralPath $UpgradePackagePath).Path
+    if (-not $resolvedUpgradePackage.EndsWith(".msix", [StringComparison]::OrdinalIgnoreCase)) {
+        throw "UpgradePackagePath must point to an MSIX package"
+    }
+    if ($resolvedUpgradePackage -eq $resolvedPackage) {
+        throw "UpgradePackagePath must differ from PackagePath"
+    }
+}
 if ($RequireTrustedSignature -and $AllowUnsigned) {
     throw "RequireTrustedSignature cannot be combined with AllowUnsigned"
 }
@@ -58,6 +70,14 @@ if ($RequireTrustedSignature -and [string]::IsNullOrWhiteSpace($ExpectedPublishe
 $signature = Get-AuthenticodeSignature -FilePath $resolvedPackage
 $signerCertificate = $signature.SignerCertificate
 $timestampCertificate = $signature.TimeStamperCertificate
+$upgradeSignature = $null
+$upgradeSignerCertificate = $null
+$upgradeTimestampCertificate = $null
+if ($null -ne $resolvedUpgradePackage) {
+    $upgradeSignature = Get-AuthenticodeSignature -FilePath $resolvedUpgradePackage
+    $upgradeSignerCertificate = $upgradeSignature.SignerCertificate
+    $upgradeTimestampCertificate = $upgradeSignature.TimeStamperCertificate
+}
 if ($RequireTrustedSignature) {
     if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
         throw "MSIX signature is not trusted: $($signature.Status)"
@@ -71,14 +91,36 @@ if ($RequireTrustedSignature) {
     if ($null -eq $timestampCertificate) {
         throw "MSIX trusted timestamp certificate is missing"
     }
+    if ($null -ne $upgradeSignature) {
+        if ($upgradeSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+            throw "MSIX upgrade signature is not trusted: $($upgradeSignature.Status)"
+        }
+        if ($null -eq $upgradeSignerCertificate) {
+            throw "MSIX upgrade signer certificate is missing"
+        }
+        if ($upgradeSignerCertificate.Subject -ne $ExpectedPublisher) {
+            throw "MSIX upgrade signer subject does not match ExpectedPublisher"
+        }
+        if ($null -eq $upgradeTimestampCertificate) {
+            throw "MSIX upgrade trusted timestamp certificate is missing"
+        }
+    }
 }
 
 $startedAt = Get-UtcSecond
+$preexistingPackages = @(Get-AgentGuardianPackages)
+if ($preexistingPackages.Count -ne 0) {
+    throw "preexisting package installation must be removed before verification"
+}
 $processStartup = $false
 $boundedLiveness = $false
 $termination = $false
 $uninstalled = $false
 $packageResidue = $false
+$upgradeAttempted = $false
+$upgraded = $false
+$versionBefore = $null
+$versionAfter = $null
 $packageFullName = $null
 $installedPackages = @()
 $smokeError = $null
@@ -98,6 +140,28 @@ try {
         throw "expected at least one installed package"
     }
     $packageFullName = $installedPackages[0].PackageFullName
+    $versionBefore = [string]$installedPackages[0].Version
+
+    if ($null -ne $resolvedUpgradePackage) {
+        $upgradeAttempted = $true
+        if ($AllowUnsigned) {
+            Add-AppxPackage -Path $resolvedUpgradePackage -AllowUnsigned
+        }
+        else {
+            Add-AppxPackage -Path $resolvedUpgradePackage
+        }
+        $upgradedPackages = @(Get-AgentGuardianPackages)
+        if ($upgradedPackages.Count -ne 1) {
+            throw "expected exactly one package after upgrade"
+        }
+        $versionAfter = [string]$upgradedPackages[0].Version
+        if ([version]$versionAfter -le [version]$versionBefore) {
+            throw "MSIX upgrade version did not increase"
+        }
+        $upgraded = $true
+        $installedPackages = $upgradedPackages
+    }
+
     $appUserModelId = "$($installedPackages[0].PackageFamilyName)!AgentGuardian"
     $shellTarget = "shell:AppsFolder\$appUserModelId"
     $launcher = Start-Process -FilePath "$env:WINDIR\explorer.exe" -ArgumentList $shellTarget -PassThru
@@ -185,6 +249,10 @@ $evidence = [ordered]@{
     result = [ordered]@{
         process_startup = $processStartup
         bounded_liveness = $boundedLiveness
+        upgrade_attempted = $upgradeAttempted
+        upgraded = $upgraded
+        version_before = $versionBefore
+        version_after = $versionAfter
         termination = $termination
         uninstalled = $uninstalled
         package_residue = $packageResidue

@@ -161,6 +161,12 @@ def test_msix_verifier_installs_launches_and_uninstalls_without_elevation() -> N
         "Get-AppxPackage",
         "Start-Process",
         "Remove-AppxPackage",
+        "UpgradePackagePath",
+        "preexisting package",
+        "version_before",
+        "version_after",
+        "upgrade_attempted",
+        "upgraded",
         "process_startup",
         "bounded_liveness",
         "uninstalled",
@@ -171,6 +177,21 @@ def test_msix_verifier_installs_launches_and_uninstalls_without_elevation() -> N
         assert required in verifier
     assert "-Verb RunAs" not in verifier
     assert "Remove-Item" not in verifier
+
+
+def test_msix_workflow_builds_and_verifies_a_same_identity_upgrade() -> None:
+    workflow = (
+        PROJECT_ROOT / ".github" / "workflows" / "windows-mvp.yml"
+    ).read_text(encoding="utf-8")
+
+    for required in (
+        "ci-msix-upgrade-stage",
+        "AgentGuardian-ci-upgrade.msix",
+        'version "0.1.0.1"',
+        "-UpgradePackagePath",
+        "same-identity upgrade and uninstall",
+    ):
+        assert required in workflow
 
 
 def test_windows_mvp_workflow_binds_tools_and_install_smoke() -> None:
@@ -220,6 +241,10 @@ def test_signed_msix_gate_is_fail_closed_and_checks_trusted_publisher() -> None:
         "signtool sign",
         "RequireTrustedSignature",
         "ExpectedPublisher",
+        "signed-upgrade-msix-stage",
+        "AgentGuardian-signed-upgrade.msix",
+        "-UpgradePackagePath",
+        'version "0.1.0.1"',
     ):
         assert required in workflow
     assert "New-SelfSignedCertificate" not in workflow
