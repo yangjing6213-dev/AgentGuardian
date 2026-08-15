@@ -10,9 +10,6 @@ jobs:
   signed-msix-fresh-runner:
     runs-on: windows-latest
     env:
-      SIGNING_PFX_B64: ${{ secrets.AGENTGUARDIAN_SIGNING_PFX_B64 }}
-      SIGNING_PFX_PASSWORD: ${{ secrets.AGENTGUARDIAN_SIGNING_PFX_PASSWORD }}
-      SIGNING_PUBLISHER: ${{ secrets.AGENTGUARDIAN_SIGNING_PUBLISHER }}
       AGENTGUARDIAN_MCP_ADAPTER_URL: ${{ vars.AGENTGUARDIAN_MCP_ADAPTER_URL }}
       AGENTGUARDIAN_MCP_ADAPTER_SHA256: ${{ vars.AGENTGUARDIAN_MCP_ADAPTER_SHA256 }}
       AGENTGUARDIAN_MCP_ADAPTER_PUBLISHER: ${{ vars.AGENTGUARDIAN_MCP_ADAPTER_PUBLISHER }}
@@ -25,6 +22,10 @@ jobs:
           cache: pip
 
       - name: Fail closed when trusted signing material is absent
+        env:
+          SIGNING_PFX_B64: ${{ secrets.AGENTGUARDIAN_SIGNING_PFX_B64 }}
+          SIGNING_PFX_PASSWORD: ${{ secrets.AGENTGUARDIAN_SIGNING_PFX_PASSWORD }}
+          SIGNING_PUBLISHER: ${{ secrets.AGENTGUARDIAN_SIGNING_PUBLISHER }}
         shell: pwsh
         run: |
           if ([string]::IsNullOrWhiteSpace($env:SIGNING_PFX_B64) -or
@@ -87,6 +88,8 @@ jobs:
           "SIGNTOOL=$($signtool.FullName)" >> $env:GITHUB_ENV
 
       - name: Build and stage signed package
+        env:
+          SIGNING_PUBLISHER: ${{ secrets.AGENTGUARDIAN_SIGNING_PUBLISHER }}
         shell: pwsh
         run: |
           $sha = (git rev-parse HEAD).Trim()
@@ -125,28 +128,44 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Sign with organization certificate and trusted timestamp
+        env:
+          SIGNING_PFX_B64: ${{ secrets.AGENTGUARDIAN_SIGNING_PFX_B64 }}
+          SIGNING_PFX_PASSWORD: ${{ secrets.AGENTGUARDIAN_SIGNING_PFX_PASSWORD }}
         shell: pwsh
         run: |
           $pfxPath = Join-Path $env:RUNNER_TEMP "agentguardian-signing.pfx"
+          $importedCertificates = @()
+          $signingCertificate = $null
           try {
             [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:SIGNING_PFX_B64))
             $securePassword = ConvertTo-SecureString $env:SIGNING_PFX_PASSWORD -AsPlainText -Force
-            $certificate = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword
-            if ($null -eq $certificate) { throw "Signing certificate import failed" }
+            $importedCertificates = @(Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword)
+            $signingCertificate = $importedCertificates | Where-Object { $_.HasPrivateKey } | Select-Object -First 1
+            if ($null -eq $signingCertificate) { throw "Signing certificate import failed" }
             # signtool sign /fd SHA256 /sha1 /tr /td SHA256
             foreach ($packagePath in @(
                 "$pwd\.analysis\AgentGuardian-signed.msix",
                 "$pwd\.analysis\AgentGuardian-signed-upgrade.msix"
               )) {
-              & $env:SIGNTOOL sign /fd SHA256 /sha1 $certificate.Thumbprint /tr "http://timestamp.digicert.com" /td SHA256 $packagePath
+              & $env:SIGNTOOL sign /fd SHA256 /sha1 $signingCertificate.Thumbprint /tr "http://timestamp.digicert.com" /td SHA256 $packagePath
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             }
           }
           finally {
+            foreach ($importedCertificate in $importedCertificates) {
+              $thumbprint = [string]$importedCertificate.Thumbprint
+              if ($thumbprint -cmatch '^[0-9A-Fa-f]{40}$') {
+                $certificatePath = "Cert:\CurrentUser\My\$thumbprint"
+                Remove-Item -LiteralPath $certificatePath -DeleteKey -Force -ErrorAction SilentlyContinue
+              }
+            }
             Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
+            $securePassword = $null
           }
 
       - name: Install launch and uninstall trusted signed MSIX on fresh runner
+        env:
+          SIGNING_PUBLISHER: ${{ secrets.AGENTGUARDIAN_SIGNING_PUBLISHER }}
         shell: pwsh
         run: |
           $sha = (git rev-parse HEAD).Trim()

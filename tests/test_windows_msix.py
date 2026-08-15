@@ -1,5 +1,8 @@
 import hashlib
+import json
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 
@@ -179,6 +182,81 @@ def test_msix_verifier_installs_launches_and_uninstalls_without_elevation() -> N
         assert required in verifier
     assert "-Verb RunAs" not in verifier
     assert "Remove-Item" not in verifier
+
+
+def test_task2_quality_review_cleanup_requeries_after_stale_removal_error() -> None:
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is unavailable")
+    verifier_path = str(PROJECT_ROOT / "scripts" / "verify_windows_msix.ps1").replace(
+        "'", "''"
+    )
+    harness = rf"""
+$tokens = $null
+$errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile(
+    '{verifier_path}',
+    [ref]$tokens,
+    [ref]$errors
+)
+if ($errors.Count -ne 0) {{ throw "verifier parse failed" }}
+$cleanupFunction = $ast.Find({{
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Remove-AgentGuardianPackagesBounded'
+}}, $true)
+if ($null -eq $cleanupFunction) {{ throw "cleanup function missing" }}
+Invoke-Expression $cleanupFunction.Extent.Text
+
+$script:queryCount = 0
+$script:removed = @()
+$script:staleAttempts = 0
+function Get-AgentGuardianPackages {{
+    $script:queryCount++
+    if ($script:queryCount -eq 1) {{
+        return @(
+            [pscustomobject]@{{ PackageFullName = 'stale-old' }},
+            [pscustomobject]@{{ PackageFullName = 'current-upgraded' }}
+        )
+    }}
+    if ($script:queryCount -eq 2) {{
+        return @([pscustomobject]@{{ PackageFullName = 'stale-old' }})
+    }}
+    return @()
+}}
+function Remove-AppxPackage {{
+    param([string]$Package, [string]$ErrorAction)
+    $script:removed += $Package
+    if ($Package -eq 'stale-old') {{
+        $script:staleAttempts++
+        if ($script:staleAttempts -eq 1) {{ throw 'stale removal failed' }}
+    }}
+}}
+function Start-Sleep {{ param([int]$Milliseconds) }}
+
+$cleanup = Remove-AgentGuardianPackagesBounded -TimeoutSeconds 1 -RetryMilliseconds 0
+[ordered]@{{
+    query_count = $script:queryCount
+    removed = @($script:removed)
+    uninstalled = [bool]$cleanup.Uninstalled
+    package_residue = [bool]$cleanup.PackageResidue
+}} | ConvertTo-Json -Compress
+"""
+
+    result = subprocess.run(
+        [pwsh, "-NoProfile", "-NonInteractive", "-Command", harness],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    evidence = json.loads(result.stdout.strip().splitlines()[-1])
+    assert evidence == {
+        "query_count": 3,
+        "removed": ["stale-old", "current-upgraded", "stale-old"],
+        "uninstalled": True,
+        "package_residue": False,
+    }
 
 
 def test_msix_workflow_builds_and_verifies_a_same_identity_upgrade() -> None:
@@ -391,9 +469,11 @@ def test_task2_mcp_msix_verifier_runs_fixed_installed_adapter_before_cleanup() -
         assert required in verifier
 
     acceptance = verifier.index("run_windows_mcp_adapter_acceptance.py")
+    smoke_catch = verifier.index("\ncatch {", acceptance)
+    smoke_finally = verifier.index("finally {", smoke_catch)
     assert verifier.index("$installedPackages = $upgradedPackages") < acceptance
     assert acceptance < verifier.index("$appUserModelId")
-    assert acceptance < verifier.index("catch {") < verifier.index("finally {")
+    assert acceptance < smoke_catch < smoke_finally
     assert "request_bytes" not in verifier
     assert "response_bytes" not in verifier
 
@@ -446,6 +526,52 @@ def test_task2_signed_workflow_does_not_dump_full_signature_evidence() -> None:
 
     assert 'Get-Content -LiteralPath "$pwd\\.analysis\\signed-msix-smoke.json"' not in workflow
     assert "$evidence.result | ConvertTo-Json -Compress" in verifier
+
+
+def test_task2_quality_review_signing_secrets_are_scoped_and_keys_removed() -> None:
+    workflow = (
+        PROJECT_ROOT / ".github" / "workflows" / "windows-mvp-signed.yml"
+    ).read_text(encoding="utf-8")
+
+    def step(name: str) -> str:
+        start = workflow.index(f"      - name: {name}")
+        end = workflow.find("\n      - name:", start + 1)
+        return workflow[start:] if end == -1 else workflow[start:end]
+
+    job_env = workflow[workflow.index("    env:"):workflow.index("    steps:")]
+    material_check = step("Fail closed when trusted signing material is absent")
+    build = step("Build and stage signed package")
+    signing = step("Sign with organization certificate and trusted timestamp")
+    install = step("Install launch and uninstall trusted signed MSIX on fresh runner")
+    pfx_secret = "SIGNING_PFX_B64: ${{ secrets.AGENTGUARDIAN_SIGNING_PFX_B64 }}"
+    password_secret = (
+        "SIGNING_PFX_PASSWORD: ${{ secrets.AGENTGUARDIAN_SIGNING_PFX_PASSWORD }}"
+    )
+    publisher_secret = (
+        "SIGNING_PUBLISHER: ${{ secrets.AGENTGUARDIAN_SIGNING_PUBLISHER }}"
+    )
+
+    assert pfx_secret not in job_env
+    assert password_secret not in job_env
+    assert publisher_secret not in job_env
+    for scoped_secret in (pfx_secret, password_secret):
+        assert scoped_secret in material_check
+        assert scoped_secret in signing
+        assert workflow.count(scoped_secret) == 2
+    assert publisher_secret in material_check
+    assert publisher_secret in build
+    assert publisher_secret in install
+    assert publisher_secret not in signing
+    assert workflow.count(publisher_secret) == 3
+    for required in (
+        "$importedCertificates = @()",
+        "$signingCertificate = $null",
+        "foreach ($importedCertificate in $importedCertificates)",
+        '"Cert:\\CurrentUser\\My\\$thumbprint"',
+        "-DeleteKey",
+        "Remove-Item -LiteralPath $pfxPath",
+    ):
+        assert required in signing
 
 
 def test_task2_mcp_unsigned_workflow_is_byte_for_byte_unchanged() -> None:

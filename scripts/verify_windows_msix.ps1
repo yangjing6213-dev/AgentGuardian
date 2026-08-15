@@ -56,6 +56,47 @@ function Get-AgentGuardianPackages {
     return @(Get-AppxPackage | Where-Object { $_.Name -like "$PackageName*" })
 }
 
+function Remove-AgentGuardianPackagesBounded {
+    param(
+        [ValidateRange(1, 300)]
+        [int]$TimeoutSeconds = 60,
+
+        [ValidateRange(0, 5000)]
+        [int]$RetryMilliseconds = 250
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $currentPackages = @(Get-AgentGuardianPackages)
+        if ($currentPackages.Count -eq 0) {
+            return [pscustomobject]@{
+                Uninstalled = $true
+                PackageResidue = $false
+            }
+        }
+        foreach ($currentPackage in $currentPackages) {
+            try {
+                Remove-AppxPackage -Package $currentPackage.PackageFullName -ErrorAction Stop
+            }
+            catch {
+                # Requery and retry so one stale package identity cannot block others.
+            }
+        }
+        if ((Get-Date) -ge $deadline) {
+            break
+        }
+        if ($RetryMilliseconds -gt 0) {
+            Start-Sleep -Milliseconds $RetryMilliseconds
+        }
+    } while ($true)
+
+    $remainingPackages = @(Get-AgentGuardianPackages)
+    return [pscustomobject]@{
+        Uninstalled = ($remainingPackages.Count -eq 0)
+        PackageResidue = ($remainingPackages.Count -ne 0)
+    }
+}
+
 function Get-InstalledMcpAdapterPath {
     param([Parameter(Mandatory = $true)]$Package)
 
@@ -355,28 +396,13 @@ catch {
 finally {
     Stop-AgentGuardianProcesses
     $termination = (@(Get-Process -Name "AgentGuardian" -ErrorAction SilentlyContinue).Count -eq 0)
-    if ($installedPackages.Count -eq 0) {
-        $installedPackages = @(Get-AgentGuardianPackages)
-    }
-    foreach ($installedPackage in $installedPackages) {
-        Remove-AppxPackage -Package $installedPackage.PackageFullName
-    }
-    if ($installedPackages.Count -ne 0) {
-        $uninstallDeadline = (Get-Date).AddSeconds(60)
-        do {
-            $remainingPackages = @(Get-AgentGuardianPackages)
-            if ($remainingPackages.Count -eq 0) {
-                $uninstalled = $true
-                break
-            }
-            Start-Sleep -Milliseconds 250
-        } while ((Get-Date) -lt $uninstallDeadline)
+    $cleanup = Remove-AgentGuardianPackagesBounded
+    $uninstalled = [bool]$cleanup.Uninstalled
+    $packageResidue = [bool]$cleanup.PackageResidue
+    if ($packageResidue) {
         $remainingPackages = @(Get-AgentGuardianPackages)
-        $packageResidue = ($remainingPackages.Count -ne 0)
-        if ($packageResidue) {
-            Write-Host "Package residue after bounded uninstall wait: $($remainingPackages.Count)"
-            $remainingPackages | Select-Object Name, PackageFullName, Status | Format-Table | Out-String | Write-Host
-        }
+        Write-Host "Package residue after bounded uninstall retry: $($remainingPackages.Count)"
+        $remainingPackages | Select-Object Name, PackageFullName, Status | Format-Table | Out-String | Write-Host
     }
     if ($null -ne $appDataRoot) {
         $appDataResidue = Test-Path -LiteralPath $appDataRoot
