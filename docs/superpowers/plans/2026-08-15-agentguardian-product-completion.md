@@ -12,17 +12,21 @@
 
 - [x] 增加 Windows MSIX 验证 workflow，固定 checkout 和 Python Action SHA。
 - [x] 使用 `requirements-dev.lock` 与 `requirements-build.lock` 哈希安装。
-- [ ] 将当前精确 SHA 推送到 `yangjing6213-dev/AgentGuardian` 并记录 push/PR run、job、annotations。
+- [x] 已将精确 SHA `24b11aa888ce21648ce68891e3a7f68aa01458fe` 推送到 `yangjing6213-dev/AgentGuardian` 并完成当前 PR runs：基础 CI `31866451116`、Windows MSIX smoke `31866451123`，两者均成功。
 
 完成条件：当前候选 SHA 的完整测试、品牌校验、源码编译、便携构建和 MSIX 契约均在 GitHub-hosted Windows Runner 通过。
+
+当前记录（2026-08-15）：基础 CI 报告 `1339 passed, 1 skipped`；Windows Runner 完成 MakeAppx staging、无签名 OID namespace 包安装/启动/卸载和 SHA-256 摘要。该烟测证据为 `signature_mode=unsigned_ci_smoke`，不是可信签名或公开发布证据。
 
 ### A2 原生安装器与安装/卸载验收
 
 - [x] 生成 MSIX manifest、资源、MakeAppx 命令和 SignTool 校验命令。
-- [x] 编写标准用户安装、启动、有限存活、终止、卸载和包残留检查脚本。
+- [x] 编写不主动提权的安装、启动、有限存活、终止、卸载和包残留检查脚本；普通用户可用性仍需签名包和干净机复核。
 - [x] CI 执行无签名 MSIX 的安装、启动和卸载烟测；证据明确标记为 `unsigned_ci_smoke`，不代表签名或发布可信度。
 - [ ] 在 Windows Runner 执行正式证书签名和签名包安装卸载烟测；依赖组织证书或 Trusted Signing secret。
 - [ ] 在独立干净 Windows 环境执行安装、升级、启动、卸载和残留验收。
+
+当前无签名 smoke 的 MSIX SHA-256：`E53895EB6E9E09E01CC2096C147C1CB8A244F8A8D775395299EFD00413F5537D`。该摘要只绑定测试包，不是发布包摘要。
 
 完成条件：安装器在目标 Windows 版本上可由普通用户安装和卸载，验证结果绑定精确 SHA 与 MSIX SHA-256；所有声明状态清理完成。
 

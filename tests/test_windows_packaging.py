@@ -34,16 +34,13 @@ PACKAGE_ROOT = PROJECT_ROOT / "src" / "agentguardian"
 BUILD_PACKAGES = {
     "altgraph": "0.17.4",
     "boolean-py": "5.0",
-    "cffi": "2.0.0",
     "cyclonedx-python-lib": "11.12.0",
-    "cryptography": "46.0.6",
     "defusedxml": "0.7.1",
     "license-expression": "30.4.4",
     "packaging": "26.2",
     "packageurl-python": "0.17.6",
     "pefile": "2023.2.7",
     "py-serializable": "2.1.0",
-    "pycparser": "3.0",
     "pyinstaller": "6.16.0",
     "pyinstaller-hooks-contrib": "2025.9",
     "pyside6": "6.11.1",
@@ -169,12 +166,12 @@ def test_build_dependencies_are_exactly_hash_locked() -> None:
     requirements = {}
     for line in lines:
         match = re.fullmatch(
-            r"([a-z0-9-]+)==([^ ]+)((?: --hash=sha256:[0-9a-f]{64})+)",
+            r"([a-z0-9-]+)==([^ ]+) --hash=sha256:([0-9a-f]{64})",
             line,
         )
         assert match is not None, line
-        name, version, hashes = match.groups()
-        requirements[name] = (version, hashes)
+        name, version, digest = match.groups()
+        requirements[name] = (version, digest)
 
     assert {name: version for name, (version, _) in requirements.items()} == (
         BUILD_PACKAGES
