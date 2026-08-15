@@ -46,6 +46,7 @@ $processStartup = $false
 $boundedLiveness = $false
 $termination = $false
 $uninstalled = $false
+$packageResidue = $false
 $packageFullName = $null
 $smokeError = $null
 
@@ -93,7 +94,16 @@ finally {
     $termination = (@(Get-Process -Name "AgentGuardian" -ErrorAction SilentlyContinue).Count -eq 0)
     if ($null -ne $packageFullName) {
         Remove-AppxPackage -Package $packageFullName
-        $uninstalled = (@(Get-AppxPackage -Name $PackageName).Count -eq 0)
+        $uninstallDeadline = (Get-Date).AddSeconds(15)
+        do {
+            $remainingPackages = @(Get-AppxPackage -Name $PackageName)
+            if ($remainingPackages.Count -eq 0) {
+                $uninstalled = $true
+                break
+            }
+            Start-Sleep -Milliseconds 250
+        } while ((Get-Date) -lt $uninstallDeadline)
+        $packageResidue = (@(Get-AppxPackage -Name $PackageName).Count -ne 0)
     }
 }
 
@@ -124,7 +134,7 @@ $evidence = [ordered]@{
         bounded_liveness = $boundedLiveness
         termination = $termination
         uninstalled = $uninstalled
-        package_residue = $false
+        package_residue = $packageResidue
     }
 }
 $evidence | ConvertTo-Json -Compress -Depth 6 | Set-Content -LiteralPath $resolvedEvidence -Encoding utf8NoBOM
