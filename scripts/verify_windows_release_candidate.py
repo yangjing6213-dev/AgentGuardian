@@ -9,6 +9,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from agentguardian.discovery import _has_reparse_component
+
 
 MAX_JSON_BYTES = 4 * 1024 * 1024
 _UNKNOWN_LICENSES = frozenset({"NOASSERTION", "UNKNOWN", "NONE"})
@@ -197,15 +199,15 @@ def _validate_license_review(
 
 
 def _directory(value: str | Path, code: str) -> Path:
-    path = Path(value)
-    if not path.is_absolute() or not path.is_dir() or path.is_symlink():
+    path = _safe_local_path(value, code)
+    if not path.is_dir():
         raise ReleaseEvidenceError(code)
     return path
 
 
 def _json_file(value: str | Path, code: str) -> dict[str, Any]:
-    path = Path(value)
-    if not path.is_absolute() or not path.is_file() or path.is_symlink():
+    path = _safe_local_path(value, code)
+    if not path.is_file():
         raise ReleaseEvidenceError(code)
     try:
         if path.stat().st_size > MAX_JSON_BYTES:
@@ -216,6 +218,18 @@ def _json_file(value: str | Path, code: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ReleaseEvidenceError(code)
     return value
+
+
+def _safe_local_path(value: str | Path, code: str) -> Path:
+    path = Path(value)
+    if (
+        not path.is_absolute()
+        or path.is_symlink()
+        or path.anchor.startswith("\\\\")
+        or _has_reparse_component(path)
+    ):
+        raise ReleaseEvidenceError(code)
+    return path
 
 
 def main() -> int:

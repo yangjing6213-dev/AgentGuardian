@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import scripts.verify_windows_release_candidate as release_evidence
 from scripts.verify_windows_release_candidate import (
     ReleaseEvidenceError,
     validate_release_candidate,
@@ -184,6 +185,23 @@ def test_release_gate_rejects_license_review_source_or_sbom_drift(tmp_path: Path
     license_review.write_text(json.dumps(review), encoding="utf-8")
 
     with pytest.raises(ReleaseEvidenceError, match="RELEASE_LICENSE_REVIEW_REQUIRED"):
+        validate_release_candidate(
+            bundle,
+            evidence,
+            expected_source_commit=COMMIT,
+            require_trusted_signature=True,
+            require_fresh_user_state=True,
+            license_review_path=license_review,
+        )
+
+
+def test_release_gate_rejects_reparse_components_in_evidence_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle, evidence, license_review = _write_candidate(tmp_path)
+    monkeypatch.setattr(release_evidence, "_has_reparse_component", lambda _path: True)
+
+    with pytest.raises(ReleaseEvidenceError, match="RELEASE_BUNDLE_INVALID"):
         validate_release_candidate(
             bundle,
             evidence,

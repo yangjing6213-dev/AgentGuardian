@@ -24,7 +24,8 @@ organization.
    smoke evidence, source SHA, and an approved license-review record. This
    final gate rejects unsigned evidence, source drift, unknown licenses,
    missing/stale license review, incomplete uninstall evidence, and an
-   unsigned build metadata status.
+   unsigned build metadata status. Every input path must be absolute, local,
+   non-symlink, and free of UNC/reparse components.
 
 ## Final gate example
 

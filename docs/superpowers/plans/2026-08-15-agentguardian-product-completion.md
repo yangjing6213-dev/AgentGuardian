@@ -144,3 +144,4 @@
 - The trusted-signature workflow now labels the portable bundle `trusted_release`, requires `-RequireFreshUserState`, and invokes `scripts/verify_windows_release_candidate.py` after signed MSIX smoke. Missing signing secrets and unresolved `NOASSERTION` licenses remain intentional fail-closed blockers.
 - Repository HEAD `36f57d0` revalidated the workflow/doc synchronization with local `1430 passed, 11 skipped` and successful push/Draft PR test and Windows checks; these remain CI evidence only.
 - The final release verifier now requires an approved `docs/security/windows-license-review.json` record bound to the exact source SHA and SBOM digest, with complete per-component evidence. The checked-in worksheet is `pending` until an authorized review is completed.
+- Release evidence path validation now rejects relative, symlink, UNC, and reparse/junction-backed inputs before reading any bundle, smoke, or license-review file.

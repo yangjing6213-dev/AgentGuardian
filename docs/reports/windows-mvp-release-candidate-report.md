@@ -100,6 +100,7 @@ This evidence does not cover the 10,000-file functional maximum, whole-process r
 - Trusted code signing: `PENDING`.
 - Trusted-signature workflow final gate: `IMPLEMENTED AND FAIL-CLOSED`; it now requires `trusted_release` bundle metadata, fresh-user-state evidence, trusted signer evidence, and complete SBOM/license notices. The current notices still contain unresolved `NOASSERTION` runtime licenses, so this gate has not passed.
 - Structured license-review evidence: `IMPLEMENTED`; the final gate binds an approved review record to the exact source SHA and SBOM SHA-256 and cross-checks every SBOM component. The committed worksheet is intentionally `pending`, so no legal/redistribution approval is claimed.
+- Release evidence path hardening: `IMPLEMENTED`; bundle, smoke evidence, and license-review inputs reject relative paths, symlinks, UNC paths, and reparse/junction components before reading.
 - Unsigned CI native install, upgrade, launch, termination and uninstall smoke: `VERIFIED`; trusted-package and independent acceptance remain pending.
 - Strict fresh-user-state verifier: `IMPLEMENTED`; independent clean Windows machine acceptance and residue review: `PENDING`.
 - License and redistribution review: `PENDING`.
