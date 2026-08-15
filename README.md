@@ -5,9 +5,9 @@
 ## Current control-core status
 
 - Offline enterprise policy enforcement is implemented: canonical policy parsing, role/capability allowlists, expiry, operator-provisioned SHA-256 pinning, and high-sensitivity confirmation. This is not a signed policy service or an enterprise console.
-- Dynamic MCP now has a default-deny supervisor contract with fixed argv, bounded request/output/runtime, temporary working directory, explicit confirmation, and no raw output retention. Because the current portable/MSIX runtime has no native network-deny attestation, adapter processes are refused by default.
+- Dynamic MCP now has a default-deny supervisor contract with fixed argv, bounded request/output/runtime, temporary working directory, explicit confirmation, no raw output retention, and a Windows Job Object process-tree boundary when a complete native attestation is supplied. Because the current portable/MSIX runtime has no native network-deny attestation, adapter processes are refused by default.
 - The desktop flow now exposes one allowlisted fixed remediation for `OPENAI_BASE_URL_OVERRIDE`: preview, scope check, explicit confirmation, target hash recheck, atomic replacement, same-directory backup, and same-session rollback. It does not execute arbitrary commands or generate edits with an LLM.
-- A native Windows AppContainer-or-equivalent provider, signed adapters, device registration, remote policy distribution, and administrator console remain required before those capabilities can be called complete.
+- A native Windows network-deny provider (AppContainer or equivalent), signed adapters, device registration, remote policy distribution, and administrator console remain required before those capabilities can be called complete. The Job Object process-tree layer is implemented and locally tested, but it does not provide network isolation by itself.
 - Fresh verification for code SHA `6c0043b5dc3551d4950f814a82a4c7484004d722`: local `1377 passed, 11 skipped`; push and Draft PR CI plus Windows package runs all succeeded (`31873363929`, `31873363921`, `31873365733`, `31873365732`). The Windows evidence remains unsigned CI smoke only.
 - Latest fixed-remediation slice SHA `20cac6c6b9c8384ba298e07b534d2186d9ec65ca`: local `1383 passed, 11 skipped`; push CI, push Windows, Draft PR CI and Draft PR Windows all succeeded (`31874528529`, `31874528521`, `31874530033`, `31874530037`). The Windows evidence remains unsigned CI smoke only.
 
@@ -43,7 +43,7 @@
 - 受控自动修复内核的固定单文件替换动作：dry-run、显式确认、目标哈希重查、同目录备份、原子替换和条件回滚；不执行任意命令。
 - 桌面端对 `OPENAI_BASE_URL_OVERRIDE` 提供受限固定地址替换和同会话回滚；修改后旧报告失效，必须重新审计。
 
-明确不包含：密钥自动撤销、云同步、企业控制台、动态 MCP 隔离和生产级安全承诺。浏览器数据库与剪贴板能力仍默认关闭且需要用户逐项触发；联网分享验证不判断链接内容、分享权限或搜索引擎收录安全。固定修复桌面流程尚未完成签名包、独立干净机器、真实 Windows 权限和竞态验收。UNC 路径被拒绝；映射网络盘无法可靠识别，属于已知残余风险。
+明确不包含：密钥自动撤销、云同步、企业控制台、完整动态 MCP 网络隔离与执行放行，以及生产级安全承诺。动态 MCP 当前仍默认拒绝；浏览器数据库与剪贴板能力仍默认关闭且需要用户逐项触发；联网分享验证不判断链接内容、分享权限或搜索引擎收录安全。固定修复桌面流程尚未完成签名包、独立干净机器、真实 Windows 权限和竞态验收。UNC 路径被拒绝；映射网络盘无法可靠识别，属于已知残余风险。
 
 ## Windows MVP 硬化进度
 

@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 
 from .discovery import _has_reparse_component
+from .windows_job_object import JobObjectUnavailable, run_in_job_object
 
 
 MAX_MCP_REQUEST_BYTES = 64 * 1024
@@ -211,6 +212,8 @@ def run_mcp_sandbox(
     root = _validated_temp_root(temp_root)
     try:
         with tempfile.TemporaryDirectory(dir=root) as workdir:
+            if os.name == "nt":
+                return _run_windows_job_object(policy, request, pathlib.Path(workdir))
             process = subprocess.Popen(
                 [os.fspath(policy.executable), *policy.arguments],
                 shell=False,
@@ -257,6 +260,59 @@ def run_mcp_sandbox(
             )
     except (OSError, ValueError):
         return _result(policy, SandboxStatus.FAILED, "sandbox_launch_failed")
+
+
+def _run_windows_job_object(
+    policy: McpSandboxPolicy,
+    request: bytes,
+    workdir: pathlib.Path,
+) -> McpSandboxResult:
+    try:
+        native = run_in_job_object(
+            policy.executable,
+            policy.arguments,
+            request,
+            workdir=workdir,
+            environment={"PYTHONNOUSERSITE": "1"},
+            timeout_seconds=policy.max_runtime_seconds,
+            max_output_bytes=policy.max_output_bytes,
+        )
+    except JobObjectUnavailable:
+        return _result(
+            policy,
+            SandboxStatus.DENIED,
+            "native_process_tree_isolation_unavailable",
+        )
+    if native.timed_out:
+        return _result(
+            policy,
+            SandboxStatus.TIMED_OUT,
+            "runtime_limit",
+            limits=("process_tree_isolation_enforced",),
+        )
+    if native.output_limited:
+        return _result(
+            policy,
+            SandboxStatus.FAILED,
+            "output_size_limit",
+            response_bytes=policy.max_output_bytes,
+            limits=("process_tree_isolation_enforced",),
+        )
+    if native.returncode != 0:
+        return _result(
+            policy,
+            SandboxStatus.FAILED,
+            "adapter_failed",
+            response_bytes=len(native.output),
+            limits=("process_tree_isolation_enforced",),
+        )
+    return _result(
+        policy,
+        SandboxStatus.COMPLETED,
+        "completed",
+        response_bytes=len(native.output),
+        limits=("process_tree_isolation_enforced",),
+    )
 
 
 def probe_native_sandbox() -> _SandboxAttestation | None:

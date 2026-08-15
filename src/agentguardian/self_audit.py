@@ -42,6 +42,7 @@ _AUDITED_CAPABILITY_MODULES = {
     "mcp_sandbox.py",
     "remediation.py",
     "share_verification.py",
+    "windows_job_object.py",
 }
 _SAFE_DIRECT_IMPORTS = {
     "ast",
@@ -51,6 +52,7 @@ _SAFE_DIRECT_IMPORTS = {
     "ipaddress",
     "json",
     "math",
+    "msvcrt",
     "ntpath",
     "os",
     "pathlib",
@@ -59,7 +61,9 @@ _SAFE_DIRECT_IMPORTS = {
     "stat",
     "sys",
     "tempfile",
+    "time",
     "unicodedata",
+    "_winapi",
 }
 _SAFE_FROM_IMPORTS = {
     "__future__",
@@ -80,6 +84,7 @@ _SAFE_FROM_IMPORTS = {
     "pyside6.qtcore",
     "pyside6.qtgui",
     "pyside6.qtwidgets",
+    "typing",
 }
 _CLIPBOARD_MODULES = {"pyperclip", "win32clipboard"}
 _TELEMETRY_MODULES = {

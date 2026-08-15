@@ -30,14 +30,17 @@ hash immediately before launch, rejects UNC/reparse executables, forbids shell
 command construction, requires explicit confirmation, uses a temporary working
 directory, bounds request/output/runtime, and never retains adapter output.
 
-The portable and current MSIX full-trust launchers do not provide proof of
-outbound network denial or process-tree isolation for a child adapter. The
-native attestation probe therefore returns no provider and the supervisor
-refuses to start an adapter. Synthetic attestation is used only in unit tests.
+`windows_job_object.py` provides a Windows Job Object launcher that assigns a
+child before resume, limits the job to one active process, kills the job on
+close, and enforces bounded runtime and output. This is a process-tree boundary,
+not a network boundary. The portable and current MSIX full-trust launchers still
+do not provide proof of outbound network denial, so the native attestation probe
+returns no complete provider and the supervisor refuses to start an adapter.
+Synthetic attestation is used only in unit tests.
 
 The remaining implementation gate is a real Windows provider based on
-AppContainer or an equivalent network-deny boundary plus Job Object process
-tree limits, followed by signed-adapter and clean-machine acceptance. Until
-that evidence exists, AgentGuardian provides static MCP detection and a
-default-deny supervisor contract, not dynamic MCP execution or production
-isolation.
+AppContainer or an equivalent network-deny boundary, combined with the Job
+Object process-tree layer, followed by signed-adapter and clean-machine
+acceptance. Until that evidence exists, AgentGuardian provides static MCP
+detection and a default-deny supervisor contract, not dynamic MCP execution or
+production isolation.

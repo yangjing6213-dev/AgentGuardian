@@ -14,6 +14,7 @@ from agentguardian.mcp_sandbox import (
     assess_mcp_sandbox,
     run_mcp_sandbox,
 )
+from agentguardian.windows_job_object import JobObjectRun
 
 
 def _policy() -> McpSandboxPolicy:
@@ -132,3 +133,45 @@ def test_attested_execution_rechecks_the_executable_hash(
     result = run_mcp_sandbox(tampered, b"synthetic-request", confirmed=True)
     assert result.status is SandboxStatus.DENIED
     assert result.reason == "executable_hash_mismatch"
+
+
+def test_attested_windows_execution_uses_job_object_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows Job Object integration")
+    policy = _policy()
+    calls = []
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "probe_native_sandbox",
+        lambda: _SandboxAttestation(
+            provider="synthetic-test-only",
+            network_isolated=True,
+            process_tree_isolated=True,
+        ),
+    )
+
+    def fake_run(*args: object, **kwargs: object) -> JobObjectRun:
+        calls.append((args, kwargs))
+        return JobObjectRun(0, b"ok", False, False, True)
+
+    monkeypatch.setattr(mcp_sandbox, "run_in_job_object", fake_run)
+    monkeypatch.setattr(
+        mcp_sandbox.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("Popen bypassed native job boundary"),
+    )
+
+    result = run_mcp_sandbox(
+        policy,
+        b"synthetic-request",
+        confirmed=True,
+        temp_root=tmp_path,
+    )
+
+    assert result.status is SandboxStatus.COMPLETED
+    assert result.response_bytes == 2
+    assert result.limits == ("process_tree_isolation_enforced",)
+    assert len(calls) == 1
