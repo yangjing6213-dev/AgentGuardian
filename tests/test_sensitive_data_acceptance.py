@@ -35,3 +35,28 @@ def test_sensitive_data_acceptance_writes_only_redacted_evidence(
     }
     assert result["workspace_cleanup"] is True
     assert "sk-proj-" not in evidence_path.read_text(encoding="utf-8")
+
+
+def test_sensitive_data_acceptance_can_use_a_user_provided_sanitized_sample(
+    tmp_path: Path,
+) -> None:
+    sample_root = tmp_path / "sanitized-sample"
+    sample_root.mkdir()
+    marker = "sk-proj-SANITIZED-ACCEPTANCE-CANARY"
+    (sample_root / "config.env").write_text(
+        f"OPENAI_API_KEY={marker}\n",
+        encoding="utf-8",
+    )
+    evidence_path = tmp_path / "sample-acceptance.json"
+
+    result = run_acceptance(evidence_path, sample_root=sample_root)
+
+    assert result["passed"] is True
+    assert result["sample"]["source_kind"] == "user_sanitized_sample"
+    assert result["sample"]["finding_count"] >= 1
+    assert result["report"]["sample_path_in_json"] is False
+    assert result["report"]["sample_path_in_html"] is False
+    assert result["report"]["sample_path_in_export"] is False
+    evidence = evidence_path.read_text(encoding="utf-8")
+    assert marker not in evidence
+    assert str(sample_root) not in evidence

@@ -1,9 +1,10 @@
-"""Run the synthetic high-sensitivity data handling acceptance gate."""
+"""Run the synthetic or user-supplied sanitized-data acceptance gate."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -20,16 +21,37 @@ from agentguardian.app import (  # noqa: E402
 )
 from agentguardian.browser_audit import BrowserKind, audit_browser_database  # noqa: E402
 from agentguardian.clipboard_audit import audit_clipboard_once  # noqa: E402
+from agentguardian.discovery import _has_reparse_component  # noqa: E402
 from agentguardian.sensitive_mode import SensitiveModePolicy  # noqa: E402
 
 
 _RAW_MARKER = "sk-proj-SYNTHETIC_AGENTGUARDIAN_MARKER_20260815"
 
 
-def run_acceptance(evidence_path: str | Path) -> dict[str, object]:
+def _validated_sample_root(value: str | Path) -> Path:
+    root = Path(value)
+    if (
+        not root.is_absolute()
+        or not root.is_dir()
+        or root.is_symlink()
+        or os.fspath(root).startswith(("\\\\", "//"))
+        or _has_reparse_component(root)
+    ):
+        raise ValueError("sample root must be an absolute local directory")
+    return root
+
+
+def run_acceptance(
+    evidence_path: str | Path,
+    *,
+    sample_root: str | Path | None = None,
+) -> dict[str, object]:
     destination = Path(evidence_path).resolve()
     if not destination.is_absolute() or not destination.parent.is_dir():
         raise ValueError("evidence path must have an existing parent directory")
+    validated_sample_root = (
+        None if sample_root is None else _validated_sample_root(sample_root)
+    )
 
     policy = SensitiveModePolicy.enabled_policy()
     export_confirmation_enforced = False
@@ -43,14 +65,18 @@ def run_acceptance(evidence_path: str | Path) -> dict[str, object]:
         prefix="agentguardian-sensitive-acceptance-",
     ) as workspace:
         workspace_path = Path(workspace)
-        scan_root = workspace_path / "scan"
-        scan_root.mkdir()
-        (scan_root / "credentials.env").write_text(
-            f"OPENAI_API_KEY={_RAW_MARKER}\n",
-            encoding="utf-8",
-        )
-
-        roots = (scan_root,)
+        if validated_sample_root is None:
+            scan_root = workspace_path / "scan"
+            scan_root.mkdir()
+            (scan_root / "credentials.env").write_text(
+                f"OPENAI_API_KEY={_RAW_MARKER}\n",
+                encoding="utf-8",
+            )
+            roots = (scan_root,)
+            sample_source_kind = "synthetic"
+        else:
+            roots = (validated_sample_root,)
+            sample_source_kind = "user_sanitized_sample"
         outcome = _run_audit(
             roots,
             scope_preview=_scope_preview_for(roots),
@@ -86,6 +112,15 @@ def run_acceptance(evidence_path: str | Path) -> dict[str, object]:
             "raw_marker_in_export": _RAW_MARKER in exported_report,
             "export_confirmation_enforced": export_confirmation_enforced,
         }
+        if validated_sample_root is not None:
+            sample_path = os.fspath(validated_sample_root)
+            report_checks.update(
+                {
+                    "sample_path_in_json": sample_path in report_json,
+                    "sample_path_in_html": sample_path in report_html,
+                    "sample_path_in_export": sample_path in exported_report,
+                }
+            )
 
         clipboard = audit_clipboard_once(
             lambda: _RAW_MARKER,
@@ -119,18 +154,27 @@ def run_acceptance(evidence_path: str | Path) -> dict[str, object]:
         }
 
     workspace_cleanup = not workspace_path.exists()
+    expected_report_checks = {
+        "raw_marker_in_json": False,
+        "raw_marker_in_html": False,
+        "raw_marker_in_export": False,
+        "export_confirmation_enforced": True,
+    }
+    if validated_sample_root is not None:
+        expected_report_checks.update(
+            {
+                "sample_path_in_json": False,
+                "sample_path_in_html": False,
+                "sample_path_in_export": False,
+            }
+        )
     result: dict[str, object] = {
         "schema_version": 1,
         "passed": (
             policy.enabled
             and not policy.api_access
             and not policy.raw_persistence
-            and report_checks == {
-                "raw_marker_in_json": False,
-                "raw_marker_in_html": False,
-                "raw_marker_in_export": False,
-                "export_confirmation_enforced": True,
-            }
+            and report_checks == expected_report_checks
             and clipboard_checks == {
                 "scanned": True,
                 "raw_data_retained": False,
@@ -150,6 +194,12 @@ def run_acceptance(evidence_path: str | Path) -> dict[str, object]:
             "export_confirmation_required": policy.export_requires_confirmation,
         },
         "report": report_checks,
+        "sample": {
+            "source_kind": sample_source_kind,
+            "finding_count": len(outcome.findings),
+            "coverage": outcome.score.coverage,
+            "incomplete": outcome.score.incomplete,
+        },
         "clipboard": clipboard_checks,
         "browser": browser_checks,
         "workspace_cleanup": workspace_cleanup,
@@ -167,8 +217,9 @@ def run_acceptance(evidence_path: str | Path) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--evidence-path", type=Path, required=True)
+    parser.add_argument("--sample-root", type=Path)
     args = parser.parse_args()
-    result = run_acceptance(args.evidence_path)
+    result = run_acceptance(args.evidence_path, sample_root=args.sample_root)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0
 
