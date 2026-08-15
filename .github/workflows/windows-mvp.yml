@@ -57,7 +57,7 @@ jobs:
             --stage-root "$pwd\.analysis\ci-msix-stage" `
             --project-root "$pwd" `
             --identity-name "yangjing6213dev.AgentGuardian" `
-            --publisher "CN=AgentGuardian CI Test" `
+            --publisher "CN=AgentGuardian CI Test, OID.2.25.311729368913984317654407730594956997722=1" `
             --version "0.1.0.0"
           & $env:MAKEAPPX pack `
             /d "$pwd\.analysis\ci-msix-stage" `

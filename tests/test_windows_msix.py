@@ -193,3 +193,4 @@ def test_windows_mvp_workflow_binds_tools_and_install_smoke() -> None:
     assert "New-SelfSignedCertificate" not in workflow
     assert "Export-PfxCertificate" not in workflow
     assert "-AllowUnsigned" in workflow
+    assert "OID.2.25.311729368913984317654407730594956997722=1" in workflow
