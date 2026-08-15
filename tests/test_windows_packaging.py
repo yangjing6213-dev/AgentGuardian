@@ -308,6 +308,7 @@ def test_build_portable_stages_trusted_mcp_adapter_before_evidence(
             "expected_publisher_subject": MCP_PUBLISHER,
             "expected_certificate_sha256": MCP_CERTIFICATE_SHA256,
         }
+        return adapter
 
     monkeypatch.setattr(build_module, "stage_trusted_mcp_adapter", stage)
 
@@ -324,6 +325,63 @@ def test_build_portable_stages_trusted_mcp_adapter_before_evidence(
     )
 
     assert events == ["adapter", "evidence"]
+
+
+def test_build_portable_locks_staged_adapter_through_evidence_and_zip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scripts.build_windows_portable as build_module
+
+    commit = "a" * 40
+    events: list[str] = []
+    _prepare_portable_build(monkeypatch, commit=commit, events=events)
+    adapter = _trusted_mcp_adapter(tmp_path)
+    digest = hashlib.sha256(adapter.read_bytes()).hexdigest()
+    staged = tmp_path / "output" / "dist" / "AgentGuardian" / "adapters" / MCP_ADAPTER_NAME
+
+    def stage(*args, **kwargs):
+        events.append("adapter")
+        return staged
+
+    @contextmanager
+    def held(path: Path):
+        assert path == staged
+        events.append("lock-enter")
+        yield
+        events.append("lock-exit")
+
+    def hash_staged(path: Path) -> str:
+        assert path == staged
+        events.append("hash")
+        return digest
+
+    monkeypatch.setattr(build_module, "stage_trusted_mcp_adapter", stage)
+    monkeypatch.setattr(
+        build_module.windows_code_signing,
+        "hold_executable_for_launch",
+        held,
+    )
+    monkeypatch.setattr(build_module, "_streaming_sha256", hash_staged)
+    monkeypatch.setattr(
+        build_module,
+        "deterministic_zip",
+        lambda *args: events.append("zip"),
+    )
+
+    build_portable(
+        tmp_path,
+        tmp_path / "output",
+        source_commit=commit,
+        built_at="2026-08-14T00:00:00Z",
+        artifact_status="trusted_release",
+        mcp_adapter_path=adapter,
+        mcp_adapter_sha256=digest,
+        mcp_adapter_publisher=MCP_PUBLISHER,
+        mcp_adapter_certificate_sha256=MCP_CERTIFICATE_SHA256,
+    )
+
+    assert events == ["adapter", "lock-enter", "hash", "evidence", "zip", "lock-exit"]
 
 
 @pytest.mark.parametrize(

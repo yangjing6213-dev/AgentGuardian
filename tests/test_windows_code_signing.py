@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,23 @@ def test_authenticode_rejects_an_unsigned_file(tmp_path: Path) -> None:
     executable = tmp_path / "unsigned.exe"
     executable.write_bytes(b"MZ synthetic unsigned executable")
     assert verify_authenticode(executable) is False
+
+
+def test_executable_launch_lock_blocks_write_and_replacement(tmp_path: Path) -> None:
+    executable = tmp_path / "adapter.exe"
+    replacement = tmp_path / "replacement.exe"
+    executable.write_bytes(b"original")
+    replacement.write_bytes(b"replacement")
+
+    with signing.hold_executable_for_launch(executable):
+        with pytest.raises(OSError):
+            executable.write_bytes(b"changed")
+        with pytest.raises(OSError):
+            os.replace(replacement, executable)
+        assert executable.read_bytes() == b"original"
+
+    os.replace(replacement, executable)
+    assert executable.read_bytes() == b"replacement"
 
 
 def test_publisher_verification_requires_an_exact_allowlist_match(

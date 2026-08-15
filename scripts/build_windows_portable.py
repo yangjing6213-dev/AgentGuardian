@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from importlib import metadata
 import json
@@ -483,28 +484,40 @@ def build_portable(
         vc_runtime_version=_pe_version(internal / "VCRUNTIME140.dll"),
         ucrt_version=_pe_version(internal / "ucrtbase.dll"),
     )
+    staged_adapter = None
     if artifact_status == "trusted_release":
-        stage_trusted_mcp_adapter(
+        staged_adapter = stage_trusted_mcp_adapter(
             bundle_root,
             mcp_adapter_path,
             expected_sha256=mcp_adapter_sha256,
             expected_publisher_subject=mcp_adapter_publisher,
             expected_certificate_sha256=mcp_adapter_certificate_sha256,
         )
-    write_portable_evidence(
-        bundle_root,
-        project_root=project_root,
-        component_specs=components,
-        source_commit=source_commit,
-        built_at=built_at,
-        build_dependencies=build_dependencies,
-        forbidden_texts=(str(project_root), str(output_root)),
-        artifact_status=artifact_status,
+    adapter_guard = (
+        windows_code_signing.hold_executable_for_launch(staged_adapter)
+        if staged_adapter is not None
+        else nullcontext()
     )
-    deterministic_zip(
-        bundle_root,
-        output_root / f"AgentGuardian-0.1.0-windows-x64-{source_commit[:12]}.zip",
-    )
+    with adapter_guard:
+        if (
+            staged_adapter is not None
+            and _streaming_sha256(staged_adapter) != mcp_adapter_sha256
+        ):
+            raise ValueError("staged MCP adapter identity changed before packaging")
+        write_portable_evidence(
+            bundle_root,
+            project_root=project_root,
+            component_specs=components,
+            source_commit=source_commit,
+            built_at=built_at,
+            build_dependencies=build_dependencies,
+            forbidden_texts=(str(project_root), str(output_root)),
+            artifact_status=artifact_status,
+        )
+        deterministic_zip(
+            bundle_root,
+            output_root / f"AgentGuardian-0.1.0-windows-x64-{source_commit[:12]}.zip",
+        )
     return bundle_root
 
 

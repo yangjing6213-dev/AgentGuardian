@@ -64,14 +64,25 @@ jobs:
       - name: Download and verify trusted MCP adapter
         shell: pwsh
         run: |
-          $adapterPath = Join-Path $env:RUNNER_TEMP "AgentGuardianMcpAdapter.exe"
-          if (Test-Path -LiteralPath $adapterPath) {
-            throw "fixed MCP adapter download path must be new"
+          $adapterOutput = @(python scripts/download_trusted_mcp_adapter.py `
+            --url "$env:AGENTGUARDIAN_MCP_ADAPTER_URL" `
+            --temporary-root "$env:RUNNER_TEMP" `
+            --expected-sha256 "$env:AGENTGUARDIAN_MCP_ADAPTER_SHA256")
+          if ($LASTEXITCODE -ne 0 -or $adapterOutput.Count -ne 1) {
+            throw "trusted MCP adapter download did not return one verified path"
           }
-          Invoke-WebRequest -Uri $env:AGENTGUARDIAN_MCP_ADAPTER_URL -OutFile $adapterPath
-          $actualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $adapterPath).Hash.ToLowerInvariant()
-          if ($actualSha256 -cne $env:AGENTGUARDIAN_MCP_ADAPTER_SHA256) {
-            throw "downloaded MCP adapter SHA-256 does not match"
+          $adapterPath = [IO.Path]::GetFullPath([string]$adapterOutput[0])
+          $runnerRoot = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd(
+            [IO.Path]::DirectorySeparatorChar,
+            [IO.Path]::AltDirectorySeparatorChar
+          ) + [IO.Path]::DirectorySeparatorChar
+          if (
+              -not [IO.Path]::IsPathFullyQualified($adapterPath) -or
+              [IO.Path]::GetFileName($adapterPath) -cne "AgentGuardianMcpAdapter.exe" -or
+              -not $adapterPath.StartsWith($runnerRoot, [StringComparison]::OrdinalIgnoreCase) -or
+              -not (Test-Path -LiteralPath $adapterPath -PathType Leaf)
+            ) {
+            throw "trusted MCP adapter downloader returned an invalid path"
           }
           "MCP_ADAPTER_PATH=$adapterPath" >> $env:GITHUB_ENV
 

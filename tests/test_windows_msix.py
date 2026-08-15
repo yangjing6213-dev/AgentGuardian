@@ -1,4 +1,5 @@
 import hashlib
+import base64
 import json
 from pathlib import Path
 import shutil
@@ -564,11 +565,15 @@ def test_task2_mcp_signed_workflow_downloads_and_binds_pinned_adapter() -> None:
         "AGENTGUARDIAN_MCP_ADAPTER_SHA256: ${{ vars.AGENTGUARDIAN_MCP_ADAPTER_SHA256 }}",
         "AGENTGUARDIAN_MCP_ADAPTER_PUBLISHER: ${{ vars.AGENTGUARDIAN_MCP_ADAPTER_PUBLISHER }}",
         "AGENTGUARDIAN_MCP_ADAPTER_CERTIFICATE_SHA256: ${{ vars.AGENTGUARDIAN_MCP_ADAPTER_CERTIFICATE_SHA256 }}",
-        'Join-Path $env:RUNNER_TEMP "AgentGuardianMcpAdapter.exe"',
         "[UriKind]::Absolute",
         'Scheme -ne "https"',
-        "Invoke-WebRequest",
-        "Get-FileHash -Algorithm SHA256",
+        "$adapterOutput = @(python scripts/download_trusted_mcp_adapter.py",
+        '--url "$env:AGENTGUARDIAN_MCP_ADAPTER_URL"',
+        '--temporary-root "$env:RUNNER_TEMP"',
+        '--expected-sha256 "$env:AGENTGUARDIAN_MCP_ADAPTER_SHA256"',
+        "$LASTEXITCODE -ne 0 -or $adapterOutput.Count -ne 1",
+        '[IO.Path]::GetFileName($adapterPath) -cne "AgentGuardianMcpAdapter.exe"',
+        '-not $adapterPath.StartsWith($runnerRoot, [StringComparison]::OrdinalIgnoreCase)',
         "--mcp-adapter-path",
         "--mcp-adapter-sha256",
         "--mcp-adapter-publisher",
@@ -584,12 +589,52 @@ def test_task2_mcp_signed_workflow_downloads_and_binds_pinned_adapter() -> None:
     ):
         assert required in workflow
 
-    assert workflow.index("Invoke-WebRequest") < workflow.index("Get-FileHash -Algorithm SHA256")
-    assert workflow.index("Get-FileHash -Algorithm SHA256") < workflow.index(
+    assert "Invoke-WebRequest" not in workflow
+    assert workflow.index("download_trusted_mcp_adapter.py") < workflow.index(
         "python scripts/build_windows_portable.py"
     )
     assert "Get-Content -LiteralPath $mcpAdapterEvidence" not in workflow
     assert "-AllowUnsigned" not in workflow
+
+
+def test_task2_mcp_download_step_is_valid_powershell() -> None:
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is unavailable")
+    workflow = (
+        PROJECT_ROOT / ".github" / "workflows" / "windows-mvp-signed.yml"
+    ).read_text(encoding="utf-8")
+    step = workflow.split(
+        "      - name: Download and verify trusted MCP adapter\n", 1
+    )[1].split("\n      - name:", 1)[0]
+    run_block = step.split("        run: |\n", 1)[1]
+    script = "\n".join(
+        line[10:] if line.startswith("          ") else line
+        for line in run_block.splitlines()
+    )
+    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    harness = rf"""
+$script = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded}'))
+$tokens = $null
+$errors = $null
+[System.Management.Automation.Language.Parser]::ParseInput(
+    $script,
+    [ref]$tokens,
+    [ref]$errors
+) | Out-Null
+if ($errors.Count -ne 0) {{
+    $errors | ForEach-Object {{ Write-Error $_.Message }}
+    exit 1
+}}
+"""
+
+    result = subprocess.run(
+        [pwsh, "-NoProfile", "-NonInteractive", "-Command", harness],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_task2_signed_workflow_does_not_dump_full_signature_evidence() -> None:
