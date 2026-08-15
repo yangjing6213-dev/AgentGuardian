@@ -19,8 +19,11 @@ Every capability decision is fail-closed unless:
 5. `mcp_dynamic` additionally has an independently attested sandbox.
 
 The digest pin is an integrity check for a locally provisioned document. It is
-not a digital signature, device registration, tenant service, administrator
-console, or remote policy distribution mechanism. Those remain release gates.
+not a digital signature or remote policy distribution mechanism. The desktop
+now provides a local-only control-plane page backed by the same SQLite core for
+tenant/device/role registration, offline policy import, device revocation, and
+bounded operational summaries. It is not a tenant service, administrator
+authentication flow, or remote administrator console.
 
 ## Dynamic MCP supervisor
 
@@ -50,7 +53,7 @@ invalid signature is denied.
 
 This does not complete the release gate. An organization publisher allowlist,
 packaged-adapter filesystem accessibility, crash/restart acceptance, clean-machine install and
-uninstall evidence, device registration, remote policy distribution, and an
-administrator console remain outstanding. The current evidence supports a
-locally verified Windows MVP boundary, not production isolation or processing
-of highly sensitive real data.
+uninstall evidence, remote device registration, remote policy distribution,
+administrator authentication, and an administrator console remain outstanding.
+The current evidence supports a locally verified Windows MVP boundary, not
+production isolation or processing of highly sensitive real data.

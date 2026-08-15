@@ -17,6 +17,8 @@ param(
 
     [switch]$RequireTrustedSignature,
 
+    [switch]$RequireFreshUserState,
+
     [ValidateRange(1, 30)]
     [int]$SmokeSeconds = 4
 )
@@ -65,6 +67,22 @@ if ($RequireTrustedSignature -and $AllowUnsigned) {
 }
 if ($RequireTrustedSignature -and [string]::IsNullOrWhiteSpace($ExpectedPublisher)) {
     throw "ExpectedPublisher is required for a trusted signature gate"
+}
+if ($RequireFreshUserState -and $AllowUnsigned) {
+    throw "RequireFreshUserState cannot be combined with AllowUnsigned"
+}
+if ($RequireFreshUserState -and -not $RequireTrustedSignature) {
+    throw "RequireFreshUserState requires RequireTrustedSignature"
+}
+$appDataRoot = $null
+if ($RequireFreshUserState) {
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        throw "RequireFreshUserState requires LOCALAPPDATA"
+    }
+    $appDataRoot = Join-Path $env:LOCALAPPDATA "AgentGuardian"
+    if (Test-Path -LiteralPath $appDataRoot) {
+        throw "RequireFreshUserState requires empty user state before install"
+    }
 }
 
 $signature = Get-AuthenticodeSignature -FilePath $resolvedPackage
@@ -117,6 +135,7 @@ $boundedLiveness = $false
 $termination = $false
 $uninstalled = $false
 $packageResidue = $false
+$appDataResidue = $false
 $upgradeAttempted = $false
 $upgraded = $false
 $versionBefore = $null
@@ -215,6 +234,9 @@ finally {
             $remainingPackages | Select-Object Name, PackageFullName, Status | Format-Table | Out-String | Write-Host
         }
     }
+    if ($null -ne $appDataRoot) {
+        $appDataResidue = Test-Path -LiteralPath $appDataRoot
+    }
 }
 
 if (-not $termination) {
@@ -225,6 +247,9 @@ if ($null -ne $smokeError) {
 }
 if (-not $uninstalled) {
     throw "MSIX package remains installed after uninstall"
+}
+if ($RequireFreshUserState -and $appDataResidue) {
+    throw "AgentGuardian user state remains after fresh-user-state uninstall"
 }
 
 $evidenceParent = Split-Path -Parent $resolvedEvidence
@@ -238,6 +263,7 @@ $evidence = [ordered]@{
     started_at = $startedAt
     completed_at = Get-UtcSecond
     smoke_seconds = $SmokeSeconds
+    fresh_user_state = [bool]$RequireFreshUserState
     signature_mode = if ($AllowUnsigned) { "unsigned_ci_smoke" } elseif ($RequireTrustedSignature) { "trusted_signed" } else { "signed" }
     signature = [ordered]@{
         status = $signature.Status.ToString()
@@ -256,6 +282,7 @@ $evidence = [ordered]@{
         termination = $termination
         uninstalled = $uninstalled
         package_residue = $packageResidue
+        app_data_residue = $appDataResidue
     }
 }
 $evidence | ConvertTo-Json -Compress -Depth 6 | Set-Content -LiteralPath $resolvedEvidence -Encoding utf8NoBOM

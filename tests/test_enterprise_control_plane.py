@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agentguardian.enterprise_control_plane import EnterpriseControlPlane
+from agentguardian.enterprise_control_plane import EnterpriseControlPlane, TenantSummary
 from agentguardian.enterprise_policy import PolicyDecisionStatus
 
 
@@ -147,3 +147,29 @@ def test_control_plane_exports_only_bounded_metadata_and_purges_expired_events(
 
     assert control_plane.purge_expired_events(NOW + timedelta(days=2)) == 1
     assert json.loads(control_plane.export_events("tenant-alpha", now=NOW))["events"] == []
+
+
+def test_control_plane_exposes_operational_summaries_without_event_content(tmp_path: Path) -> None:
+    control_plane = _provisioned(tmp_path)
+    control_plane.record_event(
+        tenant_id="tenant-alpha",
+        device_id="device-alpha",
+        event_type="scan_completed",
+        metadata={"finding_count": 2},
+        occurred_at=NOW,
+        retention=timedelta(days=1),
+    )
+
+    tenants = control_plane.list_tenant_summaries()
+    assert tenants == (
+        TenantSummary(
+            tenant_id="tenant-alpha",
+            display_name="Alpha",
+            device_count=1,
+            active_device_count=1,
+            active_policy_count=1,
+            audit_event_count=1,
+        ),
+    )
+    assert control_plane.list_device_summaries("tenant-alpha")[0].device_id == "device-alpha"
+    assert control_plane.list_policy_summaries("tenant-alpha")[0].policy_sha256

@@ -251,3 +251,19 @@ def test_signed_msix_gate_is_fail_closed_and_checks_trusted_publisher() -> None:
         assert required in workflow
     assert "New-SelfSignedCertificate" not in workflow
     assert "-AllowUnsigned" not in workflow
+
+
+def test_msix_verifier_has_a_strict_fresh_user_state_mode() -> None:
+    verifier = (
+        PROJECT_ROOT / "scripts" / "verify_windows_msix.ps1"
+    ).read_text(encoding="utf-8")
+    for required in (
+        "RequireFreshUserState",
+        "fresh_user_state",
+        "app_data_residue",
+        "LOCALAPPDATA",
+        "empty user state",
+    ):
+        assert required in verifier
+    assert "RequireFreshUserState cannot be combined with AllowUnsigned" in verifier
+    assert "RequireFreshUserState requires RequireTrustedSignature" in verifier

@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
 import json
+import os
 import pathlib
 import re
 import sqlite3
@@ -36,6 +38,48 @@ _RBAC_ROLES = frozenset({"admin", "auditor", "operator"})
 _FORBIDDEN_METADATA_TERMS = frozenset(
     {"raw", "content", "secret", "token", "password", "cookie", "url", "path", "prompt", "chat"}
 )
+_CONTROL_PLANE_FILENAME = "control-plane-v1.sqlite3"
+
+
+def default_control_plane_path() -> pathlib.Path:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data or _is_unc_path(local_app_data):
+        raise ValueError("CONTROL_PLANE_DATABASE_UNAVAILABLE")
+    root = pathlib.Path(local_app_data)
+    if not root.is_absolute():
+        raise ValueError("CONTROL_PLANE_DATABASE_UNAVAILABLE")
+    return root / "AgentGuardian" / _CONTROL_PLANE_FILENAME
+
+
+@dataclass(frozen=True, slots=True)
+class TenantSummary:
+    tenant_id: str
+    display_name: str
+    device_count: int
+    active_device_count: int
+    active_policy_count: int
+    audit_event_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceSummary:
+    tenant_id: str
+    device_id: str
+    status: str
+    registered_at: str
+    revoked_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PolicySummary:
+    tenant_id: str
+    policy_id: str
+    version: int
+    device_id: str
+    policy_sha256: str
+    status: str
+    issued_at: str
+    expires_at: str
 
 
 class EnterpriseControlPlane:
@@ -113,6 +157,52 @@ class EnterpriseControlPlane:
 
     def close(self) -> None:
         self._connection.close()
+
+    def list_tenant_summaries(self) -> tuple[TenantSummary, ...]:
+        rows = self._connection.execute(
+            "SELECT t.tenant_id, t.display_name, "
+            "COUNT(DISTINCT d.device_id) AS device_count, "
+            "COUNT(DISTINCT CASE WHEN d.status = 'active' THEN d.device_id END) "
+            "AS active_device_count, "
+            "(SELECT COUNT(*) FROM policies p WHERE p.tenant_id = t.tenant_id "
+            "AND p.status = 'active') AS active_policy_count, "
+            "(SELECT COUNT(*) FROM audit_events a WHERE a.tenant_id = t.tenant_id) "
+            "AS audit_event_count "
+            "FROM tenants t LEFT JOIN devices d ON d.tenant_id = t.tenant_id "
+            "GROUP BY t.tenant_id, t.display_name ORDER BY t.tenant_id"
+        ).fetchall()
+        return tuple(
+            TenantSummary(
+                tenant_id=row["tenant_id"],
+                display_name=row["display_name"],
+                device_count=row["device_count"],
+                active_device_count=row["active_device_count"],
+                active_policy_count=row["active_policy_count"],
+                audit_event_count=row["audit_event_count"],
+            )
+            for row in rows
+        )
+
+    def list_device_summaries(self, tenant_id: str) -> tuple[DeviceSummary, ...]:
+        tenant_id = _identifier(tenant_id, "tenant_id")
+        self._require_tenant(tenant_id)
+        rows = self._connection.execute(
+            "SELECT tenant_id, device_id, status, registered_at, revoked_at "
+            "FROM devices WHERE tenant_id = ? ORDER BY device_id",
+            (tenant_id,),
+        ).fetchall()
+        return tuple(DeviceSummary(**dict(row)) for row in rows)
+
+    def list_policy_summaries(self, tenant_id: str) -> tuple[PolicySummary, ...]:
+        tenant_id = _identifier(tenant_id, "tenant_id")
+        self._require_tenant(tenant_id)
+        rows = self._connection.execute(
+            "SELECT tenant_id, policy_id, version, device_id, policy_sha256, status, "
+            "issued_at, expires_at FROM policies WHERE tenant_id = ? "
+            "ORDER BY policy_id, version DESC",
+            (tenant_id,),
+        ).fetchall()
+        return tuple(PolicySummary(**dict(row)) for row in rows)
 
     def __enter__(self) -> Self:
         return self
@@ -411,6 +501,11 @@ def _identifier(value: object, name: str) -> str:
     if type(value) is not str or _IDENTIFIER.fullmatch(value) is None:
         raise ValueError(f"CONTROL_PLANE_{name.upper()}_INVALID")
     return value
+
+
+def _is_unc_path(value: str | pathlib.Path) -> bool:
+    text = str(value).replace("/", "\\")
+    return text.startswith("\\\\") or text.startswith("//")
 
 
 def _display_name(value: object) -> str:

@@ -664,7 +664,7 @@ def test_window_navigation_trust_strip_and_approved_theme(qapp):
     window.show()
     qapp.processEvents()
 
-    assert window.stack.count() == 3
+    assert window.stack.count() == 4
     assert window.local_mode_label.text() == "本地路径模式"
     assert window.scan_button.text() == "开始审计"
     assert not window.scan_button.icon().isNull()
@@ -673,6 +673,7 @@ def test_window_navigation_trust_strip_and_approved_theme(qapp):
         "审计范围",
         "风险发现",
         "审计报告",
+        "本地管理",
     ]
     assert [label.text() for label in window.trust_labels] == [
         "本地路径模式",
@@ -689,6 +690,8 @@ def test_window_navigation_trust_strip_and_approved_theme(qapp):
 
     assert not window.protected_state_button.icon().isNull()
     assert not window.protected_state_button.isEnabled()
+    assert window.control_plane_status_label.text() == "尚未初始化本地控制面"
+    assert "仅本地" in window.control_plane_summary_browser.toPlainText()
     report_actions = (
         window.review_button,
         window.protected_state_button,
@@ -718,6 +721,26 @@ def test_window_navigation_trust_strip_and_approved_theme(qapp):
     )
     assert not _global_rect(window.trust_strip).intersects(_global_rect(window.stack))
 
+    window.close()
+
+
+def test_local_control_plane_console_manages_local_registry(qapp) -> None:
+    window = create_window()
+    window._initialize_control_plane()
+    window.control_plane_tenant_id_edit.setText("tenant-alpha")
+    window.control_plane_tenant_name_edit.setText("Alpha")
+    window.control_plane_device_id_edit.setText("device-alpha")
+    window.control_plane_subject_id_edit.setText("operator-alpha")
+
+    window._register_control_plane_tenant()
+    window._register_control_plane_device()
+    window._grant_control_plane_role()
+
+    assert "tenant-alpha / Alpha" in window.control_plane_summary_browser.toPlainText()
+    assert "设备 1/1 活跃" in window.control_plane_summary_browser.toPlainText()
+
+    window._revoke_control_plane_device()
+    assert "设备 0/1 活跃" in window.control_plane_summary_browser.toPlainText()
     window.close()
 
 
