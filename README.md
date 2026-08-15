@@ -7,6 +7,7 @@
 - Offline enterprise policy enforcement is implemented: canonical policy parsing, role/capability allowlists, expiry, operator-provisioned SHA-256 pinning, and high-sensitivity confirmation. This is not a signed policy service or an enterprise console.
 - Dynamic MCP now has a default-deny supervisor contract with fixed argv, bounded request/output/runtime, temporary working directory, explicit confirmation, and no raw output retention. Because the current portable/MSIX runtime has no native network-deny attestation, adapter processes are refused by default.
 - A native Windows AppContainer-or-equivalent provider, signed adapters, device registration, remote policy distribution, and administrator console remain required before those capabilities can be called complete.
+- Fresh verification for code SHA `6c0043b5dc3551d4950f814a82a4c7484004d722`: local `1377 passed, 11 skipped`; push and Draft PR CI plus Windows package runs all succeeded (`31873363929`, `31873363921`, `31873365733`, `31873365732`). The Windows evidence remains unsigned CI smoke only.
 
 **AI Agent 守护者（AG）** 是一款面向 Windows 个人用户和小团队的本地优先 AI Agent 数据安全审计工具。
 
