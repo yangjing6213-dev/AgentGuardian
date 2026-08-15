@@ -9,15 +9,15 @@ Windows MVP remains incomplete. Production safety is not established.
 ## Candidate Boundary
 
 - Local gate implementation and unified local evidence baseline: historical `90e6edad53bee48adca58d508d193fc855c1db7d`.
-- The current clean code-bearing hardening HEAD is `3febfd57b6841181597bd5476e176710e81a011f`. It implements packaged MCP adapter build staging, trusted MSIX adapter acceptance, final release-evidence binding, manual signed-workflow inputs, and fail-closed signing-material cleanup. This report is a documentation-only follow-up to that SHA.
+- The current clean code-bearing hardening HEAD is `75fd3d9f0f8c8921fecac13f6eec534c5094140f`. It implements packaged MCP adapter build staging, bounded direct artifact acquisition, staged-adapter locking through evidence and ZIP generation, trusted MSIX adapter acceptance, final release-evidence binding, and fail-closed signing-material cleanup. This report is a documentation-only follow-up to that SHA.
 - The first independent review of the previous evidence-sync HEAD found 7 Important and 2 Minor findings. A second independent review of `305eeb4e1a143a245323a9b54d8fe27314a4e16c` found 2 further Important findings; both were remediated in `90e6eda`. A focused third independent re-review found no Critical or Important findings and one Minor; it did not execute tests independently.
 - OpenAI Provider remains local detection and manual guidance only; the default product path makes no provider API call and performs no endpoint verification.
-- The local remote-tracking reference was `9577a85fb107a7de506fd67ce48ce795bc707678` when this report was prepared. That local reference is not live GitHub verification and does not cover the candidate baseline.
+- The remote-tracking reference was `aabd6e828ea208d4e80951cb02ea5ead12750797` when this report was prepared. Its exact-SHA push and Draft PR CI plus both Windows package checks succeeded, but it predates the current candidate baseline.
 
 ## Current Follow-up Evidence
 
 Fresh local verification on clean code-bearing SHA
-`3febfd57b6841181597bd5476e176710e81a011f` recorded `1510 passed, 11 skipped`
+`75fd3d9f0f8c8921fecac13f6eec534c5094140f` recorded `1529 passed, 11 skipped`
 for the full suite and `47 passed, 1 skipped` for
 `scripts/run_windows_mvp_security_gate.py`. The command
 `python -m compileall src scripts tests` exited 0 and `git diff --check` was
@@ -39,15 +39,19 @@ Task 2 requires all four external adapter inputs for trusted builds and rejects
 them for unsigned builds. Under a source-file lock it verifies the exact SHA-256,
 trusted Authenticode, publisher subject, and certificate pin, then stages only
 `adapters/AgentGuardianMcpAdapter.exe` and `MCP-ADAPTER.json` before payload
-manifests, checksums, and ZIP generation. The manual workflow requires four
-non-secret repository variables, uses an absolute HTTPS download to a fixed new
-path with a pre-build hash check, scopes organization PFX/password material to
+manifests, checksums, and ZIP generation. The staged adapter is rehashed and held
+without write/delete sharing through evidence and ZIP generation. The manual
+workflow requires four non-secret repository variables and uses a direct HTTPS,
+no-redirect, 64 MiB bounded streaming downloader with exact hash, random private
+runner directory, Win32 final-handle path binding, and handle-bound failure
+deletion. It scopes organization PFX/password material to
 the required steps, verifies imported certificate/private-key and PFX cleanup
 fail-closed, and sets a real 30-minute outer timeout.
 
-Task 1 and Task 2 passed independent specification and quality/security review
-with no remaining Critical or Important issues. Current normal GitHub CI for
-`3febfd57b6841181597bd5476e176710e81a011f` had not been revalidated when this
+Task 1, Task 2, and the trusted-artifact acquisition hardening passed independent
+specification or quality/security review with no remaining Critical or Important
+issues. Current normal GitHub CI for
+`75fd3d9f0f8c8921fecac13f6eec534c5094140f` had not been revalidated when this
 documentation was prepared. Historical successful CI remains evidence only for
 its exact historical SHA.
 
@@ -71,10 +75,10 @@ change the release decision.
 
 | Gate | Current revalidation | Scope |
 | --- | --- | --- |
-| Windows MVP security gate | `47 passed, 1 skipped` | Fresh run of `scripts/run_windows_mvp_security_gate.py` at `3febfd57b6841181597bd5476e176710e81a011f`. The allowed skip is not reported as a pass. |
-| Python 3.14 full suite | `1510 passed, 11 skipped` | Fresh full-suite run at the clean code-bearing SHA above. |
+| Windows MVP security gate | `47 passed, 1 skipped` | Fresh run of `scripts/run_windows_mvp_security_gate.py` at `75fd3d9f0f8c8921fecac13f6eec534c5094140f`. The allowed skip is not reported as a pass. |
+| Python 3.14 full suite | `1529 passed, 11 skipped` | Fresh full-suite run at the clean code-bearing SHA above. |
 | Source, script, and test compilation | Exit 0 | Fresh `python -m compileall src scripts tests`. |
-| Current exact-SHA GitHub CI | `PENDING REVALIDATION` | No normal GitHub CI result for `3febfd57b6841181597bd5476e176710e81a011f` was treated as current evidence at documentation time. |
+| Current exact-SHA GitHub CI | `PENDING REVALIDATION` | No normal GitHub CI result for `75fd3d9f0f8c8921fecac13f6eec534c5094140f` was treated as current evidence at documentation time. |
 | Brand validation | Historical exit 0 | Existing brand-asset contract; not rerun for this documentation sync. |
 | Portable reproducibility | Historical: `208 files` and `92,870,198 bytes` in each bundle; Bundle diff count: `0`; both ZIPs were `36,033,202 bytes` with SHA-256 `4f7e9ffdd347fddf67ffb7544ab84e777ff7b93e2ed1bf546ed87e6e9517bad1` | Historical `90e6eda` evidence only. Two new build roots used a hash-locked Python 3.12.2/PyInstaller 6.16.0 environment, lock SHA `75be59ee054a75d556cc89099f571d9826fa272aef656124fa75dc535731cdd5`, and fixed build time `2026-08-15T00:00:00Z`. |
 | Portable isolation smoke | Historical: both copied bundles reported `process_startup=true`, `bounded_liveness=true`, `termination=forced_after_bounded_smoke`, `process_tree_terminated=true`, and `declared_residue=false` | Historical local smoke with evidence JSON SHA-256 L `8ed7fe9a1e9fc43ee7fcf0c32cc4de3bceb9042695080d11c59451ae163cf034` and M `cd4317b9881aec914efe7090cf9d7324c4adf5803931ad4704e1776986a433c9`; not clean-machine acceptance or current-SHA runtime evidence. |
@@ -84,7 +88,7 @@ For traceability, the earlier Batch 6 evidence baseline remains recorded as
 `1322 passed, 8 skipped` on Python 3.14 and `1321 passed, 9 skipped` on the
 hash-locked Python 3.12 environment. The prior `ef571a1` result was
 `1426 passed, 11 skipped`; neither historical count replaces the current
-`3febfd5` local result above.
+`75fd3d9` local result above.
 
 ## Performance Evidence
 
@@ -104,8 +108,8 @@ This evidence does not cover the 10,000-file functional maximum, whole-process r
 - Independent read-only review: `COMPLETED WITH 7 IMPORTANT AND 2 MINOR FINDINGS` on the prior evidence-sync HEAD; those findings were remediated locally.
 - Second independent re-review: `COMPLETED WITH 2 IMPORTANT AND 3 MINOR FINDINGS` on `305eeb4`; both Important findings were remediated in `90e6eda`.
 - Third independent re-review: `COMPLETED WITH NO CRITICAL/IMPORTANT FINDINGS AND 1 MINOR`; the reviewer did not execute tests independently, so runtime confirmation remains the separately recorded local-gate evidence.
-- Task 1 and Task 2 independent specification and quality/security review: `COMPLETED`; no Critical or Important issues remain. This does not provide external-material or runtime acceptance.
-- Current exact-SHA GitHub CI: `PENDING REVALIDATION` for repository HEAD `3febfd57b6841181597bd5476e176710e81a011f`. Earlier successful CI is historical and remains bound only to its historical SHA.
+- Task 1, Task 2, and trusted-artifact acquisition independent specification or quality/security review: `COMPLETED`; no Critical or Important issues remain. This does not provide external-material or runtime acceptance.
+- Current exact-SHA GitHub CI: `PENDING REVALIDATION` for repository HEAD `75fd3d9f0f8c8921fecac13f6eec534c5094140f`. Earlier successful CI is historical and remains bound only to its historical SHA.
 - Historical `e8013dc` label: Current exact-SHA GitHub CI: `VERIFIED`. It does not cover the current local SHA.
 - Historical label: GitHub-hosted Windows runner provenance: `VERIFIED AS CI EVIDENCE ONLY`. It does not cover the current local SHA or replace an independent clean Windows machine.
 - Trusted code signing: `PENDING`.
@@ -118,7 +122,7 @@ This evidence does not cover the 10,000-file functional maximum, whole-process r
 - License and redistribution review: `PENDING`.
 - Required repository variables, organization signing material, approved `windows-license-review.json`, real sanitized-sample human signoff, and independent clean-machine install/upgrade/run/uninstall evidence: `PENDING`.
 - Remote enterprise console, device enrollment, and distribution: `UNIMPLEMENTED`.
-- Residual Minor/defense-in-depth items: adapter download redirect/size limits; staged-destination lock gap through manifest/ZIP generation; evidence-output parent-path TOCTOU; streaming/size bounds in acceptance and sandbox hashing; and synchronous AppX operations bounded only by the outer workflow timeout.
+- Residual Minor/defense-in-depth items: runtime WinTrust handle binding and multi-signature signer-index binding; evidence-output parent-path TOCTOU; streaming/size bounds in acceptance and sandbox hashing; and synchronous AppX operations bounded only by the outer workflow timeout.
 
 The trusted-signature workflow remains fail-closed and has not been dispatched
 or passed with a real organization adapter/certificate. No certificate material

@@ -84,9 +84,13 @@ limits, and `raw_response_retained=false`. The final release gate cross-checks
 that record against the packaged manifest and actual packaged adapter bytes.
 
 The manual workflow requires four non-secret repository variables for the
-adapter URL, SHA-256, publisher subject, and certificate SHA-256. It permits
-only an absolute HTTPS URL, downloads to a fixed new path, and verifies the
-hash before building. Organization PFX/password material is scoped only to the
+adapter URL, SHA-256, publisher subject, and certificate SHA-256. Its bounded
+downloader permits only a direct HTTPS URL without credentials, query,
+fragment, or redirects; streams no more than 64 MiB into a random private
+runner directory; verifies the exact SHA-256; and binds Win32 writes and
+failure deletion to the resolved file handle. The staged adapter is rehashed
+and held without write/delete sharing through evidence and ZIP generation.
+Organization PFX/password material is scoped only to the
 steps that need it. Imported certificates/private keys and the PFX are removed
 and residue-checked fail-closed, and the job has a 30-minute outer timeout.
 
@@ -97,13 +101,13 @@ real organization adapter/certificate. Required repository variables, signing
 material, an approved `windows-license-review.json`, real sanitized-sample human
 signoff, and independent clean-machine install/upgrade/run/uninstall evidence
 remain pending. Current normal GitHub CI for code-bearing SHA
-`3febfd57b6841181597bd5476e176710e81a011f` was not revalidated when this
+`75fd3d9f0f8c8921fecac13f6eec534c5094140f` was not revalidated when this
 documentation was prepared.
 
-Residual Minor/defense-in-depth items are adapter download redirect/size limits,
-the staged-destination lock gap through manifest/ZIP generation, evidence-output
-parent-path TOCTOU, streaming/size bounds in acceptance and sandbox hashing, and
-synchronous AppX operations bounded only by the outer workflow timeout. Remote
+Residual Minor/defense-in-depth items are runtime WinTrust handle binding and
+multi-signature signer-index binding, evidence-output parent-path TOCTOU,
+streaming/size bounds in acceptance and sandbox hashing, and synchronous AppX
+operations bounded only by the outer workflow timeout. Remote
 device enrollment, remote policy distribution, and a remote administrator
 console remain unimplemented. The current evidence supports local implementation
 and synthetic gates only, not production isolation, high-sensitive real-data
