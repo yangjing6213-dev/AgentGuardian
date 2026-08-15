@@ -16,7 +16,7 @@
 
 完成条件：当前候选 SHA 的完整测试、品牌校验、源码编译、便携构建和 MSIX 契约均在 GitHub-hosted Windows Runner 通过。
 
-当前记录（2026-08-15）：最新提交 `c5ef30f73e8897cab7feb3e0efea605d23a26f67` 的 push CI run `31871630792` 与 Windows run `31871630758` 均为 `success`；Draft PR 同一 SHA 的 CI run `31871632626` 与 Windows run `31871632639` 也均为 `success`。本地完整回归为 `1362 passed, 11 skipped`；GitHub job 日志在当前 API 权限下无法下载，因此不把远程测试数量写成已验证数字。Windows Runner 继续执行 MakeAppx staging、无签名 OID namespace 包安装/启动/卸载和残留检查；该烟测证据为 `signature_mode=unsigned_ci_smoke`，对应 Windows job 会输出并绑定该 SHA 的包 SHA-256；它不是可信签名或公开发布证据。
+当前记录（2026-08-15）：功能代码提交 `c5ef30f73e8897cab7feb3e0efea605d23a26f67` 的 push CI run `31871630792` 与 Windows run `31871630758` 均为 `success`；Draft PR 同一 SHA 的 CI run `31871632626` 与 Windows run `31871632639` 也均为 `success`。随后仅同步本段证据的文档提交为 `3c38339ad5d0b661b621503d5eb814ea32ba2088`。本地完整回归为 `1362 passed, 11 skipped`；GitHub job 日志在当前 API 权限下无法下载，因此不把远程测试数量写成已验证数字。Windows Runner 继续执行 MakeAppx staging、无签名 OID namespace 包安装/启动/卸载和残留检查；该烟测证据为 `signature_mode=unsigned_ci_smoke`，对应 Windows job 会输出并绑定该 SHA 的包 SHA-256；它不是可信签名或公开发布证据。
 
 ### A2 原生安装器与安装/卸载验收
 
