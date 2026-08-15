@@ -183,8 +183,7 @@ def test_windows_mvp_workflow_binds_tools_and_install_smoke() -> None:
         "requirements-build.lock",
         "MakeAppx.exe",
         "SignTool.exe",
-        "CertificateRequest",
-        "X509EnhancedKeyUsageExtension",
+        "create_windows_ci_certificate.py",
         "Invoke-BoundedProcess",
         "WaitForExit",
         "Cert:\\CurrentUser\\Root",
@@ -198,3 +197,10 @@ def test_windows_mvp_workflow_binds_tools_and_install_smoke() -> None:
     assert "Export-PfxCertificate" not in workflow
     assert "timeout-minutes: 5" in workflow
     assert '"/p", $pfxPassword' in workflow
+
+    certificate_script = (
+        PROJECT_ROOT / "scripts" / "create_windows_ci_certificate.py"
+    ).read_text(encoding="utf-8")
+    assert "pkcs12.serialize_key_and_certificates" in certificate_script
+    assert "AGENTGUARDIAN_PFX_PASSWORD" in certificate_script
+    assert "cryptography" in certificate_script

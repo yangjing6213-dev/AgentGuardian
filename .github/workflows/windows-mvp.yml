@@ -74,7 +74,6 @@ jobs:
           $certPath = "$pwd\.analysis\agentguardian-ci.cer"
           $pfxPath = "$pwd\.analysis\agentguardian-ci.pfx"
           $pfxPassword = [Guid]::NewGuid().ToString("N")
-          $rsa = $null
           $cert = $null
           try {
             function Invoke-BoundedProcess {
@@ -101,34 +100,14 @@ jobs:
               }
             }
 
-            Write-Host "Creating ephemeral signing certificate with .NET CertificateRequest"
-            $rsa = [System.Security.Cryptography.RSA]::Create(2048)
-            $request = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
-              $publisher,
-              $rsa,
-              [System.Security.Cryptography.HashAlgorithmName]::SHA256,
-              [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
-            )
-            $request.CertificateExtensions.Add(
-              [System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
-                [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature,
-                $true
-              )
-            )
-            $ekuOids = [System.Security.Cryptography.OidCollection]::new()
-            $ekuOids.Add([System.Security.Cryptography.Oid]::new("1.3.6.1.5.5.7.3.3", "Code Signing"))
-            $request.CertificateExtensions.Add(
-              [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new($ekuOids, $true)
-            )
-            $cert = $request.CreateSelfSigned((Get-Date).AddMinutes(-5), (Get-Date).AddDays(1))
-            [System.IO.File]::WriteAllBytes(
-              $certPath,
-              $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
-            )
-            [System.IO.File]::WriteAllBytes(
-              $pfxPath,
-              $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, $pfxPassword)
-            )
+            Write-Host "Creating ephemeral signing certificate with locked Python cryptography"
+            $env:AGENTGUARDIAN_PFX_PASSWORD = $pfxPassword
+            python scripts/create_windows_ci_certificate.py `
+              --publisher $publisher `
+              --certificate-path $certPath `
+              --pfx-path $pfxPath
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certPath)
             Import-Certificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
             Import-Certificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
             Write-Host "Signing MSIX with ephemeral PFX"
@@ -148,7 +127,8 @@ jobs:
             }
             Remove-Item -LiteralPath $certPath -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
-            if ($null -ne $rsa) { $rsa.Dispose() }
+            Remove-Item Env:\AGENTGUARDIAN_PFX_PASSWORD -ErrorAction SilentlyContinue
+            if ($null -ne $cert) { $cert.Dispose() }
           }
 
       - name: Install launch and uninstall MSIX as standard user
