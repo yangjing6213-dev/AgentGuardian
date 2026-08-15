@@ -138,7 +138,7 @@ Expected: all tests pass.
 
 - [ ] **Step 5: Write failing installed-package/workflow tests**
 
-Extend PowerShell contract tests to require a `RequireMcpAdapterAcceptance` mode that accepts the expected source commit, adapter relative path/hash/publisher/certificate pin, and a new absolute evidence path. It must resolve the adapter beneath the installed package location after upgrade, reject traversal/reparse/missing files, invoke `run_windows_mcp_adapter_acceptance.py`, and fail before uninstall when acceptance fails. Extend workflow tests to require non-secret repository variables `AGENTGUARDIAN_MCP_ADAPTER_URL`, `AGENTGUARDIAN_MCP_ADAPTER_SHA256`, `AGENTGUARDIAN_MCP_ADAPTER_PUBLISHER`, and `AGENTGUARDIAN_MCP_ADAPTER_CERTIFICATE_SHA256`; download to `RUNNER_TEMP`, verify hash before build, pass trusted staging parameters, request installed-package acceptance, and pass `--mcp-adapter-evidence` to the final gate.
+Extend PowerShell contract tests to require an `ExpectedSourceCommit` parameter and a `RequireMcpAdapterAcceptance` mode that accepts the adapter relative path/hash/publisher/certificate pin and a new absolute evidence path. The normal MSIX evidence must record the exact expected source commit so the existing final release gate can bind it to HEAD. The verifier must resolve the adapter beneath the installed package location after upgrade, reject traversal/reparse/missing files, invoke `run_windows_mcp_adapter_acceptance.py`, and fail before uninstall when acceptance fails. Extend workflow tests to require non-secret repository variables `AGENTGUARDIAN_MCP_ADAPTER_URL`, `AGENTGUARDIAN_MCP_ADAPTER_SHA256`, `AGENTGUARDIAN_MCP_ADAPTER_PUBLISHER`, and `AGENTGUARDIAN_MCP_ADAPTER_CERTIFICATE_SHA256`; download to `RUNNER_TEMP`, verify hash before build, pass trusted staging parameters, request installed-package acceptance, and pass `--mcp-adapter-evidence` to the final gate.
 
 - [ ] **Step 6: Run workflow tests and verify RED**
 
@@ -152,7 +152,7 @@ Expected: failures because the PowerShell and workflow contracts are absent.
 
 - [ ] **Step 7: Implement installed-package acceptance and workflow wiring**
 
-Add the strict PowerShell parameter set and validation. Resolve the installed adapter with `Join-Path` plus full-path containment and reparse checks, invoke the Python acceptance runner, and preserve uninstall cleanup in `finally`. In the trusted workflow, fail closed on any missing adapter variable, download only to a fixed `RUNNER_TEMP` path, compare SHA-256 before build, and never print certificate material or adapter response data.
+Add the strict PowerShell parameter set and validation. Require `ExpectedSourceCommit` to be a full lowercase SHA-1, write it as top-level `source_commit` in MSIX evidence, resolve the installed adapter with `Join-Path` plus full-path containment and reparse checks, invoke the Python acceptance runner, and preserve uninstall cleanup in `finally`. In the trusted workflow, pass the exact `git rev-parse HEAD` value to the verifier, fail closed on any missing adapter variable, download only to a fixed `RUNNER_TEMP` path, compare SHA-256 before build, and never print certificate material or adapter response data.
 
 - [ ] **Step 8: Verify Task 2 and commit**
 
