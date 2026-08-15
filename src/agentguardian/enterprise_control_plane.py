@@ -11,10 +11,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
+import hashlib
+import hmac
 import json
 import os
 import pathlib
 import re
+import secrets
 import sqlite3
 from typing import Self
 import uuid
@@ -149,6 +152,17 @@ class EnterpriseControlPlane:
                 FOREIGN KEY (tenant_id, device_id)
                     REFERENCES devices(tenant_id, device_id)
             );
+            CREATE TABLE IF NOT EXISTS admin_tokens (
+                tenant_id TEXT NOT NULL,
+                token_id TEXT PRIMARY KEY,
+                role TEXT NOT NULL CHECK (role IN ('admin', 'auditor', 'operator')),
+                salt BLOB NOT NULL,
+                token_hash BLOB NOT NULL,
+                issued_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                revoked_at TEXT,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id)
+            );
             CREATE INDEX IF NOT EXISTS policies_active_idx
                 ON policies (tenant_id, policy_id, status, version DESC);
             CREATE INDEX IF NOT EXISTS audit_expiry_idx
@@ -158,6 +172,86 @@ class EnterpriseControlPlane:
 
     def close(self) -> None:
         self._connection.close()
+
+    def issue_admin_token(
+        self,
+        tenant_id: str,
+        role: str,
+        *,
+        now: datetime,
+        expires_at: datetime,
+    ) -> tuple[str, str]:
+        tenant_id = _identifier(tenant_id, "tenant_id")
+        if role not in _RBAC_ROLES:
+            raise ValueError("RBAC_ROLE_INVALID")
+        issued = _datetime(now)
+        expires = _datetime(expires_at)
+        if not issued < expires or expires - issued > timedelta(days=366):
+            raise ValueError("ADMIN_TOKEN_EXPIRY_INVALID")
+        self._require_tenant(tenant_id)
+        token_id = uuid.uuid4().hex
+        secret = secrets.token_urlsafe(32)
+        token = f"{token_id}.{secret}"
+        salt = secrets.token_bytes(16)
+        token_hash = _token_hash(secret, salt)
+        with self._connection:
+            self._connection.execute(
+                "INSERT INTO admin_tokens(tenant_id, token_id, role, salt, token_hash, "
+                "issued_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    tenant_id,
+                    token_id,
+                    role,
+                    salt,
+                    token_hash,
+                    _timestamp(issued),
+                    _timestamp(expires),
+                ),
+            )
+        return token_id, token
+
+    def authenticate_admin_token(
+        self,
+        token: str,
+        *,
+        now: datetime,
+    ) -> tuple[str, str] | None:
+        if type(token) is not str or not 40 <= len(token) <= 256:
+            return None
+        try:
+            token_id, secret = token.split(".", 1)
+            token_id = _identifier(token_id, "token_id")
+            if not secret or "." in secret:
+                return None
+            secret.encode("ascii")
+            current = _timestamp(now)
+        except (UnicodeEncodeError, ValueError):
+            return None
+        row = self._connection.execute(
+            "SELECT tenant_id, role, salt, token_hash FROM admin_tokens "
+            "WHERE token_id = ? AND revoked_at IS NULL AND expires_at > ?",
+            (token_id, current),
+        ).fetchone()
+        if row is None:
+            return None
+        candidate = _token_hash(secret, bytes(row["salt"]))
+        if hmac.compare_digest(candidate, bytes(row["token_hash"])):
+            return row["tenant_id"], row["role"]
+        return None
+
+    def revoke_admin_token(self, tenant_id: str, token_id: str, *, now: datetime) -> None:
+        tenant_id = _identifier(tenant_id, "tenant_id")
+        token_id = _identifier(token_id, "token_id")
+        self._require_tenant(tenant_id)
+        timestamp = _timestamp(now)
+        with self._connection:
+            result = self._connection.execute(
+                "UPDATE admin_tokens SET revoked_at = ? WHERE tenant_id = ? "
+                "AND token_id = ? AND revoked_at IS NULL",
+                (timestamp, tenant_id, token_id),
+            )
+        if result.rowcount != 1:
+            raise ValueError("ADMIN_TOKEN_NOT_FOUND")
 
     def list_tenant_summaries(self) -> tuple[TenantSummary, ...]:
         rows = self._connection.execute(
@@ -517,6 +611,16 @@ def _identifier(value: object, name: str) -> str:
 def _is_unc_path(value: str | pathlib.Path) -> bool:
     text = str(value).replace("/", "\\")
     return text.startswith("\\\\") or text.startswith("//")
+
+
+def _token_hash(token: str, salt: bytes) -> bytes:
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        token.encode("ascii"),
+        salt,
+        200_000,
+        dklen=32,
+    )
 
 
 def _display_name(value: object) -> str:

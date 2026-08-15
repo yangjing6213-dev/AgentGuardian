@@ -59,6 +59,18 @@ invalid signature is denied.
 This does not complete the release gate. An organization publisher allowlist,
 packaged-adapter filesystem accessibility, packaged crash/restart acceptance, clean-machine install and
 uninstall evidence, remote device registration, remote policy distribution,
-administrator authentication, and an administrator console remain outstanding.
+remote administrator authentication, and an administrator console remain outstanding.
 The current evidence supports a locally verified Windows MVP boundary, not
 production isolation or processing of highly sensitive real data.
+
+## Network-neutral enterprise service boundary
+
+`src/agentguardian/enterprise_service.py` now provides an in-process request
+boundary for tenant-scoped summaries, device/policy metadata, bounded audit
+export, signed-policy provisioning, device revocation, and admin-token
+rotation. Tokens are prefixed by an opaque token id and only their salted
+PBKDF2-HMAC digest is stored. Every request is tenant-bound and role-checked;
+policy writes require the Ed25519 verifier. The module deliberately opens no
+socket. A future HTTP adapter still needs TLS, deployment authentication,
+rate limiting, key rotation, remote device enrollment, and an independent
+security review before it can be called an enterprise console.

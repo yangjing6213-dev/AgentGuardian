@@ -173,3 +173,27 @@ def test_control_plane_exposes_operational_summaries_without_event_content(tmp_p
     )
     assert control_plane.list_device_summaries("tenant-alpha")[0].device_id == "device-alpha"
     assert control_plane.list_policy_summaries("tenant-alpha")[0].policy_sha256
+
+
+def test_admin_tokens_are_hashed_tenant_bound_and_revocable(tmp_path: Path) -> None:
+    control_plane = _provisioned(tmp_path)
+    token_id, token = control_plane.issue_admin_token(
+        "tenant-alpha",
+        "admin",
+        now=NOW,
+        expires_at=NOW + timedelta(days=1),
+    )
+
+    assert control_plane.authenticate_admin_token(token, now=NOW) == (
+        "tenant-alpha",
+        "admin",
+    )
+    stored = control_plane._connection.execute(
+        "SELECT token_hash FROM admin_tokens WHERE token_id = ?", (token_id,)
+    ).fetchone()
+    assert stored is not None
+    assert bytes(stored["token_hash"]) != token.encode()
+    assert control_plane.authenticate_admin_token(token, now=NOW + timedelta(days=2)) is None
+
+    control_plane.revoke_admin_token("tenant-alpha", token_id, now=NOW)
+    assert control_plane.authenticate_admin_token(token, now=NOW) is None
