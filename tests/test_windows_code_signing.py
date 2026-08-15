@@ -19,6 +19,14 @@ def test_authenticode_accepts_a_trusted_system_binary() -> None:
     assert verify_authenticode(Path(sys.executable)) is True
 
 
+def test_publisher_verification_accepts_the_exact_subject_of_a_trusted_binary() -> None:
+    executable = Path(sys.executable)
+    subject = signing._authenticode_subject(executable)
+    assert subject is not None
+    assert verify_authenticode_publisher(executable, (subject,)) is True
+    assert verify_authenticode_publisher(executable, (f"{subject}x",)) is False
+
+
 def test_authenticode_rejects_an_unsigned_file(tmp_path: Path) -> None:
     executable = tmp_path / "unsigned.exe"
     executable.write_bytes(b"MZ synthetic unsigned executable")
