@@ -16,7 +16,7 @@
     "enterprise_signing.py": "050946f569e33d1e9ee3d1c5eba333c06e06e42ce62ee9c1f595115c6d51d8c0",
     "evidence_state.py": "7f83c1d830803d0ab978ce5d3e42a986ef4705faa8ed54191f533af00d7fdeef",
     "guidance.py": "fa73140c437c6dd6700b0e429640cfa18f620f4f656e1cc836707f264943e878",
-    "mcp_sandbox.py": "c4a5cb640553c013521cd8e94309c6f38346824aa49888cb09764b4570901ace",
+    "mcp_sandbox.py": "7a2fc15afd5b948f2583bcea2eee02a5f0af6c4417d321360058cee1d1a4d229",
     "remediation.py": "7a5e25ea455625255c38e1b46f921574ba258698d1ef640b997bb2fe0f3ee2fd",
     "report_comparison.py": "93812ffc4d21f3a5952872fa64007de83141b7e1c24b70134e9df7677f3d7a59",
     "reporting.py": "8803c1d88c05440920d316de10d9d8f5bdf2215b39d0934a3e061604bd18de40",
@@ -26,7 +26,7 @@
     "share_verification.py": "f21c16e0c46210263c4a3e97b36c05b303a45a3503bd28a3dbfdb5af8355a5bd",
     "state_store.py": "1ffaf7f684c3af9bd9e8527b1ce78cf0fc7fc569c2cb01555ec320bc6a0aa59d",
     "windows_appcontainer.py": "d980e3ef71470687167a234a3adee1d6a2ea6d19e3ca3462f9ff0c18c2663ab4",
-    "windows_code_signing.py": "474e6002e35324f8fe7a33bd378ce5dc7d3e9ee8af7e278d1df5844feb380aae",
+    "windows_code_signing.py": "c7e889b881cedc436c7bfd9e42eeb534a3557bbda961a467e9ea899eded5cf35",
     "windows_dpapi.py": "e66caabc5ba7d5c1c4d19180d805e945c8c07cbe5116b5539a7bbcf2ba01f8fd",
     "windows_job_object.py": "7bd312fe3c984a9db777953175b4d51598d0c5aaddb1c832c744e03e17168945",
     "workflow.py": "b39776387234955bbd5fc8d85fa4f4bec6375910e4ca2b2ed9e1613014fb88d0"

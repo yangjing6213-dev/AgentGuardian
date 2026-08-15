@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from agentguardian.windows_code_signing import verify_authenticode
+import agentguardian.windows_code_signing as signing
+from agentguardian.windows_code_signing import verify_authenticode, verify_authenticode_publisher
 
 
 pytestmark = pytest.mark.skipif(
@@ -22,3 +23,16 @@ def test_authenticode_rejects_an_unsigned_file(tmp_path: Path) -> None:
     executable = tmp_path / "unsigned.exe"
     executable.write_bytes(b"MZ synthetic unsigned executable")
     assert verify_authenticode(executable) is False
+
+
+def test_publisher_verification_requires_an_exact_allowlist_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "adapter.exe"
+    executable.write_bytes(b"MZ synthetic")
+    monkeypatch.setattr(signing, "verify_authenticode", lambda _path: True)
+    monkeypatch.setattr(signing, "_authenticode_subject", lambda _path: "CN=Allowed")
+
+    assert verify_authenticode_publisher(executable, ("CN=Allowed",)) is True
+    assert verify_authenticode_publisher(executable, ("CN=Other",)) is False
+    assert verify_authenticode_publisher(executable, ()) is False

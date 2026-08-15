@@ -54,6 +54,11 @@ def test_mcp_supervisor_uses_appcontainer_network_boundary(
 ) -> None:
     executable = Path(r"C:\Windows\System32\curl.exe")
     monkeypatch.setattr(mcp_sandbox, "verify_authenticode", lambda _path: True)
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "verify_authenticode_publisher",
+        lambda _path, _allowed: True,
+    )
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", 0))
         listener.listen(1)
@@ -64,6 +69,7 @@ def test_mcp_supervisor_uses_appcontainer_network_boundary(
             executable=executable,
             executable_sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
             arguments=("-sS", "--max-time", "1", f"http://127.0.0.1:{port}"),
+            allowed_publisher_subjects=("CN=Windows Test Publisher",),
         )
 
         result = run_mcp_sandbox(

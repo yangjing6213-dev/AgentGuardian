@@ -19,7 +19,7 @@ import tempfile
 
 from .discovery import _has_reparse_component
 from .windows_appcontainer import AppContainerUnavailable, appcontainer_available, run_in_appcontainer
-from .windows_code_signing import verify_authenticode
+from .windows_code_signing import verify_authenticode, verify_authenticode_publisher
 from .windows_job_object import JobObjectUnavailable, run_in_job_object
 
 
@@ -28,6 +28,8 @@ MAX_MCP_OUTPUT_BYTES = 64 * 1024
 MAX_MCP_RUNTIME_SECONDS = 30.0
 _ADAPTER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 _ALLOWED_ADAPTER_CAPABILITIES = frozenset({"tools", "resources", "prompts"})
+_MAX_PUBLISHER_SUBJECTS = 16
+_MAX_PUBLISHER_SUBJECT_LENGTH = 512
 
 
 class SandboxStatus(str, Enum):
@@ -48,6 +50,7 @@ class McpSandboxPolicy:
     network_access: str
     max_runtime_seconds: float
     max_output_bytes: int
+    allowed_publisher_subjects: tuple[str, ...] = ()
 
     @classmethod
     def from_command(
@@ -58,6 +61,7 @@ class McpSandboxPolicy:
         executable_sha256: str,
         arguments: tuple[str, ...] = (),
         capabilities: tuple[str, ...] = (),
+        allowed_publisher_subjects: tuple[str, ...] = (),
         max_runtime_seconds: float = 5.0,
         max_output_bytes: int = MAX_MCP_OUTPUT_BYTES,
     ) -> "McpSandboxPolicy":
@@ -85,6 +89,20 @@ class McpSandboxPolicy:
             raise ValueError("MCP_CAPABILITY_INVALID")
         if any(capability not in _ALLOWED_ADAPTER_CAPABILITIES for capability in capabilities):
             raise ValueError("MCP_CAPABILITY_INVALID")
+        if (
+            type(allowed_publisher_subjects) is not tuple
+            or len(allowed_publisher_subjects) > _MAX_PUBLISHER_SUBJECTS
+            or any(
+                type(subject) is not str
+                or not subject
+                or len(subject) > _MAX_PUBLISHER_SUBJECT_LENGTH
+                or "\x00" in subject
+                or subject != subject.strip()
+                for subject in allowed_publisher_subjects
+            )
+            or len(set(allowed_publisher_subjects)) != len(allowed_publisher_subjects)
+        ):
+            raise ValueError("MCP_PUBLISHER_ALLOWLIST_INVALID")
         if (
             type(max_runtime_seconds) not in (int, float)
             or not 0.1 <= max_runtime_seconds <= MAX_MCP_RUNTIME_SECONDS
@@ -115,6 +133,7 @@ class McpSandboxPolicy:
             network_access="deny",
             max_runtime_seconds=float(max_runtime_seconds),
             max_output_bytes=max_output_bytes,
+            allowed_publisher_subjects=allowed_publisher_subjects,
         )
 
 
@@ -211,10 +230,15 @@ def run_mcp_sandbox(
         return _result(policy, SandboxStatus.FAILED, "executable_unavailable")
     if current_sha256 != policy.executable_sha256:
         return _result(policy, SandboxStatus.DENIED, "executable_hash_mismatch")
-    if assessment.provider == "windows-appcontainer" and not verify_authenticode(
-        policy.executable
-    ):
-        return _result(policy, SandboxStatus.DENIED, "adapter_signature_required")
+    if assessment.provider == "windows-appcontainer":
+        if not policy.allowed_publisher_subjects:
+            return _result(policy, SandboxStatus.DENIED, "adapter_publisher_allowlist_required")
+        if not verify_authenticode(policy.executable):
+            return _result(policy, SandboxStatus.DENIED, "adapter_signature_required")
+        if not verify_authenticode_publisher(
+            policy.executable, policy.allowed_publisher_subjects
+        ):
+            return _result(policy, SandboxStatus.DENIED, "adapter_publisher_not_allowlisted")
     root = _validated_temp_root(temp_root)
     try:
         with tempfile.TemporaryDirectory(dir=root) as workdir:
