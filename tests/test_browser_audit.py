@@ -64,6 +64,53 @@ def test_browser_audit_rejects_unknown_schema_without_leaking_database_error(tmp
         audit_browser_database(database, BrowserKind.CHROME)
 
 
+def test_browser_audit_reads_current_sqlite_wal_snapshot_without_raw_data(
+    tmp_path: Path,
+):
+    database = tmp_path / "History"
+    raw_urls = (
+        "https://synthetic.example/private?token=wal-one",
+        "https://synthetic.example/private?token=wal-two",
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA wal_autocheckpoint = 0")
+        connection.executescript(
+            """
+            CREATE TABLE urls (id INTEGER, url TEXT);
+            CREATE TABLE visits (id INTEGER, url INTEGER);
+            """
+        )
+        connection.execute("INSERT INTO urls VALUES (1, ?)", (raw_urls[0],))
+        connection.execute("INSERT INTO visits VALUES (1, 1)")
+        connection.commit()
+        connection.execute("INSERT INTO urls VALUES (2, ?)", (raw_urls[1],))
+        connection.execute("INSERT INTO visits VALUES (2, 2)")
+        connection.commit()
+        assert database.with_name("History-wal").is_file()
+
+        result = audit_browser_database(database, BrowserKind.CHROME)
+
+    assert result.counts == (("history_entries", 2), ("visit_entries", 2))
+    assert result.raw_data_retained is False
+    assert result.temporary_copy_removed is True
+    assert all(raw_url not in repr(result) for raw_url in raw_urls)
+
+
+def test_browser_audit_applies_size_limit_to_sqlite_sidecars(tmp_path: Path):
+    database = tmp_path / "History"
+    _create_database(database, BrowserKind.CHROME)
+    sidecar = database.with_name("History-wal")
+    sidecar.write_bytes(b"sidecar")
+
+    with pytest.raises(ValueError, match="BROWSER_PATH_INVALID"):
+        audit_browser_database(
+            database,
+            BrowserKind.CHROME,
+            max_bytes=database.stat().st_size,
+        )
+
+
 def test_browser_audit_rejects_reparse_path_without_opening_target(tmp_path: Path):
     database = tmp_path / "History"
     raw_url = _create_database(database, BrowserKind.CHROME)

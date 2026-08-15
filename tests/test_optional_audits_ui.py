@@ -6,7 +6,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog
+from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox
 
 import agentguardian.app as app_module
 from agentguardian.app import create_window
@@ -67,6 +67,11 @@ def test_clipboard_audit_is_explicit_and_keeps_report_masked(qapp, monkeypatch):
         "clipboard",
         staticmethod(lambda: Clipboard()),
     )
+    monkeypatch.setattr(
+        app_module.QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
     window = create_window()
 
     window.clipboard_button.click()
@@ -76,6 +81,29 @@ def test_clipboard_audit_is_explicit_and_keeps_report_masked(qapp, monkeypatch):
     assert raw_secret not in window.report_json
     assert raw_secret not in window.report_html
     assert "剪贴板" in window.status_label.text()
+    window.close()
+
+
+def test_clipboard_audit_cancel_does_not_read_clipboard(qapp, monkeypatch):
+    monkeypatch.setattr(
+        app_module.QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.No,
+    )
+
+    def forbidden_clipboard_read():
+        raise AssertionError("clipboard read must not start after cancellation")
+
+    monkeypatch.setattr(
+        app_module.QApplication,
+        "clipboard",
+        staticmethod(forbidden_clipboard_read),
+    )
+    window = create_window()
+
+    window.clipboard_button.click()
+
+    assert "Clipboard audit cancelled" in window.status_label.text()
     window.close()
 
 

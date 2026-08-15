@@ -1675,6 +1675,16 @@ class AgentGuardianWindow(QMainWindow):
     def _scan_clipboard_once(self) -> None:
         if self.is_scanning:
             return
+        answer = QMessageBox.question(
+            self,
+            "Clipboard one-time audit",
+            "Read the clipboard once in memory without saving the original text. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self.status_label.setText("Clipboard audit cancelled.")
+            return
         try:
             result = audit_clipboard_once(
                 lambda: QApplication.clipboard().text(),
