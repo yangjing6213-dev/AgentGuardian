@@ -14,6 +14,24 @@ Windows MVP remains incomplete. Production safety is not established.
 - OpenAI Provider remains local detection and manual guidance only; the default product path makes no provider API call and performs no endpoint verification.
 - The local remote-tracking reference was `9577a85fb107a7de506fd67ce48ce795bc707678` when this report was prepared. That local reference is not live GitHub verification and does not cover the candidate baseline.
 
+## Current Follow-up Evidence
+
+The current code-bearing hardening SHA is `253b77d1f46b63f1761fd8ac56c9fb6f49555d22`.
+Its local full regression is `1404 passed, 11 skipped`; the Windows workflow
+reported `1414 passed, 1 skipped`, and the synthetic high-sensitivity gate
+reported `passed=true` with no raw markers in reports/findings, browser
+temporary-copy removal, and workspace cleanup. The Windows AppContainer
+integration proves loopback connection denial and transient profile cleanup;
+the native MCP path also rejects an adapter without a locally trusted embedded
+Authenticode signature.
+
+The current documentation HEAD is `5a486118d45c27fe500b8dc5d903a9d5a3e741b7`.
+Its push and Draft PR CI plus Windows package checks all completed
+successfully. The Windows smoke evidence records install, same-identity
+upgrade `0.1.0.0 -> 0.1.0.1`, termination, uninstall, and
+`package_residue=false`. The package is explicitly `unsigned_ci_smoke` and
+must not be treated as a trusted release artifact.
+
 ## Current Local Evidence
 
 | Gate | Current revalidation | Scope |
@@ -46,14 +64,16 @@ This evidence does not cover the 10,000-file functional maximum, whole-process r
 - Independent read-only review: `COMPLETED WITH 7 IMPORTANT AND 2 MINOR FINDINGS` on the prior evidence-sync HEAD; those findings were remediated locally.
 - Second independent re-review: `COMPLETED WITH 2 IMPORTANT AND 3 MINOR FINDINGS` on `305eeb4`; both Important findings were remediated in `90e6eda`.
 - Third independent re-review: `COMPLETED WITH NO CRITICAL/IMPORTANT FINDINGS AND 1 MINOR`; the reviewer did not execute tests independently, so runtime confirmation remains the separately recorded local-gate evidence.
-- Current exact-SHA GitHub CI: `PENDING`.
-- Fresh-runner provenance: `PENDING`.
+- Current exact-SHA GitHub CI: `VERIFIED` for documentation HEAD `5a48611`; the code-bearing parent `253b77d` has matching push/PR CI and Windows workflow success.
+- GitHub-hosted Windows runner provenance: `VERIFIED AS CI EVIDENCE ONLY`; this does not replace an independent clean Windows machine.
 - Trusted code signing: `PENDING`.
-- Native install and uninstall: `PENDING`.
+- Unsigned CI native install, upgrade, launch, termination and uninstall smoke: `VERIFIED`; trusted-package and independent acceptance remain pending.
 - Clean Windows machine acceptance and residue review: `PENDING`.
 - License and redistribution review: `PENDING`.
 
-Workflow changes remain blocked until exact `APPROVE_GITHUB_WORKFLOW_SCOPE_REFRESH` authorization. No workflow was edited, no branch was pushed, no artifact was published, no certificate material was requested or handled, and no release or deployment was performed for this evidence.
+The trusted-signature workflow remains fail-closed and has not been run because
+organization signing material is absent. No certificate material was requested
+or handled, and no release or deployment was performed for this evidence.
 
 ## Decision
 
