@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 
 from .discovery import _has_reparse_component
+from .windows_appcontainer import AppContainerUnavailable, appcontainer_available, run_in_appcontainer
 from .windows_job_object import JobObjectUnavailable, run_in_job_object
 
 
@@ -213,6 +214,8 @@ def run_mcp_sandbox(
     try:
         with tempfile.TemporaryDirectory(dir=root) as workdir:
             if os.name == "nt":
+                if assessment.provider == "windows-appcontainer":
+                    return _run_windows_appcontainer(policy, request, pathlib.Path(workdir))
                 return _run_windows_job_object(policy, request, pathlib.Path(workdir))
             process = subprocess.Popen(
                 [os.fspath(policy.executable), *policy.arguments],
@@ -315,12 +318,72 @@ def _run_windows_job_object(
     )
 
 
+def _run_windows_appcontainer(
+    policy: McpSandboxPolicy,
+    request: bytes,
+    workdir: pathlib.Path,
+) -> McpSandboxResult:
+    try:
+        native = run_in_appcontainer(
+            policy.executable,
+            policy.arguments,
+            request,
+            workdir=workdir,
+            environment={"PYTHONNOUSERSITE": "1"},
+            timeout_seconds=policy.max_runtime_seconds,
+            max_output_bytes=policy.max_output_bytes,
+        )
+    except AppContainerUnavailable:
+        return _result(
+            policy,
+            SandboxStatus.DENIED,
+            "native_network_isolation_unavailable",
+        )
+    if native.timed_out:
+        return _result(
+            policy,
+            SandboxStatus.TIMED_OUT,
+            "runtime_limit",
+            limits=("network_isolation_enforced", "process_tree_isolation_enforced"),
+        )
+    if native.output_limited:
+        return _result(
+            policy,
+            SandboxStatus.FAILED,
+            "output_size_limit",
+            response_bytes=policy.max_output_bytes,
+            limits=("network_isolation_enforced", "process_tree_isolation_enforced"),
+        )
+    if native.returncode != 0:
+        return _result(
+            policy,
+            SandboxStatus.FAILED,
+            "adapter_failed",
+            response_bytes=len(native.output),
+            limits=("network_isolation_enforced", "process_tree_isolation_enforced"),
+        )
+    return _result(
+        policy,
+        SandboxStatus.COMPLETED,
+        "completed",
+        response_bytes=len(native.output),
+        limits=("network_isolation_enforced", "process_tree_isolation_enforced"),
+    )
+
+
 def probe_native_sandbox() -> _SandboxAttestation | None:
     """Return a platform attestation only when native controls are proven.
 
-    The current portable and MSIX full-trust launchers do not prove outbound
-    network denial for child processes, so this intentionally returns None.
+    Windows AppContainer provides the network-deny and process-tree boundary
+    used by the supervisor. Portable and MSIX full-trust launchers without
+    that provider continue to return no attestation.
     """
+    if os.name == "nt" and appcontainer_available():
+        return _SandboxAttestation(
+            provider="windows-appcontainer",
+            network_isolated=True,
+            process_tree_isolated=True,
+        )
     return None
 
 

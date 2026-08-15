@@ -32,15 +32,22 @@ directory, bounds request/output/runtime, and never retains adapter output.
 
 `windows_job_object.py` provides a Windows Job Object launcher that assigns a
 child before resume, limits the job to one active process, kills the job on
-close, and enforces bounded runtime and output. This is a process-tree boundary,
-not a network boundary. The portable and current MSIX full-trust launchers still
-do not provide proof of outbound network denial, so the native attestation probe
-returns no complete provider and the supervisor refuses to start an adapter.
-Synthetic attestation is used only in unit tests.
+close, and enforces bounded runtime and output. `windows_appcontainer.py`
+creates a unique short-lived AppContainer profile with no declared
+capabilities, starts the fixed adapter with the Job Object boundary, and
+removes the profile before returning. The local Windows integration test
+proves that a system adapter cannot connect to a parent loopback listener and
+that the transient profile directory is removed.
 
-The remaining implementation gate is a real Windows provider based on
-AppContainer or an equivalent network-deny boundary, combined with the Job
-Object process-tree layer, followed by signed-adapter and clean-machine
-acceptance. Until that evidence exists, AgentGuardian provides static MCP
-detection and a default-deny supervisor contract, not dynamic MCP execution or
-production isolation.
+The supervisor uses this provider only when the required Windows APIs load and
+the provider can complete its fail-closed lifecycle. Unsupported environments,
+provider errors, nonzero adapters, timeouts, and output-limit violations do not
+fall back to an ordinary child process. Synthetic attestation remains limited
+to unit tests.
+
+This does not complete the release gate. Signed adapters, packaged-adapter
+filesystem accessibility, crash/restart acceptance, clean-machine install and
+uninstall evidence, device registration, remote policy distribution, and an
+administrator console remain outstanding. The current evidence supports a
+locally verified Windows MVP boundary, not production isolation or processing
+of highly sensitive real data.

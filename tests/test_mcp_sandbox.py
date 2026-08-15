@@ -44,7 +44,10 @@ def test_policy_requires_an_absolute_regular_executable_and_fixed_argv() -> None
         )
 
 
-def test_default_assessment_is_denied_without_native_network_and_process_isolation() -> None:
+def test_assessment_is_denied_without_native_network_and_process_isolation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mcp_sandbox, "probe_native_sandbox", lambda: None)
     assessment = assess_mcp_sandbox(_policy())
     assert assessment.status is SandboxStatus.DENIED
     assert assessment.network_isolation == "unavailable"
@@ -62,6 +65,7 @@ def test_default_run_does_not_start_a_process_or_retain_raw_output(monkeypatch: 
         nonlocal started
         started = True
 
+    monkeypatch.setattr(mcp_sandbox, "probe_native_sandbox", lambda: None)
     monkeypatch.setattr("agentguardian.mcp_sandbox.subprocess.Popen", forbidden)
     result = run_mcp_sandbox(_policy(), b"synthetic-request", confirmed=True)
     assert result.status is SandboxStatus.DENIED

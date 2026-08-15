@@ -43,6 +43,7 @@ _AUDITED_CAPABILITY_MODULES = {
     "mcp_sandbox.py",
     "remediation.py",
     "share_verification.py",
+    "windows_appcontainer.py",
     "windows_job_object.py",
 }
 _SAFE_DIRECT_IMPORTS = {
