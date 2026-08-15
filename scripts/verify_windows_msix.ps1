@@ -29,6 +29,10 @@ function Stop-AgentGuardianProcesses {
     Start-Sleep -Milliseconds 250
 }
 
+function Get-AgentGuardianPackages {
+    return @(Get-AppxPackage | Where-Object { $_.Name -eq $PackageName })
+}
+
 $resolvedPackage = (Resolve-Path -LiteralPath $PackagePath).Path
 $resolvedEvidence = [IO.Path]::GetFullPath($EvidencePath)
 if (-not [IO.Path]::IsPathRooted($EvidencePath)) {
@@ -48,6 +52,7 @@ $termination = $false
 $uninstalled = $false
 $packageResidue = $false
 $packageFullName = $null
+$installedPackages = @()
 $smokeError = $null
 
 try {
@@ -57,12 +62,13 @@ try {
     else {
         Add-AppxPackage -Path $resolvedPackage
     }
-    $installed = @(Get-AppxPackage -Name $PackageName)
-    if ($installed.Count -ne 1) {
-        throw "expected exactly one installed package"
+    $installedPackages = @(Get-AgentGuardianPackages)
+    Write-Host "Installed matching packages: $($installedPackages.Count)"
+    if ($installedPackages.Count -eq 0) {
+        throw "expected at least one installed package"
     }
-    $packageFullName = $installed[0].PackageFullName
-    $appUserModelId = "$($installed[0].PackageFamilyName)!AgentGuardian"
+    $packageFullName = $installedPackages[0].PackageFullName
+    $appUserModelId = "$($installedPackages[0].PackageFamilyName)!AgentGuardian"
     $shellTarget = "shell:AppsFolder\$appUserModelId"
     $launcher = Start-Process -FilePath "$env:WINDIR\explorer.exe" -ArgumentList $shellTarget -PassThru
     $processStartup = $true
@@ -92,18 +98,23 @@ catch {
 finally {
     Stop-AgentGuardianProcesses
     $termination = (@(Get-Process -Name "AgentGuardian" -ErrorAction SilentlyContinue).Count -eq 0)
-    if ($null -ne $packageFullName) {
-        Remove-AppxPackage -Package $packageFullName
+    if ($installedPackages.Count -eq 0) {
+        $installedPackages = @(Get-AgentGuardianPackages)
+    }
+    foreach ($installedPackage in $installedPackages) {
+        Remove-AppxPackage -Package $installedPackage.PackageFullName
+    }
+    if ($installedPackages.Count -ne 0) {
         $uninstallDeadline = (Get-Date).AddSeconds(60)
         do {
-            $remainingPackages = @(Get-AppxPackage -Name $PackageName)
+            $remainingPackages = @(Get-AgentGuardianPackages)
             if ($remainingPackages.Count -eq 0) {
                 $uninstalled = $true
                 break
             }
             Start-Sleep -Milliseconds 250
         } while ((Get-Date) -lt $uninstallDeadline)
-        $remainingPackages = @(Get-AppxPackage -Name $PackageName)
+        $remainingPackages = @(Get-AgentGuardianPackages)
         $packageResidue = ($remainingPackages.Count -ne 0)
         if ($packageResidue) {
             Write-Host "Package residue after bounded uninstall wait: $($remainingPackages.Count)"
