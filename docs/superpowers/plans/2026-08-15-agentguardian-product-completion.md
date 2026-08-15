@@ -26,7 +26,7 @@
 - [ ] 在 Windows Runner 执行正式证书签名和签名包安装卸载烟测；依赖组织证书或 Trusted Signing secret。
 - [ ] 在独立干净 Windows 环境执行安装、升级、启动、卸载和残留验收。
 
-当前无签名 smoke 的 MSIX SHA-256：`279D1679570BBC4CBC0327AE21765792271A103F659215A2A1CD3E39779CB854`。该摘要只绑定测试包，不是发布包摘要。
+当前无签名 smoke 的 MSIX SHA-256：`54785F8A5D515BE3203A6F7ABA9EB0C4A5DCD4DE2D938473070F8D81A1726883`。该摘要只绑定测试包，不是发布包摘要。
 
 完成条件：安装器在目标 Windows 版本上可由普通用户安装和卸载，验证结果绑定精确 SHA 与 MSIX SHA-256；所有声明状态清理完成。
 
