@@ -1499,6 +1499,12 @@ class AgentGuardianWindow(QMainWindow):
     def _verify_share(self) -> None:
         if self.is_scanning:
             return
+        if self._sensitive_mode.enabled:
+            self.status_label.setText("高敏感模式已禁止联网分享验证。")
+            self.coverage_status_label.setText(
+                "未建立网络连接；高敏感模式只允许本地处理。"
+            )
+            return
         url, accepted = QInputDialog.getText(
             self,
             "验证联网分享",
@@ -1621,8 +1627,10 @@ class AgentGuardianWindow(QMainWindow):
             self.sensitive_mode_checkbox.setChecked(False)
             self.sensitive_mode_checkbox.blockSignals(False)
             self._sensitive_mode = SensitiveModePolicy()
+            self.share_button.setEnabled(True)
             self.status_label.setText("无法启用高敏感模式。")
             return
+        self.share_button.setEnabled(not checked)
         self._invalidate_report()
         self._revoke_scope_consent()
         self.status_label.setText(

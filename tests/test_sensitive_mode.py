@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtWidgets import QApplication
 
+import agentguardian.app as app_module
 from agentguardian.app import create_window, export_new_report
 from agentguardian.sensitive_mode import SensitiveModePolicy
 
@@ -60,9 +61,30 @@ def test_window_exposes_explicit_sensitive_mode_switch(qapp):
 
     assert window.sensitive_mode_checkbox.isChecked() is False
     assert window._sensitive_mode.enabled is False
+    assert window.share_button.isEnabled() is True
 
     window.sensitive_mode_checkbox.setChecked(True)
 
     assert window._sensitive_mode == SensitiveModePolicy.enabled_policy()
     assert window.scope_consent_checkbox.isChecked() is False
+    assert window.share_button.isEnabled() is False
+
+    window.sensitive_mode_checkbox.setChecked(False)
+    assert window.share_button.isEnabled() is True
+    window.close()
+
+
+def test_sensitive_mode_blocks_share_before_prompt(qapp, monkeypatch):
+    window = create_window()
+    window.sensitive_mode_checkbox.setChecked(True)
+
+    monkeypatch.setattr(
+        app_module.QInputDialog,
+        "getText",
+        lambda *_args, **_kwargs: pytest.fail("sensitive mode opened network prompt"),
+    )
+
+    window._verify_share()
+
+    assert "禁止联网分享验证" in window.status_label.text()
     window.close()
