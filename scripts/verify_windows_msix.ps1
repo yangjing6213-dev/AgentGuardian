@@ -30,7 +30,7 @@ function Stop-AgentGuardianProcesses {
 }
 
 function Get-AgentGuardianPackages {
-    return @(Get-AppxPackage | Where-Object { $_.Name -eq $PackageName })
+    return @(Get-AppxPackage | Where-Object { $_.Name -like "$PackageName*" })
 }
 
 $resolvedPackage = (Resolve-Path -LiteralPath $PackagePath).Path
@@ -65,6 +65,8 @@ try {
     $installedPackages = @(Get-AgentGuardianPackages)
     Write-Host "Installed matching packages: $($installedPackages.Count)"
     if ($installedPackages.Count -eq 0) {
+        Get-AppxPackage | Where-Object { $_.Name -like "*AgentGuardian*" } |
+            Select-Object Name, PackageFullName, Status | Format-Table | Out-String | Write-Host
         throw "expected at least one installed package"
     }
     $packageFullName = $installedPackages[0].PackageFullName
@@ -126,11 +128,11 @@ finally {
 if (-not $termination) {
     throw "AgentGuardian process remains after termination"
 }
-if (-not $uninstalled) {
-    throw "MSIX package remains installed after uninstall"
-}
 if ($null -ne $smokeError) {
     throw $smokeError
+}
+if (-not $uninstalled) {
+    throw "MSIX package remains installed after uninstall"
 }
 
 $evidenceParent = Split-Path -Parent $resolvedEvidence
