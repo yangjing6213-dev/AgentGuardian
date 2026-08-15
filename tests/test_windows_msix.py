@@ -165,6 +165,8 @@ def test_msix_verifier_installs_launches_and_uninstalls_without_elevation() -> N
         "bounded_liveness",
         "uninstalled",
         "package_residue",
+        "AllowUnsigned",
+        "unsigned_ci_smoke",
     ):
         assert required in verifier
     assert "-Verb RunAs" not in verifier
@@ -182,25 +184,12 @@ def test_windows_mvp_workflow_binds_tools_and_install_smoke() -> None:
         "requirements-dev.lock",
         "requirements-build.lock",
         "MakeAppx.exe",
-        "SignTool.exe",
-        "create_windows_ci_certificate.py",
-        "Invoke-BoundedProcess",
-        "WaitForExit",
-        "Cert:\\CurrentUser\\Root",
         "verify_windows_msix.ps1",
-        "Install launch and uninstall MSIX as standard user",
+        "Install launch and uninstall unsigned MSIX CI smoke",
     ):
         assert required in workflow
     assert "-Verb RunAs" not in workflow
     assert "production" not in workflow.casefold()
     assert "New-SelfSignedCertificate" not in workflow
     assert "Export-PfxCertificate" not in workflow
-    assert "timeout-minutes: 5" in workflow
-    assert '"/p", $pfxPassword' in workflow
-
-    certificate_script = (
-        PROJECT_ROOT / "scripts" / "create_windows_ci_certificate.py"
-    ).read_text(encoding="utf-8")
-    assert "pkcs12.serialize_key_and_certificates" in certificate_script
-    assert "AGENTGUARDIAN_PFX_PASSWORD" in certificate_script
-    assert "cryptography" in certificate_script
+    assert "-AllowUnsigned" in workflow

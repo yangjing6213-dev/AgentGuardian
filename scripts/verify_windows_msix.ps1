@@ -9,6 +9,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$EvidencePath,
 
+    [switch]$AllowUnsigned,
+
     [ValidateRange(1, 30)]
     [int]$SmokeSeconds = 4
 )
@@ -48,7 +50,12 @@ $packageFullName = $null
 $smokeError = $null
 
 try {
-    Add-AppxPackage -Path $resolvedPackage
+    if ($AllowUnsigned) {
+        Add-AppxPackage -Path $resolvedPackage -AllowUnsigned
+    }
+    else {
+        Add-AppxPackage -Path $resolvedPackage
+    }
     $installed = @(Get-AppxPackage -Name $PackageName)
     if ($installed.Count -ne 1) {
         throw "expected exactly one installed package"
@@ -111,6 +118,7 @@ $evidence = [ordered]@{
     started_at = $startedAt
     completed_at = Get-UtcSecond
     smoke_seconds = $SmokeSeconds
+    signature_mode = if ($AllowUnsigned) { "unsigned_ci_smoke" } else { "signed" }
     result = [ordered]@{
         process_startup = $processStartup
         bounded_liveness = $boundedLiveness

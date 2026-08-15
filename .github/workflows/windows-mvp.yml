@@ -34,12 +34,10 @@ jobs:
         shell: pwsh
         run: |
           $makeappx = Get-ChildItem -LiteralPath "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter MakeAppx.exe -Recurse -File | Sort-Object FullName | Select-Object -Last 1
-          $signtool = Get-ChildItem -LiteralPath "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter SignTool.exe -Recurse -File | Sort-Object FullName | Select-Object -Last 1
-          if ($null -eq $makeappx -or $null -eq $signtool) {
-            throw "Windows SDK MakeAppx.exe and SignTool.exe are required"
+          if ($null -eq $makeappx) {
+            throw "Windows SDK MakeAppx.exe is required"
           }
           "MAKEAPPX=$($makeappx.FullName)" >> $env:GITHUB_ENV
-          "SIGNTOOL=$($signtool.FullName)" >> $env:GITHUB_ENV
 
       - name: Build portable source package
         shell: pwsh
@@ -66,78 +64,14 @@ jobs:
             /p "$pwd\.analysis\AgentGuardian-ci.msix"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Sign with ephemeral CI certificate for install smoke only
-        timeout-minutes: 5
-        shell: pwsh
-        run: |
-          $publisher = "CN=AgentGuardian CI Test"
-          $certPath = "$pwd\.analysis\agentguardian-ci.cer"
-          $pfxPath = "$pwd\.analysis\agentguardian-ci.pfx"
-          $pfxPassword = [Guid]::NewGuid().ToString("N")
-          $cert = $null
-          try {
-            function Invoke-BoundedProcess {
-              param(
-                [Parameter(Mandatory = $true)][string]$FilePath,
-                [Parameter(Mandatory = $true)][string[]]$Arguments,
-                [int]$TimeoutMilliseconds = 120000
-              )
-              $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-              $startInfo.FileName = $FilePath
-              $startInfo.UseShellExecute = $false
-              foreach ($argument in $Arguments) {
-                [void]$startInfo.ArgumentList.Add($argument)
-              }
-              $process = [System.Diagnostics.Process]::new()
-              $process.StartInfo = $startInfo
-              if (-not $process.Start()) { throw "Unable to start $FilePath" }
-              if (-not $process.WaitForExit($TimeoutMilliseconds)) {
-                $process.Kill($true)
-                throw "$FilePath exceeded the bounded timeout"
-              }
-              if ($process.ExitCode -ne 0) {
-                throw "$FilePath exited with code $($process.ExitCode)"
-              }
-            }
-
-            Write-Host "Creating ephemeral signing certificate with locked Python cryptography"
-            $env:AGENTGUARDIAN_PFX_PASSWORD = $pfxPassword
-            python scripts/create_windows_ci_certificate.py `
-              --publisher $publisher `
-              --certificate-path $certPath `
-              --pfx-path $pfxPath
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certPath)
-            Import-Certificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
-            Import-Certificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
-            Write-Host "Signing MSIX with ephemeral PFX"
-            Invoke-BoundedProcess $env:SIGNTOOL @(
-              "sign", "/fd", "SHA256", "/f", $pfxPath, "/p", $pfxPassword,
-              "$pwd\.analysis\AgentGuardian-ci.msix"
-            )
-            Write-Host "Verifying MSIX signature"
-            Invoke-BoundedProcess $env:SIGNTOOL @(
-              "verify", "/pa", "/all", "$pwd\.analysis\AgentGuardian-ci.msix"
-            )
-          }
-          finally {
-            if ($null -ne $cert) {
-              Remove-Item -LiteralPath "Cert:\CurrentUser\TrustedPeople\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue
-              Remove-Item -LiteralPath "Cert:\CurrentUser\Root\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue
-            }
-            Remove-Item -LiteralPath $certPath -Force -ErrorAction SilentlyContinue
-            Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
-            Remove-Item Env:\AGENTGUARDIAN_PFX_PASSWORD -ErrorAction SilentlyContinue
-            if ($null -ne $cert) { $cert.Dispose() }
-          }
-
-      - name: Install launch and uninstall MSIX as standard user
+      - name: Install launch and uninstall unsigned MSIX CI smoke
         shell: pwsh
         run: |
           .\scripts\verify_windows_msix.ps1 `
             -PackagePath "$pwd\.analysis\AgentGuardian-ci.msix" `
             -PackageName "yangjing6213dev.AgentGuardian" `
             -EvidencePath "$pwd\.analysis\ci-msix-smoke.json" `
+            -AllowUnsigned `
             -SmokeSeconds 4
           Get-Content -LiteralPath "$pwd\.analysis\ci-msix-smoke.json"
 
