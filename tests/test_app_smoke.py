@@ -5455,7 +5455,16 @@ def test_production_modules_have_no_dangerous_capabilities_and_one_write_site():
             elif isinstance(node, ast.ImportFrom) and node.module:
                 assert node.module.split(".")[0] not in banned_imports
             elif isinstance(node, ast.Attribute):
-                assert node.attr not in {"clipboard", "write_bytes", "write_text"}
+                if node.attr == "clipboard":
+                    parent = parents.get(node)
+                    while parent and not isinstance(
+                        parent, (ast.FunctionDef, ast.AsyncFunctionDef)
+                    ):
+                        parent = parents.get(parent)
+                    assert parent is not None
+                    assert parent.name == "_scan_clipboard_once"
+                else:
+                    assert node.attr not in {"write_bytes", "write_text"}
             elif (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)

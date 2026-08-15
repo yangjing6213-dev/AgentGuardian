@@ -48,6 +48,8 @@ from PySide6.QtWidgets import (
 )
 
 from .detectors import MAX_FILE_BYTES, detect_file, detect_mcp_config, load_rules
+from .browser_audit import BrowserKind, audit_browser_database
+from .clipboard_audit import audit_clipboard_once
 from .discovery import discover_files, known_config_roots
 from .dispositions import (
     DispositionRecord,
@@ -1107,6 +1109,35 @@ class AgentGuardianWindow(QMainWindow):
         actions.addStretch()
         layout.addLayout(actions)
 
+        optional_actions = QHBoxLayout()
+        optional_actions.setSpacing(8)
+        self.browser_kind_combo = QComboBox()
+        self.browser_kind_combo.addItem("Chrome", BrowserKind.CHROME)
+        self.browser_kind_combo.addItem("Edge", BrowserKind.EDGE)
+        self.browser_kind_combo.addItem("Firefox", BrowserKind.FIREFOX)
+        self.browser_kind_combo.setToolTip("选择要读取固定元数据的浏览器数据库格式")
+        self.browser_button = QPushButton("审计浏览器数据库")
+        self.browser_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView)
+        )
+        self.browser_button.setToolTip(
+            "仅在点击后读取用户选定的数据库副本；不读取 URL、Cookie 或密码。"
+        )
+        self.browser_button.clicked.connect(self._select_browser_database)
+        self.clipboard_button = QPushButton("一次性审计剪贴板")
+        self.clipboard_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
+        )
+        self.clipboard_button.setToolTip(
+            "仅在点击后读取一次剪贴板并在内存中检测，不写回、不保存原文。"
+        )
+        self.clipboard_button.clicked.connect(self._scan_clipboard_once)
+        optional_actions.addWidget(self.browser_kind_combo)
+        optional_actions.addWidget(self.browser_button)
+        optional_actions.addWidget(self.clipboard_button)
+        optional_actions.addStretch()
+        layout.addLayout(optional_actions)
+
         self.status_label = QLabel("请选择审计文件夹。")
         self.status_label.setObjectName("status")
         layout.addWidget(self.status_label)
@@ -1318,6 +1349,109 @@ class AgentGuardianWindow(QMainWindow):
         except Exception:  # noqa: BLE001 - fixed folder-selection boundary
             self._clear_scope("无法建立有效的审计范围。")
             return
+
+    def _select_browser_database(self) -> None:
+        if self.is_scanning:
+            return
+        selected, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "选择浏览器数据库",
+            "",
+            "Chrome History;Edge History;Firefox places.sqlite",
+        )
+        if not selected:
+            return
+        try:
+            browser = BrowserKind(self.browser_kind_combo.currentData())
+            result = audit_browser_database(Path(selected), browser)
+        except (OSError, TypeError, ValueError):
+            self.status_label.setText("浏览器数据库检查未执行。")
+            self.coverage_status_label.setText(
+                "浏览器数据库检查失败；未生成报告。"
+            )
+            return
+        self._invalidate_report()
+        history_count = dict(result.counts).get("history_entries", 0)
+        visit_count = dict(result.counts).get("visit_entries", 0)
+        self.status_label.setText(
+            f"浏览器元数据审计完成：历史 {history_count}，访问记录 {visit_count}。"
+        )
+        self.coverage_status_label.setText(
+            "仅统计固定元数据；未读取 URL、Cookie、密码或页面正文。"
+        )
+        self.guidance_browser.setPlainText(
+            "浏览器检查只提供选定数据库的固定计数，不能证明浏览器、账号或网站安全。"
+        )
+
+    def _scan_clipboard_once(self) -> None:
+        if self.is_scanning:
+            return
+        try:
+            result = audit_clipboard_once(
+                lambda: QApplication.clipboard().text(),
+                scan_key=_generate_key(),
+                disposition_key=self._disposition_key,
+            )
+        except Exception:  # noqa: BLE001 - fixed clipboard boundary
+            self._invalidate_report()
+            self.status_label.setText("剪贴板检查未执行。")
+            self.coverage_status_label.setText("剪贴板读取失败；未生成报告。")
+            return
+        if not result.scanned:
+            self._invalidate_report()
+            self.status_label.setText("剪贴板检查未执行。")
+            self.coverage_status_label.setText(
+                "剪贴板内容未进入审计；未生成报告。"
+            )
+            return
+        evaluated_at = _validated_evaluation_time(_utc_now())
+        audit_score = score(
+            result.findings,
+            coverage=1.0,
+            confidence=1.0,
+            limits=(),
+        )
+        reviewed_score = score(
+            reviewed_findings(
+                result.findings,
+                disposition_index(self._dispositions),
+                now=evaluated_at,
+            ),
+            coverage=1.0,
+            confidence=1.0,
+            limits=(),
+        )
+        outcome = AuditOutcome(
+            findings=result.findings,
+            score=audit_score,
+            reviewed_score=reviewed_score,
+            evaluated_at=evaluated_at,
+            rule_version=load_rules().version,
+            report_json=render_json(
+                audit_score,
+                result.findings,
+                rule_version=load_rules().version,
+                reviewed_score=reviewed_score,
+                dispositions=self._dispositions,
+                evaluated_at=evaluated_at,
+            ),
+            report_html=render_html(
+                audit_score,
+                result.findings,
+                rule_version=load_rules().version,
+                reviewed_score=reviewed_score,
+                dispositions=self._dispositions,
+                evaluated_at=evaluated_at,
+            ),
+            scanned_roots=(),
+        )
+        self._scan_completed(outcome)
+        self.status_label.setText(
+            f"剪贴板一次性审计完成：发现 {len(result.findings)} 项。"
+        )
+        self.coverage_status_label.setText(
+            "剪贴板仅在本次点击中读取一次；报告不包含剪贴板原文。"
+        )
 
     def _add_known_config_roots(self) -> None:
         if self.is_scanning:
