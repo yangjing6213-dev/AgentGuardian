@@ -331,6 +331,37 @@ def test_task2_source_commit_contract_is_conditional_for_unsigned_compatibility(
     )
 
 
+def test_task2_mcp_acceptance_requires_upgrade_package_during_validation() -> None:
+    verifier = (
+        PROJECT_ROOT / "scripts" / "verify_windows_msix.ps1"
+    ).read_text(encoding="utf-8")
+    validation_start = verifier.index("if ($RequireMcpAdapterAcceptance) {")
+    validation_end = verifier.index("$appDataRoot = $null")
+    validation = verifier[validation_start:validation_end]
+
+    assert "[string]::IsNullOrWhiteSpace($UpgradePackagePath)" in validation
+    assert "RequireMcpAdapterAcceptance requires UpgradePackagePath" in validation
+
+
+def test_task2_mcp_acceptance_requires_completed_upgrade_before_resolution() -> None:
+    verifier = (
+        PROJECT_ROOT / "scripts" / "verify_windows_msix.ps1"
+    ).read_text(encoding="utf-8")
+    runtime_start = verifier.index(
+        "    if ($RequireMcpAdapterAcceptance) {",
+        verifier.index("try {")
+    )
+    runtime_end = verifier.index("$appUserModelId", runtime_start)
+    runtime_acceptance = verifier[runtime_start:runtime_end]
+
+    guard = "if (-not $upgradeAttempted -or -not $upgraded)"
+    assert guard in runtime_acceptance
+    assert "MCP adapter acceptance requires a completed package upgrade" in runtime_acceptance
+    assert runtime_acceptance.index(guard) < runtime_acceptance.index(
+        "Get-InstalledMcpAdapterPath"
+    )
+
+
 def test_task2_mcp_msix_verifier_runs_fixed_installed_adapter_before_cleanup() -> None:
     verifier = (
         PROJECT_ROOT / "scripts" / "verify_windows_msix.ps1"

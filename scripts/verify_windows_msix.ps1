@@ -153,6 +153,9 @@ if ($RequireMcpAdapterAcceptance) {
     if (-not $RequireTrustedSignature) {
         throw "RequireMcpAdapterAcceptance requires RequireTrustedSignature"
     }
+    if ([string]::IsNullOrWhiteSpace($UpgradePackagePath)) {
+        throw "RequireMcpAdapterAcceptance requires UpgradePackagePath"
+    }
     if ($McpAdapterRelativePath -cne $fixedMcpAdapterRelativePath) {
         throw "McpAdapterRelativePath must be adapters/AgentGuardianMcpAdapter.exe"
     }
@@ -303,6 +306,9 @@ try {
     if ($RequireMcpAdapterAcceptance) {
         if ($installedPackages.Count -ne 1) {
             throw "expected exactly one installed package for MCP adapter acceptance"
+        }
+        if (-not $upgradeAttempted -or -not $upgraded) {
+            throw "MCP adapter acceptance requires a completed package upgrade"
         }
         $installedAdapter = Get-InstalledMcpAdapterPath -Package $installedPackages[0]
         $acceptanceScript = Join-Path $PSScriptRoot "run_windows_mcp_adapter_acceptance.py"
