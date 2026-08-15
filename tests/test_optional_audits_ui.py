@@ -6,11 +6,12 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication, QFileDialog
+from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog
 
 import agentguardian.app as app_module
 from agentguardian.app import create_window
 from agentguardian.browser_audit import BrowserKind
+from agentguardian.share_verification import ShareVerificationResult
 
 
 @pytest.fixture(scope="module")
@@ -75,4 +76,37 @@ def test_clipboard_audit_is_explicit_and_keeps_report_masked(qapp, monkeypatch):
     assert raw_secret not in window.report_json
     assert raw_secret not in window.report_html
     assert "剪贴板" in window.status_label.text()
+    window.close()
+
+
+def test_share_verification_is_explicit_and_does_not_show_pasted_url(qapp, monkeypatch):
+    pasted_url = "https://public.example/share?token=synthetic-private"
+    monkeypatch.setattr(
+        QInputDialog,
+        "getText",
+        lambda *args, **kwargs: (pasted_url, True),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "verify_public_share",
+        lambda url: ShareVerificationResult(
+            address="https://public.example",
+            reachable=True,
+            status_code=200,
+            content_type="text/plain",
+            bytes_read=12,
+            redirects_followed=0,
+            scanned_data_sent=False,
+            credentials_sent=False,
+            raw_response_retained=False,
+            limits=(),
+        ),
+    )
+    window = create_window()
+
+    window.share_button.click()
+
+    assert "联网分享验证完成" in window.status_label.text()
+    assert pasted_url not in window.status_label.text()
+    assert "https://public.example" in window.status_label.text()
     window.close()

@@ -37,11 +37,13 @@ _NETWORK_IMPORT_PREFIXES = (
     "pyside6.qtwebengine",
     "pyside6.qtwebsockets",
 )
+_AUDITED_CAPABILITY_MODULES = {"remediation.py", "share_verification.py"}
 _SAFE_DIRECT_IMPORTS = {
     "ast",
     "ctypes",
     "hashlib",
     "hmac",
+    "ipaddress",
     "json",
     "math",
     "ntpath",
@@ -59,12 +61,15 @@ _SAFE_FROM_IMPORTS = {
     "collections.abc",
     "ctypes",
     "dataclasses",
+    "dataclasses.dataclass",
     "datetime",
     "enum",
+    "enum.Enum",
     "hashlib",
     "html",
     "itertools",
     "math",
+    "pathlib.Path",
     "pathlib",
     "pyside6.qtcore",
     "pyside6.qtgui",
@@ -199,6 +204,7 @@ def static_capability_findings(
     if policy is None:
         return _MANIFEST_ERROR
     root = _package_root(package_root)
+    scan_declared_network = package_root is None
     if not root.is_dir():
         return ("SOURCE_SCAN_ERROR",)
     try:
@@ -231,6 +237,8 @@ def static_capability_findings(
             expected = policy.get(relative_path)
             if expected is None or digest != expected:
                 findings.add("SOURCE_POLICY_VIOLATION")
+            if scan_declared_network and relative_path in _AUDITED_CAPABILITY_MODULES:
+                _scan_heuristic(tree, findings)
         else:
             _scan_heuristic(tree, findings)
     return tuple(sorted(findings))

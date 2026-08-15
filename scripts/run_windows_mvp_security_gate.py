@@ -70,7 +70,7 @@ SECURITY_CASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "AG-T08",
         (
-            "tests/test_self_audit.py::test_current_package_has_no_prohibited_static_capabilities",
+            "tests/test_self_audit.py::test_current_package_reports_its_constrained_network_adapter",
             "tests/test_self_audit.py::test_static_scan_detects_network_import_families_and_aliases",
             "tests/test_windows_packaging.py::test_frozen_layout_rejects_network_components",
         ),

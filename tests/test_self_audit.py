@@ -32,11 +32,13 @@ EXPECTED_REVIEWED_SOURCE_MODULES = (
     "domain.py",
     "evidence_state.py",
     "guidance.py",
+    "remediation.py",
     "report_comparison.py",
     "reporting.py",
     "scoring.py",
     "self_audit.py",
     "sensitive_mode.py",
+    "share_verification.py",
     "state_store.py",
     "windows_dpapi.py",
     "workflow.py",
@@ -191,11 +193,11 @@ def test_collect_self_audit_is_transparent_and_keeps_environment_private(
         "rules_sha256": hashlib.sha256(
             (PROJECT_ROOT / "rules" / "default.json").read_bytes()
         ).hexdigest(),
-        "local_only": True,
-        "network_capability": "not_detected",
+        "local_only": False,
+        "network_capability": "detected",
         "ordinary_user_mode": True,
         "alpha_status": "Founder Alpha",
-        "findings": [],
+        "findings": ["NETWORK_MODULE_IMPORT", "USER_DATA_WRITE"],
         "scope": {
             "capabilities": "package_source_policy",
             "semantic_analysis": "not_performed",
@@ -210,8 +212,8 @@ def test_collect_self_audit_is_transparent_and_keeps_environment_private(
     assert sys.executable not in serialized
 
 
-def test_current_package_has_no_prohibited_static_capabilities() -> None:
-    assert static_capability_findings() == ()
+def test_current_package_reports_its_constrained_network_adapter() -> None:
+    assert static_capability_findings() == ("NETWORK_MODULE_IMPORT", "USER_DATA_WRITE")
 
 
 def test_source_policy_manifest_exactly_matches_current_package() -> None:
@@ -225,10 +227,10 @@ def test_source_policy_manifest_exactly_matches_current_package() -> None:
 
     assert list(policy) == ["schema", "modules"]
     assert policy["schema"] == 1
-    assert len(EXPECTED_REVIEWED_SOURCE_MODULES) == 19
+    assert len(EXPECTED_REVIEWED_SOURCE_MODULES) == 21
     assert package_names == EXPECTED_REVIEWED_SOURCE_MODULES
     assert tuple(modules) == EXPECTED_REVIEWED_SOURCE_MODULES
-    assert len(modules) == 19
+    assert len(modules) == 21
     assert modules == {
         name: _canonical_source_digest(PACKAGE_ROOT / name)
         for name in EXPECTED_REVIEWED_SOURCE_MODULES

@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -50,6 +51,7 @@ from PySide6.QtWidgets import (
 from .detectors import MAX_FILE_BYTES, detect_file, detect_mcp_config, load_rules
 from .browser_audit import BrowserKind, audit_browser_database
 from .clipboard_audit import audit_clipboard_once
+from .share_verification import verify_public_share
 from .discovery import discover_files, known_config_roots
 from .dispositions import (
     DispositionRecord,
@@ -1132,9 +1134,18 @@ class AgentGuardianWindow(QMainWindow):
             "仅在点击后读取一次剪贴板并在内存中检测，不写回、不保存原文。"
         )
         self.clipboard_button.clicked.connect(self._scan_clipboard_once)
+        self.share_button = QPushButton("验证联网分享")
+        self.share_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogYesButton)
+        )
+        self.share_button.setToolTip(
+            "仅验证用户输入的公开 URL；不上传扫描文件、凭据或聊天内容。"
+        )
+        self.share_button.clicked.connect(self._verify_share)
         optional_actions.addWidget(self.browser_kind_combo)
         optional_actions.addWidget(self.browser_button)
         optional_actions.addWidget(self.clipboard_button)
+        optional_actions.addWidget(self.share_button)
         optional_actions.addStretch()
         layout.addLayout(optional_actions)
 
@@ -1451,6 +1462,41 @@ class AgentGuardianWindow(QMainWindow):
         )
         self.coverage_status_label.setText(
             "剪贴板仅在本次点击中读取一次；报告不包含剪贴板原文。"
+        )
+
+    def _verify_share(self) -> None:
+        if self.is_scanning:
+            return
+        url, accepted = QInputDialog.getText(
+            self,
+            "验证联网分享",
+            "输入公开 HTTP(S) URL：",
+        )
+        if not accepted or not url.strip():
+            return
+        try:
+            result = verify_public_share(url.strip())
+        except (OSError, TypeError, ValueError):
+            self.status_label.setText("联网分享验证未执行。")
+            self.coverage_status_label.setText(
+                "URL 不符合公开分享验证边界；未发送本地数据。"
+            )
+            return
+        if not result.reachable:
+            self.status_label.setText("联网分享验证未完成。")
+            self.coverage_status_label.setText(
+                "未获得符合限制的公开响应；未发送本地数据。"
+            )
+            return
+        self.status_label.setText(
+            f"联网分享验证完成：{result.address}，HTTP {result.status_code}，"
+            f"读取 {result.bytes_read} 字节。"
+        )
+        self.coverage_status_label.setText(
+            "仅验证公开响应可达性；未上传扫描文件、凭据或聊天内容。"
+        )
+        self.guidance_browser.setPlainText(
+            "联网分享验证不代表链接内容、分享权限或搜索引擎收录结果安全。"
         )
 
     def _add_known_config_roots(self) -> None:
