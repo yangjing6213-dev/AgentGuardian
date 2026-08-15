@@ -133,3 +133,11 @@
 ## 发布决策
 
 以下任一项缺失，发布状态保持 `NO-GO`：可信签名、SBOM/许可证复核、独立干净机安装卸载、真实数据验收、关键安全复审、组织发布者白名单、适配器崩溃/重启证据或动态能力隔离的完整交付证据。无签名 CI 包只允许安装契约 smoke，不允许公开交付。
+
+## Current Incremental Evidence (2026-08-15)
+
+- `e55965dbaabc17c20c16cc36908a1e3dd657f57b` adds read-only browser SQLite snapshot handling for present `-wal`, `-shm`, and `-journal` sidecars, with one aggregate size limit and fixed-count-only output.
+- Clipboard auditing now presents an explicit one-time Yes/No confirmation and stops before reading when the user cancels.
+- `scripts/run_sensitive_data_acceptance.py` accepts `--sample-root` for an absolute local non-reparse sanitized sample. Acceptance metadata records source kind and bounded finding counts; sample paths and contents are checked not to enter JSON, HTML, or export evidence.
+- Local regression is `1430 passed, 11 skipped`; exact-SHA push and Draft PR test/Windows checks all succeeded. These are implementation and CI gates only.
+- Formal trusted signing, independent clean-machine installation and uninstall acceptance, manual sanitized-sample signoff, dependency/license/binary review, and the remaining enterprise/MCP release gates are still pending. Release status remains `NO-GO`; no production-safety claim is made.
