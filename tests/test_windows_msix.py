@@ -26,7 +26,8 @@ def test_manifest_declares_full_trust_executable_and_required_logos() -> None:
     assert 'Executable="AgentGuardian.exe"' in manifest
     assert 'EntryPoint="Windows.FullTrustApplication"' in manifest
     assert '<Logo>Assets/StoreLogo.png</Logo>' in manifest
-    assert '<Dependencies />' in manifest
+    assert '<Dependencies>' in manifest
+    assert 'Name="Windows.Desktop"' in manifest
     for logo in ("Square44x44Logo.png", "Square150x150Logo.png"):
         assert f'Logo="Assets/{logo}"' in manifest
 
