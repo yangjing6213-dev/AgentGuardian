@@ -2251,13 +2251,16 @@ class AgentGuardianWindow(QMainWindow):
             if not export_confirmed:
                 return
         try:
-            export_new_report(
-                path,
-                content,
-                self._report_roots,
-                sensitive_mode=self._sensitive_mode,
-                export_confirmed=export_confirmed,
-            )
+            if self._sensitive_mode.enabled:
+                export_new_report(
+                    path,
+                    content,
+                    self._report_roots,
+                    sensitive_mode=self._sensitive_mode,
+                    export_confirmed=export_confirmed,
+                )
+            else:
+                export_new_report(path, content, self._report_roots)
         except (OSError, PermissionError, TypeError, ValueError):
             QMessageBox.warning(self, "导出失败", "无法导出报告。")
             return
