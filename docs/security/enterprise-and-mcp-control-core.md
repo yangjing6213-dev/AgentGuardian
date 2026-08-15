@@ -96,23 +96,29 @@ Organization PFX/password material is scoped only to the
 steps that need it. Imported certificates/private keys and the PFX are removed
 and residue-checked fail-closed, and the job has a 30-minute outer timeout.
 
-Task 1 and Task 2 passed independent specification and quality/security review
+Runtime launch, trusted staging, packaged MCP acceptance, and the final release
+gate now use one streaming SHA-256 helper with an exact 64 MiB adapter limit.
+Exact-limit artifacts are accepted; `64 MiB + 1 byte` is denied before launch,
+copy, or evidence creation. Manifest and ZIP processing can still allocate up to
+the bounded 64 MiB adapter size.
+
+Task 1, Task 2, and bounded adapter hashing passed independent specification and quality/security review
 with no remaining Critical or Important issues. This does not complete the
 release gate: `windows-mvp-signed.yml` has not been dispatched or passed with a
 real organization adapter/certificate. Required repository variables, signing
 material, an approved `windows-license-review.json`, real sanitized-sample human
 signoff, and independent clean-machine install/upgrade/run/uninstall evidence
-remain pending. Documentation follow-up
-`d22049dfdcfe177a760d3a3626d67a4fd020a825`, which contains code-bearing SHA
-`db56b30` unchanged, passed exact-SHA push and Draft PR CI plus both Windows
-package checks.
+remain pending. Predecessor `f4b3d5c5bfd9bd4f8f6733ac9dad491c7d2bb47e`
+passed exact-SHA push and Draft PR CI plus both Windows package checks; current
+code-bearing SHA `4d88e0b0123e7f4a6651fa43eb4afd652e4f152c` remains pending
+remote revalidation.
 
 Residual Minor/defense-in-depth items are the non-atomic boundary between reparse
-validation and final executable `CreateFileW`, for which no same-user exploit was
-reproduced under the held-file assumptions; multi-signature signer-index binding;
-evidence-output parent-path TOCTOU,
-streaming/size bounds in acceptance and sandbox hashing, and synchronous AppX
-operations bounded only by the outer workflow timeout. Remote
+validation and final executable `CreateFileW`; traditional, parent-directory,
+and `FileRenameInfoEx` POSIX replacement attempts were blocked by the held file
+on current Windows/NTFS. Multi-signature signer-index binding,
+evidence-output parent-path TOCTOU, and synchronous AppX operations bounded only
+by the outer workflow timeout remain open. Remote
 device enrollment, remote policy distribution, and a remote administrator
 console remain unimplemented. The current evidence supports local implementation
 and synthetic gates only, not production isolation, high-sensitive real-data
