@@ -6,7 +6,6 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$PackageName,
 
-    [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-f]{40}$')]
     [string]$ExpectedSourceCommit,
 
@@ -137,6 +136,13 @@ if ($RequireFreshUserState -and $AllowUnsigned) {
 }
 if ($RequireFreshUserState -and -not $RequireTrustedSignature) {
     throw "RequireFreshUserState requires RequireTrustedSignature"
+}
+$sourceCommitRequired = $RequireTrustedSignature -or $RequireMcpAdapterAcceptance
+$sourceCommitProvided = $PSBoundParameters.ContainsKey("ExpectedSourceCommit")
+$sourceCommitValid = $sourceCommitProvided -and
+    $ExpectedSourceCommit -cmatch '^[0-9a-f]{40}$'
+if (($sourceCommitRequired -or $sourceCommitProvided) -and -not $sourceCommitValid) {
+    throw "ExpectedSourceCommit must be a full lowercase SHA-1 for trusted verification"
 }
 $fixedMcpAdapterRelativePath = "adapters/AgentGuardianMcpAdapter.exe"
 $resolvedMcpAdapterEvidence = $null
@@ -390,7 +396,6 @@ if (-not (Test-Path -LiteralPath $evidenceParent)) {
 }
 $evidence = [ordered]@{
     schema_version = 1
-    source_commit = $ExpectedSourceCommit
     package_path = [IO.Path]::GetFileName($resolvedPackage)
     package_name = $PackageName
     started_at = $startedAt
@@ -417,6 +422,9 @@ $evidence = [ordered]@{
         package_residue = $packageResidue
         app_data_residue = $appDataResidue
     }
+}
+if ($sourceCommitValid) {
+    $evidence["source_commit"] = $ExpectedSourceCommit
 }
 $evidence | ConvertTo-Json -Compress -Depth 6 | Set-Content -LiteralPath $resolvedEvidence -Encoding utf8NoBOM
 $evidence.result | ConvertTo-Json -Compress

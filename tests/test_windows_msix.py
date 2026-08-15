@@ -284,7 +284,7 @@ def test_task2_mcp_msix_verifier_requires_source_commit_and_strict_acceptance_mo
 
     for required in (
         "$ExpectedSourceCommit",
-        "source_commit = $ExpectedSourceCommit",
+        '$evidence["source_commit"] = $ExpectedSourceCommit',
         "^[0-9a-f]{40}$",
         "$RequireMcpAdapterAcceptance",
         "$McpAdapterRelativePath",
@@ -300,6 +300,35 @@ def test_task2_mcp_msix_verifier_requires_source_commit_and_strict_acceptance_mo
         "^[0-9a-f]{64}$",
     ):
         assert required in verifier
+
+
+def test_task2_source_commit_contract_is_conditional_for_unsigned_compatibility() -> None:
+    verifier = (
+        PROJECT_ROOT / "scripts" / "verify_windows_msix.ps1"
+    ).read_text(encoding="utf-8")
+    unsigned_workflow_path = PROJECT_ROOT / ".github" / "workflows" / "windows-mvp.yml"
+    unsigned_workflow = unsigned_workflow_path.read_text(encoding="utf-8")
+    parameter_prefix = verifier.split("[string]$ExpectedSourceCommit,", 1)[0]
+    source_parameter_attributes = parameter_prefix.rsplit(",", 1)[1]
+
+    assert "[Parameter(Mandatory = $true)]" not in source_parameter_attributes
+    for required in (
+        "$sourceCommitRequired = $RequireTrustedSignature -or $RequireMcpAdapterAcceptance",
+        '$sourceCommitProvided = $PSBoundParameters.ContainsKey("ExpectedSourceCommit")',
+        "$sourceCommitValid = $sourceCommitProvided -and",
+        "($sourceCommitRequired -or $sourceCommitProvided) -and -not $sourceCommitValid",
+        '$evidence["source_commit"] = $ExpectedSourceCommit',
+    ):
+        assert required in verifier
+    assert verifier.index("$evidence = [ordered]@{") < verifier.index(
+        '$evidence["source_commit"] = $ExpectedSourceCommit'
+    )
+    assert "source_commit = $ExpectedSourceCommit" not in verifier
+    assert "-ExpectedSourceCommit" not in unsigned_workflow
+    assert (
+        hashlib.sha256(unsigned_workflow_path.read_bytes()).hexdigest()
+        == UNSIGNED_WORKFLOW_SHA256
+    )
 
 
 def test_task2_mcp_msix_verifier_runs_fixed_installed_adapter_before_cleanup() -> None:
