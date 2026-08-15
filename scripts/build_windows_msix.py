@@ -52,6 +52,7 @@ def msix_manifest_bytes(
         '    <Logo>Assets/StoreLogo.png</Logo>\n'
         '  </Properties>\n'
         '  <Resources><Resource Language="zh-CN" /></Resources>\n'
+        '  <Dependencies />\n'
         '  <Applications>\n'
         f'    <Application Id="AgentGuardian" Executable="{escaped["executable"]}" '
         'EntryPoint="Windows.FullTrustApplication">\n'
