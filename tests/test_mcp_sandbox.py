@@ -106,6 +106,39 @@ def test_attested_execution_is_bounded_and_returns_only_metadata(
     assert tuple(tmp_path.iterdir()) == ()
 
 
+def test_adapter_crash_fails_closed_without_restart_or_raw_retention(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy = McpSandboxPolicy.from_command(
+        adapter_id="crashing-adapter",
+        executable=sys.executable,
+        executable_sha256=hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),
+        arguments=("-c", "raise SystemExit(17)"),
+    )
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "probe_native_sandbox",
+        lambda: _SandboxAttestation(
+            provider="synthetic-test-only",
+            network_isolated=True,
+            process_tree_isolated=True,
+        ),
+    )
+
+    result = run_mcp_sandbox(
+        policy,
+        b"synthetic-request",
+        confirmed=True,
+        temp_root=tmp_path,
+    )
+
+    assert result.status is SandboxStatus.FAILED
+    assert result.reason == "adapter_failed"
+    assert result.raw_response_retained is False
+    assert tuple(tmp_path.iterdir()) == ()
+
+
 def test_attested_execution_rejects_oversize_request() -> None:
     with pytest.raises(ValueError, match="MCP_REQUEST_SIZE_LIMIT"):
         run_mcp_sandbox(_policy(), b"x" * 65_537, confirmed=True)

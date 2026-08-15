@@ -45,14 +45,16 @@ that the transient profile directory is removed.
 The supervisor uses this provider only when the required Windows APIs load and
 the provider can complete its fail-closed lifecycle. Unsupported environments,
 provider errors, nonzero adapters, timeouts, and output-limit violations do not
-fall back to an ordinary child process. Synthetic attestation remains limited
-to unit tests. The native Windows path also rechecks the executable SHA-256 and
+fall back to an ordinary child process. A crashing/nonzero adapter returns a
+bounded failure, is not automatically restarted, retains no raw output, and
+leaves no temporary work directory. Synthetic attestation remains limited to
+unit tests. The native Windows path also rechecks the executable SHA-256 and
 requires a locally trusted embedded Authenticode signature before launch. The
 signature check is cache-only and does not fetch certificate data; a missing or
 invalid signature is denied.
 
 This does not complete the release gate. An organization publisher allowlist,
-packaged-adapter filesystem accessibility, crash/restart acceptance, clean-machine install and
+packaged-adapter filesystem accessibility, packaged crash/restart acceptance, clean-machine install and
 uninstall evidence, remote device registration, remote policy distribution,
 administrator authentication, and an administrator console remain outstanding.
 The current evidence supports a locally verified Windows MVP boundary, not
