@@ -257,7 +257,11 @@ def test_native_windows_execution_requires_a_trusted_adapter_signature(
         allowed_publisher_subjects=("CN=Trusted",),
         allowed_publisher_certificate_sha256=("0" * 64,),
     )
-    monkeypatch.setattr(mcp_sandbox, "verify_authenticode", lambda _path: False)
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "verify_authenticode",
+        lambda _path, **_kwargs: False,
+    )
 
     result = run_mcp_sandbox(policy, b"synthetic-request", confirmed=True)
 
@@ -308,7 +312,11 @@ def test_native_windows_execution_rejects_a_non_allowlisted_publisher(
             process_tree_isolated=True,
         ),
     )
-    monkeypatch.setattr(mcp_sandbox, "verify_authenticode", lambda _path: True)
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "verify_authenticode",
+        lambda _path, **_kwargs: True,
+    )
     monkeypatch.setattr(
         mcp_sandbox,
         "verify_authenticode_publisher",
@@ -361,6 +369,60 @@ def test_native_windows_execution_holds_the_executable_during_launch(
 
     assert result.status is SandboxStatus.COMPLETED
     assert events == ["enter", "exit"]
+
+
+def test_native_windows_authenticode_uses_the_locked_executable_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows executable handle integration")
+    policy = McpSandboxPolicy.from_command(
+        adapter_id="synthetic-adapter",
+        executable=sys.executable,
+        executable_sha256=hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),
+        allowed_publisher_subjects=("CN=Allowed",),
+        allowed_publisher_certificate_sha256=("0" * 64,),
+    )
+    observed_handles = []
+
+    @contextmanager
+    def held(_path: Path):
+        yield 4321
+
+    def verify(_path: Path, *, file_handle=None) -> bool:
+        observed_handles.append(file_handle)
+        return file_handle == 4321
+
+    monkeypatch.setattr(mcp_sandbox, "hold_executable_for_launch", held)
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "probe_native_sandbox",
+        lambda: _SandboxAttestation(
+            provider="windows-appcontainer",
+            network_isolated=True,
+            process_tree_isolated=True,
+        ),
+    )
+    monkeypatch.setattr(mcp_sandbox, "verify_authenticode", verify)
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "verify_authenticode_publisher",
+        lambda _path, _allowed, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "_run_windows_appcontainer",
+        lambda active_policy, *_args: mcp_sandbox._result(
+            active_policy,
+            SandboxStatus.COMPLETED,
+            "completed",
+        ),
+    )
+
+    result = run_mcp_sandbox(policy, b"synthetic-request", confirmed=True)
+
+    assert result.status is SandboxStatus.COMPLETED
+    assert observed_handles == [4321]
 
 
 @pytest.mark.parametrize(

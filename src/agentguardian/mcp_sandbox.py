@@ -246,11 +246,12 @@ def run_mcp_sandbox(
     if assessment.status is not SandboxStatus.COMPLETED:
         return _result(policy, SandboxStatus.DENIED, assessment.reasons[0])
     try:
-        with hold_executable_for_launch(policy.executable):
+        with hold_executable_for_launch(policy.executable) as executable_handle:
             return _run_mcp_sandbox_with_locked_executable(
                 policy,
                 request,
                 assessment,
+                executable_handle=executable_handle,
                 temp_root=temp_root,
             )
     except (OSError, ValueError):
@@ -262,6 +263,7 @@ def _run_mcp_sandbox_with_locked_executable(
     request: bytes,
     assessment: SandboxAssessment,
     *,
+    executable_handle: int | None,
     temp_root: pathlib.Path | None,
 ) -> McpSandboxResult:
     try:
@@ -276,7 +278,10 @@ def _run_mcp_sandbox_with_locked_executable(
             or not policy.allowed_publisher_certificate_sha256
         ):
             return _result(policy, SandboxStatus.DENIED, "adapter_publisher_allowlist_required")
-        if not verify_authenticode(policy.executable):
+        if not verify_authenticode(
+            policy.executable,
+            file_handle=executable_handle,
+        ):
             return _result(policy, SandboxStatus.DENIED, "adapter_signature_required")
         if not verify_authenticode_publisher(
             policy.executable,

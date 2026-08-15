@@ -86,7 +86,11 @@ _OPEN_EXISTING = 3
 _FILE_ATTRIBUTE_NORMAL = 0x00000080
 
 
-def verify_authenticode(executable: pathlib.Path) -> bool:
+def verify_authenticode(
+    executable: pathlib.Path,
+    *,
+    file_handle: int | None = None,
+) -> bool:
     """Return true only when Windows trusts the file's Authenticode signature.
 
     Verification is cache-only so this gate cannot turn adapter launch into a
@@ -94,6 +98,8 @@ def verify_authenticode(executable: pathlib.Path) -> bool:
     is treated as untrusted.
     """
     if sys.platform != "win32":
+        return False
+    if file_handle is not None and (type(file_handle) is not int or file_handle <= 0):
         return False
     path = pathlib.Path(executable)
     try:
@@ -113,7 +119,7 @@ def verify_authenticode(executable: pathlib.Path) -> bool:
     file_info = _WintrustFileInfo(
         cb_struct=ctypes.sizeof(_WintrustFileInfo),
         file_path=str(path),
-        file_handle=None,
+        file_handle=file_handle,
         known_subject=None,
     )
     data = _WintrustData(
@@ -145,14 +151,14 @@ def verify_authenticode(executable: pathlib.Path) -> bool:
 
 
 @contextmanager
-def hold_executable_for_launch(executable: pathlib.Path) -> Iterator[None]:
+def hold_executable_for_launch(executable: pathlib.Path) -> Iterator[int | None]:
     """Hold a Windows executable open without write/delete sharing.
 
     The handle spans hash, signature, and process creation so a same-user
     replacement cannot be swapped in between validation and launch.
     """
     if sys.platform != "win32":
-        yield
+        yield None
         return
     path = pathlib.Path(executable)
     try:
@@ -192,7 +198,7 @@ def hold_executable_for_launch(executable: pathlib.Path) -> Iterator[None]:
     if handle in (None, ctypes.c_void_p(-1).value):
         raise OSError("executable lock unavailable")
     try:
-        yield
+        yield int(handle)
     finally:
         if not close_handle(handle):
             raise OSError("executable lock cleanup failed")

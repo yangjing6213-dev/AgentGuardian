@@ -53,7 +53,11 @@ def test_mcp_supervisor_uses_appcontainer_network_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = Path(r"C:\Windows\System32\curl.exe")
-    monkeypatch.setattr(mcp_sandbox, "verify_authenticode", lambda _path: True)
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "verify_authenticode",
+        lambda _path, **_kwargs: True,
+    )
     monkeypatch.setattr(
         mcp_sandbox,
         "verify_authenticode_publisher",
