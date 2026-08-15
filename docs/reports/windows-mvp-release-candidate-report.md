@@ -28,6 +28,13 @@ The Windows AppContainer integration proves loopback connection denial and
 transient profile cleanup; the native MCP path also rejects an adapter without
 a locally trusted embedded Authenticode signature.
 
+The latest repository HEAD is `36f57d0c6a97d7813dd96eed8cc142b80aa75bb4`.
+It contains the trusted-release workflow gate and evidence synchronization;
+the implementation behavior remains bound to the `e55965d` code-bearing SHA.
+The latest HEAD's push CI `31888896315`, push Windows
+`31888896325`, Draft PR CI `31888900247`, and Draft PR Windows
+`31888900331` also completed successfully.
+
 The documentation update containing this report is a follow-up to the exact
 code-bearing SHA above. The Windows smoke evidence records install,
 same-identity upgrade `0.1.0.0 -> 0.1.0.1`, termination, uninstall, and
@@ -88,7 +95,7 @@ This evidence does not cover the 10,000-file functional maximum, whole-process r
 - Independent read-only review: `COMPLETED WITH 7 IMPORTANT AND 2 MINOR FINDINGS` on the prior evidence-sync HEAD; those findings were remediated locally.
 - Second independent re-review: `COMPLETED WITH 2 IMPORTANT AND 3 MINOR FINDINGS` on `305eeb4`; both Important findings were remediated in `90e6eda`.
 - Third independent re-review: `COMPLETED WITH NO CRITICAL/IMPORTANT FINDINGS AND 1 MINOR`; the reviewer did not execute tests independently, so runtime confirmation remains the separately recorded local-gate evidence.
-- Current exact-SHA GitHub CI: `VERIFIED` for implementation HEAD `e55965d`; push/PR CI and Windows workflow checks all succeeded. This is CI evidence only and does not satisfy trusted signing or clean-machine gates.
+- Current exact-SHA GitHub CI: `VERIFIED` for repository HEAD `36f57d0`; push/PR CI and Windows workflow checks all succeeded. This is CI evidence only and does not satisfy trusted signing or clean-machine gates.
 - GitHub-hosted Windows runner provenance: `VERIFIED AS CI EVIDENCE ONLY`; this does not replace an independent clean Windows machine.
 - Trusted code signing: `PENDING`.
 - Trusted-signature workflow final gate: `IMPLEMENTED AND FAIL-CLOSED`; it now requires `trusted_release` bundle metadata, fresh-user-state evidence, trusted signer evidence, and complete SBOM/license notices. The current notices still contain unresolved `NOASSERTION` runtime licenses, so this gate has not passed.
