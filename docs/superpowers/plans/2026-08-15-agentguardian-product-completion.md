@@ -145,3 +145,4 @@
 - Repository HEAD `36f57d0` revalidated the workflow/doc synchronization with local `1430 passed, 11 skipped` and successful push/Draft PR test and Windows checks; these remain CI evidence only.
 - The final release verifier now requires an approved `docs/security/windows-license-review.json` record bound to the exact source SHA and SBOM digest, with complete per-component evidence. The checked-in worksheet is `pending` until an authorized review is completed.
 - Release evidence path validation now rejects relative, symlink, UNC, and reparse/junction-backed inputs before reading any bundle, smoke, or license-review file.
+- Repository HEAD `2099273` revalidated the release-evidence hardening with local `1432 passed, 11 skipped` and successful push/Draft PR test and Windows checks; these remain CI evidence only.

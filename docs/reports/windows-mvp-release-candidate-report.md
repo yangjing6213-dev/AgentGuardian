@@ -28,12 +28,12 @@ The Windows AppContainer integration proves loopback connection denial and
 transient profile cleanup; the native MCP path also rejects an adapter without
 a locally trusted embedded Authenticode signature.
 
-The latest repository HEAD is `36f57d0c6a97d7813dd96eed8cc142b80aa75bb4`.
-It contains the trusted-release workflow gate and evidence synchronization;
-the implementation behavior remains bound to the `e55965d` code-bearing SHA.
-The latest HEAD's push CI `31888896315`, push Windows
-`31888896325`, Draft PR CI `31888900247`, and Draft PR Windows
-`31888900331` also completed successfully.
+The latest repository HEAD is `209927342118ac1414514b4a5f15473645634006`.
+It contains the trusted-release workflow gate, license-review evidence gate,
+and release-evidence path hardening; the implementation behavior remains bound
+to the `e55965d` code-bearing SHA. The latest HEAD's push CI
+`31889886237`, push Windows `31889886222`, Draft PR CI `31889888358`, and
+Draft PR Windows `31889888361` also completed successfully.
 
 The documentation update containing this report is a follow-up to the exact
 code-bearing SHA above. The Windows smoke evidence records install,
