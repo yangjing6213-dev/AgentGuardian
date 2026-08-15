@@ -71,7 +71,7 @@ Expected: all tests pass.
 
 - [ ] **Step 5: Write failing final-gate tests**
 
-Extend `_write_candidate` in `tests/test_release_evidence.py` to create `MCP-ADAPTER.json` in the bundle and matching MCP acceptance evidence. Pass the new evidence path to every trusted release validation. Add failures for absent evidence, source mismatch, adapter metadata mismatch, non-completed sandbox state, raw retention, and missing isolation limits.
+Extend `_write_candidate` in `tests/test_release_evidence.py` to create the actual `adapters/AgentGuardianMcpAdapter.exe`, an `MCP-ADAPTER.json` record, and matching MCP acceptance evidence. The metadata must contain exactly `schema`, `path`, `name`, `sha256`, `publisher_subject`, and `certificate_sha256`; `path` is fixed to `adapters/AgentGuardianMcpAdapter.exe`. Pass the new evidence path to every trusted release validation. Add failures for absent evidence, source mismatch, adapter metadata mismatch, actual bundled-file tampering, non-completed sandbox state, raw retention, and missing isolation limits.
 
 - [ ] **Step 6: Run final-gate tests and verify RED**
 
@@ -85,7 +85,7 @@ Expected: failures because the verifier does not accept or validate MCP evidence
 
 - [ ] **Step 7: Implement the final release binding**
 
-Add required keyword `mcp_adapter_evidence_path` to `validate_release_candidate` and CLI option `--mcp-adapter-evidence`. Validate `MCP-ADAPTER.json` and the evidence with the existing bounded local-path JSON loader. Require exact source commit, adapter basename, SHA-256, publisher subject, certificate SHA-256, `passed=true`, completed bounded result, no raw retention, positive response bytes, and exact native isolation limits. Return only bounded release metadata.
+Add required keyword `mcp_adapter_evidence_path` to `validate_release_candidate` and CLI option `--mcp-adapter-evidence`. Validate `MCP-ADAPTER.json` and the evidence with the existing bounded local-path JSON loader. Resolve the fixed metadata path beneath the bundle without following symlink/reparse components, require a regular file, hash the actual adapter bytes, and match that digest against metadata and evidence. Also require exact source commit, adapter basename, publisher subject, certificate SHA-256, `passed=true`, completed bounded result, no raw retention, positive response bytes, and exact native isolation limits. Return only bounded release metadata.
 
 - [ ] **Step 8: Run focused tests and commit**
 
@@ -110,7 +110,7 @@ Expected: all pass. Commit only the four Task 1 files.
 
 - [ ] **Step 1: Write failing trusted-bundle staging tests**
 
-Add tests for `stage_trusted_mcp_adapter` that use a temporary adapter and monkeypatch Authenticode identity verification. Require a fixed destination `adapters/AgentGuardianMcpAdapter.exe`, canonical `MCP-ADAPTER.json`, exact file hash, exact signer subject/certificate pin, no reparse/UNC input, and no staging for unsigned builds. Require `build_portable` with `artifact_status="trusted_release"` inputs to be complete; partial or absent adapter inputs fail closed.
+Add tests for `stage_trusted_mcp_adapter` that use a temporary adapter and monkeypatch Authenticode identity verification. Require a fixed destination `adapters/AgentGuardianMcpAdapter.exe`, canonical `MCP-ADAPTER.json` with exactly `schema`, `path`, `name`, `sha256`, `publisher_subject`, and `certificate_sha256`, exact file hash, exact signer subject/certificate pin, no reparse/UNC input, and no staging for unsigned builds. Require `build_portable` with `artifact_status="trusted_release"` inputs to be complete; partial or absent adapter inputs fail closed.
 
 - [ ] **Step 2: Run staging tests and verify RED**
 
