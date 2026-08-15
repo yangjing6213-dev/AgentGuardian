@@ -28,6 +28,8 @@ def test_manifest_declares_full_trust_executable_and_required_logos() -> None:
     assert '<Logo>Assets/StoreLogo.png</Logo>' in manifest
     assert '<Dependencies>' in manifest
     assert 'Name="Windows.Desktop"' in manifest
+    assert 'xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"' in manifest
+    assert '<rescap:Capability Name="runFullTrust" />' in manifest
     for logo in ("Square44x44Logo.png", "Square150x150Logo.png"):
         assert f'Logo="Assets/{logo}"' in manifest
 
