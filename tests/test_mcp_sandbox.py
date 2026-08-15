@@ -236,3 +236,35 @@ def test_native_windows_execution_requires_a_trusted_adapter_signature(
     assert result.status is SandboxStatus.DENIED
     assert result.reason == "adapter_signature_required"
     assert result.raw_response_retained is False
+
+
+@pytest.mark.parametrize(
+    ("runner_name", "launcher_name"),
+    (
+        ("_run_windows_job_object", "run_in_job_object"),
+        ("_run_windows_appcontainer", "run_in_appcontainer"),
+    ),
+)
+def test_native_launcher_unexpected_exception_fails_closed_without_leaking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner_name: str,
+    launcher_name: str,
+) -> None:
+    policy = _policy()
+    marker = "synthetic native launcher failure"
+
+    def fail_closed(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError(marker)
+
+    monkeypatch.setattr(mcp_sandbox, launcher_name, fail_closed)
+    result = getattr(mcp_sandbox, runner_name)(
+        policy,
+        b"synthetic-request",
+        tmp_path,
+    )
+
+    assert result.status is SandboxStatus.FAILED
+    assert result.reason == "sandbox_launch_failed"
+    assert result.raw_response_retained is False
+    assert marker not in repr(result)

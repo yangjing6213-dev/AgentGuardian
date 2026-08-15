@@ -291,6 +291,8 @@ def _run_windows_job_object(
             SandboxStatus.DENIED,
             "native_process_tree_isolation_unavailable",
         )
+    except Exception:  # noqa: BLE001 - native boundary fails closed
+        return _result(policy, SandboxStatus.FAILED, "sandbox_launch_failed")
     if native.timed_out:
         return _result(
             policy,
@@ -344,6 +346,8 @@ def _run_windows_appcontainer(
             SandboxStatus.DENIED,
             "native_network_isolation_unavailable",
         )
+    except Exception:  # noqa: BLE001 - native boundary fails closed
+        return _result(policy, SandboxStatus.FAILED, "sandbox_launch_failed")
     if native.timed_out:
         return _result(
             policy,
