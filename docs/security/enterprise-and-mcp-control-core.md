@@ -63,13 +63,51 @@ allowlists are denied. Unexpected
 ordinary exceptions from either native launcher are converted to the fixed
 `sandbox_launch_failed` result instead of escaping into the desktop boundary.
 
-This does not complete the release gate. An organization-signed adapter and
-reviewed publisher allowlist, packaged-adapter filesystem accessibility,
-packaged crash/restart acceptance, clean-machine install and uninstall evidence,
-remote device registration, remote policy distribution,
-remote administrator authentication, and an administrator console remain outstanding.
-The current evidence supports a locally verified Windows MVP boundary, not
-production isolation or processing of highly sensitive real data.
+## Packaged MCP release evidence
+
+Trusted portable builds require all four external adapter inputs: an absolute
+adapter path, its exact SHA-256, an exact X.500 publisher subject, and the exact
+DER certificate SHA-256. While holding the source executable without
+write/delete sharing, the build verifies the actual bytes, trusted
+Authenticode, publisher subject, and certificate pin. It then stages only
+`adapters/AgentGuardianMcpAdapter.exe` and `MCP-ADAPTER.json` before generating
+payload manifests, checksums, and the deterministic ZIP. Unsigned builds reject
+all adapter inputs.
+
+Trusted MSIX acceptance requires an exact source SHA, fresh user state, and a
+completed same-identity package upgrade. It resolves the installed adapter
+under the package install root, rejects reparse components, and runs the actual
+installed bytes through AppContainer plus a Job Object. The bounded acceptance
+record binds the source SHA, adapter SHA-256, publisher subject, certificate
+SHA-256, completed native sandbox metadata, response byte count, enforced
+limits, and `raw_response_retained=false`. The final release gate cross-checks
+that record against the packaged manifest and actual packaged adapter bytes.
+
+The manual workflow requires four non-secret repository variables for the
+adapter URL, SHA-256, publisher subject, and certificate SHA-256. It permits
+only an absolute HTTPS URL, downloads to a fixed new path, and verifies the
+hash before building. Organization PFX/password material is scoped only to the
+steps that need it. Imported certificates/private keys and the PFX are removed
+and residue-checked fail-closed, and the job has a 30-minute outer timeout.
+
+Task 1 and Task 2 passed independent specification and quality/security review
+with no remaining Critical or Important issues. This does not complete the
+release gate: `windows-mvp-signed.yml` has not been dispatched or passed with a
+real organization adapter/certificate. Required repository variables, signing
+material, an approved `windows-license-review.json`, real sanitized-sample human
+signoff, and independent clean-machine install/upgrade/run/uninstall evidence
+remain pending. Current normal GitHub CI for code-bearing SHA
+`3febfd57b6841181597bd5476e176710e81a011f` was not revalidated when this
+documentation was prepared.
+
+Residual Minor/defense-in-depth items are adapter download redirect/size limits,
+the staged-destination lock gap through manifest/ZIP generation, evidence-output
+parent-path TOCTOU, streaming/size bounds in acceptance and sandbox hashing, and
+synchronous AppX operations bounded only by the outer workflow timeout. Remote
+device enrollment, remote policy distribution, and a remote administrator
+console remain unimplemented. The current evidence supports local implementation
+and synthetic gates only, not production isolation, high-sensitive real-data
+readiness, or legal approval.
 
 ## Network-neutral enterprise service boundary
 

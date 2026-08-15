@@ -1,6 +1,6 @@
 # AgentGuardian Windows MVP Release-Candidate Report
 
-Status date: 2026-08-15
+Status date: 2026-08-16
 
 Release-candidate decision: `NO-GO`.
 
@@ -9,38 +9,47 @@ Windows MVP remains incomplete. Production safety is not established.
 ## Candidate Boundary
 
 - Local gate implementation and unified local evidence baseline: historical `90e6edad53bee48adca58d508d193fc855c1db7d`.
-- The current code-bearing hardening slice is `e8013dc37d030a90c95c8f8f990a430937de91d0`; it modifies `src/agentguardian` and adds certificate-pinned dynamic-MCP publisher attestation plus a launch-time executable handle lock.
+- The current clean code-bearing hardening HEAD is `3febfd57b6841181597bd5476e176710e81a011f`. It implements packaged MCP adapter build staging, trusted MSIX adapter acceptance, final release-evidence binding, manual signed-workflow inputs, and fail-closed signing-material cleanup. This report is a documentation-only follow-up to that SHA.
 - The first independent review of the previous evidence-sync HEAD found 7 Important and 2 Minor findings. A second independent review of `305eeb4e1a143a245323a9b54d8fe27314a4e16c` found 2 further Important findings; both were remediated in `90e6eda`. A focused third independent re-review found no Critical or Important findings and one Minor; it did not execute tests independently.
 - OpenAI Provider remains local detection and manual guidance only; the default product path makes no provider API call and performs no endpoint verification.
 - The local remote-tracking reference was `9577a85fb107a7de506fd67ce48ce795bc707678` when this report was prepared. That local reference is not live GitHub verification and does not cover the candidate baseline.
 
 ## Current Follow-up Evidence
 
-The current code-bearing hardening SHA is `e8013dc37d030a90c95c8f8f990a430937de91d0`.
-Its local full regression is `1438 passed, 11 skipped`, and the local selected
-security gate is `47 passed, 1 skipped`. Exact-SHA GitHub revalidation completed
-successfully: push CI `31892391687`, push Windows `31892391681`, Draft PR CI
-`31892393406`, and Draft PR Windows `31892393403`. This SHA includes the native
-MCP fail-closed launcher behavior, browser SQLite WAL/SHM/journal snapshot
-handling with a total size cap, explicit clipboard consent/cancel behavior,
-the sanitized `--sample-root` acceptance path, and an exact X.500 publisher
-subject plus signer-certificate SHA-256 pin checked through local Windows Crypt32
-APIs, with the validated executable held open through process creation. The Windows
-AppContainer integration proves loopback connection denial and transient
-profile cleanup; the native MCP path rejects unsigned, untrusted, or
-non-allowlisted adapters.
+Fresh local verification on clean code-bearing SHA
+`3febfd57b6841181597bd5476e176710e81a011f` recorded `1510 passed, 11 skipped`
+for the full suite and `47 passed, 1 skipped` for
+`scripts/run_windows_mvp_security_gate.py`. The command
+`python -m compileall src scripts tests` exited 0 and `git diff --check` was
+clean. Earlier independent review
+reported the same full-suite count; the focused Task 2 run reported
+`117 passed, 1 skipped`, but neither historical or focused result replaces the
+fresh full-suite evidence above.
 
-The code-bearing validation SHA is `e8013dc37d030a90c95c8f8f990a430937de91d0`;
-the current documentation follow-up HEAD is `18efc94`. The trusted-release workflow gate, license-review evidence gate, and
-release-evidence path hardening remain in its history. The current CI results
-are code and CI evidence only; they do not establish trusted signing,
-clean-machine acceptance, or production safety.
+Task 1 implements packaged MCP adapter acceptance after a completed
+same-identity trusted MSIX upgrade. Acceptance requires an exact source SHA,
+fresh user state, strict installed package path and reparse checks, actual
+installed adapter execution under AppContainer plus a Job Object, and bounded
+evidence binding the adapter bytes, exact X.500 publisher subject, exact DER
+certificate SHA-256, completed native sandbox metadata, and
+`raw_response_retained=false`. Package cleanup requeries and retries uninstall
+before the final source/signature/license/MCP evidence gate.
 
-The documentation update containing this report is a follow-up to the exact
-code-bearing SHA above. The Windows smoke evidence records install,
-same-identity upgrade `0.1.0.0 -> 0.1.0.1`, termination, uninstall, and
-`package_residue=false`. The package is explicitly `unsigned_ci_smoke` and
-must not be treated as a trusted release artifact.
+Task 2 requires all four external adapter inputs for trusted builds and rejects
+them for unsigned builds. Under a source-file lock it verifies the exact SHA-256,
+trusted Authenticode, publisher subject, and certificate pin, then stages only
+`adapters/AgentGuardianMcpAdapter.exe` and `MCP-ADAPTER.json` before payload
+manifests, checksums, and ZIP generation. The manual workflow requires four
+non-secret repository variables, uses an absolute HTTPS download to a fixed new
+path with a pre-build hash check, scopes organization PFX/password material to
+the required steps, verifies imported certificate/private-key and PFX cleanup
+fail-closed, and sets a real 30-minute outer timeout.
+
+Task 1 and Task 2 passed independent specification and quality/security review
+with no remaining Critical or Important issues. Current normal GitHub CI for
+`3febfd57b6841181597bd5476e176710e81a011f` had not been revalidated when this
+documentation was prepared. Historical successful CI remains evidence only for
+its exact historical SHA.
 
 The earlier implementation HEAD was `a6a75c27e20d329a32f9e1ef2473f35b23deb198`.
 Its local full regression is `1407 passed, 11 skipped`; push and Draft PR CI
@@ -62,21 +71,20 @@ change the release decision.
 
 | Gate | Current revalidation | Scope |
 | --- | --- | --- |
-| Security gate contract | `22 passed` | Threat IDs, test-node resolution, isolated pytest environment, timeout, collection- and runtime-skip handling, performance evidence contract, and documentation boundaries. |
-| Selected negative security gate | `47 passed, 1 skipped` | AG-T01 through AG-T11 selected tests. The only allowed skip is AG-T09 directory symlink unavailable; it is not reported as a full pass. |
-| Python 3.14 full suite | `1438 passed, 11 skipped` | Current implementation at `e8013dc`; includes certificate-pinned publisher policy, native Crypt32 identity extraction, and launch-time executable handle locking. |
-| Hash-locked Python 3.12 full suite | Exact-SHA GitHub Windows job `success` | The job `31892391681` is bound to `e8013dc37d030a90c95c8f8f990a430937de91d0`; its raw log count is not used as local evidence. |
-| Brand validation | Exit 0 | Existing brand-asset contract. |
-| Source and script compilation | Exit 0 | `python -B -m compileall -q src scripts`. |
-| Portable reproducibility | `208 files` and `92,870,198 bytes` in each bundle; Bundle diff count: `0`; both ZIPs were `36,033,202 bytes` with SHA-256 `4f7e9ffdd347fddf67ffb7544ab84e777ff7b93e2ed1bf546ed87e6e9517bad1` | Two new build roots, one hash-locked Python 3.12.2/PyInstaller 6.16.0 environment, actual lock dependency versions recorded with lock SHA `75be59ee054a75d556cc89099f571d9826fa272aef656124fa75dc535731cdd5`, source SHA `90e6eda`, and fixed build time `2026-08-15T00:00:00Z`. PyInstaller work/spec intermediates are excluded. |
-| Portable isolation smoke | Both copied bundles reported `process_startup=true`, `bounded_liveness=true`, `termination=forced_after_bounded_smoke`, `process_tree_terminated=true`, and `declared_residue=false` | Four-second offscreen local smoke with isolated `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP`, `USERPROFILE`, and `PROGRAMDATA`; the verifier enumerates the process tree before termination and confirms the captured process IDs are gone after taskkill. Durable evidence binds source, bundle, ZIP, and verifier hashes. Evidence JSON SHA-256: L `8ed7fe9a1e9fc43ee7fcf0c32cc4de3bceb9042695080d11c59451ae163cf034`, M `cd4317b9881aec914efe7090cf9d7324c4adf5803931ad4704e1776986a433c9`. This is not clean-machine acceptance. |
-| Package-source self-audit | Both bundles returned `findings=[]`, `local_only=true`, `network_capability=not_detected`, `ordinary_user_mode=true` | Reviewed copied source policy only; dependencies and binaries are not scanned. |
+| Windows MVP security gate | `47 passed, 1 skipped` | Fresh run of `scripts/run_windows_mvp_security_gate.py` at `3febfd57b6841181597bd5476e176710e81a011f`. The allowed skip is not reported as a pass. |
+| Python 3.14 full suite | `1510 passed, 11 skipped` | Fresh full-suite run at the clean code-bearing SHA above. |
+| Source, script, and test compilation | Exit 0 | Fresh `python -m compileall src scripts tests`. |
+| Current exact-SHA GitHub CI | `PENDING REVALIDATION` | No normal GitHub CI result for `3febfd57b6841181597bd5476e176710e81a011f` was treated as current evidence at documentation time. |
+| Brand validation | Historical exit 0 | Existing brand-asset contract; not rerun for this documentation sync. |
+| Portable reproducibility | Historical: `208 files` and `92,870,198 bytes` in each bundle; Bundle diff count: `0`; both ZIPs were `36,033,202 bytes` with SHA-256 `4f7e9ffdd347fddf67ffb7544ab84e777ff7b93e2ed1bf546ed87e6e9517bad1` | Historical `90e6eda` evidence only. Two new build roots used a hash-locked Python 3.12.2/PyInstaller 6.16.0 environment, lock SHA `75be59ee054a75d556cc89099f571d9826fa272aef656124fa75dc535731cdd5`, and fixed build time `2026-08-15T00:00:00Z`. |
+| Portable isolation smoke | Historical: both copied bundles reported `process_startup=true`, `bounded_liveness=true`, `termination=forced_after_bounded_smoke`, `process_tree_terminated=true`, and `declared_residue=false` | Historical local smoke with evidence JSON SHA-256 L `8ed7fe9a1e9fc43ee7fcf0c32cc4de3bceb9042695080d11c59451ae163cf034` and M `cd4317b9881aec914efe7090cf9d7324c4adf5803931ad4704e1776986a433c9`; not clean-machine acceptance or current-SHA runtime evidence. |
+| Package-source self-audit | Historical: both bundles returned `findings=[]`, `local_only=true`, `network_capability=not_detected`, `ordinary_user_mode=true` | Reviewed copied source policy only; dependencies and binaries were not scanned. |
 
 For traceability, the earlier Batch 6 evidence baseline remains recorded as
 `1322 passed, 8 skipped` on Python 3.14 and `1321 passed, 9 skipped` on the
 hash-locked Python 3.12 environment. The prior `ef571a1` result was
 `1426 passed, 11 skipped`; neither historical count replaces the current
-`e55965d` local result above.
+`3febfd5` local result above.
 
 ## Performance Evidence
 
@@ -96,21 +104,33 @@ This evidence does not cover the 10,000-file functional maximum, whole-process r
 - Independent read-only review: `COMPLETED WITH 7 IMPORTANT AND 2 MINOR FINDINGS` on the prior evidence-sync HEAD; those findings were remediated locally.
 - Second independent re-review: `COMPLETED WITH 2 IMPORTANT AND 3 MINOR FINDINGS` on `305eeb4`; both Important findings were remediated in `90e6eda`.
 - Third independent re-review: `COMPLETED WITH NO CRITICAL/IMPORTANT FINDINGS AND 1 MINOR`; the reviewer did not execute tests independently, so runtime confirmation remains the separately recorded local-gate evidence.
-- Current exact-SHA GitHub CI: `VERIFIED` for repository HEAD `e8013dc37d030a90c95c8f8f990a430937de91d0`; push/PR CI and Windows workflow checks all succeeded. This is CI evidence only and does not satisfy trusted signing or clean-machine gates.
-- GitHub-hosted Windows runner provenance: `VERIFIED AS CI EVIDENCE ONLY`; this does not replace an independent clean Windows machine.
+- Task 1 and Task 2 independent specification and quality/security review: `COMPLETED`; no Critical or Important issues remain. This does not provide external-material or runtime acceptance.
+- Current exact-SHA GitHub CI: `PENDING REVALIDATION` for repository HEAD `3febfd57b6841181597bd5476e176710e81a011f`. Earlier successful CI is historical and remains bound only to its historical SHA.
+- Historical `e8013dc` label: Current exact-SHA GitHub CI: `VERIFIED`. It does not cover the current local SHA.
+- Historical label: GitHub-hosted Windows runner provenance: `VERIFIED AS CI EVIDENCE ONLY`. It does not cover the current local SHA or replace an independent clean Windows machine.
 - Trusted code signing: `PENDING`.
-- Trusted-signature workflow final gate: `IMPLEMENTED AND FAIL-CLOSED`; it now requires `trusted_release` bundle metadata, fresh-user-state evidence, trusted signer evidence, and complete SBOM/license notices. The current notices still contain unresolved `NOASSERTION` runtime licenses, so this gate has not passed.
+- Trusted-signature workflow final gate: `IMPLEMENTED AND FAIL-CLOSED`; it requires `trusted_release` bundle metadata, all four external adapter inputs, fresh-user-state and completed same-identity upgrade evidence, trusted signer evidence, packaged MCP acceptance, and complete SBOM/license evidence. It has not been dispatched or passed with a real organization adapter/certificate.
 - Structured license-review evidence: `IMPLEMENTED`; the final gate binds an approved review record to the exact source SHA and SBOM SHA-256 and cross-checks every SBOM component. The committed worksheet is intentionally `pending`, so no legal/redistribution approval is claimed.
-- Dynamic MCP publisher attestation: `IMPLEMENTED`; policy construction rejects malformed or duplicate publisher subjects and certificate pins, and the native Windows path requires a non-empty exact-match X.500 subject allowlist plus signer-certificate SHA-256 pin after Authenticode verification. Launch holds the validated executable open without write/delete sharing. Organization-signed adapter configuration and real packaged-adapter acceptance remain pending.
+- Packaged MCP adapter build and acceptance: `IMPLEMENTED`; trusted builds stage only the fixed adapter and `MCP-ADAPTER.json`, while trusted MSIX acceptance executes the installed bytes under AppContainer plus a Job Object and binds bounded evidence to the source/signature/license/MCP gate. Real organization adapter/certificate execution remains pending.
 - Release evidence path hardening: `IMPLEMENTED`; bundle, smoke evidence, and license-review inputs reject relative paths, symlinks, UNC paths, and reparse/junction components before reading.
 - Unsigned CI native install, upgrade, launch, termination and uninstall smoke: `VERIFIED`; trusted-package and independent acceptance remain pending.
 - Strict fresh-user-state verifier: `IMPLEMENTED`; independent clean Windows machine acceptance and residue review: `PENDING`.
 - License and redistribution review: `PENDING`.
+- Required repository variables, organization signing material, approved `windows-license-review.json`, real sanitized-sample human signoff, and independent clean-machine install/upgrade/run/uninstall evidence: `PENDING`.
+- Remote enterprise console, device enrollment, and distribution: `UNIMPLEMENTED`.
+- Residual Minor/defense-in-depth items: adapter download redirect/size limits; staged-destination lock gap through manifest/ZIP generation; evidence-output parent-path TOCTOU; streaming/size bounds in acceptance and sandbox hashing; and synchronous AppX operations bounded only by the outer workflow timeout.
 
-The trusted-signature workflow remains fail-closed and has not been run because
-organization signing material is absent. No certificate material was requested
-or handled, and no release or deployment was performed for this evidence.
+The trusted-signature workflow remains fail-closed and has not been dispatched
+or passed with a real organization adapter/certificate. No certificate material
+was requested or handled, and no release or deployment was performed for this
+documentation evidence.
 
 ## Decision
 
-The local threat-model, selected security, fixed performance, reproducible portable build, isolated launch/cleanup, dependency-lock, and package-source increments are supported by the current local evidence baseline. The first independent review found 7 Important and 2 Minor findings; the second found 2 Important and 3 Minor findings; the focused third review found no Critical or Important findings and one Minor. All currently identified Important findings have local remediation. Batch 5 external release controls and Batch 6 remote and external gates are absent. Therefore the release-candidate decision remains `NO-GO`.
+The packaged MCP release controls are implemented and fresh local tests pass,
+but real external material and trusted runtime execution remain pending. Current
+normal GitHub CI for the new local SHA is also pending revalidation. Required
+signing, license, sanitized-sample, and independent clean-machine evidence is
+absent; remote enterprise delivery remains unimplemented. Therefore the
+release-candidate decision remains `NO-GO`. This report makes no production
+safety, high-sensitive real-data readiness, or legal approval claim.
