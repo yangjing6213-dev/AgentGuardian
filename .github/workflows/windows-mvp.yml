@@ -67,27 +67,43 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Sign with ephemeral CI certificate for install smoke only
+        timeout-minutes: 5
         shell: pwsh
         run: |
           $publisher = "CN=AgentGuardian CI Test"
           $cert = $null
+          $pfxPath = $null
           try {
+            Write-Host "Creating ephemeral signing certificate"
             $cert = New-SelfSignedCertificate `
               -Type Custom `
               -Subject $publisher `
+              -KeyAlgorithm RSA `
+              -KeyLength 2048 `
+              -HashAlgorithm SHA256 `
+              -KeyExportPolicy Exportable `
               -KeyUsage DigitalSignature `
               -CertStoreLocation Cert:\CurrentUser\My `
               -NotAfter (Get-Date).AddDays(1)
             $certPath = "$pwd\.analysis\agentguardian-ci.cer"
+            $pfxPath = "$pwd\.analysis\agentguardian-ci.pfx"
+            $pfxPassword = [Guid]::NewGuid().ToString("N")
+            $securePassword = ConvertTo-SecureString -String $pfxPassword -AsPlainText -Force
             Export-Certificate -Cert $cert -FilePath $certPath | Out-Null
+            Export-PfxCertificate -Cert $cert -FilePath $pfxPath -Password $securePassword | Out-Null
             Import-Certificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
             Import-Certificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
-            & $env:SIGNTOOL sign /fd SHA256 /sha1 $cert.Thumbprint "$pwd\.analysis\AgentGuardian-ci.msix"
+            Write-Host "Signing MSIX with ephemeral PFX"
+            & $env:SIGNTOOL sign /fd SHA256 /f $pfxPath /p $pfxPassword "$pwd\.analysis\AgentGuardian-ci.msix"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Write-Host "Verifying MSIX signature"
             & $env:SIGNTOOL verify /pa /all "$pwd\.analysis\AgentGuardian-ci.msix"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           finally {
+            if ($null -ne $pfxPath) {
+              Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
+            }
             if ($null -ne $cert) {
               Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue
               Remove-Item -LiteralPath "Cert:\CurrentUser\TrustedPeople\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue
