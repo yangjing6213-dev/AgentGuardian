@@ -30,6 +30,7 @@ EXPECTED_REVIEWED_SOURCE_MODULES = (
     "discovery.py",
     "dispositions.py",
     "domain.py",
+    "enterprise_control_plane.py",
     "enterprise_policy.py",
     "evidence_state.py",
     "guidance.py",
@@ -201,6 +202,7 @@ def test_collect_self_audit_is_transparent_and_keeps_environment_private(
         "ordinary_user_mode": True,
         "alpha_status": "Founder Alpha",
         "findings": [
+            "DATABASE_CAPABILITY",
             "NATIVE_CAPABILITY",
             "NETWORK_MODULE_IMPORT",
             "SHELL_EXECUTION",
@@ -222,6 +224,7 @@ def test_collect_self_audit_is_transparent_and_keeps_environment_private(
 
 def test_current_package_reports_its_constrained_network_adapter() -> None:
     assert static_capability_findings() == (
+        "DATABASE_CAPABILITY",
         "NATIVE_CAPABILITY",
         "NETWORK_MODULE_IMPORT",
         "SHELL_EXECUTION",
@@ -240,10 +243,10 @@ def test_source_policy_manifest_exactly_matches_current_package() -> None:
 
     assert list(policy) == ["schema", "modules"]
     assert policy["schema"] == 1
-    assert len(EXPECTED_REVIEWED_SOURCE_MODULES) == 24
+    assert len(EXPECTED_REVIEWED_SOURCE_MODULES) == 25
     assert package_names == EXPECTED_REVIEWED_SOURCE_MODULES
     assert tuple(modules) == EXPECTED_REVIEWED_SOURCE_MODULES
-    assert len(modules) == 24
+    assert len(modules) == 25
     assert modules == {
         name: _canonical_source_digest(PACKAGE_ROOT / name)
         for name in EXPECTED_REVIEWED_SOURCE_MODULES

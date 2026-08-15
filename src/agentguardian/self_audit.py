@@ -38,6 +38,7 @@ _NETWORK_IMPORT_PREFIXES = (
     "pyside6.qtwebsockets",
 )
 _AUDITED_CAPABILITY_MODULES = {
+    "enterprise_control_plane.py",
     "enterprise_policy.py",
     "mcp_sandbox.py",
     "remediation.py",
@@ -63,6 +64,7 @@ _SAFE_DIRECT_IMPORTS = {
     "tempfile",
     "time",
     "unicodedata",
+    "uuid",
     "_winapi",
 }
 _SAFE_FROM_IMPORTS = {

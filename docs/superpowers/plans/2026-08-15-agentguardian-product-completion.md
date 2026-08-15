@@ -26,7 +26,7 @@
 
 最新复核（2026-08-15，MSIX 安装升级卸载）：提交 `0ac5ff748f16578a86a3662b8fddd8f6fb94def3` 的本地完整回归为 `1391 passed, 11 skipped`；push CI `31876853579`、push Windows `31876853553`、Draft PR CI `31876855289` 和 Draft PR Windows `31876855292` 均为 `success`。Windows job `94993768289` 的 smoke JSON 明确记录 `upgrade_attempted=true`、`upgraded=true`、版本 `0.1.0.0 -> 0.1.0.1`、`termination=true`、`uninstalled=true`、`package_residue=false`；签名模式仍为 `unsigned_ci_smoke`，不替代可信签名或独立干净机器证据。
 
-最新复核（2026-08-15，高敏感数据与 Windows 发布门禁）：提交 `f41caecac32d28ef8b7a9d7fcbdbfe127bc955fa` 的本地完整回归为 `1392 passed, 11 skipped`；push CI `31877362969`、push Windows `31877362973`、Draft PR CI `31877364632` 和 Draft PR Windows `31877364625` 均为 `success`。Windows full suite 为 `1402 passed, 1 skipped`；合成高敏感 gate 记录 `passed=true`、JSON/HTML/导出/剪贴板无原始标记、浏览器临时副本删除和工作区清理通过；MSIX 安装升级卸载继续通过。签名模式仍为 `unsigned_ci_smoke`，不替代可信签名、真实脱敏样本或独立干净机器证据。
+最新复核（2026-08-15，高敏感数据与 Windows 发布门禁）：提交 `5fcb252c1874c949e97a99eba0ea08eb634eb0b8` 的本地完整回归为 `1392 passed, 11 skipped`；push CI `31877751306`、push Windows `31877751258`、Draft PR CI `31877752695` 和 Draft PR Windows `31877752689` 均为 `success`。Windows full suite 为 `1402 passed, 1 skipped`；合成高敏感 gate 记录 `passed=true`、JSON/HTML/导出/剪贴板无原始标记、浏览器临时副本删除和工作区清理通过；MSIX 安装升级卸载继续通过。签名模式仍为 `unsigned_ci_smoke`，不替代可信签名、真实脱敏样本或独立干净机器证据。
 
 ### A2 原生安装器与安装/卸载验收
 
@@ -105,6 +105,7 @@
 
 - [x] 实现离线企业策略控制核：规范 JSON、未知字段/重复键拒绝、角色能力白名单、有效期、操作员配置的 SHA-256 完整性指纹、高敏感二次确认，以及 `mcp_dynamic` 的隔离证明门禁。
 - [x] 增加合成数据测试，覆盖策略篡改、过期、角色未授权、高敏感未确认和 MCP 未隔离时的默认拒绝。
+- [x] 增加本地事务化企业控制面核心：组织/设备注册与撤回、RBAC 绑定、策略版本单调与撤回、按租户隔离的脱敏元数据导出和到期清理；实现位于 `enterprise_control_plane.py`，不等同于远程控制台、数字签名服务或租户级网络隔离。
 - [ ] 完成真正的企业控制台：组织身份、设备注册、RBAC 管理、策略签名/版本、租户隔离、最小化遥测、保留/删除策略和管理员导出；当前离线策略核不等于这些服务端能力。
 - [ ] 完成签名策略分发、撤销和真实企业网络/权限验收；当前 SHA-256 pin 不是数字签名。
 
