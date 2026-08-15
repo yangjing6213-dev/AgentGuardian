@@ -21,10 +21,19 @@ def test_authenticode_accepts_a_trusted_system_binary() -> None:
 
 def test_publisher_verification_accepts_the_exact_subject_of_a_trusted_binary() -> None:
     executable = Path(sys.executable)
-    subject = signing._authenticode_subject(executable)
-    assert subject is not None
-    assert verify_authenticode_publisher(executable, (subject,)) is True
-    assert verify_authenticode_publisher(executable, (f"{subject}x",)) is False
+    identity = signing._authenticode_identity(executable)
+    assert identity is not None
+    subject, certificate_sha256 = identity
+    assert verify_authenticode_publisher(
+        executable,
+        (subject,),
+        allowed_certificate_sha256=(certificate_sha256,),
+    ) is True
+    assert verify_authenticode_publisher(
+        executable,
+        (subject,),
+        allowed_certificate_sha256=("0" * 64,),
+    ) is False
 
 
 def test_authenticode_rejects_an_unsigned_file(tmp_path: Path) -> None:
@@ -39,8 +48,24 @@ def test_publisher_verification_requires_an_exact_allowlist_match(
     executable = tmp_path / "adapter.exe"
     executable.write_bytes(b"MZ synthetic")
     monkeypatch.setattr(signing, "verify_authenticode", lambda _path: True)
-    monkeypatch.setattr(signing, "_authenticode_subject", lambda _path: "CN=Allowed")
+    monkeypatch.setattr(
+        signing,
+        "_authenticode_identity",
+        lambda _path: ("CN=Allowed", "1" * 64),
+    )
 
-    assert verify_authenticode_publisher(executable, ("CN=Allowed",)) is True
-    assert verify_authenticode_publisher(executable, ("CN=Other",)) is False
-    assert verify_authenticode_publisher(executable, ()) is False
+    assert verify_authenticode_publisher(
+        executable,
+        ("CN=Allowed",),
+        allowed_certificate_sha256=("1" * 64,),
+    ) is True
+    assert verify_authenticode_publisher(
+        executable,
+        ("CN=Allowed",),
+        allowed_certificate_sha256=("2" * 64,),
+    ) is False
+    assert verify_authenticode_publisher(
+        executable,
+        ("CN=Other",),
+        allowed_certificate_sha256=("1" * 64,),
+    ) is False

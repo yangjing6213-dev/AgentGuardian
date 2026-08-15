@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -56,9 +57,11 @@ def test_policy_keeps_an_explicit_publisher_allowlist() -> None:
         adapter_id="synthetic-adapter",
         executable=sys.executable,
         executable_sha256=hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),
-        allowed_publisher_subjects=("CN=AgentGuardian Adapter Publisher",),
-    )
+            allowed_publisher_subjects=("CN=AgentGuardian Adapter Publisher",),
+            allowed_publisher_certificate_sha256=("0" * 64,),
+        )
     assert policy.allowed_publisher_subjects == ("CN=AgentGuardian Adapter Publisher",)
+    assert policy.allowed_publisher_certificate_sha256 == ("0" * 64,)
 
 
 def test_assessment_is_denied_without_native_network_and_process_isolation(
@@ -252,6 +255,7 @@ def test_native_windows_execution_requires_a_trusted_adapter_signature(
         executable_sha256=policy.executable_sha256,
         arguments=policy.arguments,
         allowed_publisher_subjects=("CN=Trusted",),
+        allowed_publisher_certificate_sha256=("0" * 64,),
     )
     monkeypatch.setattr(mcp_sandbox, "verify_authenticode", lambda _path: False)
 
@@ -293,6 +297,7 @@ def test_native_windows_execution_rejects_a_non_allowlisted_publisher(
         executable=sys.executable,
         executable_sha256=hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),
         allowed_publisher_subjects=("CN=Allowed",),
+        allowed_publisher_certificate_sha256=("0" * 64,),
     )
     monkeypatch.setattr(
         mcp_sandbox,
@@ -307,13 +312,55 @@ def test_native_windows_execution_rejects_a_non_allowlisted_publisher(
     monkeypatch.setattr(
         mcp_sandbox,
         "verify_authenticode_publisher",
-        lambda _path, _allowed: False,
+        lambda _path, _allowed, **_kwargs: False,
     )
 
     result = run_mcp_sandbox(policy, b"synthetic-request", confirmed=True)
 
     assert result.status is SandboxStatus.DENIED
     assert result.reason == "adapter_publisher_not_allowlisted"
+
+
+def test_native_windows_execution_holds_the_executable_during_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows executable handle integration")
+    policy = McpSandboxPolicy.from_command(
+        adapter_id="synthetic-adapter",
+        executable=sys.executable,
+        executable_sha256=hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),
+        allowed_publisher_subjects=("CN=Allowed",),
+        allowed_publisher_certificate_sha256=("0" * 64,),
+    )
+    events: list[str] = []
+
+    @contextmanager
+    def held(_path: Path):
+        events.append("enter")
+        yield
+        events.append("exit")
+
+    monkeypatch.setattr(mcp_sandbox, "hold_executable_for_launch", held)
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "probe_native_sandbox",
+        lambda: _SandboxAttestation(
+            provider="synthetic-test-only",
+            network_isolated=True,
+            process_tree_isolated=True,
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "run_in_job_object",
+        lambda *_args, **_kwargs: JobObjectRun(0, b"ok", False, False, True),
+    )
+
+    result = run_mcp_sandbox(policy, b"synthetic-request", confirmed=True)
+
+    assert result.status is SandboxStatus.COMPLETED
+    assert events == ["enter", "exit"]
 
 
 @pytest.mark.parametrize(

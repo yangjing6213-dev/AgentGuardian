@@ -74,6 +74,7 @@ _SAFE_FROM_IMPORTS = {
     "__future__",
     "agentguardian",
     "collections.abc",
+    "contextlib",
     "ctypes",
     "dataclasses",
     "dataclasses.dataclass",

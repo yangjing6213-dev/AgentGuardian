@@ -57,7 +57,7 @@ def test_mcp_supervisor_uses_appcontainer_network_boundary(
     monkeypatch.setattr(
         mcp_sandbox,
         "verify_authenticode_publisher",
-        lambda _path, _allowed: True,
+        lambda _path, _allowed, **_kwargs: True,
     )
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", 0))
@@ -70,6 +70,7 @@ def test_mcp_supervisor_uses_appcontainer_network_boundary(
             executable_sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
             arguments=("-sS", "--max-time", "1", f"http://127.0.0.1:{port}"),
             allowed_publisher_subjects=("CN=Windows Test Publisher",),
+            allowed_publisher_certificate_sha256=("0" * 64,),
         )
 
         result = run_mcp_sandbox(

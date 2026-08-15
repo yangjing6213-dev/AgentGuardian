@@ -19,7 +19,11 @@ import tempfile
 
 from .discovery import _has_reparse_component
 from .windows_appcontainer import AppContainerUnavailable, appcontainer_available, run_in_appcontainer
-from .windows_code_signing import verify_authenticode, verify_authenticode_publisher
+from .windows_code_signing import (
+    hold_executable_for_launch,
+    verify_authenticode,
+    verify_authenticode_publisher,
+)
 from .windows_job_object import JobObjectUnavailable, run_in_job_object
 
 
@@ -30,6 +34,7 @@ _ADAPTER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 _ALLOWED_ADAPTER_CAPABILITIES = frozenset({"tools", "resources", "prompts"})
 _MAX_PUBLISHER_SUBJECTS = 16
 _MAX_PUBLISHER_SUBJECT_LENGTH = 512
+_MAX_PUBLISHER_CERTIFICATE_HASHES = 16
 
 
 class SandboxStatus(str, Enum):
@@ -51,6 +56,7 @@ class McpSandboxPolicy:
     max_runtime_seconds: float
     max_output_bytes: int
     allowed_publisher_subjects: tuple[str, ...] = ()
+    allowed_publisher_certificate_sha256: tuple[str, ...] = ()
 
     @classmethod
     def from_command(
@@ -62,6 +68,7 @@ class McpSandboxPolicy:
         arguments: tuple[str, ...] = (),
         capabilities: tuple[str, ...] = (),
         allowed_publisher_subjects: tuple[str, ...] = (),
+        allowed_publisher_certificate_sha256: tuple[str, ...] = (),
         max_runtime_seconds: float = 5.0,
         max_output_bytes: int = MAX_MCP_OUTPUT_BYTES,
     ) -> "McpSandboxPolicy":
@@ -104,6 +111,19 @@ class McpSandboxPolicy:
         ):
             raise ValueError("MCP_PUBLISHER_ALLOWLIST_INVALID")
         if (
+            type(allowed_publisher_certificate_sha256) is not tuple
+            or len(allowed_publisher_certificate_sha256) > _MAX_PUBLISHER_CERTIFICATE_HASHES
+            or any(
+                type(digest) is not str
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+                for digest in allowed_publisher_certificate_sha256
+            )
+            or len(set(allowed_publisher_certificate_sha256))
+            != len(allowed_publisher_certificate_sha256)
+        ):
+            raise ValueError("MCP_PUBLISHER_CERT_ALLOWLIST_INVALID")
+        if (
             type(max_runtime_seconds) not in (int, float)
             or not 0.1 <= max_runtime_seconds <= MAX_MCP_RUNTIME_SECONDS
             or type(max_output_bytes) is not int
@@ -134,6 +154,7 @@ class McpSandboxPolicy:
             max_runtime_seconds=float(max_runtime_seconds),
             max_output_bytes=max_output_bytes,
             allowed_publisher_subjects=allowed_publisher_subjects,
+            allowed_publisher_certificate_sha256=allowed_publisher_certificate_sha256,
         )
 
 
@@ -225,73 +246,95 @@ def run_mcp_sandbox(
     if assessment.status is not SandboxStatus.COMPLETED:
         return _result(policy, SandboxStatus.DENIED, assessment.reasons[0])
     try:
+        with hold_executable_for_launch(policy.executable):
+            return _run_mcp_sandbox_with_locked_executable(
+                policy,
+                request,
+                assessment,
+                temp_root=temp_root,
+            )
+    except (OSError, ValueError):
+        return _result(policy, SandboxStatus.FAILED, "sandbox_launch_failed")
+
+
+def _run_mcp_sandbox_with_locked_executable(
+    policy: McpSandboxPolicy,
+    request: bytes,
+    assessment: SandboxAssessment,
+    *,
+    temp_root: pathlib.Path | None,
+) -> McpSandboxResult:
+    try:
         current_sha256 = hashlib.sha256(policy.executable.read_bytes()).hexdigest()
     except OSError:
         return _result(policy, SandboxStatus.FAILED, "executable_unavailable")
     if current_sha256 != policy.executable_sha256:
         return _result(policy, SandboxStatus.DENIED, "executable_hash_mismatch")
     if assessment.provider == "windows-appcontainer":
-        if not policy.allowed_publisher_subjects:
+        if (
+            not policy.allowed_publisher_subjects
+            or not policy.allowed_publisher_certificate_sha256
+        ):
             return _result(policy, SandboxStatus.DENIED, "adapter_publisher_allowlist_required")
         if not verify_authenticode(policy.executable):
             return _result(policy, SandboxStatus.DENIED, "adapter_signature_required")
         if not verify_authenticode_publisher(
-            policy.executable, policy.allowed_publisher_subjects
+            policy.executable,
+            policy.allowed_publisher_subjects,
+            allowed_certificate_sha256=policy.allowed_publisher_certificate_sha256,
+            signature_already_verified=True,
         ):
             return _result(policy, SandboxStatus.DENIED, "adapter_publisher_not_allowlisted")
     root = _validated_temp_root(temp_root)
-    try:
-        with tempfile.TemporaryDirectory(dir=root) as workdir:
-            if os.name == "nt":
-                if assessment.provider == "windows-appcontainer":
-                    return _run_windows_appcontainer(policy, request, pathlib.Path(workdir))
-                return _run_windows_job_object(policy, request, pathlib.Path(workdir))
-            process = subprocess.Popen(
-                [os.fspath(policy.executable), *policy.arguments],
-                shell=False,
-                cwd=workdir,
-                env={"PYTHONNOUSERSITE": "1"},
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                close_fds=True,
+    with tempfile.TemporaryDirectory(dir=root) as workdir:
+        if os.name == "nt":
+            if assessment.provider == "windows-appcontainer":
+                return _run_windows_appcontainer(policy, request, pathlib.Path(workdir))
+            return _run_windows_job_object(policy, request, pathlib.Path(workdir))
+        process = subprocess.Popen(
+            [os.fspath(policy.executable), *policy.arguments],
+            shell=False,
+            cwd=workdir,
+            env={"PYTHONNOUSERSITE": "1"},
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        try:
+            output, _ = process.communicate(
+                input=request,
+                timeout=policy.max_runtime_seconds,
             )
-            try:
-                output, _ = process.communicate(
-                    input=request,
-                    timeout=policy.max_runtime_seconds,
-                )
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.communicate()
-                return _result(
-                    policy,
-                    SandboxStatus.TIMED_OUT,
-                    "runtime_limit",
-                    limits=("process_tree_isolation_enforced",),
-                )
-            if len(output) > policy.max_output_bytes:
-                return _result(
-                    policy,
-                    SandboxStatus.FAILED,
-                    "output_size_limit",
-                    response_bytes=policy.max_output_bytes,
-                )
-            if process.returncode != 0:
-                return _result(
-                    policy,
-                    SandboxStatus.FAILED,
-                    "adapter_failed",
-                    response_bytes=len(output),
-                )
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
             return _result(
                 policy,
-                SandboxStatus.COMPLETED,
-                "completed",
+                SandboxStatus.TIMED_OUT,
+                "runtime_limit",
+                limits=("process_tree_isolation_enforced",),
+            )
+        if len(output) > policy.max_output_bytes:
+            return _result(
+                policy,
+                SandboxStatus.FAILED,
+                "output_size_limit",
+                response_bytes=policy.max_output_bytes,
+            )
+        if process.returncode != 0:
+            return _result(
+                policy,
+                SandboxStatus.FAILED,
+                "adapter_failed",
                 response_bytes=len(output),
             )
-    except (OSError, ValueError):
-        return _result(policy, SandboxStatus.FAILED, "sandbox_launch_failed")
+        return _result(
+            policy,
+            SandboxStatus.COMPLETED,
+            "completed",
+            response_bytes=len(output),
+        )
 
 
 def _run_windows_job_object(
