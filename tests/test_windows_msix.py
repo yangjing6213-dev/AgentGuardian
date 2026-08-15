@@ -184,6 +184,7 @@ def test_windows_mvp_workflow_binds_tools_and_install_smoke() -> None:
         "MakeAppx.exe",
         "SignTool.exe",
         "New-SelfSignedCertificate",
+        "Cert:\\CurrentUser\\Root",
         "verify_windows_msix.ps1",
         "Install launch and uninstall MSIX as standard user",
     ):

@@ -81,6 +81,7 @@ jobs:
             $certPath = "$pwd\.analysis\agentguardian-ci.cer"
             Export-Certificate -Cert $cert -FilePath $certPath | Out-Null
             Import-Certificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
+            Import-Certificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
             & $env:SIGNTOOL sign /fd SHA256 /sha1 $cert.Thumbprint "$pwd\.analysis\AgentGuardian-ci.msix"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             & $env:SIGNTOOL verify /pa /all "$pwd\.analysis\AgentGuardian-ci.msix"
@@ -90,6 +91,7 @@ jobs:
             if ($null -ne $cert) {
               Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue
               Remove-Item -LiteralPath "Cert:\CurrentUser\TrustedPeople\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue
+              Remove-Item -LiteralPath "Cert:\CurrentUser\Root\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue
             }
           }
 
