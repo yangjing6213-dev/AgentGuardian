@@ -208,19 +208,35 @@ $cleanupFunction = $ast.Find({{
 if ($null -eq $cleanupFunction) {{ throw "cleanup function missing" }}
 Invoke-Expression $cleanupFunction.Extent.Text
 
+$script:mode = 'transient'
 $script:queryCount = 0
 $script:removed = @()
 $script:staleAttempts = 0
+$script:clock = 0
+function Get-Date {{
+    $script:clock++
+    $base = [datetime]'2026-08-16T00:00:00Z'
+    if ($script:mode -eq 'permanent') {{
+        return $base.AddSeconds(2 * $script:clock)
+    }}
+    return $base.AddMilliseconds(100 * $script:clock)
+}}
 function Get-AgentGuardianPackages {{
     $script:queryCount++
     if ($script:queryCount -eq 1) {{
+        throw 'transient package query failed'
+    }}
+    if ($script:queryCount -eq 2) {{
         return @(
             [pscustomobject]@{{ PackageFullName = 'stale-old' }},
             [pscustomobject]@{{ PackageFullName = 'current-upgraded' }}
         )
     }}
-    if ($script:queryCount -eq 2) {{
+    if ($script:queryCount -eq 3) {{
         return @([pscustomobject]@{{ PackageFullName = 'stale-old' }})
+    }}
+    if ($script:mode -eq 'permanent') {{
+        throw 'permanent package query failed'
     }}
     return @()
 }}
@@ -234,12 +250,26 @@ function Remove-AppxPackage {{
 }}
 function Start-Sleep {{ param([int]$Milliseconds) }}
 
-$cleanup = Remove-AgentGuardianPackagesBounded -TimeoutSeconds 1 -RetryMilliseconds 0
+$transientCleanup = Remove-AgentGuardianPackagesBounded -TimeoutSeconds 1 -RetryMilliseconds 0
+$transientQueryCount = $script:queryCount
+$transientRemoved = @($script:removed)
+
+$script:mode = 'permanent'
+$script:queryCount = 0
+$script:clock = 0
+$exhaustedCleanup = Remove-AgentGuardianPackagesBounded -TimeoutSeconds 1 -RetryMilliseconds 0
 [ordered]@{{
-    query_count = $script:queryCount
-    removed = @($script:removed)
-    uninstalled = [bool]$cleanup.Uninstalled
-    package_residue = [bool]$cleanup.PackageResidue
+    transient = [ordered]@{{
+        query_count = $transientQueryCount
+        removed = $transientRemoved
+        uninstalled = [bool]$transientCleanup.Uninstalled
+        package_residue = [bool]$transientCleanup.PackageResidue
+    }}
+    exhausted = [ordered]@{{
+        query_count = $script:queryCount
+        uninstalled = [bool]$exhaustedCleanup.Uninstalled
+        package_residue = [bool]$exhaustedCleanup.PackageResidue
+    }}
 }} | ConvertTo-Json -Compress
 """
 
@@ -251,12 +281,45 @@ $cleanup = Remove-AgentGuardianPackagesBounded -TimeoutSeconds 1 -RetryMilliseco
 
     assert result.returncode == 0, result.stderr
     evidence = json.loads(result.stdout.strip().splitlines()[-1])
-    assert evidence == {
-        "query_count": 3,
+    assert evidence["transient"] == {
+        "query_count": 4,
         "removed": ["stale-old", "current-upgraded", "stale-old"],
         "uninstalled": True,
         "package_residue": False,
     }
+    assert evidence["exhausted"] == {
+        "query_count": 1,
+        "uninstalled": False,
+        "package_residue": True,
+    }
+
+
+def test_task2_calibrated_cleanup_finally_is_fail_closed_and_checks_app_data() -> None:
+    verifier = (
+        PROJECT_ROOT / "scripts" / "verify_windows_msix.ps1"
+    ).read_text(encoding="utf-8")
+
+    smoke_catch = verifier.index("\ncatch {\n    $smokeError")
+    smoke_finally = verifier.index("\nfinally {", smoke_catch)
+    final_checks = verifier.index("\nif (-not $termination)", smoke_finally)
+    cleanup_finally = verifier[smoke_finally:final_checks]
+    cleanup_call = cleanup_finally.index("Remove-AgentGuardianPackagesBounded")
+    cleanup_catch = cleanup_finally.index("catch {", cleanup_call)
+    app_data_check = cleanup_finally.index(
+        "$appDataResidue = Test-Path -LiteralPath $appDataRoot"
+    )
+
+    assert cleanup_call < cleanup_catch < app_data_check
+    assert "$uninstalled = $false" in cleanup_finally[cleanup_catch:app_data_check]
+    assert "$packageResidue = $true" in cleanup_finally[cleanup_catch:app_data_check]
+    assert "$remainingPackages = @(Get-AgentGuardianPackages)" not in cleanup_finally
+    assert 'throw "MSIX package remains installed after uninstall"' in verifier[final_checks:]
+
+    helper_start = verifier.index("function Remove-AgentGuardianPackagesBounded")
+    helper_end = verifier.index("\nfunction Get-InstalledMcpAdapterPath", helper_start)
+    helper = verifier[helper_start:helper_end]
+    for fake_timeout_primitive in ("Start-Job", "Wait-Job", "Stop-Job"):
+        assert fake_timeout_primitive not in helper
 
 
 def test_msix_workflow_builds_and_verifies_a_same_identity_upgrade() -> None:
@@ -572,6 +635,61 @@ def test_task2_quality_review_signing_secrets_are_scoped_and_keys_removed() -> N
         "Remove-Item -LiteralPath $pfxPath",
     ):
         assert required in signing
+
+
+def test_task2_calibrated_signing_cleanup_is_verified_and_job_bounded() -> None:
+    workflow = (
+        PROJECT_ROOT / ".github" / "workflows" / "windows-mvp-signed.yml"
+    ).read_text(encoding="utf-8")
+
+    signing_start = workflow.index(
+        "      - name: Sign with organization certificate and trusted timestamp"
+    )
+    signing_end = workflow.index("\n      - name:", signing_start + 1)
+    signing = workflow[signing_start:signing_end]
+    job_header = workflow[
+        workflow.index("  signed-msix-fresh-runner:") : workflow.index("    env:")
+    ]
+
+    assert "timeout-minutes: 30" in job_header
+    for required in (
+        "$preexistingThumbprints = @(",
+        "Get-ChildItem -LiteralPath Cert:\\CurrentUser\\My -ErrorAction Stop",
+        "$preImportSnapshotComplete = $true",
+        "$postImportThumbprints = @(",
+        "$newThumbprints = @(",
+        "$targetThumbprints = @(",
+        "Where-Object { $_ -notin $preexistingThumbprints }",
+        "$cleanupFailures = [System.Collections.Generic.List[string]]::new()",
+        "$cleanupFailures.Add(",
+        "Remove-Item -LiteralPath $certificatePath -DeleteKey -Force -ErrorAction Stop",
+        "Remove-Item -LiteralPath $pfxPath -Force -ErrorAction Stop",
+        "Test-Path -LiteralPath $certificatePath -ErrorAction Stop",
+        "Test-Path -LiteralPath $pfxPath -ErrorAction Stop",
+        'throw "SIGNING_MATERIAL_CLEANUP_FAILED"',
+    ):
+        assert required in signing
+
+    assert "SilentlyContinue" not in signing
+    assert signing.index("$preexistingThumbprints = @(") < signing.index(
+        "Import-PfxCertificate"
+    )
+    assert signing.index("$postImportThumbprints = @(") > signing.index("finally {")
+    assert signing.index("Where-Object { $_ -notin $preexistingThumbprints }") > (
+        signing.index("$postImportThumbprints = @(")
+    )
+    certificate_remove = signing.index(
+        "Remove-Item -LiteralPath $certificatePath -DeleteKey -Force -ErrorAction Stop"
+    )
+    pfx_remove = signing.index(
+        "Remove-Item -LiteralPath $pfxPath -Force -ErrorAction Stop"
+    )
+    assert certificate_remove < signing.index(
+        "Test-Path -LiteralPath $certificatePath -ErrorAction Stop"
+    )
+    assert pfx_remove < signing.index(
+        "Test-Path -LiteralPath $pfxPath -ErrorAction Stop", pfx_remove
+    )
 
 
 def test_task2_mcp_unsigned_workflow_is_byte_for_byte_unchanged() -> None:

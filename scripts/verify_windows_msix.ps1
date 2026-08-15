@@ -67,7 +67,21 @@ function Remove-AgentGuardianPackagesBounded {
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
-        $currentPackages = @(Get-AgentGuardianPackages)
+        try {
+            $currentPackages = @(Get-AgentGuardianPackages)
+        }
+        catch {
+            if ((Get-Date) -ge $deadline) {
+                return [pscustomobject]@{
+                    Uninstalled = $false
+                    PackageResidue = $true
+                }
+            }
+            if ($RetryMilliseconds -gt 0) {
+                Start-Sleep -Milliseconds $RetryMilliseconds
+            }
+            continue
+        }
         if ($currentPackages.Count -eq 0) {
             return [pscustomobject]@{
                 Uninstalled = $true
@@ -90,7 +104,15 @@ function Remove-AgentGuardianPackagesBounded {
         }
     } while ($true)
 
-    $remainingPackages = @(Get-AgentGuardianPackages)
+    try {
+        $remainingPackages = @(Get-AgentGuardianPackages)
+    }
+    catch {
+        return [pscustomobject]@{
+            Uninstalled = $false
+            PackageResidue = $true
+        }
+    }
     return [pscustomobject]@{
         Uninstalled = ($remainingPackages.Count -eq 0)
         PackageResidue = ($remainingPackages.Count -ne 0)
@@ -396,13 +418,17 @@ catch {
 finally {
     Stop-AgentGuardianProcesses
     $termination = (@(Get-Process -Name "AgentGuardian" -ErrorAction SilentlyContinue).Count -eq 0)
-    $cleanup = Remove-AgentGuardianPackagesBounded
-    $uninstalled = [bool]$cleanup.Uninstalled
-    $packageResidue = [bool]$cleanup.PackageResidue
+    try {
+        $cleanup = Remove-AgentGuardianPackagesBounded
+        $uninstalled = [bool]$cleanup.Uninstalled
+        $packageResidue = [bool]$cleanup.PackageResidue
+    }
+    catch {
+        $uninstalled = $false
+        $packageResidue = $true
+    }
     if ($packageResidue) {
-        $remainingPackages = @(Get-AgentGuardianPackages)
-        Write-Host "Package residue after bounded uninstall retry: $($remainingPackages.Count)"
-        $remainingPackages | Select-Object Name, PackageFullName, Status | Format-Table | Out-String | Write-Host
+        Write-Host "Package cleanup did not establish an empty installed-package state"
     }
     if ($null -ne $appDataRoot) {
         $appDataResidue = Test-Path -LiteralPath $appDataRoot
