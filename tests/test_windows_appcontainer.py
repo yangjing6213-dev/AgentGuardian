@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import agentguardian.mcp_sandbox as mcp_sandbox
 from agentguardian.windows_appcontainer import _profile_name, run_in_appcontainer
 from agentguardian.mcp_sandbox import McpSandboxPolicy, SandboxStatus, run_mcp_sandbox
 
@@ -47,8 +48,12 @@ def test_appcontainer_denies_loopback_and_cleans_transient_state(tmp_path: Path)
     assert tuple(tmp_path.iterdir()) == ()
 
 
-def test_mcp_supervisor_uses_appcontainer_network_boundary(tmp_path: Path) -> None:
+def test_mcp_supervisor_uses_appcontainer_network_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     executable = Path(r"C:\Windows\System32\curl.exe")
+    monkeypatch.setattr(mcp_sandbox, "verify_authenticode", lambda _path: True)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", 0))
         listener.listen(1)

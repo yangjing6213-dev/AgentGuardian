@@ -44,6 +44,7 @@ _AUDITED_CAPABILITY_MODULES = {
     "remediation.py",
     "share_verification.py",
     "windows_appcontainer.py",
+    "windows_code_signing.py",
     "windows_job_object.py",
 }
 _SAFE_DIRECT_IMPORTS = {

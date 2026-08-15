@@ -19,6 +19,7 @@ import tempfile
 
 from .discovery import _has_reparse_component
 from .windows_appcontainer import AppContainerUnavailable, appcontainer_available, run_in_appcontainer
+from .windows_code_signing import verify_authenticode
 from .windows_job_object import JobObjectUnavailable, run_in_job_object
 
 
@@ -210,6 +211,10 @@ def run_mcp_sandbox(
         return _result(policy, SandboxStatus.FAILED, "executable_unavailable")
     if current_sha256 != policy.executable_sha256:
         return _result(policy, SandboxStatus.DENIED, "executable_hash_mismatch")
+    if assessment.provider == "windows-appcontainer" and not verify_authenticode(
+        policy.executable
+    ):
+        return _result(policy, SandboxStatus.DENIED, "adapter_signature_required")
     root = _validated_temp_root(temp_root)
     try:
         with tempfile.TemporaryDirectory(dir=root) as workdir:

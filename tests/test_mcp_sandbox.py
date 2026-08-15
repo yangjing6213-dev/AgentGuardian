@@ -179,3 +179,27 @@ def test_attested_windows_execution_uses_job_object_boundary(
     assert result.response_bytes == 2
     assert result.limits == ("process_tree_isolation_enforced",)
     assert len(calls) == 1
+
+
+def test_native_windows_execution_requires_a_trusted_adapter_signature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows Authenticode integration")
+    policy = _policy()
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "probe_native_sandbox",
+        lambda: _SandboxAttestation(
+            provider="windows-appcontainer",
+            network_isolated=True,
+            process_tree_isolated=True,
+        ),
+    )
+    monkeypatch.setattr(mcp_sandbox, "verify_authenticode", lambda _path: False)
+
+    result = run_mcp_sandbox(policy, b"synthetic-request", confirmed=True)
+
+    assert result.status is SandboxStatus.DENIED
+    assert result.reason == "adapter_signature_required"
+    assert result.raw_response_retained is False
