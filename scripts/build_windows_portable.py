@@ -25,6 +25,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from agentguardian import windows_code_signing  # noqa: E402
+from agentguardian.file_integrity import (  # noqa: E402
+    FileSizeLimitExceeded,
+    bounded_file_sha256,
+)
 
 
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
@@ -382,7 +386,7 @@ def stage_trusted_mcp_adapter(
         raise ValueError("MCP adapter staging path contains a reparse point")
     try:
         with windows_code_signing.hold_executable_for_launch(adapter):
-            if _streaming_sha256(adapter) != expected_sha256:
+            if _bounded_adapter_sha256(adapter) != expected_sha256:
                 raise ValueError("MCP adapter SHA-256 does not match")
             if not windows_code_signing.verify_authenticode_publisher(
                 adapter,
@@ -392,7 +396,7 @@ def stage_trusted_mcp_adapter(
                 raise ValueError("MCP adapter trusted Authenticode identity is invalid")
             with adapter.open("rb") as source, destination.open("xb") as target:
                 shutil.copyfileobj(source, target, length=1024 * 1024)
-            if _streaming_sha256(destination) != expected_sha256:
+            if _bounded_adapter_sha256(destination) != expected_sha256:
                 raise ValueError("MCP adapter identity changed during staging")
         metadata = {
             "schema": 1,
@@ -501,7 +505,7 @@ def build_portable(
     with adapter_guard:
         if (
             staged_adapter is not None
-            and _streaming_sha256(staged_adapter) != mcp_adapter_sha256
+            and _bounded_adapter_sha256(staged_adapter) != mcp_adapter_sha256
         ):
             raise ValueError("staged MCP adapter identity changed before packaging")
         write_portable_evidence(
@@ -763,12 +767,11 @@ def _validate_lower_sha256(value: object, message: str) -> None:
         raise ValueError(message)
 
 
-def _streaming_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+def _bounded_adapter_sha256(path: Path) -> str:
+    try:
+        return bounded_file_sha256(path)
+    except FileSizeLimitExceeded:
+        raise ValueError("MCP adapter exceeds 64 MiB limit") from None
 
 
 if __name__ == "__main__":

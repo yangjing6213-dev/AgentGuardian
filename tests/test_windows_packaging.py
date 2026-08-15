@@ -12,6 +12,7 @@ from contextlib import contextmanager
 
 import pytest
 
+from agentguardian.file_integrity import FileSizeLimitExceeded
 from scripts.build_windows_portable import (
     artifact_manifest,
     build_portable,
@@ -157,6 +158,34 @@ def test_stage_trusted_mcp_adapter_writes_fixed_canonical_metadata(
             False,
         )
     ]
+
+
+def test_stage_trusted_mcp_adapter_rejects_oversize_before_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scripts.build_windows_portable as build_module
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    adapter = _trusted_mcp_adapter(tmp_path)
+    monkeypatch.setattr(
+        build_module,
+        "bounded_file_sha256",
+        lambda _path: (_ for _ in ()).throw(FileSizeLimitExceeded()),
+    )
+
+    with pytest.raises(ValueError, match="MCP adapter exceeds 64 MiB limit"):
+        stage_trusted_mcp_adapter(
+            bundle,
+            adapter,
+            expected_sha256="a" * 64,
+            expected_publisher_subject=MCP_PUBLISHER,
+            expected_certificate_sha256=MCP_CERTIFICATE_SHA256,
+        )
+
+    assert not (bundle / "adapters" / MCP_ADAPTER_NAME).exists()
+    assert not (bundle / "MCP-ADAPTER.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -362,7 +391,7 @@ def test_build_portable_locks_staged_adapter_through_evidence_and_zip(
         "hold_executable_for_launch",
         held,
     )
-    monkeypatch.setattr(build_module, "_streaming_sha256", hash_staged)
+    monkeypatch.setattr(build_module, "_bounded_adapter_sha256", hash_staged)
     monkeypatch.setattr(
         build_module,
         "deterministic_zip",

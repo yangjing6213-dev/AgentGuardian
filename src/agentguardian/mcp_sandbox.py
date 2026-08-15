@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-import hashlib
 import os
 import pathlib
 import re
@@ -18,6 +17,7 @@ import subprocess
 import tempfile
 
 from .discovery import _has_reparse_component
+from .file_integrity import FileSizeLimitExceeded, bounded_file_sha256
 from .windows_appcontainer import AppContainerUnavailable, appcontainer_available, run_in_appcontainer
 from .windows_code_signing import (
     hold_executable_for_launch,
@@ -267,7 +267,9 @@ def _run_mcp_sandbox_with_locked_executable(
     temp_root: pathlib.Path | None,
 ) -> McpSandboxResult:
     try:
-        current_sha256 = hashlib.sha256(policy.executable.read_bytes()).hexdigest()
+        current_sha256 = bounded_file_sha256(policy.executable)
+    except FileSizeLimitExceeded:
+        return _result(policy, SandboxStatus.DENIED, "executable_size_limit")
     except OSError:
         return _result(policy, SandboxStatus.FAILED, "executable_unavailable")
     if current_sha256 != policy.executable_sha256:

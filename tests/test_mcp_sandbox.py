@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import agentguardian.mcp_sandbox as mcp_sandbox
+from agentguardian.file_integrity import FileSizeLimitExceeded
 from agentguardian.mcp_sandbox import (
     McpSandboxPolicy,
     SandboxStatus,
@@ -190,6 +191,36 @@ def test_attested_execution_rechecks_the_executable_hash(
     result = run_mcp_sandbox(tampered, b"synthetic-request", confirmed=True)
     assert result.status is SandboxStatus.DENIED
     assert result.reason == "executable_hash_mismatch"
+
+
+def test_attested_execution_rejects_an_oversize_executable_before_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy = _policy()
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "probe_native_sandbox",
+        lambda: _SandboxAttestation(
+            provider="synthetic-test-only",
+            network_isolated=True,
+            process_tree_isolated=True,
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "bounded_file_sha256",
+        lambda _path: (_ for _ in ()).throw(FileSizeLimitExceeded()),
+    )
+    monkeypatch.setattr(
+        mcp_sandbox.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("oversize adapter was launched"),
+    )
+
+    result = run_mcp_sandbox(policy, b"synthetic-request", confirmed=True)
+
+    assert result.status is SandboxStatus.DENIED
+    assert result.reason == "executable_size_limit"
 
 
 def test_attested_windows_execution_uses_job_object_boundary(

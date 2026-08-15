@@ -10,6 +10,7 @@ import sys
 import pytest
 
 import scripts.verify_windows_release_candidate as release_evidence
+from agentguardian.file_integrity import FileSizeLimitExceeded
 from scripts.verify_windows_release_candidate import (
     ReleaseEvidenceError,
     validate_release_candidate,
@@ -419,6 +420,21 @@ def test_release_gate_rejects_actual_bundled_adapter_tampering(tmp_path: Path) -
     (bundle / "adapters" / ADAPTER_NAME).write_bytes(b"tampered adapter bytes")
 
     with pytest.raises(ReleaseEvidenceError, match="RELEASE_MCP_ADAPTER_HASH_MISMATCH"):
+        _validate_trusted_candidate(bundle, evidence, license_review, mcp_evidence)
+
+
+def test_release_gate_rejects_an_oversize_bundled_adapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, evidence, license_review, mcp_evidence = _write_candidate(tmp_path)
+    monkeypatch.setattr(
+        release_evidence,
+        "bounded_file_sha256",
+        lambda _path: (_ for _ in ()).throw(FileSizeLimitExceeded()),
+    )
+
+    with pytest.raises(ReleaseEvidenceError, match="RELEASE_MCP_ADAPTER_SIZE_LIMIT"):
         _validate_trusted_candidate(bundle, evidence, license_review, mcp_evidence)
 
 

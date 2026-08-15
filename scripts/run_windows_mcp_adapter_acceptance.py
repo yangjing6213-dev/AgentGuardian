@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,6 +14,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from agentguardian.discovery import _has_reparse_component  # noqa: E402
+from agentguardian.file_integrity import (  # noqa: E402
+    FileSizeLimitExceeded,
+    bounded_file_sha256,
+)
 from agentguardian.mcp_sandbox import (  # noqa: E402
     McpSandboxPolicy,
     SandboxStatus,
@@ -59,7 +62,9 @@ def run_packaged_adapter_acceptance(
         "MCP_ACCEPTANCE_CERTIFICATE_HASH_INVALID",
     )
     try:
-        actual_sha256 = hashlib.sha256(adapter.read_bytes()).hexdigest()
+        actual_sha256 = bounded_file_sha256(adapter)
+    except FileSizeLimitExceeded:
+        raise ValueError("MCP_ACCEPTANCE_ADAPTER_SIZE_LIMIT") from None
     except OSError:
         raise ValueError("MCP_ACCEPTANCE_ADAPTER_PATH_INVALID") from None
     if actual_sha256 != expected_adapter_sha256:

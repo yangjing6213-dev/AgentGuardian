@@ -17,6 +17,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from agentguardian.discovery import _has_reparse_component
+from agentguardian.file_integrity import (
+    FileSizeLimitExceeded,
+    bounded_file_sha256,
+)
 
 
 MAX_JSON_BYTES = 4 * 1024 * 1024
@@ -144,8 +148,9 @@ def _validate_mcp_adapter(
     if not stat.S_ISREG(adapter_stat.st_mode):
         raise ReleaseEvidenceError("RELEASE_MCP_ADAPTER_FILE_INVALID")
     try:
-        with adapter.open("rb") as input_file:
-            actual_sha256 = hashlib.file_digest(input_file, "sha256").hexdigest()
+        actual_sha256 = bounded_file_sha256(adapter)
+    except FileSizeLimitExceeded:
+        raise ReleaseEvidenceError("RELEASE_MCP_ADAPTER_SIZE_LIMIT") from None
     except OSError:
         raise ReleaseEvidenceError("RELEASE_MCP_ADAPTER_FILE_INVALID") from None
     if actual_sha256 != manifest["sha256"]:

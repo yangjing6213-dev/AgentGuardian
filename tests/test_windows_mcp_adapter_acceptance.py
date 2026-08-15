@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import scripts.run_windows_mcp_adapter_acceptance as acceptance
+from agentguardian.file_integrity import FileSizeLimitExceeded
 from agentguardian.mcp_sandbox import McpSandboxResult, SandboxStatus
 from scripts.run_windows_mcp_adapter_acceptance import run_packaged_adapter_acceptance
 
@@ -113,6 +114,36 @@ def test_acceptance_writes_only_canonical_bounded_evidence(
     assert b"synthetic-response-marker" not in serialized
     assert b"PYTHONNOUSERSITE" not in serialized
     assert b"synthetic exception text" not in serialized
+
+
+def test_acceptance_rejects_an_oversize_adapter_before_sandbox_or_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, adapter_sha256 = _adapter(tmp_path)
+    evidence_path = tmp_path / "mcp-acceptance.json"
+    monkeypatch.setattr(
+        acceptance,
+        "bounded_file_sha256",
+        lambda _path: (_ for _ in ()).throw(FileSizeLimitExceeded()),
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "run_mcp_sandbox",
+        lambda *_args, **_kwargs: pytest.fail("oversize adapter reached sandbox"),
+    )
+
+    with pytest.raises(ValueError, match="MCP_ACCEPTANCE_ADAPTER_SIZE_LIMIT"):
+        run_packaged_adapter_acceptance(
+            adapter,
+            evidence_path,
+            expected_source_commit=COMMIT,
+            expected_adapter_sha256=adapter_sha256,
+            expected_publisher_subject=PUBLISHER_SUBJECT,
+            expected_certificate_sha256=CERTIFICATE_SHA256,
+        )
+
+    assert not evidence_path.exists()
 
 
 @pytest.mark.parametrize(

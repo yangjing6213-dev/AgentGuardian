@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ctypes
+from ctypes import wintypes
 import sys
 import os
 from pathlib import Path
@@ -14,6 +16,64 @@ pytestmark = pytest.mark.skipif(
     sys.platform != "win32",
     reason="Authenticode verification is only available on Windows",
 )
+
+
+def _replace_with_posix_semantics(source: Path, destination: Path) -> None:
+    filename = str(destination)
+
+    class RenameInfo(ctypes.Structure):
+        _fields_ = [
+            ("flags", wintypes.DWORD),
+            ("root_directory", wintypes.HANDLE),
+            ("filename_length", wintypes.DWORD),
+            ("filename", wintypes.WCHAR * len(filename)),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    set_file_info = kernel32.SetFileInformationByHandle
+    set_file_info.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    set_file_info.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+    handle = create_file(
+        str(source),
+        0x00010000,
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,
+        0x00000080,
+        None,
+    )
+    if handle in (None, ctypes.c_void_p(-1).value):
+        raise OSError(ctypes.get_last_error(), "replacement open failed")
+    info = RenameInfo(
+        flags=0x1 | 0x2,
+        root_directory=None,
+        filename_length=len(filename.encode("utf-16-le")),
+        filename=filename,
+    )
+    try:
+        if not set_file_info(handle, 22, ctypes.byref(info), ctypes.sizeof(info)):
+            raise OSError(ctypes.get_last_error(), "POSIX replacement failed")
+    finally:
+        assert close_handle(handle)
 
 
 def test_authenticode_accepts_a_trusted_system_binary() -> None:
@@ -115,6 +175,21 @@ def test_executable_launch_lock_blocks_parent_directory_replacement(
 
     os.replace(active, moved)
     assert (moved / "adapter.exe").read_bytes() == b"original"
+
+
+def test_executable_launch_lock_blocks_posix_path_replacement(tmp_path: Path) -> None:
+    executable = tmp_path / "adapter.exe"
+    replacement = tmp_path / "replacement.exe"
+    executable.write_bytes(b"original")
+    replacement.write_bytes(b"replacement")
+
+    with signing.hold_executable_for_launch(executable):
+        with pytest.raises(OSError) as error:
+            _replace_with_posix_semantics(replacement, executable)
+        assert error.value.errno == 32
+
+    _replace_with_posix_semantics(replacement, executable)
+    assert executable.read_bytes() == b"replacement"
 
 
 def test_publisher_verification_requires_an_exact_allowlist_match(
