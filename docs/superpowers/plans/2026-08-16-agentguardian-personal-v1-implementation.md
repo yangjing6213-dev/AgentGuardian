@@ -126,6 +126,7 @@ rtk git commit -m "Remove abandoned enterprise runtime"
 - Create: `scripts/run_personal_privacy_acceptance.py`
 - Create: `tests/test_personal_privacy_acceptance.py`
 - Modify: `tests/test_app_smoke.py`
+- Modify: `tests/test_self_audit.py`
 - Modify: `.github/workflows/windows-mvp.yml`
 - Delete: `src/agentguardian/sensitive_mode.py`
 - Delete: `scripts/run_sensitive_data_acceptance.py`
@@ -179,18 +180,22 @@ Move the acceptance implementation to `run_personal_privacy_acceptance.py`, remo
 evidence = {
     "schema": 1,
     "profile": "personal_privacy_acceptance",
+    "passed": True,
     "claims": {
         "redacted_reports": True,
         "clipboard_raw_retained": False,
         "browser_snapshot_cleaned": True,
         "temporary_workspace_cleaned": True,
         "raw_markers_absent": True,
-        "high_sensitivity_readiness": False,
+        "default_api_call": False,
     },
 }
 ```
 
 The acceptance still scans only generated synthetic data or an explicitly supplied sanitized sample and rejects raw markers in JSON, HTML, diagnostics, and evidence.
+The claim values are derived from the report, clipboard, browser, cleanup, and
+package self-audit checks; they are not unconditional constants. The evidence
+contains no high-sensitivity mode or readiness field.
 
 - [ ] **Step 4: Add acceptance tests and update the workflow**
 
@@ -201,7 +206,8 @@ def test_personal_privacy_acceptance_proves_only_personal_invariants(tmp_path):
     assert result["profile"] == "personal_privacy_acceptance"
     assert result["claims"]["raw_markers_absent"] is True
     assert result["claims"]["clipboard_raw_retained"] is False
-    assert result["claims"]["high_sensitivity_readiness"] is False
+    assert result["claims"]["default_api_call"] is False
+    assert "high_sensitivity" not in result
     assert "sensitive_mode" not in evidence_path.read_text(encoding="utf-8")
 ```
 
