@@ -12,12 +12,13 @@ Windows MVP remains incomplete. Production safety is not established.
 - The current clean code-bearing hardening HEAD is `6ccb5232f6eb3955890f89f7a1000df338db8e8a`. It repairs the cross-environment MCP path-replacement gap exposed by GitHub Windows run `31907590797`. Runtime now binds the fixed adapter to the OS-resolved `yangjing6213dev.AgentGuardian` Store/line-of-business package under the Program Files `WindowsApps` repository, requires `Install == Effective`, rejects Mutable and all External package paths, and fails closed when the complete path is mutable by the current token. The existing streaming 64 MiB limit, WinTrust handle binding, trusted staging, packaged acceptance, and final evidence controls remain in place. This report is a documentation-only follow-up to that SHA.
 - The first independent review of the previous evidence-sync HEAD found 7 Important and 2 Minor findings. A second independent review of `305eeb4e1a143a245323a9b54d8fe27314a4e16c` found 2 further Important findings; both were remediated in `90e6eda`. A focused third independent re-review found no Critical or Important findings and one Minor; it did not execute tests independently.
 - OpenAI Provider remains local detection and manual guidance only; the default product path makes no provider API call and performs no endpoint verification.
-- Pre-repair remote HEAD `1af14022acc47a053d6393bea05a171a913ca84a` failed Windows run `31907590797`: `FileRenameInfoEx` POSIX replacement succeeded while the old file handle remained open. Predecessor `f4b3d5c5bfd9bd4f8f6733ac9dad491c7d2bb47e` remains the latest exact SHA whose push and Draft PR CI plus both Windows package checks all succeeded.
+- Pre-repair remote HEAD `1af14022acc47a053d6393bea05a171a913ca84a` failed Windows run `31907590797`: `FileRenameInfoEx` POSIX replacement succeeded while the old file handle remained open. Documentation HEAD `ac796dd379b785d3c52aa6a7e2dde52d078d7e78` then exposed a second platform variance: the rename API could report success without the test observing replacement bytes. The test-only correction at branch HEAD `1da903465f463d1421e7af2b20971da3d8c149bd` preserves the user-writable-path rejection assertion and received four successful normal GitHub checks.
 
 ## Current Follow-up Evidence
 
-Fresh local verification on clean code-bearing SHA
-`6ccb5232f6eb3955890f89f7a1000df338db8e8a` recorded `1563 passed, 11 skipped`
+Fresh local verification on branch HEAD
+`1da903465f463d1421e7af2b20971da3d8c149bd`, with runtime code unchanged from
+`6ccb5232f6eb3955890f89f7a1000df338db8e8a`, recorded `1563 passed, 11 skipped`
 for the full suite and `47 passed, 1 skipped` for
 `scripts/run_windows_mvp_security_gate.py`. The command
 `python -m compileall src scripts tests` exited 0 and `git diff --check` was
@@ -90,10 +91,10 @@ change the release decision.
 
 | Gate | Current revalidation | Scope |
 | --- | --- | --- |
-| Windows MVP security gate | `47 passed, 1 skipped` | Fresh run of `scripts/run_windows_mvp_security_gate.py` at `6ccb5232f6eb3955890f89f7a1000df338db8e8a`. The allowed skip is not reported as a pass. |
+| Windows MVP security gate | `47 passed, 1 skipped` | Fresh run of `scripts/run_windows_mvp_security_gate.py` at `1da903465f463d1421e7af2b20971da3d8c149bd`; runtime code is unchanged from `6ccb5232f6eb3955890f89f7a1000df338db8e8a`. The allowed skip is not reported as a pass. |
 | Python 3.14 full suite | `1563 passed, 11 skipped` | Fresh full-suite run at the exact SHA above. |
 | Source, script, and test compilation | Exit 0 | Fresh `python -m compileall -q src scripts tests`. |
-| Latest completed exact-SHA GitHub CI | `VERIFIED` | At predecessor `f4b3d5c5bfd9bd4f8f6733ac9dad491c7d2bb47e`, push CI `31906131946`, push Windows `31906131948`, Draft PR CI `31906133527`, and Draft PR Windows `31906133509` all completed successfully. The Windows package remains unsigned CI smoke. |
+| Latest completed exact-SHA GitHub CI | `VERIFIED` | At `1da903465f463d1421e7af2b20971da3d8c149bd`, push CI `31929152189`, push Windows `31929152263`, Draft PR CI `31929154481`, and Draft PR Windows `31929154483` all completed successfully. The Windows package remains unsigned CI smoke. |
 | Brand validation | Historical exit 0 | Existing brand-asset contract; not rerun for this documentation sync. |
 | Portable reproducibility | Historical: `208 files` and `92,870,198 bytes` in each bundle; Bundle diff count: `0`; both ZIPs were `36,033,202 bytes` with SHA-256 `4f7e9ffdd347fddf67ffb7544ab84e777ff7b93e2ed1bf546ed87e6e9517bad1` | Historical `90e6eda` evidence only. Two new build roots used a hash-locked Python 3.12.2/PyInstaller 6.16.0 environment, lock SHA `75be59ee054a75d556cc89099f571d9826fa272aef656124fa75dc535731cdd5`, and fixed build time `2026-08-15T00:00:00Z`. |
 | Portable isolation smoke | Historical: both copied bundles reported `process_startup=true`, `bounded_liveness=true`, `termination=forced_after_bounded_smoke`, `process_tree_terminated=true`, and `declared_residue=false` | Historical local smoke with evidence JSON SHA-256 L `8ed7fe9a1e9fc43ee7fcf0c32cc4de3bceb9042695080d11c59451ae163cf034` and M `cd4317b9881aec914efe7090cf9d7324c4adf5803931ad4704e1776986a433c9`; not clean-machine acceptance or current-SHA runtime evidence. |
@@ -124,7 +125,7 @@ This evidence does not cover the 10,000-file functional maximum, whole-process r
 - Second independent re-review: `COMPLETED WITH 2 IMPORTANT AND 3 MINOR FINDINGS` on `305eeb4`; both Important findings were remediated in `90e6eda`.
 - Third independent re-review: `COMPLETED WITH NO CRITICAL/IMPORTANT FINDINGS AND 1 MINOR`; the reviewer did not execute tests independently, so runtime confirmation remains the separately recorded local-gate evidence.
 - Task 1, Task 2, trusted-artifact acquisition, runtime WinTrust handle-binding, bounded adapter hashing, and packaged-path identity independent specification or quality/security review: `COMPLETED`; no Critical or Important issues remain for the documented standard-user model. This does not provide external-material or trusted-release acceptance.
-- Latest completed all-green exact-SHA GitHub CI: `VERIFIED` for predecessor `f4b3d5c5bfd9bd4f8f6733ac9dad491c7d2bb47e`; push CI `31906131946`, push Windows `31906131948`, Draft PR CI `31906133527`, and Draft PR Windows `31906133509` all succeeded. Pre-repair HEAD `1af14022acc47a053d6393bea05a171a913ca84a` failed Windows run `31907590797`; current code-bearing SHA `6ccb5232f6eb3955890f89f7a1000df338db8e8a` remains pending remote revalidation.
+- Latest completed all-green exact-SHA GitHub CI: `VERIFIED` for `1da903465f463d1421e7af2b20971da3d8c149bd`; push CI `31929152189`, push Windows `31929152263`, Draft PR CI `31929154481`, and Draft PR Windows `31929154483` all succeeded. Pre-repair HEAD `1af14022acc47a053d6393bea05a171a913ca84a` and documentation HEAD `ac796dd379b785d3c52aa6a7e2dde52d078d7e78` retain their failed historical runs.
 - Historical `e8013dc` label: Current exact-SHA GitHub CI: `VERIFIED`. It does not cover the current local SHA.
 - Historical label: GitHub-hosted Windows runner provenance: `VERIFIED AS CI EVIDENCE ONLY`. It does not cover the current local SHA or replace an independent clean Windows machine.
 - Trusted code signing: `PENDING`.
