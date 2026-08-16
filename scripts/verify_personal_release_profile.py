@@ -578,6 +578,15 @@ def _resolved_profile_path(root: Path, profile_path: str | Path) -> Path:
         if any(":" in part for part in lexical.parts[1:]):
             raise ProfileViolation("PROFILE_PATH_INVALID")
         candidate = lexical
+    elif isinstance(profile_path, Path):
+        parts = lexical.parts
+        if (
+            lexical.drive
+            or not parts
+            or any(part in {"", ".", ".."} or ":" in part for part in parts)
+        ):
+            raise ProfileViolation("PROFILE_PATH_INVALID")
+        candidate = root.joinpath(*parts)
     else:
         value = str(profile_path)
         if not _safe_relative_pattern(value):

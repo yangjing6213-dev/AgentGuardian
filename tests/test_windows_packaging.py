@@ -136,7 +136,9 @@ def _prepare_portable_build(
         record_snapshot("profile_evidence"),
         raising=False,
     )
-    monkeypatch.setattr(build_module, "deterministic_zip", lambda *args: None)
+    monkeypatch.setattr(
+        build_module, "deterministic_zip", lambda *args: events.append("zip")
+    )
 
 
 def test_personal_portable_builder_has_no_dynamic_mcp_inputs() -> None:
@@ -159,25 +161,31 @@ def test_portable_build_verifies_source_then_payload_and_records_profile_digest(
 
     events: list[str] = []
     _prepare_portable_build(monkeypatch, commit="a" * 40, events=events)
+    output = tmp_path / "output"
+    record_source_profile = build_module.verify_profile
+
+    def verify_before_output(*args) -> None:
+        assert not output.exists()
+        record_source_profile(*args)
+
+    monkeypatch.setattr(build_module, "verify_profile", verify_before_output)
 
     build_module.build_portable(
         tmp_path,
-        tmp_path / "output",
+        output,
         source_commit="a" * 40,
         built_at="2026-08-14T00:00:00Z",
     )
 
-    assert sorted(events) == sorted(
-        (
-            "source_profile",
-            "pyinstaller",
-            "layout",
-            "payload_profile",
-            "snapshot_unchanged",
-            "profile_evidence",
-            "evidence",
-        )
+    assert events.index("source_profile") < events.index("pyinstaller")
+    assert (
+        events.index("layout")
+        < events.index("payload_profile")
+        < events.index("evidence")
     )
+    assert events.index("snapshot_unchanged") < events.index("profile_evidence")
+    assert events.index("snapshot_unchanged") < events.index("evidence")
+    assert events.index("snapshot_unchanged") < events.index("zip")
 
 
 def test_personal_profile_evidence_is_canonical_and_digest_bound(tmp_path: Path) -> None:

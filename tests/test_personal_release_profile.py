@@ -201,6 +201,38 @@ def test_profile_snapshot_rejects_unsafe_relative_actual_paths(
     assert str(root) not in str(caught.value)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows native Path regression")
+def test_profile_snapshot_accepts_native_relative_path_object(tmp_path: Path) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+
+    snapshot = verifier.load_profile_snapshot(
+        root, Path("release_profiles") / "personal_store_release.json"
+    )
+
+    assert snapshot.profile["name"] == "personal_store_release"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native Path regression")
+@pytest.mark.parametrize(
+    "value",
+    (
+        Path(),
+        Path("..") / "profile.json",
+        Path("release_profiles") / "carrier:profile",
+        Path("C:profile.json"),
+    ),
+)
+def test_profile_snapshot_rejects_unsafe_native_relative_path_objects(
+    tmp_path: Path, value: Path
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+
+    with pytest.raises(verifier.ProfileViolation, match="^PROFILE_PATH_INVALID$"):
+        verifier.load_profile_snapshot(root, value)
+
+
 def test_profile_snapshot_rejects_symlink_escape_before_resolution(tmp_path: Path) -> None:
     verifier = _verifier()
     root = _copy_fixture(tmp_path)
