@@ -38,12 +38,8 @@ _NETWORK_IMPORT_PREFIXES = (
     "pyside6.qtwebsockets",
 )
 _AUDITED_CAPABILITY_MODULES = {
-    "mcp_sandbox.py",
     "remediation.py",
     "share_verification.py",
-    "windows_appcontainer.py",
-    "windows_code_signing.py",
-    "windows_job_object.py",
 }
 _AUDITED_IMPORT_MODULES = {"browser_audit.py"}
 _SAFE_DIRECT_IMPORTS = {

@@ -1,5 +1,5 @@
 import json
-import hashlib
+import inspect
 import os
 from pathlib import Path
 import re
@@ -8,11 +8,9 @@ import sys
 from types import SimpleNamespace
 import zipfile
 from datetime import datetime, timezone
-from contextlib import contextmanager
 
 import pytest
 
-from agentguardian.file_integrity import FileSizeLimitExceeded
 from scripts.build_windows_portable import (
     artifact_manifest,
     build_portable,
@@ -24,7 +22,6 @@ from scripts.build_windows_portable import (
     portable_component_specs,
     reviewed_source_paths,
     runtime_library_versions,
-    stage_trusted_mcp_adapter,
     validate_build_dependency_snapshot,
     validate_relative_paths,
     write_portable_evidence,
@@ -58,17 +55,6 @@ BUILD_PACKAGES = {
     "sortedcontainers": "2.4.0",
     "typing-extensions": "4.16.0",
 }
-MCP_ADAPTER_NAME = "AgentGuardianMcpAdapter.exe"
-MCP_PUBLISHER = "CN=AgentGuardian MCP Adapter, O=AgentGuardian"
-MCP_CERTIFICATE_SHA256 = "b" * 64
-
-
-def _trusted_mcp_adapter(tmp_path: Path, content: bytes = b"signed adapter") -> Path:
-    adapter = tmp_path / MCP_ADAPTER_NAME
-    adapter.write_bytes(content)
-    return adapter
-
-
 def _prepare_portable_build(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -99,420 +85,19 @@ def _prepare_portable_build(
     monkeypatch.setattr(build_module, "deterministic_zip", lambda *args: None)
 
 
-def test_stage_trusted_mcp_adapter_writes_fixed_canonical_metadata(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    bundle = tmp_path / "bundle"
-    bundle.mkdir()
-    adapter = _trusted_mcp_adapter(tmp_path)
-    digest = hashlib.sha256(adapter.read_bytes()).hexdigest()
-    verification_calls = []
+def test_personal_portable_builder_has_no_dynamic_mcp_inputs() -> None:
+    signature = inspect.signature(build_portable)
 
-    @contextmanager
-    def held(path: Path):
-        assert path == adapter
-        yield
-
-    def verify(path, publishers, *, allowed_certificate_sha256, signature_already_verified=False):
-        verification_calls.append(
-            (path, publishers, allowed_certificate_sha256, signature_already_verified)
-        )
-        return True
-
-    monkeypatch.setattr(
-        "scripts.build_windows_portable.windows_code_signing.hold_executable_for_launch",
-        held,
-    )
-    monkeypatch.setattr(
-        "scripts.build_windows_portable.windows_code_signing.verify_authenticode_publisher",
-        verify,
+    assert tuple(signature.parameters) == (
+        "project_root",
+        "output_root",
+        "source_commit",
+        "built_at",
+        "artifact_status",
     )
 
-    staged = stage_trusted_mcp_adapter(
-        bundle,
-        adapter,
-        expected_sha256=digest,
-        expected_publisher_subject=MCP_PUBLISHER,
-        expected_certificate_sha256=MCP_CERTIFICATE_SHA256,
-    )
 
-    assert staged == bundle / "adapters" / MCP_ADAPTER_NAME
-    assert staged.read_bytes() == adapter.read_bytes()
-    metadata = {
-        "schema": 1,
-        "path": f"adapters/{MCP_ADAPTER_NAME}",
-        "name": MCP_ADAPTER_NAME,
-        "sha256": digest,
-        "publisher_subject": MCP_PUBLISHER,
-        "certificate_sha256": MCP_CERTIFICATE_SHA256,
-    }
-    metadata_path = bundle / "MCP-ADAPTER.json"
-    assert metadata_path.read_bytes() == canonical_json_bytes(metadata)
-    assert json.loads(metadata_path.read_bytes()) == metadata
-    assert verification_calls == [
-        (
-            adapter,
-            (MCP_PUBLISHER,),
-            (MCP_CERTIFICATE_SHA256,),
-            False,
-        )
-    ]
-
-
-def test_stage_trusted_mcp_adapter_rejects_oversize_before_copy(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import scripts.build_windows_portable as build_module
-
-    bundle = tmp_path / "bundle"
-    bundle.mkdir()
-    adapter = _trusted_mcp_adapter(tmp_path)
-    monkeypatch.setattr(
-        build_module,
-        "bounded_file_sha256",
-        lambda _path: (_ for _ in ()).throw(FileSizeLimitExceeded()),
-    )
-
-    with pytest.raises(ValueError, match="MCP adapter exceeds 64 MiB limit"):
-        stage_trusted_mcp_adapter(
-            bundle,
-            adapter,
-            expected_sha256="a" * 64,
-            expected_publisher_subject=MCP_PUBLISHER,
-            expected_certificate_sha256=MCP_CERTIFICATE_SHA256,
-        )
-
-    assert not (bundle / "adapters" / MCP_ADAPTER_NAME).exists()
-    assert not (bundle / "MCP-ADAPTER.json").exists()
-
-
-@pytest.mark.parametrize(
-    ("adapter_value", "sha256", "publisher", "certificate_sha256"),
-    (
-        (Path(MCP_ADAPTER_NAME), "a" * 64, MCP_PUBLISHER, MCP_CERTIFICATE_SHA256),
-        (Path(r"\\server\share\AgentGuardianMcpAdapter.exe"), "a" * 64, MCP_PUBLISHER, MCP_CERTIFICATE_SHA256),
-        (None, "A" * 64, MCP_PUBLISHER, MCP_CERTIFICATE_SHA256),
-        (None, "a" * 63, MCP_PUBLISHER, MCP_CERTIFICATE_SHA256),
-        (None, "a" * 64, " AgentGuardian ", MCP_CERTIFICATE_SHA256),
-        (None, "a" * 64, "AgentGuardian", MCP_CERTIFICATE_SHA256),
-        (None, "a" * 64, True, MCP_CERTIFICATE_SHA256),
-        (None, "a" * 64, MCP_PUBLISHER, "B" * 64),
-        (None, "a" * 64, MCP_PUBLISHER, True),
-    ),
-)
-def test_stage_trusted_mcp_adapter_rejects_invalid_inputs(
-    tmp_path: Path,
-    adapter_value: Path | None,
-    sha256: object,
-    publisher: object,
-    certificate_sha256: object,
-) -> None:
-    bundle = tmp_path / "bundle"
-    bundle.mkdir()
-    adapter = adapter_value or _trusted_mcp_adapter(tmp_path)
-
-    with pytest.raises(ValueError, match="MCP adapter"):
-        stage_trusted_mcp_adapter(
-            bundle,
-            adapter,
-            expected_sha256=sha256,
-            expected_publisher_subject=publisher,
-            expected_certificate_sha256=certificate_sha256,
-        )
-
-    assert not (bundle / "MCP-ADAPTER.json").exists()
-    assert not (bundle / "adapters" / MCP_ADAPTER_NAME).exists()
-
-
-def test_stage_trusted_mcp_adapter_rejects_wrong_name_reparse_and_directory(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    bundle = tmp_path / "bundle"
-    bundle.mkdir()
-    wrong_name = tmp_path / "other.exe"
-    wrong_name.write_bytes(b"adapter")
-    directory = tmp_path / MCP_ADAPTER_NAME
-    directory.mkdir()
-
-    for adapter in (wrong_name, directory):
-        with pytest.raises(ValueError, match="MCP adapter"):
-            stage_trusted_mcp_adapter(
-                bundle,
-                adapter,
-                expected_sha256="a" * 64,
-                expected_publisher_subject=MCP_PUBLISHER,
-                expected_certificate_sha256=MCP_CERTIFICATE_SHA256,
-            )
-
-    reparse_root = tmp_path / "reparse"
-    reparse_root.mkdir()
-    adapter = _trusted_mcp_adapter(reparse_root)
-    original = Path.is_symlink
-    monkeypatch.setattr(
-        Path,
-        "is_symlink",
-        lambda path: path == reparse_root or original(path),
-    )
-    with pytest.raises(ValueError, match="reparse"):
-        stage_trusted_mcp_adapter(
-            bundle,
-            adapter,
-            expected_sha256=hashlib.sha256(adapter.read_bytes()).hexdigest(),
-            expected_publisher_subject=MCP_PUBLISHER,
-            expected_certificate_sha256=MCP_CERTIFICATE_SHA256,
-        )
-
-
-def test_stage_trusted_mcp_adapter_rejects_hash_signature_and_copy_identity_changes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    bundle = tmp_path / "bundle"
-    bundle.mkdir()
-    adapter = _trusted_mcp_adapter(tmp_path)
-    digest = hashlib.sha256(adapter.read_bytes()).hexdigest()
-
-    monkeypatch.setattr(
-        "scripts.build_windows_portable.windows_code_signing.verify_authenticode_publisher",
-        lambda *args, **kwargs: False,
-    )
-    with pytest.raises(ValueError, match="trusted Authenticode"):
-        stage_trusted_mcp_adapter(
-            bundle,
-            adapter,
-            expected_sha256=digest,
-            expected_publisher_subject=MCP_PUBLISHER,
-            expected_certificate_sha256=MCP_CERTIFICATE_SHA256,
-        )
-
-    def mutate(*args, **kwargs):
-        adapter.write_bytes(b"replacement")
-        return True
-
-    @contextmanager
-    def unlocked(path: Path):
-        yield
-
-    monkeypatch.setattr(
-        "scripts.build_windows_portable.windows_code_signing.hold_executable_for_launch",
-        unlocked,
-    )
-    monkeypatch.setattr(
-        "scripts.build_windows_portable.windows_code_signing.verify_authenticode_publisher",
-        mutate,
-    )
-    with pytest.raises(ValueError, match="identity changed"):
-        stage_trusted_mcp_adapter(
-            bundle,
-            adapter,
-            expected_sha256=digest,
-            expected_publisher_subject=MCP_PUBLISHER,
-            expected_certificate_sha256=MCP_CERTIFICATE_SHA256,
-        )
-    assert not (bundle / "MCP-ADAPTER.json").exists()
-    assert not (bundle / "adapters" / MCP_ADAPTER_NAME).exists()
-
-
-def test_build_portable_stages_trusted_mcp_adapter_before_evidence(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import scripts.build_windows_portable as build_module
-
-    commit = "a" * 40
-    events: list[str] = []
-    _prepare_portable_build(monkeypatch, commit=commit, events=events)
-    adapter = _trusted_mcp_adapter(tmp_path)
-    digest = hashlib.sha256(adapter.read_bytes()).hexdigest()
-
-    def stage(bundle, path, **pins):
-        events.append("adapter")
-        assert bundle == tmp_path / "output" / "dist" / "AgentGuardian"
-        assert path == adapter
-        assert pins == {
-            "expected_sha256": digest,
-            "expected_publisher_subject": MCP_PUBLISHER,
-            "expected_certificate_sha256": MCP_CERTIFICATE_SHA256,
-        }
-        return adapter
-
-    monkeypatch.setattr(build_module, "stage_trusted_mcp_adapter", stage)
-
-    build_portable(
-        tmp_path,
-        tmp_path / "output",
-        source_commit=commit,
-        built_at="2026-08-14T00:00:00Z",
-        artifact_status="trusted_release",
-        mcp_adapter_path=adapter,
-        mcp_adapter_sha256=digest,
-        mcp_adapter_publisher=MCP_PUBLISHER,
-        mcp_adapter_certificate_sha256=MCP_CERTIFICATE_SHA256,
-    )
-
-    assert events == ["adapter", "evidence"]
-
-
-def test_build_portable_locks_staged_adapter_through_evidence_and_zip(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import scripts.build_windows_portable as build_module
-
-    commit = "a" * 40
-    events: list[str] = []
-    _prepare_portable_build(monkeypatch, commit=commit, events=events)
-    adapter = _trusted_mcp_adapter(tmp_path)
-    digest = hashlib.sha256(adapter.read_bytes()).hexdigest()
-    staged = tmp_path / "output" / "dist" / "AgentGuardian" / "adapters" / MCP_ADAPTER_NAME
-
-    def stage(*args, **kwargs):
-        events.append("adapter")
-        return staged
-
-    @contextmanager
-    def held(path: Path):
-        assert path == staged
-        events.append("lock-enter")
-        yield
-        events.append("lock-exit")
-
-    def hash_staged(path: Path) -> str:
-        assert path == staged
-        events.append("hash")
-        return digest
-
-    monkeypatch.setattr(build_module, "stage_trusted_mcp_adapter", stage)
-    monkeypatch.setattr(
-        build_module.windows_code_signing,
-        "hold_executable_for_launch",
-        held,
-    )
-    monkeypatch.setattr(build_module, "_bounded_adapter_sha256", hash_staged)
-    monkeypatch.setattr(
-        build_module,
-        "deterministic_zip",
-        lambda *args: events.append("zip"),
-    )
-
-    build_portable(
-        tmp_path,
-        tmp_path / "output",
-        source_commit=commit,
-        built_at="2026-08-14T00:00:00Z",
-        artifact_status="trusted_release",
-        mcp_adapter_path=adapter,
-        mcp_adapter_sha256=digest,
-        mcp_adapter_publisher=MCP_PUBLISHER,
-        mcp_adapter_certificate_sha256=MCP_CERTIFICATE_SHA256,
-    )
-
-    assert events == ["adapter", "lock-enter", "hash", "evidence", "zip", "lock-exit"]
-
-
-@pytest.mark.parametrize(
-    "adapter_inputs",
-    (
-        {},
-        {"mcp_adapter_path": Path(MCP_ADAPTER_NAME)},
-        {
-            "mcp_adapter_path": Path(MCP_ADAPTER_NAME),
-            "mcp_adapter_sha256": "a" * 64,
-            "mcp_adapter_publisher": MCP_PUBLISHER,
-        },
-    ),
-)
-def test_build_portable_trusted_mcp_adapter_inputs_are_all_required(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    adapter_inputs: dict[str, object],
-) -> None:
-    import scripts.build_windows_portable as build_module
-
-    monkeypatch.setattr(build_module.sys, "platform", "win32")
-    monkeypatch.setattr(build_module.sys, "version_info", (3, 12))
-    with pytest.raises(ValueError, match="all four MCP adapter inputs"):
-        build_portable(
-            tmp_path,
-            tmp_path / "output",
-            source_commit="a" * 40,
-            built_at="2026-08-14T00:00:00Z",
-            artifact_status="trusted_release",
-            **adapter_inputs,
-        )
-
-
-def test_build_portable_unsigned_rejects_all_trusted_mcp_adapter_inputs(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import scripts.build_windows_portable as build_module
-
-    monkeypatch.setattr(build_module.sys, "platform", "win32")
-    monkeypatch.setattr(build_module.sys, "version_info", (3, 12))
-    with pytest.raises(ValueError, match="unsigned build cannot stage"):
-        build_portable(
-            tmp_path,
-            tmp_path / "output",
-            source_commit="a" * 40,
-            built_at="2026-08-14T00:00:00Z",
-            mcp_adapter_path=Path(MCP_ADAPTER_NAME),
-        )
-
-
-def test_trusted_mcp_adapter_cli_forwards_all_pins(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import scripts.build_windows_portable as build_module
-
-    adapter = _trusted_mcp_adapter(tmp_path)
-    captured = {}
-    monkeypatch.setattr(
-        build_module,
-        "build_portable",
-        lambda *args, **kwargs: captured.update(kwargs),
-    )
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "build_windows_portable.py",
-            "--output-root",
-            str(tmp_path / "output"),
-            "--source-commit",
-            "a" * 40,
-            "--built-at",
-            "2026-08-14T00:00:00Z",
-            "--artifact-status",
-            "trusted_release",
-            "--mcp-adapter-path",
-            str(adapter),
-            "--mcp-adapter-sha256",
-            "c" * 64,
-            "--mcp-adapter-publisher",
-            MCP_PUBLISHER,
-            "--mcp-adapter-certificate-sha256",
-            MCP_CERTIFICATE_SHA256,
-        ],
-    )
-
-    assert build_module.main() == 0
-    assert captured == {
-        "source_commit": "a" * 40,
-        "built_at": "2026-08-14T00:00:00Z",
-        "artifact_status": "trusted_release",
-        "mcp_adapter_path": adapter,
-        "mcp_adapter_sha256": "c" * 64,
-        "mcp_adapter_publisher": MCP_PUBLISHER,
-        "mcp_adapter_certificate_sha256": MCP_CERTIFICATE_SHA256,
-    }
-
-
-def test_trusted_mcp_adapter_cli_loads_project_package_without_pythonpath() -> None:
+def test_portable_builder_cli_loads_project_package_without_pythonpath() -> None:
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import nullcontext
 from datetime import datetime, timezone
 from importlib import metadata
 import json
@@ -24,13 +23,6 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from agentguardian import windows_code_signing  # noqa: E402
-from agentguardian.file_integrity import (  # noqa: E402
-    FileSizeLimitExceeded,
-    bounded_file_sha256,
-)
-
-
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 _UNUSED_QT_GUI_PLUGINS = {
     "qpdf.dll",
@@ -46,10 +38,6 @@ _FORBIDDEN_NETWORK_COMPONENTS = {
     "qt6network.dll",
     "qtnetwork.pyd",
 }
-_MCP_ADAPTER_NAME = "AgentGuardianMcpAdapter.exe"
-_MCP_ADAPTER_RELATIVE_PATH = f"adapters/{_MCP_ADAPTER_NAME}"
-
-
 def reviewed_source_paths(project_root: Path) -> tuple[Path, ...]:
     package_root = project_root / "src" / "agentguardian"
     policy_path = package_root / "source_policy.json"
@@ -332,90 +320,6 @@ def validate_build_time(value: str) -> datetime:
     return parsed
 
 
-def stage_trusted_mcp_adapter(
-    bundle_root: Path,
-    adapter_path: Path,
-    *,
-    expected_sha256: str,
-    expected_publisher_subject: str,
-    expected_certificate_sha256: str,
-) -> Path:
-    adapter = Path(adapter_path)
-    if (
-        not adapter.is_absolute()
-        or _is_unc(adapter)
-        or adapter.name != _MCP_ADAPTER_NAME
-        or any(part in {".", ".."} for part in adapter.parts)
-        or _has_reparse_component(adapter)
-    ):
-        raise ValueError("MCP adapter path is invalid or contains a reparse point")
-    try:
-        mode = adapter.stat(follow_symlinks=False).st_mode
-    except OSError:
-        raise ValueError("MCP adapter must be a regular file") from None
-    if not stat.S_ISREG(mode):
-        raise ValueError("MCP adapter must be a regular file")
-    _validate_lower_sha256(expected_sha256, "MCP adapter SHA-256 is invalid")
-    _validate_lower_sha256(
-        expected_certificate_sha256,
-        "MCP adapter certificate SHA-256 is invalid",
-    )
-    if type(expected_publisher_subject) is not str:
-        raise ValueError("MCP adapter publisher subject is invalid")
-    publisher_key, separator, publisher_value = expected_publisher_subject.partition("=")
-    if (
-        not expected_publisher_subject
-        or expected_publisher_subject != expected_publisher_subject.strip()
-        or len(expected_publisher_subject) > 512
-        or "\x00" in expected_publisher_subject
-        or not separator
-        or not publisher_key.strip()
-        or not publisher_value.strip()
-    ):
-        raise ValueError("MCP adapter publisher subject is invalid")
-    if not bundle_root.is_dir() or _is_reparse_point(bundle_root):
-        raise ValueError("MCP adapter bundle root is invalid")
-
-    destination = bundle_root / "adapters" / _MCP_ADAPTER_NAME
-    metadata_path = bundle_root / "MCP-ADAPTER.json"
-    if destination.exists() or metadata_path.exists():
-        raise ValueError("MCP adapter staging destination already exists")
-    adapters_root_created = not destination.parent.exists()
-    destination.parent.mkdir(parents=False, exist_ok=True)
-    if _is_reparse_point(destination.parent):
-        raise ValueError("MCP adapter staging path contains a reparse point")
-    try:
-        with windows_code_signing.hold_executable_for_launch(adapter):
-            if _bounded_adapter_sha256(adapter) != expected_sha256:
-                raise ValueError("MCP adapter SHA-256 does not match")
-            if not windows_code_signing.verify_authenticode_publisher(
-                adapter,
-                (expected_publisher_subject,),
-                allowed_certificate_sha256=(expected_certificate_sha256,),
-            ):
-                raise ValueError("MCP adapter trusted Authenticode identity is invalid")
-            with adapter.open("rb") as source, destination.open("xb") as target:
-                shutil.copyfileobj(source, target, length=1024 * 1024)
-            if _bounded_adapter_sha256(destination) != expected_sha256:
-                raise ValueError("MCP adapter identity changed during staging")
-        metadata = {
-            "schema": 1,
-            "path": _MCP_ADAPTER_RELATIVE_PATH,
-            "name": _MCP_ADAPTER_NAME,
-            "sha256": expected_sha256,
-            "publisher_subject": expected_publisher_subject,
-            "certificate_sha256": expected_certificate_sha256,
-        }
-        metadata_path.write_bytes(canonical_json_bytes(metadata))
-    except Exception:
-        destination.unlink(missing_ok=True)
-        metadata_path.unlink(missing_ok=True)
-        if adapters_root_created:
-            destination.parent.rmdir()
-        raise
-    return destination
-
-
 def build_portable(
     project_root: Path,
     output_root: Path,
@@ -423,27 +327,9 @@ def build_portable(
     source_commit: str,
     built_at: str,
     artifact_status: str = "unsigned_development_only",
-    mcp_adapter_path: Path | None = None,
-    mcp_adapter_sha256: str | None = None,
-    mcp_adapter_publisher: str | None = None,
-    mcp_adapter_certificate_sha256: str | None = None,
 ) -> Path:
     if sys.platform != "win32" or sys.version_info[:2] != (3, 12):
         raise RuntimeError("portable builds require Windows Python 3.12")
-    adapter_inputs = (
-        mcp_adapter_path,
-        mcp_adapter_sha256,
-        mcp_adapter_publisher,
-        mcp_adapter_certificate_sha256,
-    )
-    if artifact_status == "trusted_release" and not all(
-        value is not None for value in adapter_inputs
-    ):
-        raise ValueError("trusted release requires all four MCP adapter inputs")
-    if artifact_status == "unsigned_development_only" and any(
-        value is not None for value in adapter_inputs
-    ):
-        raise ValueError("unsigned build cannot stage MCP adapter inputs")
     if artifact_status not in {"unsigned_development_only", "trusted_release"}:
         raise ValueError("artifact status is invalid")
     project_root = project_root.resolve()
@@ -488,40 +374,20 @@ def build_portable(
         vc_runtime_version=_pe_version(internal / "VCRUNTIME140.dll"),
         ucrt_version=_pe_version(internal / "ucrtbase.dll"),
     )
-    staged_adapter = None
-    if artifact_status == "trusted_release":
-        staged_adapter = stage_trusted_mcp_adapter(
-            bundle_root,
-            mcp_adapter_path,
-            expected_sha256=mcp_adapter_sha256,
-            expected_publisher_subject=mcp_adapter_publisher,
-            expected_certificate_sha256=mcp_adapter_certificate_sha256,
-        )
-    adapter_guard = (
-        windows_code_signing.hold_executable_for_launch(staged_adapter)
-        if staged_adapter is not None
-        else nullcontext()
+    write_portable_evidence(
+        bundle_root,
+        project_root=project_root,
+        component_specs=components,
+        source_commit=source_commit,
+        built_at=built_at,
+        build_dependencies=build_dependencies,
+        forbidden_texts=(str(project_root), str(output_root)),
+        artifact_status=artifact_status,
     )
-    with adapter_guard:
-        if (
-            staged_adapter is not None
-            and _bounded_adapter_sha256(staged_adapter) != mcp_adapter_sha256
-        ):
-            raise ValueError("staged MCP adapter identity changed before packaging")
-        write_portable_evidence(
-            bundle_root,
-            project_root=project_root,
-            component_specs=components,
-            source_commit=source_commit,
-            built_at=built_at,
-            build_dependencies=build_dependencies,
-            forbidden_texts=(str(project_root), str(output_root)),
-            artifact_status=artifact_status,
-        )
-        deterministic_zip(
-            bundle_root,
-            output_root / f"AgentGuardian-0.1.0-windows-x64-{source_commit[:12]}.zip",
-        )
+    deterministic_zip(
+        bundle_root,
+        output_root / f"AgentGuardian-0.1.0-windows-x64-{source_commit[:12]}.zip",
+    )
     return bundle_root
 
 
@@ -568,10 +434,6 @@ def main() -> int:
         choices=("unsigned_development_only", "trusted_release"),
         default="unsigned_development_only",
     )
-    parser.add_argument("--mcp-adapter-path", type=Path)
-    parser.add_argument("--mcp-adapter-sha256")
-    parser.add_argument("--mcp-adapter-publisher")
-    parser.add_argument("--mcp-adapter-certificate-sha256")
     arguments = parser.parse_args()
     build_portable(
         Path(__file__).parents[1],
@@ -579,10 +441,6 @@ def main() -> int:
         source_commit=arguments.source_commit,
         built_at=arguments.built_at,
         artifact_status=arguments.artifact_status,
-        mcp_adapter_path=arguments.mcp_adapter_path,
-        mcp_adapter_sha256=arguments.mcp_adapter_sha256,
-        mcp_adapter_publisher=arguments.mcp_adapter_publisher,
-        mcp_adapter_certificate_sha256=arguments.mcp_adapter_certificate_sha256,
     )
     return 0
 
@@ -743,35 +601,6 @@ def _is_reparse_point(path: Path) -> bool:
     except OSError:
         raise ValueError(f"unable to inspect artifact path: {path.name}") from None
     return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
-
-
-def _has_reparse_component(path: Path) -> bool:
-    current = Path(path.anchor)
-    for part in path.parts[1:]:
-        current /= part
-        if _is_reparse_point(current):
-            return True
-    return False
-
-
-def _is_unc(path: Path) -> bool:
-    return path.anchor.startswith("\\\\") or os.fspath(path).startswith(("\\\\", "//"))
-
-
-def _validate_lower_sha256(value: object, message: str) -> None:
-    if (
-        type(value) is not str
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
-        raise ValueError(message)
-
-
-def _bounded_adapter_sha256(path: Path) -> str:
-    try:
-        return bounded_file_sha256(path)
-    except FileSizeLimitExceeded:
-        raise ValueError("MCP adapter exceeds 64 MiB limit") from None
 
 
 if __name__ == "__main__":

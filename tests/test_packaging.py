@@ -242,8 +242,8 @@ def test_wheel_extracts_with_self_audit_resources_offline(tmp_path: Path) -> Non
                 "from agentguardian.self_audit import collect_self_audit,static_capability_findings;"
                 "audit=collect_self_audit();"
                 "assert load_rules().rules;"
-                "assert static_capability_findings()==('DATABASE_CAPABILITY','NATIVE_CAPABILITY','NETWORK_MODULE_IMPORT','SHELL_EXECUTION','USER_DATA_WRITE');"
-                "assert audit['findings']==['DATABASE_CAPABILITY','NATIVE_CAPABILITY','NETWORK_MODULE_IMPORT','SHELL_EXECUTION','USER_DATA_WRITE'] and not audit['local_only'];"
+                "assert static_capability_findings()==('DATABASE_CAPABILITY','NETWORK_MODULE_IMPORT','USER_DATA_WRITE');"
+                "assert audit['findings']==['DATABASE_CAPABILITY','NETWORK_MODULE_IMPORT','USER_DATA_WRITE'] and not audit['local_only'];"
                 "print(json.dumps(audit,sort_keys=True))"
             ),
         ],

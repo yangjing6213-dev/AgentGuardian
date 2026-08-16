@@ -33,7 +33,6 @@ EXPECTED_REVIEWED_SOURCE_MODULES = (
     "evidence_state.py",
     "file_integrity.py",
     "guidance.py",
-    "mcp_sandbox.py",
     "remediation.py",
     "report_comparison.py",
     "reporting.py",
@@ -41,10 +40,7 @@ EXPECTED_REVIEWED_SOURCE_MODULES = (
     "self_audit.py",
     "share_verification.py",
     "state_store.py",
-    "windows_appcontainer.py",
-    "windows_code_signing.py",
     "windows_dpapi.py",
-    "windows_job_object.py",
     "workflow.py",
 )
 _APPROVED_TASK_2_EXAMPLE = """import json
@@ -203,9 +199,7 @@ def test_collect_self_audit_is_transparent_and_keeps_environment_private(
         "alpha_status": "Founder Alpha",
         "findings": [
             "DATABASE_CAPABILITY",
-            "NATIVE_CAPABILITY",
             "NETWORK_MODULE_IMPORT",
-            "SHELL_EXECUTION",
             "USER_DATA_WRITE",
         ],
         "scope": {
@@ -225,9 +219,7 @@ def test_collect_self_audit_is_transparent_and_keeps_environment_private(
 def test_current_package_reports_its_constrained_network_adapter() -> None:
     assert static_capability_findings() == (
         "DATABASE_CAPABILITY",
-        "NATIVE_CAPABILITY",
         "NETWORK_MODULE_IMPORT",
-        "SHELL_EXECUTION",
         "USER_DATA_WRITE",
     )
 
@@ -243,10 +235,10 @@ def test_source_policy_manifest_exactly_matches_current_package() -> None:
 
     assert list(policy) == ["schema", "modules"]
     assert policy["schema"] == 1
-    assert len(EXPECTED_REVIEWED_SOURCE_MODULES) == 25
+    assert len(EXPECTED_REVIEWED_SOURCE_MODULES) == 21
     assert package_names == EXPECTED_REVIEWED_SOURCE_MODULES
     assert tuple(modules) == EXPECTED_REVIEWED_SOURCE_MODULES
-    assert len(modules) == 25
+    assert len(modules) == 21
     assert modules == {
         name: _canonical_source_digest(PACKAGE_ROOT / name)
         for name in EXPECTED_REVIEWED_SOURCE_MODULES
@@ -1289,7 +1281,7 @@ def test_docs_track_batch_3_finding_disposition_boundaries() -> None:
         "`mode` 固定为 `manual`",
         "`VerificationResult.status` 固定为 `not_performed`",
         "不表示通过/失败复审记录",
-        "动态 MCP 的网络拒绝、签名适配器、完整执行放行、企业服务端身份/策略分发和独立复审字段仍是未来能力",
+        "MCP 动态执行永久不属于 Personal v1",
         "Findings --> Guidance",
         "规则 ID、按 Windows 词法规则规范化的源路径，以及 NFKC 规范化的原始匹配",
         "本地处置 HMAC 密钥与每次扫描随机生成的报告 HMAC 密钥彼此独立",

@@ -22,18 +22,6 @@ param(
 
     [switch]$RequireFreshUserState,
 
-    [switch]$RequireMcpAdapterAcceptance,
-
-    [string]$McpAdapterRelativePath,
-
-    [string]$ExpectedMcpAdapterSha256,
-
-    [string]$ExpectedMcpAdapterPublisher,
-
-    [string]$ExpectedMcpAdapterCertificateSha256,
-
-    [string]$McpAdapterEvidencePath,
-
     [ValidateRange(1, 30)]
     [int]$SmokeSeconds = 4
 )
@@ -119,54 +107,6 @@ function Remove-AgentGuardianPackagesBounded {
     }
 }
 
-function Get-InstalledMcpAdapterPath {
-    param([Parameter(Mandatory = $true)]$Package)
-
-    if ([string]::IsNullOrWhiteSpace([string]$Package.InstallLocation)) {
-        throw "installed package InstallLocation is missing"
-    }
-    $installLocation = [IO.Path]::GetFullPath([string]$Package.InstallLocation)
-    if (-not [IO.Directory]::Exists($installLocation)) {
-        throw "installed package InstallLocation is missing"
-    }
-    $installRootItem = Get-Item -LiteralPath $installLocation -Force
-    if (($installRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "installed package InstallLocation is a reparse point"
-    }
-    $candidate = Join-Path $installLocation $McpAdapterRelativePath
-    $resolvedAdapter = [IO.Path]::GetFullPath($candidate)
-    $containmentPrefix = $installLocation.TrimEnd(
-        [IO.Path]::DirectorySeparatorChar,
-        [IO.Path]::AltDirectorySeparatorChar
-    ) + [IO.Path]::DirectorySeparatorChar
-    if (-not $resolvedAdapter.StartsWith(
-        $containmentPrefix,
-        [StringComparison]::OrdinalIgnoreCase
-    )) {
-        throw "installed MCP adapter escapes package InstallLocation"
-    }
-
-    $currentPath = $installLocation
-    $components = @($McpAdapterRelativePath -split "/")
-    for ($index = 0; $index -lt $components.Count; $index++) {
-        $currentPath = Join-Path $currentPath $components[$index]
-        if (-not (Test-Path -LiteralPath $currentPath)) {
-            throw "installed MCP adapter is missing"
-        }
-        $item = Get-Item -LiteralPath $currentPath -Force
-        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "installed MCP adapter path contains a reparse point"
-        }
-        if ($index -lt ($components.Count - 1) -and -not $item.PSIsContainer) {
-            throw "installed MCP adapter parent is not a directory"
-        }
-    }
-    if (-not ($item -is [IO.FileInfo])) {
-        throw "installed MCP adapter is not a regular file"
-    }
-    return $resolvedAdapter
-}
-
 $resolvedPackage = (Resolve-Path -LiteralPath $PackagePath).Path
 $resolvedEvidence = [IO.Path]::GetFullPath($EvidencePath)
 if (-not [IO.Path]::IsPathRooted($EvidencePath)) {
@@ -200,64 +140,12 @@ if ($RequireFreshUserState -and $AllowUnsigned) {
 if ($RequireFreshUserState -and -not $RequireTrustedSignature) {
     throw "RequireFreshUserState requires RequireTrustedSignature"
 }
-$sourceCommitRequired = $RequireTrustedSignature -or $RequireMcpAdapterAcceptance
+$sourceCommitRequired = $RequireTrustedSignature
 $sourceCommitProvided = $PSBoundParameters.ContainsKey("ExpectedSourceCommit")
 $sourceCommitValid = $sourceCommitProvided -and
     $ExpectedSourceCommit -cmatch '^[0-9a-f]{40}$'
 if (($sourceCommitRequired -or $sourceCommitProvided) -and -not $sourceCommitValid) {
     throw "ExpectedSourceCommit must be a full lowercase SHA-1 for trusted verification"
-}
-$fixedMcpAdapterRelativePath = "adapters/AgentGuardianMcpAdapter.exe"
-$resolvedMcpAdapterEvidence = $null
-if ($RequireMcpAdapterAcceptance) {
-    if ($AllowUnsigned) {
-        throw "RequireMcpAdapterAcceptance cannot be combined with AllowUnsigned"
-    }
-    if (-not $RequireTrustedSignature) {
-        throw "RequireMcpAdapterAcceptance requires RequireTrustedSignature"
-    }
-    if ([string]::IsNullOrWhiteSpace($UpgradePackagePath)) {
-        throw "RequireMcpAdapterAcceptance requires UpgradePackagePath"
-    }
-    if ($McpAdapterRelativePath -cne $fixedMcpAdapterRelativePath) {
-        throw "McpAdapterRelativePath must be adapters/AgentGuardianMcpAdapter.exe"
-    }
-    foreach ($digest in @(
-        $ExpectedMcpAdapterSha256,
-        $ExpectedMcpAdapterCertificateSha256
-    )) {
-        if ($digest -cnotmatch '^[0-9a-f]{64}$') {
-            throw "MCP adapter SHA-256 pins must be exact lowercase hex"
-        }
-    }
-    if (
-        [string]::IsNullOrWhiteSpace($ExpectedMcpAdapterPublisher) -or
-        $ExpectedMcpAdapterPublisher -cne $ExpectedMcpAdapterPublisher.Trim() -or
-        $ExpectedMcpAdapterPublisher.Length -gt 512 -or
-        -not $ExpectedMcpAdapterPublisher.Contains("=")
-    ) {
-        throw "ExpectedMcpAdapterPublisher must be a trimmed X.500 subject"
-    }
-    if (-not [IO.Path]::IsPathRooted($McpAdapterEvidencePath)) {
-        throw "McpAdapterEvidencePath must be absolute"
-    }
-    $resolvedMcpAdapterEvidence = [IO.Path]::GetFullPath($McpAdapterEvidencePath)
-    if (Test-Path -LiteralPath $resolvedMcpAdapterEvidence) {
-        throw "McpAdapterEvidencePath must be new"
-    }
-    $mcpEvidenceParent = Split-Path -Parent $resolvedMcpAdapterEvidence
-    if (-not (Test-Path -LiteralPath $mcpEvidenceParent -PathType Container)) {
-        throw "McpAdapterEvidencePath parent must exist"
-    }
-}
-elseif (
-    $PSBoundParameters.ContainsKey("McpAdapterRelativePath") -or
-    $PSBoundParameters.ContainsKey("ExpectedMcpAdapterSha256") -or
-    $PSBoundParameters.ContainsKey("ExpectedMcpAdapterPublisher") -or
-    $PSBoundParameters.ContainsKey("ExpectedMcpAdapterCertificateSha256") -or
-    $PSBoundParameters.ContainsKey("McpAdapterEvidencePath")
-) {
-    throw "MCP adapter inputs require RequireMcpAdapterAcceptance"
 }
 $appDataRoot = $null
 if ($RequireFreshUserState) {
@@ -365,29 +253,6 @@ try {
         $upgraded = $true
         $installedPackages = $upgradedPackages
         $packageFullName = [string]$installedPackages[0].PackageFullName
-    }
-
-    if ($RequireMcpAdapterAcceptance) {
-        if ($installedPackages.Count -ne 1) {
-            throw "expected exactly one installed package for MCP adapter acceptance"
-        }
-        if (-not $upgradeAttempted -or -not $upgraded) {
-            throw "MCP adapter acceptance requires a completed package upgrade"
-        }
-        $installedAdapter = Get-InstalledMcpAdapterPath -Package $installedPackages[0]
-        $acceptanceScript = Join-Path $PSScriptRoot "run_windows_mcp_adapter_acceptance.py"
-        & python $acceptanceScript `
-            --adapter-path $installedAdapter `
-            --evidence-path $resolvedMcpAdapterEvidence `
-            --expected-source-commit $ExpectedSourceCommit `
-            --expected-adapter-sha256 $ExpectedMcpAdapterSha256 `
-            --expected-package-full-name $packageFullName `
-            --expected-publisher-subject $ExpectedMcpAdapterPublisher `
-            --expected-certificate-sha256 $ExpectedMcpAdapterCertificateSha256 2>$null |
-            Out-Null
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $resolvedMcpAdapterEvidence -PathType Leaf)) {
-            throw "MCP adapter acceptance failed"
-        }
     }
 
     $appUserModelId = "$($installedPackages[0].PackageFamilyName)!AgentGuardian"

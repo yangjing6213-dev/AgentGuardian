@@ -6,7 +6,7 @@ import hashlib
 from pathlib import Path
 
 
-MAX_MCP_ADAPTER_BYTES = 64 * 1024 * 1024
+MAX_HASHED_FILE_BYTES = 64 * 1024 * 1024
 _HASH_CHUNK_BYTES = 1024 * 1024
 
 
@@ -17,7 +17,7 @@ class FileSizeLimitExceeded(ValueError):
 def bounded_file_sha256(
     path: Path,
     *,
-    max_bytes: int = MAX_MCP_ADAPTER_BYTES,
+    max_bytes: int = MAX_HASHED_FILE_BYTES,
 ) -> str:
     if type(max_bytes) is not int or max_bytes < 1:
         raise ValueError("FILE_HASH_SIZE_LIMIT_INVALID")

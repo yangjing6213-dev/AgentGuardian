@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from agentguardian.file_integrity import (
-    MAX_MCP_ADAPTER_BYTES,
+    MAX_HASHED_FILE_BYTES,
     FileSizeLimitExceeded,
     bounded_file_sha256,
 )
@@ -30,7 +30,7 @@ def test_bounded_file_sha256_rejects_one_byte_over_the_limit(tmp_path: Path) -> 
 def test_default_adapter_limit_rejects_sparse_64_mib_plus_one(tmp_path: Path) -> None:
     target = tmp_path / "adapter.exe"
     with target.open("wb") as output:
-        output.seek(MAX_MCP_ADAPTER_BYTES)
+        output.seek(MAX_HASHED_FILE_BYTES)
         output.write(b"x")
 
     with pytest.raises(FileSizeLimitExceeded):
