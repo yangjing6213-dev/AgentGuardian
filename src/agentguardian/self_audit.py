@@ -38,8 +38,6 @@ _NETWORK_IMPORT_PREFIXES = (
     "pyside6.qtwebsockets",
 )
 _AUDITED_CAPABILITY_MODULES = {
-    "enterprise_control_plane.py",
-    "enterprise_policy.py",
     "mcp_sandbox.py",
     "remediation.py",
     "share_verification.py",
@@ -47,6 +45,7 @@ _AUDITED_CAPABILITY_MODULES = {
     "windows_code_signing.py",
     "windows_job_object.py",
 }
+_AUDITED_IMPORT_MODULES = {"browser_audit.py"}
 _SAFE_DIRECT_IMPORTS = {
     "ast",
     "ctypes",
@@ -256,8 +255,11 @@ def static_capability_findings(
             expected = policy.get(relative_path)
             if expected is None or digest != expected:
                 findings.add("SOURCE_POLICY_VIOLATION")
-            if scan_declared_network and relative_path in _AUDITED_CAPABILITY_MODULES:
-                _scan_heuristic(tree, findings)
+            if scan_declared_network:
+                if relative_path in _AUDITED_IMPORT_MODULES:
+                    _scan_heuristic(tree, findings, imports_only=True)
+                elif relative_path in _AUDITED_CAPABILITY_MODULES:
+                    _scan_heuristic(tree, findings)
         else:
             _scan_heuristic(tree, findings)
     return tuple(sorted(findings))
@@ -337,7 +339,12 @@ def _module_key(root: Path, module: Path) -> tuple[str, str]:
     return relative.casefold(), relative
 
 
-def _scan_heuristic(tree: ast.Module, findings: set[str]) -> None:
+def _scan_heuristic(
+    tree: ast.Module,
+    findings: set[str],
+    *,
+    imports_only: bool = False,
+) -> None:
     direct_calls = {
         node.func: node for node in ast.walk(tree) if isinstance(node, ast.Call)
     }
@@ -358,6 +365,8 @@ def _scan_heuristic(tree: ast.Module, findings: set[str]) -> None:
                 findings.update(_import_findings(node.module, alias.name))
                 if alias.asname and node.module.split(".", 1)[0] in {"os", "pathlib"}:
                     findings.add("SOURCE_POLICY_VIOLATION")
+        elif imports_only:
+            continue
         elif isinstance(node, ast.Call):
             _scan_call(node, findings)
         elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):

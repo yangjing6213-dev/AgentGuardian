@@ -82,10 +82,6 @@ from .evidence_state import (
     build_snapshot,
 )
 from .guidance import guidance_for
-from .enterprise_control_plane import (
-    EnterpriseControlPlane,
-    default_control_plane_path,
-)
 from .report_comparison import (
     ReportComparison,
     compare_report_summaries,
@@ -951,7 +947,6 @@ class AgentGuardianWindow(QMainWindow):
         self._comparison_state: _ComparisonState | None = None
         self._refresh_failure_notified = False
         self._last_remediation: tuple[Path, str] | None = None
-        self._control_plane: EnterpriseControlPlane | None = None
         self._expiry_timer = QTimer(self)
         self._expiry_timer.setSingleShot(True)
         self._expiry_timer.timeout.connect(self._handle_expiry_timeout)
@@ -986,7 +981,7 @@ class AgentGuardianWindow(QMainWindow):
         sidebar_layout.addWidget(brand)
 
         self.navigation_buttons: list[QPushButton] = []
-        for index, text in enumerate(("审计范围", "风险发现", "审计报告", "本地管理")):
+        for index, text in enumerate(("审计范围", "风险发现", "审计报告")):
             button = QPushButton(text)
             button.setObjectName("navigation")
             button.setCheckable(True)
@@ -1034,114 +1029,8 @@ class AgentGuardianWindow(QMainWindow):
         self.stack.addWidget(self._scope_page())
         self.stack.addWidget(self._findings_page())
         self.stack.addWidget(self._report_page())
-        self.stack.addWidget(self._enterprise_page())
         content_layout.addWidget(self.stack, 1)
         self._switch_view(0)
-
-    def _enterprise_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(24, 22, 24, 22)
-        layout.setSpacing(12)
-        layout.addWidget(_heading("本地管理控制面"))
-        description = QLabel(
-            "仅管理本机离线控制面：租户、设备、角色和策略摘要。"
-            "不提供远程登录、联网同步、管理员认证或策略签名服务。"
-        )
-        description.setWordWrap(True)
-        layout.addWidget(description)
-
-        self.control_plane_status_label = QLabel("尚未初始化本地控制面")
-        self.control_plane_status_label.setObjectName("status")
-        self.control_plane_status_label.setWordWrap(True)
-        layout.addWidget(self.control_plane_status_label)
-        try:
-            database_path = str(default_control_plane_path())
-        except ValueError:
-            database_path = "当前 Windows 用户数据目录不可用"
-        self.control_plane_database_label = QLabel(f"数据库：{database_path}")
-        self.control_plane_database_label.setWordWrap(True)
-        layout.addWidget(self.control_plane_database_label)
-
-        setup_controls = QHBoxLayout()
-        self.control_plane_initialize_button = QPushButton("初始化本地控制面")
-        self.control_plane_initialize_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
-        )
-        self.control_plane_initialize_button.clicked.connect(
-            self._initialize_control_plane
-        )
-        self.control_plane_refresh_button = QPushButton("刷新摘要")
-        self.control_plane_refresh_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
-        )
-        self.control_plane_refresh_button.clicked.connect(
-            self._refresh_control_plane_view
-        )
-        setup_controls.addWidget(self.control_plane_initialize_button)
-        setup_controls.addWidget(self.control_plane_refresh_button)
-        setup_controls.addStretch()
-        layout.addLayout(setup_controls)
-
-        form = QFormLayout()
-        self.control_plane_tenant_id_edit = QLineEdit()
-        self.control_plane_tenant_id_edit.setPlaceholderText("例如 tenant-alpha")
-        self.control_plane_tenant_name_edit = QLineEdit()
-        self.control_plane_tenant_name_edit.setPlaceholderText("显示名称")
-        self.control_plane_device_id_edit = QLineEdit()
-        self.control_plane_device_id_edit.setPlaceholderText("例如 device-alpha")
-        self.control_plane_subject_id_edit = QLineEdit()
-        self.control_plane_subject_id_edit.setPlaceholderText("例如 operator-alpha")
-        self.control_plane_role_combo = QComboBox()
-        self.control_plane_role_combo.addItems(("admin", "auditor", "operator"))
-        form.addRow("租户 ID", self.control_plane_tenant_id_edit)
-        form.addRow("租户名称", self.control_plane_tenant_name_edit)
-        form.addRow("设备 ID", self.control_plane_device_id_edit)
-        form.addRow("主体 ID", self.control_plane_subject_id_edit)
-        form.addRow("角色", self.control_plane_role_combo)
-        layout.addLayout(form)
-
-        management_controls = QHBoxLayout()
-        self.control_plane_register_tenant_button = QPushButton("注册租户")
-        self.control_plane_register_tenant_button.clicked.connect(
-            self._register_control_plane_tenant
-        )
-        self.control_plane_register_device_button = QPushButton("注册设备")
-        self.control_plane_register_device_button.clicked.connect(
-            self._register_control_plane_device
-        )
-        self.control_plane_grant_role_button = QPushButton("授予角色")
-        self.control_plane_grant_role_button.clicked.connect(
-            self._grant_control_plane_role
-        )
-        self.control_plane_revoke_device_button = QPushButton("撤销设备")
-        self.control_plane_revoke_device_button.clicked.connect(
-            self._revoke_control_plane_device
-        )
-        self.control_plane_import_policy_button = QPushButton("导入策略")
-        self.control_plane_import_policy_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton)
-        )
-        self.control_plane_import_policy_button.clicked.connect(
-            self._import_control_plane_policy
-        )
-        for button in (
-            self.control_plane_register_tenant_button,
-            self.control_plane_register_device_button,
-            self.control_plane_grant_role_button,
-            self.control_plane_revoke_device_button,
-            self.control_plane_import_policy_button,
-        ):
-            management_controls.addWidget(button)
-        management_controls.addStretch()
-        layout.addLayout(management_controls)
-
-        self.control_plane_summary_browser = QTextBrowser()
-        self.control_plane_summary_browser.setPlainText(
-            "仅本地 SQLite 摘要，尚未读取任何控制面数据。"
-        )
-        layout.addWidget(self.control_plane_summary_browser, 1)
-        return page
 
     def _scope_page(self) -> QWidget:
         page = QWidget()
@@ -1485,141 +1374,6 @@ class AgentGuardianWindow(QMainWindow):
         self.stack.setCurrentIndex(index)
         for button_index, button in enumerate(self.navigation_buttons):
             button.setChecked(button_index == index)
-
-    def _ensure_control_plane(self) -> EnterpriseControlPlane | None:
-        if self._control_plane is not None:
-            return self._control_plane
-        try:
-            self._control_plane = EnterpriseControlPlane(default_control_plane_path())
-        except (OSError, TypeError, ValueError):
-            self.control_plane_status_label.setText(
-                "本地控制面不可用：当前用户数据目录无效或无法写入。"
-            )
-            return None
-        self.control_plane_status_label.setText("本地控制面已初始化，当前仅离线运行。")
-        return self._control_plane
-
-    def _refresh_control_plane_view(self) -> None:
-        control_plane = self._control_plane
-        if control_plane is None:
-            self.control_plane_status_label.setText("尚未初始化本地控制面")
-            self.control_plane_summary_browser.setPlainText(
-                "仅本地 SQLite 摘要，尚未读取任何控制面数据。"
-            )
-            return
-        try:
-            tenants = control_plane.list_tenant_summaries()
-        except (OSError, RuntimeError, ValueError):
-            self.control_plane_status_label.setText("本地控制面读取失败，已停止展示摘要。")
-            return
-        lines = ["租户摘要（不含审计原文、凭据或策略正文）", ""]
-        if not tenants:
-            lines.append("尚未注册租户。")
-        for tenant in tenants:
-            lines.append(
-                f"{tenant.tenant_id} / {tenant.display_name} | "
-                f"设备 {tenant.active_device_count}/{tenant.device_count} 活跃 | "
-                f"活动策略 {tenant.active_policy_count} | "
-                f"审计元数据 {tenant.audit_event_count}"
-            )
-        self.control_plane_summary_browser.setPlainText("\n".join(lines))
-        self.control_plane_status_label.setText("本地控制面已就绪，摘要已刷新。")
-
-    def _initialize_control_plane(self) -> None:
-        if self._ensure_control_plane() is not None:
-            self._refresh_control_plane_view()
-
-    def _control_plane_form_values(self) -> tuple[str, str, str, str, str]:
-        return (
-            self.control_plane_tenant_id_edit.text().strip(),
-            self.control_plane_tenant_name_edit.text().strip(),
-            self.control_plane_device_id_edit.text().strip(),
-            self.control_plane_subject_id_edit.text().strip(),
-            str(self.control_plane_role_combo.currentData() or ""),
-        )
-
-    def _register_control_plane_tenant(self) -> None:
-        control_plane = self._ensure_control_plane()
-        if control_plane is None:
-            return
-        tenant_id, tenant_name, _device_id, _subject_id, _role = (
-            self._control_plane_form_values()
-        )
-        try:
-            control_plane.register_tenant(tenant_id, tenant_name, now=_utc_now())
-        except (OSError, TypeError, ValueError) as error:
-            self.control_plane_status_label.setText(f"注册租户失败：{error}")
-            return
-        self.control_plane_status_label.setText("租户已注册。")
-        self._refresh_control_plane_view()
-
-    def _register_control_plane_device(self) -> None:
-        control_plane = self._ensure_control_plane()
-        if control_plane is None:
-            return
-        tenant_id, _tenant_name, device_id, _subject_id, _role = (
-            self._control_plane_form_values()
-        )
-        try:
-            control_plane.register_device(tenant_id, device_id, now=_utc_now())
-        except (OSError, TypeError, ValueError) as error:
-            self.control_plane_status_label.setText(f"注册设备失败：{error}")
-            return
-        self.control_plane_status_label.setText("设备已注册。")
-        self._refresh_control_plane_view()
-
-    def _grant_control_plane_role(self) -> None:
-        control_plane = self._ensure_control_plane()
-        if control_plane is None:
-            return
-        tenant_id, _tenant_name, _device_id, subject_id, role = (
-            self._control_plane_form_values()
-        )
-        try:
-            control_plane.grant_role(tenant_id, subject_id, role)
-        except (OSError, TypeError, ValueError) as error:
-            self.control_plane_status_label.setText(f"授予角色失败：{error}")
-            return
-        self.control_plane_status_label.setText("角色已授予。")
-        self._refresh_control_plane_view()
-
-    def _revoke_control_plane_device(self) -> None:
-        control_plane = self._ensure_control_plane()
-        if control_plane is None:
-            return
-        tenant_id, _tenant_name, device_id, _subject_id, _role = (
-            self._control_plane_form_values()
-        )
-        try:
-            control_plane.revoke_device(tenant_id, device_id, now=_utc_now())
-        except (OSError, TypeError, ValueError) as error:
-            self.control_plane_status_label.setText(f"撤销设备失败：{error}")
-            return
-        self.control_plane_status_label.setText("设备已撤销，后续策略评估将拒绝。")
-        self._refresh_control_plane_view()
-
-    def _import_control_plane_policy(self) -> None:
-        control_plane = self._ensure_control_plane()
-        if control_plane is None:
-            return
-        selected, _selected_filter = QFileDialog.getOpenFileName(
-            self,
-            "选择离线企业策略 JSON",
-            "",
-            "JSON (*.json);;All files (*)",
-        )
-        if not selected:
-            return
-        try:
-            digest = control_plane.provision_policy(
-                Path(selected).read_bytes(),
-                now=_utc_now(),
-            )
-        except (OSError, TypeError, ValueError) as error:
-            self.control_plane_status_label.setText(f"导入策略失败：{error}")
-            return
-        self.control_plane_status_label.setText(f"策略已导入，SHA-256：{digest}")
-        self._refresh_control_plane_view()
 
     def _select_folder(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "选择审计文件夹")
@@ -2890,9 +2644,6 @@ class AgentGuardianWindow(QMainWindow):
             event.ignore()
             return
         self._expiry_timer.stop()
-        if self._control_plane is not None:
-            self._control_plane.close()
-            self._control_plane = None
         super().closeEvent(event)
 
 
