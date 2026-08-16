@@ -4,6 +4,7 @@ import importlib
 import json
 import os
 from pathlib import Path, PureWindowsPath
+import re
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,86 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE_PATH = ROOT / "release_profiles" / "personal_store_release.json"
+SECURITY_DOCS = ROOT / "docs" / "security"
+ACTIVE_PERSONAL_DOCS = (
+    ROOT / "README.md",
+    ROOT / "docs" / "architecture.md",
+    SECURITY_DOCS / "personal-v1-threat-model.md",
+    SECURITY_DOCS / "personal-v1-privacy.md",
+    SECURITY_DOCS / "personal-v1-support.md",
+    SECURITY_DOCS / "personal-v1-release-runbook.md",
+    SECURITY_DOCS / "personal-v1-independent-machine-acceptance.md",
+)
+GOVERNING_PERSONAL_DOCS = (
+    ROOT
+    / "docs"
+    / "superpowers"
+    / "specs"
+    / "2026-08-16-agentguardian-personal-v1-design.md",
+    ROOT
+    / "docs"
+    / "superpowers"
+    / "plans"
+    / "2026-08-16-agentguardian-personal-v1-implementation.md",
+)
+HISTORICAL_SECURITY_DOCS = (
+    SECURITY_DOCS / "windows-mvp-threat-model.md",
+    SECURITY_DOCS / "windows-release-evidence.md",
+)
+RELEASE_STATUS_PATH = SECURITY_DOCS / "personal-v1-release-status.json"
+_MACHINE_SPECIFIC_ABSOLUTE_PATH = re.compile(
+    r"(?i)(?:\b[A-Z]:[\\/]|\\\\[^\\/\s]+[\\/][^\\/\s]+)"
+)
+_PREMATURE_RELEASE_CLAIMS = (
+    "Production safety is established",
+    "is production safe",
+    "WACK has passed",
+    "WACK gate passed",
+    "Store release is approved",
+    "Store gate passed",
+    "license and Qt approval has passed",
+    "license gate passed",
+    "clean-machine acceptance has passed",
+    "independent-machine gate passed",
+    "all eight gates have passed",
+    "eight-gate decision is GO",
+    "formal personal release",
+    "已通过生产安全验证",
+    "WACK 已通过",
+    "Store 发布已批准",
+    "许可证和 Qt 审查已批准",
+    "干净机器验收已通过",
+    "八项门禁已全部通过",
+    "正式个人版发布",
+)
+_RELEASE_GATE_NAMES = (
+    "scope",
+    "local",
+    "remote",
+    "supply_chain",
+    "store",
+    "independent_machine",
+    "independent_review",
+    "operations",
+)
+_SHA_40 = re.compile(r"[0-9a-f]{40}\Z")
+_SHA_256 = re.compile(r"[0-9a-f]{64}\Z")
+_UTC_SECONDS = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
+
+
+def _assert_no_machine_specific_paths(text: str) -> None:
+    assert _MACHINE_SPECIFIC_ABSOLUTE_PATH.search(text) is None, (
+        "active Personal v1 document contains machine-specific path"
+    )
+
+
+def _assert_no_premature_release_claims(text: str) -> None:
+    normalized = " ".join(text.casefold().split())
+    for claim in _PREMATURE_RELEASE_CLAIMS:
+        normalized_claim = " ".join(claim.casefold().split())
+        assert normalized_claim not in normalized, (
+            f"active Personal v1 document contains premature claim: {claim}"
+        )
 
 
 def _verifier():
@@ -92,6 +173,321 @@ def test_repository_matches_canonical_personal_store_release_profile() -> None:
         "profile": "personal_store_release",
         "status": "pass",
     }
+
+
+def test_active_personal_docs_replace_stale_release_history() -> None:
+    profile = _profile()
+    expected_paths = sorted(
+        [
+            path.relative_to(ROOT).as_posix()
+            for path in (*ACTIVE_PERSONAL_DOCS, RELEASE_STATUS_PATH)
+        ]
+    )
+    assert profile["active_document_paths"] == expected_paths
+
+    documents = {
+        path.name: path.read_text(encoding="utf-8") for path in ACTIVE_PERSONAL_DOCS
+    }
+    combined = "\n".join(documents.values())
+    active_overview = documents["README.md"] + documents["architecture.md"]
+
+    for required in (
+        "personal non-regulated configuration",
+        "Windows 11 x64",
+        "Personal v1 permanently excludes MCP runtime integration.",
+        "The runtime must not call OpenAI or another provider API by default.",
+        "0.1.0",
+        "NO-GO",
+    ):
+        assert required in combined
+
+    assert "Batch 3" not in active_overview
+    assert "Batch 4" not in active_overview
+    assert "Batch 5" not in active_overview
+    assert "Batch 6" not in active_overview
+    assert " passed," not in active_overview
+    assert not re.search(r"\b[0-9a-f]{40}\b", active_overview)
+    _assert_no_machine_specific_paths(combined)
+    _assert_no_premature_release_claims(combined)
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        r"C:\Users\Synthetic\AgentGuardian\report.json",
+        r"\\server\share\AgentGuardian\report.json",
+    ),
+    ids=("drive-qualified", "unc"),
+)
+def test_active_personal_doc_path_guard_rejects_machine_specific_paths(
+    path: str,
+) -> None:
+    with pytest.raises(AssertionError, match="machine-specific path"):
+        _assert_no_machine_specific_paths(path)
+
+
+def test_active_personal_release_claim_guard_rejects_premature_status() -> None:
+    for claim in _PREMATURE_RELEASE_CLAIMS:
+        multiline_claim = claim.replace(" ", "\n", 1)
+        for rendered_claim in (claim, claim.swapcase(), multiline_claim):
+            with pytest.raises(AssertionError, match="premature claim"):
+                _assert_no_premature_release_claims(rendered_claim)
+
+
+def test_governing_and_historical_document_classes_are_explicit() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    design = GOVERNING_PERSONAL_DOCS[0].read_text(encoding="utf-8")
+    runbook = (SECURITY_DOCS / "personal-v1-release-runbook.md").read_text(
+        encoding="utf-8"
+    )
+
+    for path in GOVERNING_PERSONAL_DOCS:
+        assert path.relative_to(ROOT).as_posix() in readme
+    assert "govern development" in readme
+    assert "not product capability claims or release evidence" in readme
+    assert "approved active product specification" in design
+    assert "implementation has not started" not in design
+
+    excluded_security_docs = {
+        path
+        for path in SECURITY_DOCS.glob("*.md")
+        if path not in ACTIVE_PERSONAL_DOCS
+    }
+    assert excluded_security_docs == set(HISTORICAL_SECURITY_DOCS)
+    for path in HISTORICAL_SECURITY_DOCS:
+        text = path.read_text(encoding="utf-8")
+        assert "Historical Windows MVP snapshot." in text
+        assert (
+            "not an active Personal v1 product promise or current release evidence"
+            in text
+        )
+
+    for stale_branch_inventory in (
+        "default branch had CI and Windows MVP workflows only",
+        "default branch contained CI and Windows MVP workflows only",
+        "Store workflow was not present on the default branch",
+        "2026-08-17",
+    ):
+        assert stale_branch_inventory not in readme
+        assert stale_branch_inventory not in runbook
+
+
+def test_active_architecture_domain_inventory_matches_source() -> None:
+    import dataclasses
+
+    from agentguardian import domain
+
+    architecture = (ROOT / "docs" / "architecture.md").read_text(encoding="utf-8")
+    match = re.search(
+        r"<!-- domain-field-inventory -->\s*```json\s*(\{.*?\})\s*```",
+        architecture,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    assert json.loads(match.group(1)) == {
+        contract.__name__: [field.name for field in dataclasses.fields(contract)]
+        for contract in (
+            domain.Asset,
+            domain.Evidence,
+            domain.Finding,
+            domain.Score,
+            domain.RemediationPlan,
+            domain.VerificationResult,
+        )
+    }
+
+
+def test_personal_privacy_support_and_acceptance_contracts_are_explicit() -> None:
+    privacy = (SECURITY_DOCS / "personal-v1-privacy.md").read_text(encoding="utf-8")
+    support = (SECURITY_DOCS / "personal-v1-support.md").read_text(encoding="utf-8")
+    runbook = (SECURITY_DOCS / "personal-v1-release-runbook.md").read_text(
+        encoding="utf-8"
+    )
+    machines = (
+        SECURITY_DOCS / "personal-v1-independent-machine-acceptance.md"
+    ).read_text(encoding="utf-8")
+
+    for marker in (
+        "local reads",
+        "temporary copy",
+        "one-time in-memory read",
+        "DPAPI-protected state",
+        "explicit public URL",
+        "user deletion",
+        "no provider API call by default",
+    ):
+        assert marker in privacy
+
+    assert "https://github.com/yangjing6213-dev/AgentGuardian/issues" in support
+    assert "ordinary support: live" in support
+    assert "GitHub Private Vulnerability Reporting is currently disabled." in support
+    assert "No private vulnerability intake is currently available." in support
+    assert "Do not submit sensitive vulnerability details in a public Issue." in support
+    assert "operations/security channel gate: pending" in support
+    assert not re.search(r"[\w.+-]+@[\w.-]+", support)
+
+    assert "This runbook is a release gate, not a production-safety claim." in runbook
+    for marker in (
+        "same source commit S",
+        "canonical external record",
+        "repository license template remains pending",
+        "must not be written back into S",
+        "formal package must be built from S",
+    ):
+        assert marker in runbook
+
+    for marker in (
+        "two newly provisioned Windows 11 x64 machines",
+        "25H2",
+        "24H2 or 25H2",
+        "no development tools",
+        "private Store origin",
+        "identity, version, and signature",
+        "install and launch",
+        "eligible scan",
+        "browser metadata",
+        "clipboard",
+        "share reachability",
+        "remediation and rollback",
+        "report comparison",
+        "crash and restart",
+        "upgrade",
+        "uninstall and residue",
+        "machine ID hash",
+    ):
+        assert marker in machines
+    for forbidden in ("username", "full path", "user content"):
+        assert f"never record {forbidden}" in machines
+
+
+def _assert_release_status_contract(status: dict[str, object]) -> None:
+    assert set(status) == {"decision", "gates", "note", "schema"}
+    assert type(status["schema"]) is int and status["schema"] == 1
+    assert isinstance(status["note"], str)
+    assert "external" in status["note"].casefold()
+    assert "self" in status["note"].casefold()
+
+    gates = status["gates"]
+    assert isinstance(gates, list)
+    assert [gate["name"] for gate in gates] == list(_RELEASE_GATE_NAMES)
+    passed_commits: set[str] = set()
+    for gate in gates:
+        assert set(gate) == {
+            "evidence_sha256",
+            "name",
+            "source_commit",
+            "status",
+            "verified_at",
+        }
+        assert gate["status"] in {"blocked", "pass", "pending"}
+        source_commit = gate["source_commit"]
+        evidence_sha256 = gate["evidence_sha256"]
+        verified_at = gate["verified_at"]
+        assert source_commit is None or (
+            isinstance(source_commit, str) and _SHA_40.fullmatch(source_commit)
+        )
+        assert evidence_sha256 is None or (
+            isinstance(evidence_sha256, str)
+            and _SHA_256.fullmatch(evidence_sha256)
+        )
+        assert verified_at is None or (
+            isinstance(verified_at, str) and _UTC_SECONDS.fullmatch(verified_at)
+        )
+        if gate["status"] == "pass":
+            assert source_commit is not None
+            assert evidence_sha256 is not None
+            assert verified_at is not None
+            passed_commits.add(source_commit)
+
+    assert len(passed_commits) <= 1
+    expected_decision = (
+        "GO" if all(gate["status"] == "pass" for gate in gates) else "NO-GO"
+    )
+    assert status["decision"] == expected_decision
+
+
+def test_release_status_is_canonical_eight_gate_ledger() -> None:
+    status = json.loads(RELEASE_STATUS_PATH.read_text(encoding="ascii"))
+    assert RELEASE_STATUS_PATH.read_bytes() == _canonical(status)
+    _assert_release_status_contract(status)
+
+
+def test_release_status_contract_accepts_evidence_bound_transitions() -> None:
+    status = json.loads(RELEASE_STATUS_PATH.read_text(encoding="ascii"))
+    evidence = {
+        "evidence_sha256": "b" * 64,
+        "source_commit": "a" * 40,
+        "status": "pass",
+        "verified_at": "2026-08-17T12:00:00Z",
+    }
+
+    status["gates"][0].update(evidence)
+    _assert_release_status_contract(status)
+
+    for gate in status["gates"]:
+        gate.update(evidence)
+    status["decision"] = "GO"
+    _assert_release_status_contract(status)
+
+    status["gates"][-1]["source_commit"] = "c" * 40
+    with pytest.raises(AssertionError):
+        _assert_release_status_contract(status)
+
+    status["gates"][-1].update(evidence)
+    status["gates"][-1]["status"] = "pending"
+    with pytest.raises(AssertionError):
+        _assert_release_status_contract(status)
+
+
+def test_task_8_freezes_candidate_before_gates_and_avoids_self_reference() -> None:
+    plan = (
+        ROOT
+        / "docs"
+        / "superpowers"
+        / "plans"
+        / "2026-08-16-agentguardian-personal-v1-implementation.md"
+    ).read_text(encoding="utf-8")
+    task_7, task_8 = plan.split("### Task 8:", 1)
+    design = (
+        ROOT
+        / "docs"
+        / "superpowers"
+        / "specs"
+        / "2026-08-16-agentguardian-personal-v1-design.md"
+    ).read_text(encoding="utf-8")
+    normalized_design = " ".join(design.split())
+
+    assert "- Modify: `tests/test_self_audit.py`" in task_7
+    assert (
+        "- Modify: `docs/superpowers/specs/"
+        "2026-08-16-agentguardian-personal-v1-design.md`"
+    ) in task_7
+    for candidate_file in (
+        ".github/workflows/windows-store-candidate.yml",
+        "pyproject.toml",
+        "release_profiles/personal_store_release.json",
+        "scripts/build_windows_msix.py",
+        "scripts/build_windows_portable.py",
+        "src/agentguardian/__init__.py",
+    ):
+        assert f"`{candidate_file}`" in task_8
+    assert "NO-GO `1.0.0` candidate" in task_8
+    assert "private candidate package may carry version `1.0.0`" in task_8
+    assert "previously committed target candidate SHA" in task_8
+    assert "formal package must come from that target SHA" in task_8
+    assert "Freeze the version, Store identity, and package inputs before" in task_8
+    assert "invalidates all eight gates" in task_8
+    assert "only external status evidence and formal-release wording may change" in task_8
+    assert "NO-GO `1.0.0` private candidate before any gate" in normalized_design
+    assert "already carries version `1.0.0`" in normalized_design
+    assert (
+        "only external status evidence and formal-release wording may change"
+        in normalized_design
+    )
+    assert (
+        "Only when all eight gates pass may a separately authorized commit change "
+        "the product version"
+    ) not in task_8
 
 
 def test_profile_is_git_bound_to_lf_line_endings() -> None:
@@ -1139,11 +1535,11 @@ def test_active_readme_rejects_each_retired_implementation_claim(
             "`enterprise_policy.py` 提供离线策略准入",
         ),
         (
-            "docs/security/windows-mvp-threat-model.md",
+            "docs/security/personal-v1-threat-model.md",
             "`enterprise_policy.py` rejects duplicate/unknown fields",
         ),
         (
-            "docs/security/windows-mvp-threat-model.md",
+            "docs/security/personal-v1-threat-model.md",
             "Optional `enterprise_signing.py` verifies an Ed25519 envelope",
         ),
     ),

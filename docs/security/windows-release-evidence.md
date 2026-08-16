@@ -1,5 +1,7 @@
 # Windows Release Evidence Runbook
 
+> Historical Windows MVP snapshot. This is not an active Personal v1 product promise or current release evidence. See `personal-v1-release-runbook.md` for the active release gate.
+
 This runbook is a release gate, not a production-safety claim. It is only
 valid for a clean exact source commit and a package signed by the target
 organization.

@@ -1,5 +1,7 @@
 # Windows MVP Threat Model
 
+> Historical Windows MVP snapshot. This is not an active Personal v1 product promise or current release evidence. See `personal-v1-threat-model.md` for the active threat model.
+
 Status: Batch 6 local security gate in progress. This document does not establish a release candidate and does not establish production safety.
 
 ## Scope

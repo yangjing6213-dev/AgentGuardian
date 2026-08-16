@@ -624,13 +624,18 @@ Stage only Task 6 files and commit with `rtk git commit -m "Add Store candidate 
 **Files:**
 - Modify: `README.md`
 - Modify: `docs/architecture.md`
+- Modify: `docs/security/windows-mvp-threat-model.md`
+- Modify: `docs/security/windows-release-evidence.md`
+- Modify: `docs/superpowers/specs/2026-08-16-agentguardian-personal-v1-design.md`
 - Create: `docs/security/personal-v1-threat-model.md`
 - Create: `docs/security/personal-v1-privacy.md`
 - Create: `docs/security/personal-v1-support.md`
 - Create: `docs/security/personal-v1-release-runbook.md`
 - Create: `docs/security/personal-v1-independent-machine-acceptance.md`
 - Create: `docs/security/personal-v1-release-status.json`
+- Modify: `release_profiles/personal_store_release.json`
 - Modify: `tests/test_personal_release_profile.py`
+- Modify: `tests/test_self_audit.py`
 
 - [ ] **Step 1: Add failing active-document and status tests**
 
@@ -678,10 +683,36 @@ Stage only Task 7 files and commit with `rtk git commit -m "Synchronize personal
 ### Task 8: Exact-SHA Verification And External Formal Acceptance
 
 **Files:**
+- Modify before candidate SHA: `.github/workflows/windows-mvp.yml`
+- Modify before candidate SHA: `.github/workflows/windows-store-candidate.yml`
+- Modify before candidate SHA: `README.md`
+- Modify before candidate SHA: `docs/architecture.md`
+- Modify before candidate SHA: `docs/security/personal-v1-release-runbook.md`
+- Modify before candidate SHA: `docs/security/personal-v1-threat-model.md`
+- Modify before candidate SHA: `pyproject.toml`
+- Modify before candidate SHA: `release_profiles/personal_store_release.json`
+- Modify before candidate SHA: `scripts/build_windows_msix.py`
+- Modify before candidate SHA: `scripts/build_windows_portable.py`
+- Modify before candidate SHA: `scripts/verify_personal_release_profile.py`
+- Modify before candidate SHA: `src/agentguardian/__init__.py`
+- Modify before candidate SHA as required: `tests/test_app_smoke.py`
+- Modify before candidate SHA as required: `tests/test_evidence_state.py`
+- Modify before candidate SHA as required: `tests/test_personal_release_profile.py`
+- Modify before candidate SHA as required: `tests/test_release_evidence.py`
+- Modify before candidate SHA as required: `tests/test_reporting.py`
+- Modify before candidate SHA as required: `tests/test_state_store.py`
+- Modify before candidate SHA as required: `tests/test_windows_msix.py`
+- Modify before candidate SHA as required: `tests/test_windows_store_candidate.py`
 - Modify only when evidence exists: `docs/security/windows-license-review.json`
 - Modify only when evidence exists: `docs/security/personal-v1-release-status.json`
 
 - [ ] **Step 1: Run the local final candidate gate on a clean tree**
+
+Create the NO-GO `1.0.0` candidate before running any gate. Update the listed versioned product, active-document, build, workflow, and assertion files so the product version is `1.0.0`, the MSIX package version is the intended `1.0.0.0`, and the release profile canonically pins the Store identity, publisher, package version, and package inputs. The Store workflow must reject dispatch values that differ from those pins. Freeze the version, Store identity, and package inputs before committing the target candidate SHA `S`.
+
+Before freezing `S`, keep the release-status contract transition-aware: it must validate pending, blocked, partial-pass, and all-pass ledgers while deriving `NO-GO` or `GO` from the eight gates. A later ledger-only evidence update must not require changing tests or package inputs.
+
+The private candidate package may carry version `1.0.0` for WACK, private Store, and independent-machine evidence, but it remains `NO-GO` and must not be called a formal or public release. A later status-ledger commit may record a previously committed target candidate SHA; that ledger commit is not evidence for itself, and the formal package must come from that target SHA. Any version, Store identity, source, dependency, or package-input change after `S` enters the gates invalidates all eight gates and requires a new candidate.
 
 Run:
 
@@ -706,11 +737,13 @@ Push `agent/founder-alpha`, verify normal CI, Windows development MSIX, Draft PR
 
 - [ ] **Step 4: Complete human and external gates without simulation**
 
-An authorized human approves the exact-SHA license/Qt record; Partner Center accepts the private-audience package; WACK evidence passes; two independent machines pass the full runbook; privacy/support/security channels are live. Store secrets, credentials, PFX data, user data, and raw evidence are never committed.
+Use the two-stage same-SHA license flow. First build the source bundle, package, and SBOM from `S`; an authorized person reviews those materials externally and creates a canonical external license/Qt record bound to `S` and the SBOM digest. Then rerun the gate against the same `S` while consuming that record. The repository template remains pending, approval is not written back into `S`, and the formal package comes from `S`.
+
+Partner Center accepts the private-audience package; WACK evidence passes; two independent machines pass the full runbook; privacy/support/security channels are live. Store secrets, credentials, PFX data, user data, and raw evidence are never committed.
 
 - [ ] **Step 5: Recompute the final decision**
 
-Set a gate to `pass` only after its exact evidence digest and timestamp exist. Keep `decision=NO-GO` while any gate is not `pass`. Only when all eight gates pass may a separately authorized commit change the product version to `1.0.0` and use the phrase `formal personal release`; this plan does not authorize merge, public Store rollout, GitHub binary release, deployment, or a production-safety claim.
+Set a gate to `pass` only after its external exact-SHA evidence digest and timestamp exist. Keep `decision=NO-GO` while any gate is not `pass`. A later status-ledger commit may record `GO` only when all eight gates for `S` pass; after that, only external status evidence and formal-release wording may change. It must not change version, Store identity, source, dependencies, package inputs, or the formal package. Any such package-affecting change invalidates all eight gates. This plan does not authorize merge, public Store rollout, GitHub binary release, deployment, or a production-safety claim.
 
 ---
 
@@ -720,4 +753,4 @@ Set a gate to `pass` only after its exact evidence digest and timestamp exist. K
 - Scope boundary: enterprise, optional high-sensitivity mode, and dynamic MCP execution are deleted; static MCP detection and supported personal workflows remain.
 - Evidence boundary: local tests, CI, WACK, Store certification, legal review, independent machines, and independent review are recorded as distinct facts.
 - YAGNI check: no enterprise replacement, sandbox replacement, cloud service, updater, telemetry, direct-download channel, or API integration is introduced.
-- Release claim: version stays `0.1.0` and status stays `NO-GO` until all external evidence exists.
+- Release claim: Task 7 keeps the current product at `0.1.0 / NO-GO`; Task 8 first creates a frozen `1.0.0 / NO-GO` private candidate, and formal-release wording remains prohibited until all eight gates pass.

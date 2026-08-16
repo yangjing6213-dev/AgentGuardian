@@ -1,6 +1,8 @@
 # AgentGuardian Personal v1.0 Scope Convergence Design
 
-Status: approved product direction; implementation has not started.
+Status: approved active product specification. The development branch is at
+the Task 7 documentation-convergence checkpoint; Task 8 exact-SHA and external
+acceptance remains incomplete. This is governance status, not release evidence.
 
 ## Goal
 
@@ -215,6 +217,12 @@ These are product operations, not substitutes for technical tests.
 
 Personal 1.0 is complete only when all gates pass for one exact candidate:
 
+Before any gate runs, the intended formal version, Store identity, and every
+package input are committed and frozen in a NO-GO `1.0.0` private candidate
+before any gate. That private candidate package may carry version `1.0.0` for
+WACK, Store, and independent-machine evidence, but it is not a formal or public
+release while any gate remains incomplete.
+
 1. **Scope gate:** removed capabilities are absent from source, payload, UI,
    workflows, documentation, and runtime imports.
 2. **Local gate:** full tests, focused privacy/security tests, brand validation,
@@ -233,9 +241,12 @@ Personal 1.0 is complete only when all gates pass for one exact candidate:
 8. **Operations gate:** privacy, support, vulnerability disclosure, release
    notes, update, rollback, and security-update processes are live.
 
-Only after all eight gates pass may the package and public documentation use
-version `1.0.0` and the term "formal personal release." Passing gates do not
-expand the unsupported data or host-compromise boundary.
+The package validated by all eight gates already carries version `1.0.0`.
+After all eight gates pass, only external status evidence and formal-release
+wording may change. Any source, version, Store identity, dependency, or package
+input change creates a new candidate and requires all affected gates to rerun.
+Passing gates do not establish production safety or expand the unsupported data
+or host-compromise boundary.
 
 ## Migration Sequence
 
