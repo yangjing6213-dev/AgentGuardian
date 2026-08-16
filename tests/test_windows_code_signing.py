@@ -184,17 +184,14 @@ def test_writable_path_gate_covers_posix_replacement_variance(tmp_path: Path) ->
     replacement.write_bytes(b"replacement")
 
     assert signing.executable_path_is_protected(executable) is False
-    replaced_while_locked = False
     with signing.hold_executable_for_launch(executable):
         try:
             _replace_with_posix_semantics(replacement, executable)
         except OSError as error:
             assert error.errno == 32
-        else:
-            replaced_while_locked = True
 
-    if not replaced_while_locked:
-        _replace_with_posix_semantics(replacement, executable)
+    replacement.write_bytes(b"replacement")
+    os.replace(replacement, executable)
     assert executable.read_bytes() == b"replacement"
 
 
