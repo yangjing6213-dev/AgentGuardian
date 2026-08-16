@@ -26,6 +26,7 @@ from agentguardian.mcp_sandbox import (  # noqa: E402
 
 
 ADAPTER_NAME = "AgentGuardianMcpAdapter.exe"
+PACKAGE_NAME_PREFIX = "yangjing6213dev.AgentGuardian_"
 SYNTHETIC_REQUEST = (
     b'{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}\n'
 )
@@ -41,6 +42,7 @@ def run_packaged_adapter_acceptance(
     *,
     expected_source_commit: str,
     expected_adapter_sha256: str,
+    expected_package_full_name: str,
     expected_publisher_subject: str,
     expected_certificate_sha256: str,
 ) -> dict[str, object]:
@@ -48,6 +50,15 @@ def run_packaged_adapter_acceptance(
     destination = _evidence_path(evidence_path)
     _lower_hex(expected_source_commit, 40, "MCP_ACCEPTANCE_SOURCE_COMMIT_INVALID")
     _lower_hex(expected_adapter_sha256, 64, "MCP_ACCEPTANCE_ADAPTER_HASH_INVALID")
+    if (
+        type(expected_package_full_name) is not str
+        or not expected_package_full_name
+        or expected_package_full_name != expected_package_full_name.strip()
+        or len(expected_package_full_name) > 256
+        or "\x00" in expected_package_full_name
+        or not expected_package_full_name.startswith(PACKAGE_NAME_PREFIX)
+    ):
+        raise ValueError("MCP_ACCEPTANCE_PACKAGE_IDENTITY_INVALID")
     if (
         type(expected_publisher_subject) is not str
         or not expected_publisher_subject
@@ -77,6 +88,7 @@ def run_packaged_adapter_acceptance(
         arguments=(),
         allowed_publisher_subjects=(expected_publisher_subject,),
         allowed_publisher_certificate_sha256=(expected_certificate_sha256,),
+        package_full_name=expected_package_full_name,
     )
     try:
         result = run_mcp_sandbox(policy, SYNTHETIC_REQUEST, confirmed=True)
@@ -98,6 +110,7 @@ def run_packaged_adapter_acceptance(
         "source_commit": expected_source_commit,
         "adapter": {
             "name": adapter.name,
+            "package_full_name": expected_package_full_name,
             "sha256": expected_adapter_sha256,
             "publisher_subject": expected_publisher_subject,
             "certificate_sha256": expected_certificate_sha256,
@@ -175,6 +188,7 @@ def main() -> int:
     parser.add_argument("--evidence-path", type=Path, required=True)
     parser.add_argument("--expected-source-commit", required=True)
     parser.add_argument("--expected-adapter-sha256", required=True)
+    parser.add_argument("--expected-package-full-name", required=True)
     parser.add_argument("--expected-publisher-subject", required=True)
     parser.add_argument("--expected-certificate-sha256", required=True)
     args = parser.parse_args()
@@ -184,6 +198,7 @@ def main() -> int:
             args.evidence_path,
             expected_source_commit=args.expected_source_commit,
             expected_adapter_sha256=args.expected_adapter_sha256,
+            expected_package_full_name=args.expected_package_full_name,
             expected_publisher_subject=args.expected_publisher_subject,
             expected_certificate_sha256=args.expected_certificate_sha256,
         )

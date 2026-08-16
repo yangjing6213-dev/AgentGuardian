@@ -287,11 +287,22 @@ def test_native_windows_execution_requires_a_trusted_adapter_signature(
         arguments=policy.arguments,
         allowed_publisher_subjects=("CN=Trusted",),
         allowed_publisher_certificate_sha256=("0" * 64,),
+        package_full_name="yangjing6213dev.AgentGuardian_0.1.0.0_x64__publisher",
     )
     monkeypatch.setattr(
         mcp_sandbox,
         "verify_authenticode",
         lambda _path, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "executable_matches_installed_package",
+        lambda _path, _package: True,
+    )
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "executable_path_is_protected",
+        lambda _path: True,
     )
 
     result = run_mcp_sandbox(policy, b"synthetic-request", confirmed=True)
@@ -299,6 +310,122 @@ def test_native_windows_execution_requires_a_trusted_adapter_signature(
     assert result.status is SandboxStatus.DENIED
     assert result.reason == "adapter_signature_required"
     assert result.raw_response_retained is False
+
+
+def test_native_windows_execution_requires_installed_package_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows installed-package identity integration")
+    policy = McpSandboxPolicy.from_command(
+        adapter_id="synthetic-adapter",
+        executable=sys.executable,
+        executable_sha256=hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),
+        allowed_publisher_subjects=("CN=Allowed",),
+        allowed_publisher_certificate_sha256=("0" * 64,),
+    )
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "probe_native_sandbox",
+        lambda: _SandboxAttestation(
+            provider="windows-appcontainer",
+            network_isolated=True,
+            process_tree_isolated=True,
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "verify_authenticode",
+        lambda *_args, **_kwargs: pytest.fail("missing package identity reached signature check"),
+    )
+
+    result = run_mcp_sandbox(policy, b"synthetic-request", confirmed=True)
+
+    assert result.status is SandboxStatus.DENIED
+    assert result.reason == "adapter_package_identity_required"
+
+
+def test_native_windows_execution_rejects_a_package_path_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows installed-package identity integration")
+    policy = McpSandboxPolicy.from_command(
+        adapter_id="synthetic-adapter",
+        executable=sys.executable,
+        executable_sha256=hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),
+        allowed_publisher_subjects=("CN=Allowed",),
+        allowed_publisher_certificate_sha256=("0" * 64,),
+        package_full_name="yangjing6213dev.AgentGuardian_0.1.0.0_x64__publisher",
+    )
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "probe_native_sandbox",
+        lambda: _SandboxAttestation(
+            provider="windows-appcontainer",
+            network_isolated=True,
+            process_tree_isolated=True,
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "executable_matches_installed_package",
+        lambda _path, _package: False,
+    )
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "executable_path_is_protected",
+        lambda _path: pytest.fail("package mismatch reached ACL gate"),
+    )
+
+    result = run_mcp_sandbox(policy, b"synthetic-request", confirmed=True)
+
+    assert result.status is SandboxStatus.DENIED
+    assert result.reason == "adapter_package_path_mismatch"
+
+
+def test_native_windows_execution_rejects_a_user_writable_adapter_parent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows adapter parent ACL integration")
+    policy = McpSandboxPolicy.from_command(
+        adapter_id="synthetic-adapter",
+        executable=sys.executable,
+        executable_sha256=hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),
+        allowed_publisher_subjects=("CN=Allowed",),
+        allowed_publisher_certificate_sha256=("0" * 64,),
+        package_full_name="yangjing6213dev.AgentGuardian_0.1.0.0_x64__publisher",
+    )
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "probe_native_sandbox",
+        lambda: _SandboxAttestation(
+            provider="windows-appcontainer",
+            network_isolated=True,
+            process_tree_isolated=True,
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "executable_matches_installed_package",
+        lambda _path, _package: True,
+    )
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "executable_path_is_protected",
+        lambda _path: False,
+    )
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "verify_authenticode",
+        lambda *_args, **_kwargs: pytest.fail("unprotected adapter reached signature check"),
+    )
+
+    result = run_mcp_sandbox(policy, b"synthetic-request", confirmed=True)
+
+    assert result.status is SandboxStatus.DENIED
+    assert result.reason == "adapter_path_unprotected"
 
 
 def test_native_windows_execution_requires_a_publisher_allowlist(
@@ -333,6 +460,7 @@ def test_native_windows_execution_rejects_a_non_allowlisted_publisher(
         executable_sha256=hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),
         allowed_publisher_subjects=("CN=Allowed",),
         allowed_publisher_certificate_sha256=("0" * 64,),
+        package_full_name="yangjing6213dev.AgentGuardian_0.1.0.0_x64__publisher",
     )
     monkeypatch.setattr(
         mcp_sandbox,
@@ -347,6 +475,16 @@ def test_native_windows_execution_rejects_a_non_allowlisted_publisher(
         mcp_sandbox,
         "verify_authenticode",
         lambda _path, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "executable_matches_installed_package",
+        lambda _path, _package: True,
+    )
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "executable_path_is_protected",
+        lambda _path: True,
     )
     monkeypatch.setattr(
         mcp_sandbox,
@@ -413,6 +551,7 @@ def test_native_windows_authenticode_uses_the_locked_executable_handle(
         executable_sha256=hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),
         allowed_publisher_subjects=("CN=Allowed",),
         allowed_publisher_certificate_sha256=("0" * 64,),
+        package_full_name="yangjing6213dev.AgentGuardian_0.1.0.0_x64__publisher",
     )
     observed_handles = []
 
@@ -435,6 +574,16 @@ def test_native_windows_authenticode_uses_the_locked_executable_handle(
         ),
     )
     monkeypatch.setattr(mcp_sandbox, "verify_authenticode", verify)
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "executable_matches_installed_package",
+        lambda _path, _package: True,
+    )
+    monkeypatch.setattr(
+        mcp_sandbox,
+        "executable_path_is_protected",
+        lambda _path: True,
+    )
     monkeypatch.setattr(
         mcp_sandbox,
         "verify_authenticode_publisher",

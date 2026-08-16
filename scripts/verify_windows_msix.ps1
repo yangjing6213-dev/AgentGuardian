@@ -364,6 +364,7 @@ try {
         }
         $upgraded = $true
         $installedPackages = $upgradedPackages
+        $packageFullName = [string]$installedPackages[0].PackageFullName
     }
 
     if ($RequireMcpAdapterAcceptance) {
@@ -380,6 +381,7 @@ try {
             --evidence-path $resolvedMcpAdapterEvidence `
             --expected-source-commit $ExpectedSourceCommit `
             --expected-adapter-sha256 $ExpectedMcpAdapterSha256 `
+            --expected-package-full-name $packageFullName `
             --expected-publisher-subject $ExpectedMcpAdapterPublisher `
             --expected-certificate-sha256 $ExpectedMcpAdapterCertificateSha256 2>$null |
             Out-Null
@@ -456,6 +458,7 @@ $evidence = [ordered]@{
     schema_version = 1
     package_path = [IO.Path]::GetFileName($resolvedPackage)
     package_name = $PackageName
+    package_full_name = $packageFullName
     started_at = $startedAt
     completed_at = Get-UtcSecond
     smoke_seconds = $SmokeSeconds

@@ -538,9 +538,11 @@ def test_task2_mcp_msix_verifier_runs_fixed_installed_adapter_before_cleanup() -
         "--evidence-path",
         "--expected-source-commit",
         "--expected-adapter-sha256",
+        "--expected-package-full-name",
         "--expected-publisher-subject",
         "--expected-certificate-sha256",
         "MCP adapter acceptance failed",
+        "package_full_name",
         "| Out-Null",
     ):
         assert required in verifier

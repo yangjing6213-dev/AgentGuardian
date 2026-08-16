@@ -75,6 +75,18 @@ def test_mcp_supervisor_uses_appcontainer_network_boundary(
             arguments=("-sS", "--max-time", "1", f"http://127.0.0.1:{port}"),
             allowed_publisher_subjects=("CN=Windows Test Publisher",),
             allowed_publisher_certificate_sha256=("0" * 64,),
+            package_full_name="yangjing6213dev.AgentGuardian_0.1.0.0_x64__publisher",
+        )
+
+        monkeypatch.setattr(
+            mcp_sandbox,
+            "executable_matches_installed_package",
+            lambda _path, _package: True,
+        )
+        monkeypatch.setattr(
+            mcp_sandbox,
+            "executable_path_is_protected",
+            lambda _path: True,
         )
 
         result = run_mcp_sandbox(

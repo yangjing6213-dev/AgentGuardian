@@ -26,6 +26,7 @@ NATIVE_LIMITS = [
     "network_isolation_enforced",
     "process_tree_isolation_enforced",
 ]
+PACKAGE_FULL_NAME = "yangjing6213dev.AgentGuardian_0.1.0.0_x64__publisher"
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -100,6 +101,7 @@ def _write_candidate(
             {
                 "schema_version": 1,
                 "source_commit": COMMIT,
+                "package_full_name": PACKAGE_FULL_NAME,
                 "signature_mode": "trusted_signed" if trusted else "unsigned_ci_smoke",
                 "signature": {"status": "Valid" if trusted else "NotSigned"},
                 "fresh_user_state": fresh,
@@ -123,6 +125,7 @@ def _write_candidate(
                 "source_commit": COMMIT,
                 "adapter": {
                     "name": ADAPTER_NAME,
+                    "package_full_name": PACKAGE_FULL_NAME,
                     "sha256": adapter_sha256,
                     "publisher_subject": PUBLISHER_SUBJECT,
                     "certificate_sha256": CERTIFICATE_SHA256,
@@ -358,6 +361,7 @@ def test_release_gate_rejects_boolean_mcp_acceptance_schema(tmp_path: Path) -> N
     ("field", "value"),
     (
         ("name", "OtherAdapter.exe"),
+        ("package_full_name", "OtherPackage_0.1.0.0_x64__publisher"),
         ("sha256", "0" * 64),
         ("publisher_subject", "CN=Other Publisher"),
         ("certificate_sha256", "0" * 64),

@@ -81,9 +81,34 @@ _CERT_NAME_RDN_TYPE = 2
 _CERT_X500_NAME_STR = 3
 _CERT_CLOSE_STORE_CHECK_FLAG = 0x00000002
 _GENERIC_READ = 0x80000000
+_DELETE = 0x00010000
+_WRITE_DAC = 0x00040000
+_WRITE_OWNER = 0x00080000
+_FILE_ADD_FILE = 0x00000002
+_FILE_DELETE_CHILD = 0x00000040
 _FILE_SHARE_READ = 0x00000001
+_FILE_SHARE_WRITE = 0x00000002
+_FILE_SHARE_DELETE = 0x00000004
 _OPEN_EXISTING = 3
 _FILE_ATTRIBUTE_NORMAL = 0x00000080
+_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_ERROR_ACCESS_DENIED = 5
+_ERROR_INSUFFICIENT_BUFFER = 122
+_MAX_PACKAGE_PATH_CHARS = 32_768
+_MCP_ADAPTER_RELATIVE_PATH = pathlib.Path("adapters") / "AgentGuardianMcpAdapter.exe"
+_PACKAGE_NAME_PREFIX = "yangjing6213dev.AgentGuardian_"
+_PACKAGE_PATH_TYPE_INSTALL = 0
+_PACKAGE_PATH_TYPE_EFFECTIVE = 2
+_ERROR_NOT_FOUND = 1168
+_APPMODEL_ERROR_NO_MUTABLE_DIRECTORY = 15707
+_TRUSTED_PACKAGE_ORIGINS = frozenset({3, 6})
+_FOLDERID_PROGRAM_FILES = _Guid(
+    0x905E63B6,
+    0xC1BF,
+    0x494E,
+    (ctypes.c_ubyte * 8)(0xB2, 0x9C, 0x65, 0xB7, 0x32, 0xD3, 0xD2, 0x1A),
+)
 
 
 def verify_authenticode(
@@ -202,6 +227,250 @@ def hold_executable_for_launch(executable: pathlib.Path) -> Iterator[int | None]
     finally:
         if not close_handle(handle):
             raise OSError("executable lock cleanup failed")
+
+
+def executable_path_is_protected(executable: pathlib.Path) -> bool:
+    """Return true only when the current Windows token cannot retarget the path."""
+    if sys.platform != "win32":
+        return False
+    path = pathlib.Path(executable)
+    try:
+        directories = tuple(path.parents)
+        root = pathlib.Path(path.anchor)
+        if (
+            not path.is_absolute()
+            or not directories
+            or directories[-1] != root
+            or path.is_symlink()
+            or not stat.S_ISREG(path.stat().st_mode)
+            or any(directory.is_symlink() or not directory.is_dir() for directory in directories)
+        ):
+            return False
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        create_file.restype = wintypes.HANDLE
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+    except (AttributeError, OSError, ValueError):
+        return False
+
+    probes = [
+        (path, _DELETE, _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT),
+        (path, _WRITE_DAC, _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT),
+        (path, _WRITE_OWNER, _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT),
+        (
+            path.parent,
+            _FILE_ADD_FILE,
+            _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
+        ),
+    ]
+    directory_flags = _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT
+    for directory in directories:
+        if directory != root:
+            probes.append((directory, _DELETE, directory_flags))
+        probes.extend(
+            (
+                (directory, _FILE_DELETE_CHILD, directory_flags),
+                (directory, _WRITE_DAC, directory_flags),
+                (directory, _WRITE_OWNER, directory_flags),
+            )
+        )
+
+    share_mode = _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE
+    for target, access, flags in probes:
+        ctypes.set_last_error(0)
+        try:
+            handle = create_file(
+                str(target),
+                access,
+                share_mode,
+                None,
+                _OPEN_EXISTING,
+                flags,
+                None,
+            )
+        except (OSError, ValueError, ctypes.ArgumentError):
+            return False
+        if handle not in (None, ctypes.c_void_p(-1).value):
+            try:
+                cleanup_succeeded = bool(close_handle(handle))
+            except (OSError, ValueError, ctypes.ArgumentError):
+                return False
+            if not cleanup_succeeded:
+                return False
+            return False
+        if ctypes.get_last_error() != _ERROR_ACCESS_DENIED:
+            return False
+    return True
+
+
+def executable_matches_installed_package(
+    executable: pathlib.Path,
+    package_full_name: str,
+) -> bool:
+    """Bind the fixed adapter path to an OS-resolved installed package root."""
+    if (
+        sys.platform != "win32"
+        or type(package_full_name) is not str
+        or not package_full_name
+        or package_full_name != package_full_name.strip()
+        or len(package_full_name) > 256
+        or "\x00" in package_full_name
+        or not package_full_name.startswith(_PACKAGE_NAME_PREFIX)
+    ):
+        return False
+    try:
+        kernelbase = ctypes.WinDLL("kernelbase", use_last_error=True)
+        get_package_path = kernelbase.GetPackagePathByFullName2
+        get_package_path.argtypes = [
+            wintypes.LPCWSTR,
+            ctypes.c_int,
+            ctypes.POINTER(wintypes.UINT),
+            wintypes.LPWSTR,
+        ]
+        get_package_path.restype = wintypes.LONG
+        get_package_origin = kernelbase.GetStagedPackageOrigin
+        get_package_origin.argtypes = [
+            wintypes.LPCWSTR,
+            ctypes.POINTER(ctypes.c_int),
+        ]
+        get_package_origin.restype = wintypes.LONG
+        origin = ctypes.c_int(0)
+        if (
+            get_package_origin(package_full_name, ctypes.byref(origin)) != 0
+            or origin.value not in _TRUSTED_PACKAGE_ORIGINS
+        ):
+            return False
+        package_root = _read_package_path(
+            get_package_path,
+            package_full_name,
+            _PACKAGE_PATH_TYPE_INSTALL,
+        )
+        effective_root = _read_package_path(
+            get_package_path,
+            package_full_name,
+            _PACKAGE_PATH_TYPE_EFFECTIVE,
+        )
+        forbidden_paths = (
+            (1, _APPMODEL_ERROR_NO_MUTABLE_DIRECTORY),
+            (3, _ERROR_NOT_FOUND),
+            (4, _ERROR_NOT_FOUND),
+            (5, _ERROR_NOT_FOUND),
+        )
+        for path_type, absent_result in forbidden_paths:
+            length = wintypes.UINT(0)
+            if (
+                get_package_path(
+                    package_full_name,
+                    path_type,
+                    ctypes.byref(length),
+                    None,
+                )
+                != absent_result
+                or length.value != 0
+            ):
+                return False
+        path = pathlib.Path(executable)
+        program_files = _program_files_root()
+        if (
+            program_files is None
+            or not package_root.is_absolute()
+            or package_root.is_symlink()
+            or not package_root.is_dir()
+            or effective_root.resolve(strict=True) != package_root.resolve(strict=True)
+            or package_root.name.casefold() != package_full_name.casefold()
+            or package_root.parent.resolve(strict=True)
+            != (program_files / "WindowsApps").resolve(strict=True)
+        ):
+            return False
+        expected = package_root / _MCP_ADAPTER_RELATIVE_PATH
+        return path.resolve(strict=True) == expected.resolve(strict=True)
+    except (AttributeError, OSError, ValueError, ctypes.ArgumentError):
+        return False
+
+
+def _read_package_path(
+    get_package_path: object,
+    package_full_name: str,
+    path_type: int,
+) -> pathlib.Path:
+    length = wintypes.UINT(0)
+    if (
+        get_package_path(
+            package_full_name,
+            path_type,
+            ctypes.byref(length),
+            None,
+        )
+        != _ERROR_INSUFFICIENT_BUFFER
+        or not 1 < length.value <= _MAX_PACKAGE_PATH_CHARS
+    ):
+        raise ValueError("package path unavailable")
+    buffer = ctypes.create_unicode_buffer(length.value)
+    if (
+        get_package_path(
+            package_full_name,
+            path_type,
+            ctypes.byref(length),
+            buffer,
+        )
+        != 0
+    ):
+        raise ValueError("package path unavailable")
+    return pathlib.Path(buffer.value)
+
+
+def _program_files_root() -> pathlib.Path | None:
+    if sys.platform != "win32":
+        return None
+    path_pointer = wintypes.LPWSTR()
+    try:
+        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+        known_folder_path = shell32.SHGetKnownFolderPath
+        known_folder_path.argtypes = [
+            ctypes.POINTER(_Guid),
+            wintypes.DWORD,
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.LPWSTR),
+        ]
+        known_folder_path.restype = wintypes.LONG
+        ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+        free_memory = ole32.CoTaskMemFree
+        free_memory.argtypes = [ctypes.c_void_p]
+        free_memory.restype = None
+        if (
+            known_folder_path(
+                ctypes.byref(_FOLDERID_PROGRAM_FILES),
+                0,
+                None,
+                ctypes.byref(path_pointer),
+            )
+            != 0
+            or not path_pointer.value
+        ):
+            return None
+        root = pathlib.Path(path_pointer.value)
+        free_memory(ctypes.cast(path_pointer, ctypes.c_void_p))
+        path_pointer = wintypes.LPWSTR()
+        return root if root.is_absolute() and root.is_dir() else None
+    except (AttributeError, OSError, ValueError, ctypes.ArgumentError):
+        return None
+    finally:
+        if path_pointer.value:
+            try:
+                free_memory(ctypes.cast(path_pointer, ctypes.c_void_p))
+            except (NameError, OSError, ValueError, ctypes.ArgumentError):
+                pass
 
 
 def verify_authenticode_publisher(

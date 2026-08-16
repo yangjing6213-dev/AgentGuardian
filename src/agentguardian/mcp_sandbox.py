@@ -20,6 +20,8 @@ from .discovery import _has_reparse_component
 from .file_integrity import FileSizeLimitExceeded, bounded_file_sha256
 from .windows_appcontainer import AppContainerUnavailable, appcontainer_available, run_in_appcontainer
 from .windows_code_signing import (
+    executable_matches_installed_package,
+    executable_path_is_protected,
     hold_executable_for_launch,
     verify_authenticode,
     verify_authenticode_publisher,
@@ -35,6 +37,7 @@ _ALLOWED_ADAPTER_CAPABILITIES = frozenset({"tools", "resources", "prompts"})
 _MAX_PUBLISHER_SUBJECTS = 16
 _MAX_PUBLISHER_SUBJECT_LENGTH = 512
 _MAX_PUBLISHER_CERTIFICATE_HASHES = 16
+_PACKAGE_NAME_PREFIX = "yangjing6213dev.AgentGuardian_"
 
 
 class SandboxStatus(str, Enum):
@@ -57,6 +60,7 @@ class McpSandboxPolicy:
     max_output_bytes: int
     allowed_publisher_subjects: tuple[str, ...] = ()
     allowed_publisher_certificate_sha256: tuple[str, ...] = ()
+    package_full_name: str = ""
 
     @classmethod
     def from_command(
@@ -69,6 +73,7 @@ class McpSandboxPolicy:
         capabilities: tuple[str, ...] = (),
         allowed_publisher_subjects: tuple[str, ...] = (),
         allowed_publisher_certificate_sha256: tuple[str, ...] = (),
+        package_full_name: str = "",
         max_runtime_seconds: float = 5.0,
         max_output_bytes: int = MAX_MCP_OUTPUT_BYTES,
     ) -> "McpSandboxPolicy":
@@ -124,6 +129,14 @@ class McpSandboxPolicy:
         ):
             raise ValueError("MCP_PUBLISHER_CERT_ALLOWLIST_INVALID")
         if (
+            type(package_full_name) is not str
+            or len(package_full_name) > 256
+            or "\x00" in package_full_name
+            or package_full_name != package_full_name.strip()
+            or (package_full_name and not package_full_name.startswith(_PACKAGE_NAME_PREFIX))
+        ):
+            raise ValueError("MCP_PACKAGE_IDENTITY_INVALID")
+        if (
             type(max_runtime_seconds) not in (int, float)
             or not 0.1 <= max_runtime_seconds <= MAX_MCP_RUNTIME_SECONDS
             or type(max_output_bytes) is not int
@@ -155,6 +168,7 @@ class McpSandboxPolicy:
             max_output_bytes=max_output_bytes,
             allowed_publisher_subjects=allowed_publisher_subjects,
             allowed_publisher_certificate_sha256=allowed_publisher_certificate_sha256,
+            package_full_name=package_full_name,
         )
 
 
@@ -245,6 +259,32 @@ def run_mcp_sandbox(
     assessment = assess_mcp_sandbox(policy)
     if assessment.status is not SandboxStatus.COMPLETED:
         return _result(policy, SandboxStatus.DENIED, assessment.reasons[0])
+    if (
+        assessment.provider == "windows-appcontainer"
+        and policy.allowed_publisher_subjects
+        and policy.allowed_publisher_certificate_sha256
+    ):
+        if not policy.package_full_name:
+            return _result(
+                policy,
+                SandboxStatus.DENIED,
+                "adapter_package_identity_required",
+            )
+        if not executable_matches_installed_package(
+            policy.executable,
+            policy.package_full_name,
+        ):
+            return _result(
+                policy,
+                SandboxStatus.DENIED,
+                "adapter_package_path_mismatch",
+            )
+        if not executable_path_is_protected(policy.executable):
+            return _result(
+                policy,
+                SandboxStatus.DENIED,
+                "adapter_path_unprotected",
+            )
     try:
         with hold_executable_for_launch(policy.executable) as executable_handle:
             return _run_mcp_sandbox_with_locked_executable(

@@ -27,6 +27,7 @@ MAX_JSON_BYTES = 4 * 1024 * 1024
 _UNKNOWN_LICENSES = frozenset({"NOASSERTION", "UNKNOWN", "NONE"})
 _MCP_ADAPTER_NAME = "AgentGuardianMcpAdapter.exe"
 _MCP_ADAPTER_PATH = f"adapters/{_MCP_ADAPTER_NAME}"
+_PACKAGE_NAME_PREFIX = "yangjing6213dev.AgentGuardian_"
 _MCP_NATIVE_LIMITS = [
     "network_isolation_enforced",
     "process_tree_isolation_enforced",
@@ -81,6 +82,9 @@ def validate_release_candidate(
         raise ReleaseEvidenceError("RELEASE_TRUSTED_SIGNATURE_REQUIRED")
     if evidence.get("source_commit") != expected_source_commit:
         raise ReleaseEvidenceError("RELEASE_SMOKE_SOURCE_COMMIT_MISMATCH")
+    package_full_name = evidence.get("package_full_name")
+    if not _is_package_full_name(package_full_name):
+        raise ReleaseEvidenceError("RELEASE_PACKAGE_IDENTITY_INVALID")
     if require_fresh_user_state and (
         evidence.get("fresh_user_state") is not True
         or result.get("app_data_residue") is not False
@@ -95,6 +99,7 @@ def validate_release_candidate(
         bundle,
         mcp_adapter_evidence_path,
         expected_source_commit,
+        package_full_name,
     )
 
     return {
@@ -110,6 +115,7 @@ def _validate_mcp_adapter(
     bundle: Path,
     evidence_path: str | Path,
     expected_source_commit: str,
+    expected_package_full_name: str,
 ) -> None:
     manifest = _json_file(
         bundle / "MCP-ADAPTER.json",
@@ -174,6 +180,7 @@ def _validate_mcp_adapter(
     adapter_evidence = evidence.get("adapter")
     expected_adapter = {
         "name": manifest["name"],
+        "package_full_name": expected_package_full_name,
         "sha256": actual_sha256,
         "publisher_subject": manifest["publisher_subject"],
         "certificate_sha256": manifest["certificate_sha256"],
@@ -217,6 +224,17 @@ def _is_publisher_subject(value: object) -> bool:
         and value == value.strip()
         and len(value) <= 512
         and "\x00" not in value
+    )
+
+
+def _is_package_full_name(value: object) -> bool:
+    return (
+        type(value) is str
+        and bool(value)
+        and value == value.strip()
+        and len(value) <= 256
+        and "\x00" not in value
+        and value.startswith(_PACKAGE_NAME_PREFIX)
     )
 
 

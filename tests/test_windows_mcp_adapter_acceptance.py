@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from pathlib import Path
 
@@ -20,6 +21,13 @@ NATIVE_LIMITS = (
     "network_isolation_enforced",
     "process_tree_isolation_enforced",
 )
+PACKAGE_FULL_NAME = "yangjing6213dev.AgentGuardian_0.1.0.0_x64__publisher"
+
+
+def test_acceptance_requires_an_installed_package_full_name() -> None:
+    parameters = inspect.signature(run_packaged_adapter_acceptance).parameters
+    assert "expected_package_full_name" in parameters
+    assert parameters["expected_package_full_name"].default is inspect.Parameter.empty
 
 
 def _adapter(tmp_path: Path) -> tuple[Path, str]:
@@ -66,6 +74,7 @@ def _run(
         evidence_path,
         expected_source_commit=COMMIT,
         expected_adapter_sha256=adapter_sha256,
+        expected_package_full_name=PACKAGE_FULL_NAME,
         expected_publisher_subject=PUBLISHER_SUBJECT,
         expected_certificate_sha256=CERTIFICATE_SHA256,
     )
@@ -75,6 +84,7 @@ def _run(
     assert policy.arguments == ()
     assert policy.allowed_publisher_subjects == (PUBLISHER_SUBJECT,)
     assert policy.allowed_publisher_certificate_sha256 == (CERTIFICATE_SHA256,)
+    assert policy.package_full_name == PACKAGE_FULL_NAME
     assert captured["request"] == acceptance.SYNTHETIC_REQUEST
     assert captured["confirmed"] is True
     return evidence, adapter, evidence_path, adapter_sha256
@@ -90,6 +100,7 @@ def test_acceptance_writes_only_canonical_bounded_evidence(
         "source_commit": COMMIT,
         "adapter": {
             "name": ADAPTER_NAME,
+            "package_full_name": PACKAGE_FULL_NAME,
             "sha256": adapter_sha256,
             "publisher_subject": PUBLISHER_SUBJECT,
             "certificate_sha256": CERTIFICATE_SHA256,
@@ -139,6 +150,7 @@ def test_acceptance_rejects_an_oversize_adapter_before_sandbox_or_evidence(
             evidence_path,
             expected_source_commit=COMMIT,
             expected_adapter_sha256=adapter_sha256,
+            expected_package_full_name=PACKAGE_FULL_NAME,
             expected_publisher_subject=PUBLISHER_SUBJECT,
             expected_certificate_sha256=CERTIFICATE_SHA256,
         )
@@ -152,6 +164,17 @@ def test_acceptance_rejects_an_oversize_adapter_before_sandbox_or_evidence(
         ("expected_source_commit", "A" * 40, "MCP_ACCEPTANCE_SOURCE_COMMIT_INVALID"),
         ("expected_source_commit", "a" * 39, "MCP_ACCEPTANCE_SOURCE_COMMIT_INVALID"),
         ("expected_adapter_sha256", "A" * 64, "MCP_ACCEPTANCE_ADAPTER_HASH_INVALID"),
+        ("expected_package_full_name", "", "MCP_ACCEPTANCE_PACKAGE_IDENTITY_INVALID"),
+        (
+            "expected_package_full_name",
+            " AgentGuardian_0.1.0.0_x64__publisher",
+            "MCP_ACCEPTANCE_PACKAGE_IDENTITY_INVALID",
+        ),
+        (
+            "expected_package_full_name",
+            "OtherProduct_0.1.0.0_x64__publisher",
+            "MCP_ACCEPTANCE_PACKAGE_IDENTITY_INVALID",
+        ),
         ("expected_publisher_subject", "", "MCP_ACCEPTANCE_PUBLISHER_SUBJECT_INVALID"),
         (
             "expected_publisher_subject",
@@ -173,6 +196,7 @@ def test_acceptance_rejects_invalid_identity_inputs(
     arguments = {
         "expected_source_commit": COMMIT,
         "expected_adapter_sha256": adapter_sha256,
+        "expected_package_full_name": PACKAGE_FULL_NAME,
         "expected_publisher_subject": PUBLISHER_SUBJECT,
         "expected_certificate_sha256": CERTIFICATE_SHA256,
     }
@@ -208,6 +232,7 @@ def test_acceptance_rejects_adapter_hash_mismatch(
             tmp_path / "evidence.json",
             expected_source_commit=COMMIT,
             expected_adapter_sha256="0" * 64,
+            expected_package_full_name=PACKAGE_FULL_NAME,
             expected_publisher_subject=PUBLISHER_SUBJECT,
             expected_certificate_sha256=CERTIFICATE_SHA256,
         )
@@ -241,6 +266,7 @@ def test_acceptance_rejects_unbounded_or_failed_sandbox_results(
             evidence_path,
             expected_source_commit=COMMIT,
             expected_adapter_sha256=adapter_sha256,
+            expected_package_full_name=PACKAGE_FULL_NAME,
             expected_publisher_subject=PUBLISHER_SUBJECT,
             expected_certificate_sha256=CERTIFICATE_SHA256,
         )
@@ -267,6 +293,7 @@ def test_acceptance_rejects_invalid_adapter_paths(
                 tmp_path / "evidence.json",
                 expected_source_commit=COMMIT,
                 expected_adapter_sha256=adapter_sha256,
+                expected_package_full_name=PACKAGE_FULL_NAME,
                 expected_publisher_subject=PUBLISHER_SUBJECT,
                 expected_certificate_sha256=CERTIFICATE_SHA256,
             )
@@ -278,6 +305,7 @@ def test_acceptance_rejects_invalid_adapter_paths(
             tmp_path / "evidence.json",
             expected_source_commit=COMMIT,
             expected_adapter_sha256=adapter_sha256,
+            expected_package_full_name=PACKAGE_FULL_NAME,
             expected_publisher_subject=PUBLISHER_SUBJECT,
             expected_certificate_sha256=CERTIFICATE_SHA256,
         )
@@ -299,6 +327,7 @@ def test_acceptance_requires_a_new_absolute_non_reparse_evidence_path(
                 invalid,
                 expected_source_commit=COMMIT,
                 expected_adapter_sha256=adapter_sha256,
+                expected_package_full_name=PACKAGE_FULL_NAME,
                 expected_publisher_subject=PUBLISHER_SUBJECT,
                 expected_certificate_sha256=CERTIFICATE_SHA256,
             )
@@ -312,6 +341,7 @@ def test_acceptance_requires_a_new_absolute_non_reparse_evidence_path(
             evidence_path,
             expected_source_commit=COMMIT,
             expected_adapter_sha256=adapter_sha256,
+            expected_package_full_name=PACKAGE_FULL_NAME,
             expected_publisher_subject=PUBLISHER_SUBJECT,
             expected_certificate_sha256=CERTIFICATE_SHA256,
         )
