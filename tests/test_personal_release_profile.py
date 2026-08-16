@@ -257,6 +257,81 @@ def test_runtime_ast_rejects_removed_dynamic_llm_telemetry_and_process_code(
         verifier.verify_profile(root, root / "release_profiles/personal_store_release.json")
 
 
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import PySide6.QtCore\nPySide6.QtCore.QProcess.startDetached('tool')\n",
+        "import PySide6.QtCore as qc\nqc.QProcess.start('tool')\n",
+        "import PySide6.QtCore as qc\nmodule = qc\nmodule.QProcess.start('tool')\n",
+        "from PySide6.QtCore import QProcess\nrunner = QProcess.startDetached\nrunner('tool')\n",
+        "import PySide6.QtCore\nproc = PySide6.QtCore.QProcess\nproc.start('tool')\n",
+        "import PySide6.QtCore as qc\nfirst = qc.QProcess\nsecond = first\nsecond.start('tool')\n",
+        "import PySide6.QtCore as qc\nfirst = qc.QProcess\nsecond = first\nfirst = second\nsecond.start('tool')\n",
+        "import PySide6.QtCore as qc\nproc = qc.QProcess\nproc = object\nproc.start('tool')\n",
+        "import builtins\nbuiltins.__import__('module')\n",
+        "import builtins\nbuiltins.eval('value')\n",
+        "import builtins\nbuiltins.exec('pass')\n",
+        "import builtins\nbuiltins.compile('pass', 'name', 'exec')\n",
+        "import builtins\nloader = builtins.__import__\nloader('module')\n",
+    ),
+)
+def test_runtime_ast_rejects_qualified_and_aliased_forbidden_calls(
+    tmp_path: Path, source: str
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    (root / "src/agentguardian/hostile.py").write_text(source, encoding="utf-8")
+
+    with pytest.raises(
+        verifier.ProfileViolation, match="^PROFILE_RUNTIME_CALL_FORBIDDEN$"
+    ) as caught:
+        verifier.verify_profile(
+            root, root / "release_profiles/personal_store_release.json"
+        )
+
+    assert str(caught.value) == "PROFILE_RUNTIME_CALL_FORBIDDEN"
+    assert str(root) not in str(caught.value)
+    assert source.strip() not in str(caught.value)
+
+
+def test_runtime_ast_resolves_subprocess_callable_assignment_before_import_gate(
+    tmp_path: Path,
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    source = "import subprocess\nrunner = subprocess.run\nrunner(('tool',))\n"
+    (root / "src/agentguardian/hostile.py").write_text(source, encoding="utf-8")
+
+    with pytest.raises(
+        verifier.ProfileViolation, match="^PROFILE_RUNTIME_CALL_FORBIDDEN$"
+    ) as caught:
+        verifier.verify_profile(
+            root, root / "release_profiles/personal_store_release.json"
+        )
+
+    assert str(caught.value) == "PROFILE_RUNTIME_CALL_FORBIDDEN"
+
+
+def test_runtime_ast_preserves_benign_aliases_and_noncalled_literals(
+    tmp_path: Path,
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    (root / "src/agentguardian/benign_alias.py").write_text(
+        "import sqlite3 as database\n"
+        "connect = database.connect\n"
+        "open_database = connect\n"
+        "open_database(':memory:')\n"
+        "left = right\nright = left\n"
+        "DETECTOR_NAMES = ('subprocess.run', 'builtins.exec', 'QProcess.start')\n",
+        encoding="utf-8",
+    )
+
+    assert verifier.verify_profile(
+        root, root / "release_profiles/personal_store_release.json"
+    )["status"] == "pass"
+
+
 def test_network_import_set_rejects_undeclared_and_missing_modules(tmp_path: Path) -> None:
     verifier = _verifier()
     root = _copy_fixture(tmp_path)
@@ -321,6 +396,28 @@ def test_workflow_allows_normal_build_commands_but_rejects_retired_contracts(
     workflow.write_text("env:\n  AGENTGUARDIAN_SIGNING_PFX: retired\n", encoding="utf-8")
     with pytest.raises(verifier.ProfileViolation, match="^PROFILE_WORKFLOW_FORBIDDEN$"):
         verifier.verify_profile(root, root / "release_profiles/personal_store_release.json")
+
+
+def test_workflow_scans_yaml_suffix_case_insensitively(tmp_path: Path) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    workflow = root / ".github/workflows/ordinary.YaMl"
+    workflow.write_text(
+        "on: workflow_dispatch\njobs:\n  build:\n    steps:\n"
+        "      - run: python scripts/build_windows_portable.py\n",
+        encoding="utf-8",
+    )
+    assert verifier.verify_profile(
+        root, root / "release_profiles/personal_store_release.json"
+    )["status"] == "pass"
+
+    workflow.write_text(
+        "env:\n  AGENTGUARDIAN_SIGNING_PFX: retired\n", encoding="utf-8"
+    )
+    with pytest.raises(verifier.ProfileViolation, match="^PROFILE_WORKFLOW_FORBIDDEN$"):
+        verifier.verify_profile(
+            root, root / "release_profiles/personal_store_release.json"
+        )
 
 
 def test_static_detector_source_remains_required(tmp_path: Path) -> None:

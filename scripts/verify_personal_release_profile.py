@@ -16,6 +16,9 @@ from typing import Any
 MAX_PROFILE_BYTES = 64 * 1024
 _MAX_ARRAY_ITEMS = 128
 _MAX_VALUE_LENGTH = 256
+_MAX_ALIAS_DEPTH = 64
+_MAX_SIMPLE_ASSIGNMENTS = 512
+_MAX_ALIAS_VALUES = 128
 _PROFILE_KEYS = frozenset(
     {
         "active_document_paths",
@@ -166,13 +169,13 @@ def _verify_runtime(root: Path, profile: dict[str, Any]) -> None:
         except (OSError, SyntaxError, ValueError):
             raise ProfileViolation("PROFILE_RUNTIME_SYNTAX_INVALID") from None
         imports, aliases = _imports_and_aliases(tree)
+        if _has_forbidden_call(tree, aliases, profile["forbidden_runtime_calls"]):
+            raise ProfileViolation("PROFILE_RUNTIME_CALL_FORBIDDEN")
         if any(
             _module_matches(name, profile["forbidden_runtime_imports"])
             for name in imports
         ):
             raise ProfileViolation("PROFILE_RUNTIME_IMPORT_FORBIDDEN")
-        if _has_forbidden_call(tree, aliases, profile["forbidden_runtime_calls"]):
-            raise ProfileViolation("PROFILE_RUNTIME_CALL_FORBIDDEN")
         if _has_forbidden_symbol(tree, imports, profile["forbidden_runtime_symbols"]):
             raise ProfileViolation("PROFILE_RUNTIME_SYMBOL_FORBIDDEN")
         if any(
@@ -189,7 +192,7 @@ def _verify_workflows(root: Path, forbidden_tokens: list[str]) -> None:
     if not workflow_root.is_dir():
         return
     for _, path in _walk(workflow_root, root):
-        if not path.is_file() or path.suffix.casefold() != ".yml":
+        if not path.is_file() or path.suffix.casefold() not in {".yaml", ".yml"}:
             continue
         try:
             text = path.read_text(encoding="utf-8")
@@ -221,14 +224,21 @@ def _verify_documents(root: Path, profile: dict[str, Any]) -> None:
         raise ProfileViolation("PROFILE_DOCUMENT_BOUNDARY_MISSING")
 
 
-def _imports_and_aliases(tree: ast.AST) -> tuple[tuple[str, ...], dict[str, str]]:
+def _imports_and_aliases(
+    tree: ast.AST,
+) -> tuple[
+    tuple[str, ...],
+    tuple[dict[str, frozenset[str]], dict[str, tuple[ast.AST, ...]]],
+]:
     imports: list[str] = []
-    aliases: dict[str, str] = {}
+    aliases: dict[str, set[str]] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for item in node.names:
                 imports.append(item.name)
-                aliases[item.asname or item.name.split(".", 1)[0]] = item.name
+                bound = item.asname or item.name.split(".", 1)[0]
+                resolved = item.name if item.asname else bound
+                aliases.setdefault(bound, set()).add(resolved)
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ""
             if module:
@@ -236,19 +246,55 @@ def _imports_and_aliases(tree: ast.AST) -> tuple[tuple[str, ...], dict[str, str]
             for item in node.names:
                 qualified = f"{module}.{item.name}" if module else item.name
                 imports.append(qualified)
-                aliases[item.asname or item.name] = qualified
-    return tuple(imports), aliases
+                aliases.setdefault(item.asname or item.name, set()).add(qualified)
+
+    assignments = _simple_assignments(tree)
+    if len(assignments) > _MAX_SIMPLE_ASSIGNMENTS:
+        raise ProfileViolation("PROFILE_RUNTIME_CALL_FORBIDDEN")
+    assignment_map: dict[str, list[ast.AST]] = {}
+    for target, source in assignments:
+        assignment_map.setdefault(target, []).append(source)
+    return tuple(imports), (
+        {key: frozenset(values) for key, values in aliases.items()},
+        {key: tuple(values) for key, values in assignment_map.items()},
+    )
+
+
+def _simple_assignments(tree: ast.AST) -> tuple[tuple[str, ast.AST], ...]:
+    assignments: list[tuple[int, int, str, ast.AST]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, (ast.Name, ast.Attribute)):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    assignments.append((node.lineno, node.col_offset, target.id, node.value))
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and isinstance(node.value, (ast.Name, ast.Attribute))
+        ):
+            assignments.append((node.lineno, node.col_offset, node.target.id, node.value))
+    assignments.sort(key=lambda value: (value[0], value[1], value[2]))
+    return tuple((target, source) for _, _, target, source in assignments)
 
 
 def _has_forbidden_call(
-    tree: ast.AST, aliases: dict[str, str], patterns: list[str]
+    tree: ast.AST,
+    aliases: tuple[dict[str, frozenset[str]], dict[str, tuple[ast.AST, ...]]],
+    patterns: list[str],
 ) -> bool:
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        name = _resolved_name(node.func, aliases)
-        if name and any(fnmatchcase(name.casefold(), pattern.casefold()) for pattern in patterns):
-            return True
+        for name in _resolved_names(node.func, *aliases):
+            candidates = {name}
+            if name.casefold().startswith("builtins."):
+                candidates.add(name.rsplit(".", 1)[-1])
+            if any(
+                fnmatchcase(candidate.casefold(), pattern.casefold())
+                for candidate in candidates
+                for pattern in patterns
+            ):
+                return True
     return False
 
 
@@ -269,13 +315,51 @@ def _has_forbidden_symbol(
     return False
 
 
-def _resolved_name(node: ast.AST, aliases: dict[str, str]) -> str | None:
+def _resolved_names(
+    node: ast.AST,
+    aliases: dict[str, frozenset[str]],
+    assignments: dict[str, tuple[ast.AST, ...]],
+    *,
+    stack: frozenset[str] = frozenset(),
+    depth: int = 0,
+) -> frozenset[str]:
+    if depth > _MAX_ALIAS_DEPTH:
+        raise ProfileViolation("PROFILE_RUNTIME_CALL_FORBIDDEN")
     if isinstance(node, ast.Name):
-        return aliases.get(node.id, node.id)
+        if node.id in stack:
+            return aliases.get(node.id, frozenset())
+        resolved = set(aliases.get(node.id, ()))
+        sources = assignments.get(node.id, ())
+        for source in sources:
+            resolved.update(
+                _resolved_names(
+                    source,
+                    aliases,
+                    assignments,
+                    stack=stack | {node.id},
+                    depth=depth + 1,
+                )
+            )
+        if not resolved and not sources:
+            resolved.add(node.id)
+        if len(resolved) > _MAX_ALIAS_VALUES:
+            raise ProfileViolation("PROFILE_RUNTIME_CALL_FORBIDDEN")
+        return frozenset(resolved)
     if isinstance(node, ast.Attribute):
-        parent = _resolved_name(node.value, aliases)
-        return f"{parent}.{node.attr}" if parent else None
-    return None
+        resolved = frozenset(
+            f"{parent}.{node.attr}"
+            for parent in _resolved_names(
+                node.value,
+                aliases,
+                assignments,
+                stack=stack,
+                depth=depth + 1,
+            )
+        )
+        if len(resolved) > _MAX_ALIAS_VALUES:
+            raise ProfileViolation("PROFILE_RUNTIME_CALL_FORBIDDEN")
+        return resolved
+    return frozenset()
 
 
 def _module_matches(name: str, families: list[str]) -> bool:
