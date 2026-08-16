@@ -407,22 +407,32 @@ Expected: `FAIL` because the profile and verifier do not exist.
     "scripts/*mcp_adapter*.py"
   ],
   "forbidden_payload_globs": ["adapters/**", "**/*McpAdapter*.exe"],
-  "forbidden_active_tokens": [
+  "forbidden_workflow_tokens": [
     "AGENTGUARDIAN_SIGNING_PFX",
     "AGENTGUARDIAN_MCP_ADAPTER",
-    "SensitiveModePolicy",
-    "EnterpriseControlPlane",
-    "subprocess.",
-    "openai.OpenAI("
+    "McpAdapter",
+    "mcp_adapter"
   ],
-  "active_text_paths": [
+  "forbidden_runtime_imports": [
+    "importlib",
+    "openai",
+    "runpy",
+    "subprocess"
+  ],
+  "forbidden_runtime_calls": ["__import__", "compile", "eval", "exec"],
+  "forbidden_runtime_symbols": [
+    "EnterpriseControlPlane",
+    "SensitiveModePolicy"
+  ],
+  "active_document_paths": [
     "README.md",
-    "pyproject.toml",
-    "src/agentguardian/**/*.py",
-    "scripts/**/*.py",
-    ".github/workflows/*.yml",
     "docs/architecture.md",
     "docs/security/*.md"
+  ],
+  "forbidden_document_promises": [
+    "dynamic MCP execution is implemented",
+    "high-sensitivity mode is supported",
+    "enterprise control plane is implemented"
   ],
   "required_source_paths": [
     "src/agentguardian/detectors.py",
@@ -435,7 +445,16 @@ Expected: `FAIL` because the profile and verifier do not exist.
 
 - [ ] **Step 3: Implement a fail-closed verifier**
 
-Implement `ProfileViolation(code)` plus `load_profile`, `verify_profile`, and `verify_payload`. Require exact schema keys, sorted unique arrays, relative POSIX patterns, bounded JSON size, no symlink/reparse traversal, all required paths present, all forbidden paths absent, forbidden token absence in active text, and exact network-module declaration. Return only `{"profile": "personal_store_release", "status": "pass"}` on success.
+Implement `ProfileViolation(code)` plus `load_profile`, `verify_profile`, and
+`verify_payload`. Require exact schema keys, sorted unique arrays, relative
+POSIX patterns, bounded JSON size, no symlink/reparse traversal, all required
+paths present, and all forbidden paths absent. Parse runtime Python with `ast`:
+reject actual forbidden imports/calls/symbol use, telemetry/LLM imports, and any
+network import outside the exact declared module list while allowing
+`self_audit.py` to contain detector literals. Scan workflow text only for the
+workflow token list and active documents only for exact retired positive
+promises. Return only
+`{"profile": "personal_store_release", "status": "pass"}` on success.
 
 - [ ] **Step 4: Bind packaging and final release verification**
 
