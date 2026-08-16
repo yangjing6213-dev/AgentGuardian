@@ -1,4 +1,5 @@
 import ast
+import inspect
 import json
 import os
 import time
@@ -5415,6 +5416,54 @@ def test_export_new_report_is_exclusive_and_outside_scanned_roots(tmp_path):
         export_new_report(tmp_path / "missing" / "report.json", "unsafe", [])
     assert "stable destination directory" in export_new_report.__doc__
     assert "reparse" in export_new_report.__doc__.lower()
+
+
+def test_personal_window_has_no_optional_data_sensitivity_mode(qapp):
+    window = create_window()
+    retired_state = "sensitive" + "_mode"
+
+    assert not hasattr(window, retired_state + "_checkbox")
+    assert not hasattr(window, "_" + retired_state)
+    assert window.share_button.isEnabled() is True
+    window.close()
+
+
+def test_export_new_report_has_fixed_personal_signature() -> None:
+    parameters = inspect.signature(export_new_report).parameters
+
+    assert tuple(parameters) == ("path", "content", "scanned_roots")
+    assert all(
+        parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+        and parameter.default is inspect.Parameter.empty
+        for parameter in parameters.values()
+    )
+
+
+def test_share_verification_starts_only_after_user_click(
+    qapp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prompts = []
+    requests = []
+    monkeypatch.setattr(
+        app_module.QInputDialog,
+        "getText",
+        lambda *args: (prompts.append(args), ("https://example.test", True))[1],
+    )
+    monkeypatch.setattr(
+        app_module,
+        "verify_public_share",
+        lambda url: (requests.append(url), SimpleNamespace(reachable=False))[1],
+    )
+    window = create_window()
+
+    assert prompts == []
+    assert requests == []
+
+    window.share_button.click()
+
+    assert len(prompts) == 1
+    assert requests == ["https://example.test"]
+    window.close()
 
 
 def test_export_rejects_resolved_parent_symlink_into_scanned_root(tmp_path):

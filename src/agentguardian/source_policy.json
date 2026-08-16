@@ -3,7 +3,7 @@
   "modules": {
     "__init__.py": "6bcb0e775f831e3d6acf1e8611abf9a7d54875ef1eb94032be1c0bd68ae0f92a",
     "__main__.py": "832caf5ea96c681db924078e0f5551c574e566cd34feb1298c9e34f82f48f673",
-    "app.py": "07c8c69045c0b6c06ed3b77a4b4b7d7fa09f150ee2cfee27ca0c1b717144c542",
+    "app.py": "5ef384c6e8debd8a162027544845c325a26f4c0861677914651db71367f3c1b8",
     "browser_audit.py": "1e2631fcf355667f7a630d9dd74aef9d6dee98207d2afd6aad57b90a704d7017",
     "clipboard_audit.py": "152fa64217ba1a3146846b24a6e031a8b037a1e04ef96bc5bbfca4c30b681f86",
     "detectors.py": "49f2ec4e85918039b5bd824fb9d383b6c72d149dd093ac2a84a406d0a82d4815",
@@ -19,7 +19,6 @@
     "reporting.py": "8803c1d88c05440920d316de10d9d8f5bdf2215b39d0934a3e061604bd18de40",
     "scoring.py": "ed04a103981b08e4fd55cb15e36a32487ee76db85c5d494fe4918f3b1092dd7d",
     "self_audit.py": "db5c13675684aa40e47ac3e75fc982f7cb742a77e4394e198730c2e672f23955",
-    "sensitive_mode.py": "4648c94dc4f91be4f17919c6017a1b934b64dab0418d33f43e86d75e8e575c78",
     "share_verification.py": "f21c16e0c46210263c4a3e97b36c05b303a45a3503bd28a3dbfdb5af8355a5bd",
     "state_store.py": "1ffaf7f684c3af9bd9e8527b1ce78cf0fc7fc569c2cb01555ec320bc6a0aa59d",
     "windows_appcontainer.py": "d980e3ef71470687167a234a3adee1d6a2ea6d19e3ca3462f9ff0c18c2663ab4",

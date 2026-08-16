@@ -17,7 +17,7 @@ from scripts.build_windows_msix import (
 
 
 PROJECT_ROOT = Path(__file__).parents[1]
-UNSIGNED_WORKFLOW_SHA256 = "4c48dec977fa7bc6eafbc6f1e06b295943dac097764a5bbbcc4e93cf6d0fc31d"
+UNSIGNED_WORKFLOW_SHA256 = "87a97672db830d117a360a2f681492ec7b05943d0aaa8ece4838bf55628858aa"
 
 
 def _git_text_sha256(path: Path) -> str:
@@ -364,8 +364,8 @@ def test_windows_mvp_workflow_binds_tools_and_install_smoke() -> None:
         "requirements-build.lock",
         "MakeAppx.exe",
         "verify_windows_msix.ps1",
-        "run_sensitive_data_acceptance.py",
-        "sensitive-data-acceptance.json",
+        "run_personal_privacy_acceptance.py",
+        "personal-privacy-acceptance.json",
         "Install launch and uninstall unsigned MSIX CI smoke",
     ):
         assert required in workflow

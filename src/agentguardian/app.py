@@ -96,7 +96,6 @@ from .remediation import (
     rollback_fixed_replacement,
 )
 from .scoring import score
-from .sensitive_mode import SensitiveModePolicy
 from .state_store import StateStoreError, load_protected_state, save_protected_state
 from .workflow import (
     COVERAGE_LIMIT_LABELS,
@@ -635,23 +634,12 @@ def export_new_report(
     path: str | Path,
     content: str,
     scanned_roots: Iterable[str | Path],
-    *,
-    sensitive_mode: SensitiveModePolicy | None = None,
-    export_confirmed: bool = False,
 ) -> None:
     """Create a report assuming a stable destination directory during open.
 
     Founder Alpha does not provide a handle sandbox against an active local
     reparse replacement race between the final resolution and exclusive open.
     """
-    policy = (
-        SensitiveModePolicy()
-        if sensitive_mode is None
-        else sensitive_mode
-    )
-    if type(policy) is not SensitiveModePolicy:
-        raise ValueError("SENSITIVE_MODE_INVALID")
-    policy.validate_export(export_confirmed)
     roots = tuple(scanned_roots)
     if _is_unc_path(path) or any(_is_unc_path(root) for root in roots):
         raise ValueError("UNC paths are not allowed")
@@ -940,7 +928,6 @@ class AgentGuardianWindow(QMainWindow):
         self._disposition_key = disposition_context.key
         self._dispositions = disposition_context.records
         self._protected_state_invalid = disposition_context.invalid_state
-        self._sensitive_mode = SensitiveModePolicy()
         self.is_scanning = False
         self.report_json = ""
         self.report_html = ""
@@ -1068,15 +1055,6 @@ class AgentGuardianWindow(QMainWindow):
         ):
             label.setWordWrap(True)
             layout.addWidget(label)
-
-        self.sensitive_mode_checkbox = QCheckBox("高敏感模式")
-        self.sensitive_mode_checkbox.setToolTip(
-            "仅本地内存处理；禁止 API 访问和原文持久化；导出需要二次确认。"
-        )
-        self.sensitive_mode_checkbox.toggled.connect(
-            self._sensitive_mode_changed
-        )
-        layout.addWidget(self.sensitive_mode_checkbox)
 
         self.scope_consent_checkbox = QCheckBox(
             "我已核对并同意仅扫描当前显示范围"
@@ -1509,12 +1487,6 @@ class AgentGuardianWindow(QMainWindow):
     def _verify_share(self) -> None:
         if self.is_scanning:
             return
-        if self._sensitive_mode.enabled:
-            self.status_label.setText("高敏感模式已禁止联网分享验证。")
-            self.coverage_status_label.setText(
-                "未建立网络连接；高敏感模式只允许本地处理。"
-            )
-            return
         url, accepted = QInputDialog.getText(
             self,
             "验证联网分享",
@@ -1624,30 +1596,6 @@ class AgentGuardianWindow(QMainWindow):
                 self.scope_consent_checkbox.blockSignals(False)
                 self.status_label.setText("请重新核对并同意当前审计范围。")
         self._update_scan_enabled()
-
-    def _sensitive_mode_changed(self, checked: bool) -> None:
-        try:
-            self._sensitive_mode = (
-                SensitiveModePolicy.enabled_policy()
-                if checked
-                else SensitiveModePolicy()
-            )
-        except Exception:  # noqa: BLE001 - fixed security-mode boundary
-            self.sensitive_mode_checkbox.blockSignals(True)
-            self.sensitive_mode_checkbox.setChecked(False)
-            self.sensitive_mode_checkbox.blockSignals(False)
-            self._sensitive_mode = SensitiveModePolicy()
-            self.share_button.setEnabled(True)
-            self.status_label.setText("无法启用高敏感模式。")
-            return
-        self.share_button.setEnabled(not checked)
-        self._invalidate_report()
-        self._revoke_scope_consent()
-        self.status_label.setText(
-            "高敏感模式已启用；请重新核对范围并同意后开始审计。"
-            if checked
-            else "高敏感模式已关闭；请重新核对范围并同意后开始审计。"
-        )
 
     def _revoke_scope_consent(self) -> None:
         self._scope_consent = None
@@ -2588,29 +2536,8 @@ class AgentGuardianWindow(QMainWindow):
         if not path:
             return
         content = self.report_json if mode == "JSON" else self.report_html
-        export_confirmed = False
-        if self._sensitive_mode.enabled:
-            answer = QMessageBox.question(
-                self,
-                "高敏感模式导出确认",
-                "报告只包含脱敏证据；确认将报告写入所选本地路径吗？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            export_confirmed = answer == QMessageBox.StandardButton.Yes
-            if not export_confirmed:
-                return
         try:
-            if self._sensitive_mode.enabled:
-                export_new_report(
-                    path,
-                    content,
-                    self._report_roots,
-                    sensitive_mode=self._sensitive_mode,
-                    export_confirmed=export_confirmed,
-                )
-            else:
-                export_new_report(path, content, self._report_roots)
+            export_new_report(path, content, self._report_roots)
         except (OSError, PermissionError, TypeError, ValueError):
             QMessageBox.warning(self, "导出失败", "无法导出报告。")
             return

@@ -26,13 +26,13 @@ jobs:
         shell: pwsh
         run: python -m pytest -q -p no:cacheprovider
 
-      - name: Run synthetic high-sensitivity data acceptance gate
+      - name: Run personal privacy acceptance gate
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path "$pwd\.analysis" -Force | Out-Null
-          python scripts/run_sensitive_data_acceptance.py `
-            --evidence-path "$pwd\.analysis\sensitive-data-acceptance.json"
-          Get-Content -LiteralPath "$pwd\.analysis\sensitive-data-acceptance.json"
+          python scripts/run_personal_privacy_acceptance.py `
+            --evidence-path "$pwd\.analysis\personal-privacy-acceptance.json"
+          Get-Content -LiteralPath "$pwd\.analysis\personal-privacy-acceptance.json"
 
       - name: Install hash-locked build dependencies
         shell: pwsh
