@@ -14,9 +14,11 @@ import os
 from pathlib import Path
 import stat
 import xml.etree.ElementTree as ET
+import zipfile
 
 
 MAX_REPORT_BYTES = 16 * 1024 * 1024
+MAX_MANIFEST_BYTES = 1024 * 1024
 
 
 class WackEvidenceError(ValueError):
@@ -74,16 +76,15 @@ def verify_wack_report(
     report_path: str | Path,
     evidence_root: str | Path,
     *,
+    package_path: str | Path,
     source_commit: str,
-    expected_package_identity: str,
     generated_at: str,
 ) -> dict[str, object]:
     report = _bounded_report_path(report_path, evidence_root)
     if not _lower_sha(source_commit):
         raise WackEvidenceError("WACK_SOURCE_COMMIT_INVALID")
-    if not _printable(expected_package_identity):
-        raise WackEvidenceError("WACK_PACKAGE_IDENTITY_INVALID")
     _utc_seconds(generated_at)
+    package, package_identity = read_msix_identity(package_path)
     try:
         raw = report.read_bytes()
     except OSError:
@@ -104,27 +105,60 @@ def verify_wack_report(
     if root.get("PARTIAL_RUN") != "FALSE":
         raise WackEvidenceError("WACK_REPORT_SCHEMA_UNSUPPORTED")
 
-    package_identity = _report_package_identity(root)
-    if package_identity != expected_package_identity:
-        raise WackEvidenceError("WACK_PACKAGE_IDENTITY_MISMATCH")
+    tool_version = root.get("VERSION")
+    app_name = root.get("APP_NAME")
+    app_version = root.get("APP_VERSION")
+    report_id = root.get("ID")
+    publisher_display_name = root.get("PUBLISHER_DISPLAY_NAME")
+    if not all(
+        _printable(value)
+        for value in (
+            tool_version,
+            app_name,
+            app_version,
+            report_id,
+            publisher_display_name,
+        )
+    ):
+        raise WackEvidenceError("WACK_REPORT_SCHEMA_UNSUPPORTED")
+    if app_version != package_identity["version"]:
+        raise WackEvidenceError("WACK_PACKAGE_VERSION_MISMATCH")
+
     requirements = tuple(root.iter("REQUIREMENT"))
     tests = tuple(root.iter("TEST"))
-    results = tuple(element.get("RESULT") for element in (*requirements, *tests))
-    if not results or any(result not in {"PASS", "FAIL"} for result in results):
+    if not requirements or not tests:
+        raise WackEvidenceError("WACK_REPORT_SCHEMA_UNSUPPORTED")
+    results: list[str] = []
+    for element in (*requirements, *tests):
+        attribute_result = element.get("RESULT")
+        direct_results = element.findall("RESULT")
+        if attribute_result is not None:
+            results.append(attribute_result.strip())
+        if element.tag == "TEST" and len(direct_results) != 1:
+            raise WackEvidenceError("WACK_REPORT_SCHEMA_UNSUPPORTED")
+        for result in direct_results:
+            results.append((result.text or "").strip())
+    if any(result == "FAIL" for result in results):
+        raise WackEvidenceError("WACK_RESULT_FAILED")
+    if len(results) != len(tests) or any(result != "PASS" for result in results):
         raise WackEvidenceError("WACK_REPORT_SCHEMA_UNSUPPORTED")
     failed = sum(result == "FAIL" for result in results)
-    if failed:
-        raise WackEvidenceError("WACK_RESULT_FAILED")
-    tool_version = root.get("TOOL_VERSION")
-    if not _printable(tool_version):
-        raise WackEvidenceError("WACK_REPORT_SCHEMA_UNSUPPORTED")
     return {
         "generated_at": generated_at,
         "overall_result": "PASS",
         "package_identity": package_identity,
+        "package_sha256": _sha256_file(package, "WACK_PACKAGE_INVALID"),
+        "report_fields": {
+            "app_name": app_name,
+            "app_version": app_version,
+            "id": report_id,
+            "id_semantics": "unverified",
+            "publisher_display_name": publisher_display_name,
+        },
         "report_sha256": hashlib.sha256(raw).hexdigest(),
-        "schema": 1,
+        "schema": 2,
         "source_commit": source_commit,
+        "source_commit_origin": "candidate_input",
         "test_counts": {
             "failed": failed,
             "passed": len(results) - failed,
@@ -136,21 +170,85 @@ def verify_wack_report(
     }
 
 
-def _report_package_identity(root: ET.Element) -> str:
-    # WACK has no public stable XML schema. Support only these explicit fields.
-    values: list[str] = []
-    root_value = root.get("PACKAGE_IDENTITY")
-    if root_value is not None:
-        values.append(root_value)
-    for package in root.iter("PACKAGE"):
-        for field in ("IDENTITY_NAME", "PACKAGE_IDENTITY"):
-            value = package.get(field)
-            if value is not None:
-                values.append(value)
-    unique = set(values)
-    if len(unique) != 1 or not _printable(next(iter(unique), None)):
-        raise WackEvidenceError("WACK_PACKAGE_IDENTITY_UNSUPPORTED")
-    return next(iter(unique))
+def read_msix_identity(package_value: str | Path) -> tuple[Path, dict[str, str]]:
+    package = _bounded_package_path(package_value)
+    try:
+        with zipfile.ZipFile(package) as archive:
+            manifests = [
+                info
+                for info in archive.infolist()
+                if info.filename.casefold() == "appxmanifest.xml"
+            ]
+            if (
+                len(manifests) != 1
+                or manifests[0].filename != "AppxManifest.xml"
+                or manifests[0].is_dir()
+                or manifests[0].flag_bits & 1
+                or manifests[0].file_size > MAX_MANIFEST_BYTES
+            ):
+                raise WackEvidenceError("WACK_PACKAGE_MANIFEST_INVALID")
+            manifest_raw = archive.read(manifests[0])
+    except WackEvidenceError:
+        raise
+    except (OSError, KeyError, MemoryError, RuntimeError, zipfile.BadZipFile):
+        raise WackEvidenceError("WACK_PACKAGE_MANIFEST_INVALID") from None
+    if b"<!DOCTYPE" in manifest_raw.upper() or b"<!ENTITY" in manifest_raw.upper():
+        raise WackEvidenceError("WACK_PACKAGE_MANIFEST_INVALID")
+    try:
+        root = ET.fromstring(manifest_raw)
+    except (ET.ParseError, MemoryError, RecursionError):
+        raise WackEvidenceError("WACK_PACKAGE_MANIFEST_INVALID") from None
+    if _local_name(root.tag) != "Package":
+        raise WackEvidenceError("WACK_PACKAGE_MANIFEST_INVALID")
+    identities = [element for element in root if _local_name(element.tag) == "Identity"]
+    if len(identities) != 1:
+        raise WackEvidenceError("WACK_PACKAGE_MANIFEST_INVALID")
+    identity = identities[0]
+    values = {
+        "name": identity.get("Name"),
+        "publisher": identity.get("Publisher"),
+        "version": identity.get("Version"),
+        "processor_architecture": identity.get("ProcessorArchitecture"),
+    }
+    if (
+        not all(_printable(value) for value in values.values())
+        or values["processor_architecture"] != "x64"
+    ):
+        raise WackEvidenceError("WACK_PACKAGE_MANIFEST_INVALID")
+    return package, values
+
+
+def _bounded_package_path(package_value: str | Path) -> Path:
+    package = Path(package_value)
+    if (
+        not package.is_absolute()
+        or package.anchor.startswith("\\\\")
+        or package.suffix.casefold() != ".msix"
+        or _has_reparse_component(package)
+    ):
+        raise WackEvidenceError("WACK_PACKAGE_INVALID")
+    try:
+        resolved = package.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise WackEvidenceError("WACK_PACKAGE_INVALID") from None
+    if not _regular_file(resolved):
+        raise WackEvidenceError("WACK_PACKAGE_INVALID")
+    return resolved
+
+
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _sha256_file(path: Path, code: str) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        raise WackEvidenceError(code) from None
+    return digest.hexdigest()
 
 
 def _bounded_report_path(report_value: str | Path, root_value: str | Path) -> Path:
@@ -237,8 +335,8 @@ def main() -> int:
     parser.add_argument("--validate-tool-path", type=Path)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--evidence-root", type=Path)
+    parser.add_argument("--package", type=Path)
     parser.add_argument("--source-commit")
-    parser.add_argument("--expected-package-identity")
     parser.add_argument("--generated-at")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -249,8 +347,8 @@ def main() -> int:
                 for value in (
                     args.report,
                     args.evidence_root,
+                    args.package,
                     args.source_commit,
-                    args.expected_package_identity,
                     args.generated_at,
                     args.output,
                 )
@@ -263,8 +361,8 @@ def main() -> int:
             for value in (
                 args.report,
                 args.evidence_root,
+                args.package,
                 args.source_commit,
-                args.expected_package_identity,
                 args.generated_at,
                 args.output,
             )
@@ -273,12 +371,19 @@ def main() -> int:
         result = verify_wack_report(
             args.report,
             args.evidence_root,
+            package_path=args.package,
             source_commit=args.source_commit,
-            expected_package_identity=args.expected_package_identity,
             generated_at=args.generated_at,
         )
         output = args.output
-        if not output.is_absolute() or output.parent.resolve() != args.evidence_root.resolve():
+        if (
+            not output.is_absolute()
+            or output.anchor.startswith("\\\\")
+            or output.suffix.casefold() != ".json"
+            or output.exists()
+            or not output.parent.is_dir()
+            or _has_reparse_component(output.parent)
+        ):
             raise WackEvidenceError("WACK_OUTPUT_PATH_INVALID")
         output.write_bytes(canonical_json_bytes(result))
     except WackEvidenceError as error:

@@ -39,7 +39,12 @@ def _canonical(value: object) -> bytes:
 
 def _copy_fixture(tmp_path: Path) -> Path:
     root = tmp_path / "repository"
-    for relative in ("src/agentguardian", ".github/workflows", "docs/security"):
+    for relative in (
+        "src/agentguardian",
+        ".github/workflows",
+        "docs/security",
+        "tests/fixtures/wack",
+    ):
         shutil.copytree(ROOT / relative, root / relative)
     for relative in (
         "README.md",
@@ -48,6 +53,7 @@ def _copy_fixture(tmp_path: Path) -> Path:
         "scripts/run_personal_privacy_acceptance.py",
         "scripts/verify_wack_report.py",
         "scripts/verify_windows_release_candidate.py",
+        "scripts/verify_windows_store_candidate.py",
         "release_profiles/personal_store_release.json",
     ):
         destination = root / relative

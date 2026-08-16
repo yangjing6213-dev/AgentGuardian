@@ -45,7 +45,6 @@ def validate_release_candidate(
     require_trusted_signature: bool,
     require_fresh_user_state: bool,
     license_review_path: str | Path | None = None,
-    wack_evidence_path: str | Path | None = None,
 ) -> dict[str, object]:
     bundle = _directory(bundle_root, "RELEASE_BUNDLE_INVALID")
     evidence = _json_file(smoke_evidence_path, "RELEASE_SMOKE_EVIDENCE_INVALID")
@@ -106,12 +105,6 @@ def validate_release_candidate(
     package_full_name = evidence.get("package_full_name")
     if not _is_package_full_name(package_full_name):
         raise ReleaseEvidenceError("RELEASE_PACKAGE_IDENTITY_INVALID")
-    wack_status = "not_provided"
-    if wack_evidence_path is not None:
-        wack = _validate_wack_evidence(wack_evidence_path, expected_source_commit)
-        if not package_full_name.startswith(f"{wack['package_identity']}_"):
-            raise ReleaseEvidenceError("RELEASE_WACK_EVIDENCE_INVALID")
-        wack_status = "complete"
     if require_fresh_user_state and (
         evidence.get("fresh_user_state") is not True
         or result.get("app_data_residue") is not False
@@ -122,15 +115,12 @@ def validate_release_candidate(
             raise ReleaseEvidenceError(f"RELEASE_SMOKE_{key.upper()}_FAILED")
     if result.get("package_residue") is not False:
         raise ReleaseEvidenceError("RELEASE_PACKAGE_RESIDUE")
-    if require_trusted_signature and wack_status != "complete":
-        raise ReleaseEvidenceError("RELEASE_WACK_EVIDENCE_REQUIRED")
     return {
         "passed": True,
         "source_commit": expected_source_commit,
         "signature_mode": signature_mode,
         "fresh_user_state": evidence.get("fresh_user_state") is True,
         "license_review": "complete",
-        "wack": wack_status,
     }
 
 
@@ -255,69 +245,6 @@ def _regular_file(path: Path) -> bool:
         return path.is_file() and not path.is_symlink() and not _has_reparse_component(path)
     except OSError:
         return False
-
-
-def _validate_wack_evidence(
-    evidence_path: str | Path, expected_source_commit: str
-) -> dict[str, Any]:
-    evidence = _json_file(evidence_path, "RELEASE_WACK_EVIDENCE_INVALID")
-    expected_keys = {
-        "generated_at",
-        "overall_result",
-        "package_identity",
-        "report_sha256",
-        "schema",
-        "source_commit",
-        "test_counts",
-        "tool_version",
-    }
-    counts = evidence.get("test_counts")
-    if (
-        set(evidence) != expected_keys
-        or evidence.get("schema") != 1
-        or evidence.get("source_commit") != expected_source_commit
-        or evidence.get("overall_result") != "PASS"
-        or not _lower_hex(evidence.get("report_sha256"), 64)
-        or not _bounded_text(evidence.get("package_identity"))
-        or not _bounded_text(evidence.get("tool_version"))
-        or not isinstance(counts, dict)
-        or set(counts) != {"failed", "passed", "requirements", "tests", "total"}
-        or any(type(counts.get(key)) is not int for key in counts)
-        or any(counts[key] < 0 for key in counts)
-        or counts["failed"] != 0
-        or counts["total"] <= 0
-        or counts["passed"] != counts["total"]
-        or counts["requirements"] + counts["tests"] != counts["total"]
-    ):
-        raise ReleaseEvidenceError("RELEASE_WACK_EVIDENCE_INVALID")
-    try:
-        generated = datetime.strptime(evidence.get("generated_at"), "%Y-%m-%dT%H:%M:%SZ")
-        path = _safe_local_path(evidence_path, "RELEASE_WACK_EVIDENCE_INVALID")
-        if path.read_bytes() != canonical_json_bytes(evidence):
-            raise ReleaseEvidenceError("RELEASE_WACK_EVIDENCE_INVALID")
-    except (OSError, TypeError, ValueError):
-        raise ReleaseEvidenceError("RELEASE_WACK_EVIDENCE_INVALID") from None
-    if generated.strftime("%Y-%m-%dT%H:%M:%SZ") != evidence["generated_at"]:
-        raise ReleaseEvidenceError("RELEASE_WACK_EVIDENCE_INVALID")
-    return evidence
-
-
-def _lower_hex(value: object, length: int) -> bool:
-    return (
-        type(value) is str
-        and len(value) == length
-        and all(character in "0123456789abcdef" for character in value)
-    )
-
-
-def _bounded_text(value: object) -> bool:
-    return (
-        type(value) is str
-        and bool(value)
-        and value == value.strip()
-        and len(value) <= 256
-        and all(ord(character) >= 32 for character in value)
-    )
 
 
 def _profile_bytes_from_commit(source_commit: str) -> bytes:
@@ -535,7 +462,6 @@ def main() -> int:
     parser.add_argument("--require-trusted-signature", action="store_true")
     parser.add_argument("--require-fresh-user-state", action="store_true")
     parser.add_argument("--license-review", type=Path)
-    parser.add_argument("--wack-evidence", type=Path)
     args = parser.parse_args()
     try:
         result = validate_release_candidate(
@@ -545,7 +471,6 @@ def main() -> int:
             require_trusted_signature=args.require_trusted_signature,
             require_fresh_user_state=args.require_fresh_user_state,
             license_review_path=args.license_review,
-            wack_evidence_path=args.wack_evidence,
         )
     except ReleaseEvidenceError as error:
         parser.error(str(error))

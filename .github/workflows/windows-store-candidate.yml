@@ -154,29 +154,29 @@ jobs:
           python scripts/build_windows_msix.py `
             --msixupload-package "$pwd\.analysis\AgentGuardian-store.msix" `
             --msixupload-output "$evidence\AgentGuardian-$($env:EXPECTED_SOURCE_COMMIT).msixupload"
-          Copy-Item "$pwd\.analysis\portable-a\dist\AgentGuardian\SHA256SUMS" "$evidence\portable-SHA256SUMS"
           Copy-Item "$pwd\.analysis\portable-a\dist\AgentGuardian\AgentGuardian.cdx.json" "$evidence\AgentGuardian.cdx.json"
           Copy-Item "$pwd\.analysis\portable-a\dist\AgentGuardian\THIRD_PARTY_NOTICES.md" "$evidence\THIRD_PARTY_NOTICES.md"
           Copy-Item "$pwd\.analysis\portable-a\dist\AgentGuardian\BUILD-METADATA.json" "$evidence\provenance.json"
-          Copy-Item "$pwd\.analysis\portable-a\dist\AgentGuardian\PAYLOAD-MANIFEST.json" "$evidence\release-manifest.json"
-
-      - name: Record bounded workflow metadata
-        shell: pwsh
-        env:
-          RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-        run: |
-          python -c "import json,os,pathlib; value={'schema':1,'source_commit':os.environ['EXPECTED_SOURCE_COMMIT'],'commit_utc':os.environ['COMMIT_UTC'],'run_id':os.environ['RUN_ID'],'run_attempt':os.environ['RUN_ATTEMPT'],'store_identity_name':os.environ['STORE_IDENTITY_NAME'],'store_version':os.environ['STORE_VERSION'],'wack_ci_capability':'not_verified','store_submission':'not_performed'}; pathlib.Path('.analysis/store-evidence/workflow-run.json').write_text(json.dumps(value,ensure_ascii=True,sort_keys=True,separators=(',',':'))+'\n',encoding='ascii')"
+          Copy-Item "$pwd\.analysis\portable-a\dist\AgentGuardian\PAYLOAD-MANIFEST.json" "$evidence\payload-manifest.json"
+          Copy-Item "$pwd\docs\security\windows-license-review.json" "$evidence\windows-license-review.json"
 
       - name: Run Windows App Certification Kit in required active user session
         shell: pwsh
         run: |
           # Microsoft contract: appcert.exe reset, then test with package and report paths.
-          # WACK requires an active user session; this CI capability is not verified.
+          # WACK requires an active user session; current CI capability is not verified.
+          $userInteractive = [Environment]::UserInteractive
+          $sessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+          "WACK_USER_INTERACTIVE=$($userInteractive.ToString().ToLowerInvariant())" >> $env:GITHUB_ENV
+          "WACK_SESSION_ID=$sessionId" >> $env:GITHUB_ENV
+          if (-not $userInteractive -or $sessionId -eq 0) {
+            throw "WACK requires an active user session; current CI capability is not verified"
+          }
           $tool = (python scripts/verify_wack_report.py --validate-tool-path $env:WACK_TOOL_PATH).Trim()
           & $tool reset
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $report = "$pwd\.analysis\store-evidence\wack-report.xml"
+          New-Item -ItemType Directory -Path "$pwd\.analysis\wack-evidence" -Force | Out-Null
+          $report = "$pwd\.analysis\wack-evidence\wack-report.xml"
           & $tool test `
             -appxpackagepath "$pwd\.analysis\AgentGuardian-store.msix" `
             -reportoutputpath $report
@@ -184,44 +184,62 @@ jobs:
           $generatedAt = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
           python scripts/verify_wack_report.py `
             --report $report `
-            --evidence-root "$pwd\.analysis\store-evidence" `
+            --evidence-root "$pwd\.analysis\wack-evidence" `
+            --package "$pwd\.analysis\AgentGuardian-store.msix" `
             --source-commit $env:EXPECTED_SOURCE_COMMIT `
-            --expected-package-identity $env:STORE_IDENTITY_NAME `
             --generated-at $generatedAt `
             --output "$pwd\.analysis\store-evidence\wack-summary.json"
 
-      - name: Final formal release gate remains fail closed
+      - name: Record bounded workflow metadata
+        shell: pwsh
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          python -c "import json,os,pathlib; value={'schema':1,'source_commit':os.environ['EXPECTED_SOURCE_COMMIT'],'commit_utc':os.environ['COMMIT_UTC'],'run_id':os.environ['RUN_ID'],'run_attempt':os.environ['RUN_ATTEMPT'],'wack_user_interactive':os.environ['WACK_USER_INTERACTIVE']=='true','wack_session_id':int(os.environ['WACK_SESSION_ID']),'store_submission':'not_performed'}; pathlib.Path('.analysis/store-evidence/workflow-run.json').write_text(json.dumps(value,ensure_ascii=True,sort_keys=True,separators=(',',':'))+'\n',encoding='ascii')"
+
+      - name: Generate top-level Store evidence manifest and checksums
+        shell: pwsh
+        run: |
+          python scripts/verify_windows_store_candidate.py `
+            --evidence-root "$pwd\.analysis\store-evidence" `
+            --expected-source-commit $env:EXPECTED_SOURCE_COMMIT `
+            --create
+
+      - name: Verify Store candidate evidence chain
+        shell: pwsh
+        run: |
+          python scripts/verify_windows_store_candidate.py `
+            --evidence-root "$pwd\.analysis\store-evidence" `
+            --expected-source-commit $env:EXPECTED_SOURCE_COMMIT
+
+      - name: Validate bounded evidence upload allowlist
+        id: evidence_whitelist
         if: always()
         shell: pwsh
         run: |
-          python scripts/verify_windows_release_candidate.py `
-            --bundle-root "$pwd\.analysis\portable-a\dist\AgentGuardian" `
-            --smoke-evidence "$pwd\.analysis\store-evidence\wack-summary.json" `
+          python scripts/verify_windows_store_candidate.py `
+            --evidence-root "$pwd\.analysis\store-evidence" `
             --expected-source-commit $env:EXPECTED_SOURCE_COMMIT `
-            --require-trusted-signature `
-            --require-fresh-user-state `
-            --license-review "$pwd\docs\security\windows-license-review.json" `
-            --wack-evidence "$pwd\.analysis\store-evidence\wack-summary.json"
-          if ($LASTEXITCODE -eq 0) {
-            throw "Store candidate must not pass the formal release gate"
-          }
-          exit $LASTEXITCODE
+            --check-upload-allowlist
 
-      - name: Upload bounded candidate evidence only
-        if: always()
+      - name: Upload bounded Store evidence only
+        if: always() && steps.evidence_whitelist.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: agentguardian-store-candidate-${{ inputs.expected_source_commit }}
+          name: agentguardian-store-evidence-${{ inputs.expected_source_commit }}
           retention-days: 14
-          if-no-files-found: warn
+          if-no-files-found: error
           path: |
             .analysis/store-evidence/AgentGuardian-${{ inputs.expected_source_commit }}.msixupload
-            .analysis/store-evidence/portable-SHA256SUMS
             .analysis/store-evidence/AgentGuardian.cdx.json
             .analysis/store-evidence/THIRD_PARTY_NOTICES.md
+            .analysis/store-evidence/candidate-SHA256SUMS
+            .analysis/store-evidence/payload-manifest.json
+            .analysis/store-evidence/privacy-result.json
+            .analysis/store-evidence/profile-result.json
             .analysis/store-evidence/provenance.json
             .analysis/store-evidence/release-manifest.json
-            .analysis/store-evidence/profile-result.json
-            .analysis/store-evidence/privacy-result.json
             .analysis/store-evidence/wack-summary.json
+            .analysis/store-evidence/windows-license-review.json
             .analysis/store-evidence/workflow-run.json
