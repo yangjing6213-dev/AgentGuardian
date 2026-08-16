@@ -52,6 +52,7 @@ def _write_msix(
     *,
     version: str = VERSION,
     processor_architecture: str = "x64",
+    manifest_override: bytes | None = None,
     portable_files: dict[str, bytes] | None = None,
     extra_entries: dict[str, bytes] | None = None,
 ) -> Path:
@@ -64,6 +65,8 @@ def _write_msix(
         b'ProcessorArchitecture="x64"',
         f'ProcessorArchitecture="{processor_architecture}"'.encode("ascii"),
     )
+    if manifest_override is not None:
+        manifest = manifest_override
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("AppxManifest.xml", manifest)
         for name, body in (
@@ -236,6 +239,9 @@ def test_msixupload_is_a_deterministic_zip_containing_only_the_msix(
     assert first.read_bytes() == second.read_bytes()
     with zipfile.ZipFile(first) as archive:
         assert archive.namelist() == ["AgentGuardian.msix"]
+        info = archive.infolist()[0]
+        assert info.compress_type == zipfile.ZIP_STORED
+        assert info.compress_size == info.file_size
         assert archive.read("AgentGuardian.msix") == b"synthetic msix"
 
 
@@ -547,6 +553,52 @@ def test_wack_report_fails_closed_on_unsafe_or_incomplete_evidence(
         )
 
 
+def test_wack_report_rejects_utf16_internal_entity(tmp_path: Path) -> None:
+    wack = _wack()
+    package = _write_msix(tmp_path / "AgentGuardian.msix")
+    report_text = WACK_FIXTURE.read_text(encoding="utf-8")
+    report_text = report_text.replace('encoding="utf-8"', 'encoding="utf-16"')
+    report_text = report_text.replace(
+        "<REPORT",
+        '<!DOCTYPE REPORT [<!ENTITY pass "PASS">]><REPORT',
+        1,
+    ).replace('OVERALL_RESULT="PASS"', 'OVERALL_RESULT="&pass;"', 1)
+    report = _write_report(tmp_path / "raw-wack", report_text.encode("utf-16"))
+
+    with pytest.raises(wack.WackEvidenceError, match="^WACK_XML_DTD_FORBIDDEN$"):
+        wack.verify_wack_report(
+            report,
+            report.parent,
+            package_path=package,
+            source_commit=COMMIT,
+            generated_at="2026-08-17T00:00:00Z",
+        )
+
+
+def test_msix_manifest_rejects_utf16_internal_entity(tmp_path: Path) -> None:
+    wack = _wack()
+    manifest = msix_manifest_bytes(
+        identity_name=PACKAGE_IDENTITY,
+        publisher=PUBLISHER,
+        version=VERSION,
+    ).decode("utf-8")
+    manifest = manifest.replace('encoding="utf-8"', 'encoding="utf-16"')
+    manifest = manifest.replace(
+        "<Package",
+        f'<!DOCTYPE Package [<!ENTITY identity "{PACKAGE_IDENTITY}">]><Package',
+        1,
+    ).replace(f'Name="{PACKAGE_IDENTITY}"', 'Name="&identity;"', 1)
+    package = _write_msix(
+        tmp_path / "AgentGuardian.msix",
+        manifest_override=manifest.encode("utf-16"),
+    )
+
+    with pytest.raises(
+        wack.WackEvidenceError, match="^WACK_PACKAGE_MANIFEST_INVALID$"
+    ):
+        wack.read_msix_identity(package)
+
+
 def test_wack_report_requires_absolute_in_root_regular_non_reparse_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -754,6 +806,15 @@ def test_store_candidate_manifest_and_checksums_bind_complete_chain(
     }
     assert manifest["msix"]["name"] == "AgentGuardian-store.msix"
     assert manifest["msixupload"]["name"] == f"AgentGuardian-{COMMIT}.msixupload"
+    asset_sha = hashlib.sha256(b"synthetic png").hexdigest()
+    assert manifest["assets"] == [
+        {"name": name, "sha256": asset_sha, "size": len(b"synthetic png")}
+        for name in (
+            "Assets/Square44x44Logo.png",
+            "Assets/Square150x150Logo.png",
+            "Assets/StoreLogo.png",
+        )
+    ]
     assert set(manifest["evidence"]) == {
         "license_review",
         "notices",
@@ -938,6 +999,48 @@ def test_store_candidate_rejects_msixupload_with_more_than_one_msix(
         candidate.validate_store_candidate(root, expected_source_commit=COMMIT)
 
 
+def test_store_candidate_rejects_compressed_outer_msixupload(tmp_path: Path) -> None:
+    candidate = _candidate()
+    root = _write_candidate_inputs(tmp_path, create_evidence=False)
+    upload = root / f"AgentGuardian-{COMMIT}.msixupload"
+    with zipfile.ZipFile(upload) as archive:
+        package_name = archive.namelist()[0]
+        package_bytes = archive.read(package_name)
+    upload.unlink()
+    with zipfile.ZipFile(upload, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(package_name, package_bytes)
+
+    with pytest.raises(
+        candidate.StoreCandidateError, match="^STORE_CANDIDATE_UPLOAD_INVALID$"
+    ):
+        candidate.create_candidate_evidence(root, expected_source_commit=COMMIT)
+
+
+@pytest.mark.parametrize(
+    "extra_name",
+    ("Assets/evil.exe", "Assets/evil/", "AppxSignature.p7x"),
+)
+def test_store_candidate_rejects_extra_wrapper_during_full_validation(
+    tmp_path: Path, extra_name: str
+) -> None:
+    candidate = _candidate()
+    root = _write_candidate_inputs(tmp_path)
+    upload = root / f"AgentGuardian-{COMMIT}.msixupload"
+    package = tmp_path / "mutated-store.msix"
+    with zipfile.ZipFile(upload) as archive:
+        package.write_bytes(archive.read(archive.namelist()[0]))
+    with zipfile.ZipFile(package, "a") as archive:
+        archive.writestr(extra_name, b"unexpected wrapper asset")
+    upload.unlink()
+    deterministic_msixupload(package, upload)
+
+    with pytest.raises(
+        candidate.StoreCandidateError,
+        match="^STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID$",
+    ):
+        candidate.validate_store_candidate(root, expected_source_commit=COMMIT)
+
+
 @pytest.mark.parametrize(
     "name",
     (
@@ -1041,6 +1144,82 @@ def test_store_candidate_rejects_uncovered_portable_msix_entry(tmp_path: Path) -
         candidate.create_candidate_evidence(root, expected_source_commit=COMMIT)
 
 
+def test_store_candidate_rejects_evidence_root_over_total_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = _candidate()
+    root = _write_candidate_inputs(tmp_path)
+    total = sum(path.stat().st_size for path in root.iterdir())
+    monkeypatch.setattr(candidate, "MAX_EVIDENCE_ROOT_BYTES", total - 1, raising=False)
+
+    with pytest.raises(
+        candidate.StoreCandidateError, match="^STORE_EVIDENCE_ALLOWLIST_INVALID$"
+    ):
+        candidate.validate_upload_allowlist(root, COMMIT)
+
+
+def test_payload_manifest_schema_rejects_bool() -> None:
+    candidate = _candidate()
+    body = b"x"
+    digest = hashlib.sha256(body).hexdigest()
+    raw = _canonical(
+        {
+            "algorithm": "sha256",
+            "files": [{"path": "file.bin", "sha256": digest, "size": 1}],
+            "schema": True,
+        }
+    )
+
+    with pytest.raises(
+        candidate.StoreCandidateError,
+        match="^STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID$",
+    ):
+        candidate._validate_payload_manifest(raw, {"file.bin": (1, digest)})
+
+
+@pytest.mark.parametrize(
+    "name,schema_value,code",
+    (
+        ("privacy-result.json", True, "STORE_CANDIDATE_PRIVACY_INVALID"),
+        ("workflow-run.json", True, "STORE_CANDIDATE_WORKFLOW_METADATA_INVALID"),
+        ("wack-summary.json", 2.0, "STORE_CANDIDATE_WACK_INVALID"),
+    ),
+)
+def test_store_candidate_schema_fields_require_exact_integer_type(
+    tmp_path: Path, name: str, schema_value: object, code: str
+) -> None:
+    candidate = _candidate()
+    root = _write_candidate_inputs(tmp_path, create_evidence=False)
+    path = root / name
+    value = json.loads(path.read_text(encoding="ascii"))
+    value["schema"] = schema_value
+    path.write_bytes(_canonical(value))
+
+    with pytest.raises(candidate.StoreCandidateError, match=f"^{code}$"):
+        candidate.create_candidate_evidence(root, expected_source_commit=COMMIT)
+
+
+def test_external_license_schema_version_rejects_bool(tmp_path: Path) -> None:
+    candidate = _candidate()
+    root = _write_candidate_inputs(tmp_path, create_evidence=False)
+    path = root / "windows-license-review.json"
+    review = json.loads(path.read_text(encoding="ascii"))
+    path.unlink()
+    review["schema_version"] = True
+    encoded = base64.b64encode(_canonical(review)).decode("ascii")
+
+    with pytest.raises(
+        candidate.StoreCandidateError,
+        match="^STORE_CANDIDATE_LICENSE_INPUT_INVALID$",
+    ):
+        candidate.materialize_license_review(
+            root,
+            ROOT / "docs" / "security" / "windows-license-review.json",
+            encoded,
+            expected_source_commit=COMMIT,
+        )
+
+
 def test_store_candidate_upload_allowlist_is_exact_and_safe(tmp_path: Path) -> None:
     candidate = _candidate()
     root = _write_candidate_inputs(tmp_path)
@@ -1089,8 +1268,21 @@ def test_personal_source_gate_requires_store_candidate_infrastructure() -> None:
     )
 
     assert ".github/workflows/windows-store-candidate.yml" in profile["required_source_paths"]
+    assert "requirements-build.lock" in profile["required_source_paths"]
+    assert "requirements-dev.lock" in profile["required_source_paths"]
+    assert "scripts/build_windows_msix.py" in profile["required_source_paths"]
     assert "scripts/verify_wack_report.py" in profile["required_source_paths"]
     assert "scripts/verify_windows_store_candidate.py" in profile["required_source_paths"]
     assert "tests/fixtures/wack/windows-app-certification-kit-10.0.26100.7705.xml" in profile[
         "required_source_paths"
     ]
+
+
+def test_defusedxml_is_hash_locked_for_dev_and_build_phases() -> None:
+    requirement = (
+        "defusedxml==0.7.1 "
+        "--hash=sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61"
+    )
+
+    for name in ("requirements-dev.lock", "requirements-build.lock"):
+        assert requirement in (ROOT / name).read_text(encoding="utf-8").splitlines()

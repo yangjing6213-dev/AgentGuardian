@@ -16,12 +16,15 @@ import os
 from pathlib import Path
 import stat
 import subprocess
-import xml.etree.ElementTree as ET
 import zipfile
+
+from defusedxml import ElementTree as ET
+from defusedxml.common import DefusedXmlException
 
 
 MAX_REPORT_BYTES = 16 * 1024 * 1024
 MAX_MANIFEST_BYTES = 1024 * 1024
+MAX_MSIX_BYTES = 512 * 1024 * 1024
 WACK_COMMAND_TIMEOUT_SECONDS = 60 * 60
 _WTS_ACTIVE = 0
 _WTS_CONNECT_STATE = 8
@@ -166,11 +169,15 @@ def verify_wack_report(
         raw = report.read_bytes()
     except OSError:
         raise WackEvidenceError("WACK_REPORT_READ_FAILED") from None
-    folded = raw.upper()
-    if b"<!DOCTYPE" in folded or b"<!ENTITY" in folded:
-        raise WackEvidenceError("WACK_XML_DTD_FORBIDDEN")
     try:
-        root = ET.fromstring(raw)
+        root = ET.fromstring(
+            raw,
+            forbid_dtd=True,
+            forbid_entities=True,
+            forbid_external=True,
+        )
+    except DefusedXmlException:
+        raise WackEvidenceError("WACK_XML_DTD_FORBIDDEN") from None
     except (ET.ParseError, MemoryError, RecursionError):
         raise WackEvidenceError("WACK_XML_INVALID") from None
     if root.tag != "REPORT":
@@ -269,11 +276,14 @@ def read_msix_identity(package_value: str | Path) -> tuple[Path, dict[str, str]]
         raise
     except (OSError, KeyError, MemoryError, RuntimeError, zipfile.BadZipFile):
         raise WackEvidenceError("WACK_PACKAGE_MANIFEST_INVALID") from None
-    if b"<!DOCTYPE" in manifest_raw.upper() or b"<!ENTITY" in manifest_raw.upper():
-        raise WackEvidenceError("WACK_PACKAGE_MANIFEST_INVALID")
     try:
-        root = ET.fromstring(manifest_raw)
-    except (ET.ParseError, MemoryError, RecursionError):
+        root = ET.fromstring(
+            manifest_raw,
+            forbid_dtd=True,
+            forbid_entities=True,
+            forbid_external=True,
+        )
+    except (DefusedXmlException, ET.ParseError, MemoryError, RecursionError):
         raise WackEvidenceError("WACK_PACKAGE_MANIFEST_INVALID") from None
     if _local_name(root.tag) != "Package":
         raise WackEvidenceError("WACK_PACKAGE_MANIFEST_INVALID")
@@ -306,9 +316,10 @@ def _bounded_package_path(package_value: str | Path) -> Path:
         raise WackEvidenceError("WACK_PACKAGE_INVALID")
     try:
         resolved = package.resolve(strict=True)
+        size = resolved.stat(follow_symlinks=False).st_size
     except (OSError, RuntimeError):
         raise WackEvidenceError("WACK_PACKAGE_INVALID") from None
-    if not _regular_file(resolved):
+    if not _regular_file(resolved) or size <= 0 or size > MAX_MSIX_BYTES:
         raise WackEvidenceError("WACK_PACKAGE_INVALID")
     return resolved
 

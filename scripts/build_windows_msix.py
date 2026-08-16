@@ -18,6 +18,8 @@ _CERTIFICATE_THUMBPRINT = re.compile(r"^[0-9A-Fa-f]{40}$")
 _LOGO_SOURCE = "assets/brand/agentguardian-mark-512.png"
 _TIMESTAMP_URL = "http://timestamp.digicert.com"
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+MAX_MSIX_BYTES = 512 * 1024 * 1024
+MAX_MSIXUPLOAD_BYTES = 512 * 1024 * 1024
 
 
 def msix_manifest_bytes(
@@ -155,6 +157,8 @@ def deterministic_msixupload(package_path: Path, destination: Path) -> Path:
         or not package.is_file()
         or package_path.is_symlink()
         or package.suffix.casefold() != ".msix"
+        or package.stat().st_size <= 0
+        or package.stat().st_size > MAX_MSIX_BYTES
     ):
         raise ValueError("MSIX package path is invalid")
     if (
@@ -166,17 +170,18 @@ def deterministic_msixupload(package_path: Path, destination: Path) -> Path:
         raise ValueError("MSIX upload output path is invalid")
     output.parent.mkdir(parents=True, exist_ok=True)
     info = zipfile.ZipInfo(package.name, date_time=_ZIP_TIMESTAMP)
-    info.compress_type = zipfile.ZIP_DEFLATED
+    info.compress_type = zipfile.ZIP_STORED
     info.create_system = 3
     info.external_attr = (stat.S_IFREG | 0o644) << 16
-    with zipfile.ZipFile(
-        output,
-        "w",
-        compression=zipfile.ZIP_DEFLATED,
-        compresslevel=9,
-    ) as archive:
-        with package.open("rb") as source, archive.open(info, "w") as target:
-            shutil.copyfileobj(source, target, length=1024 * 1024)
+    try:
+        with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
+            with package.open("rb") as source, archive.open(info, "w") as target:
+                shutil.copyfileobj(source, target, length=1024 * 1024)
+        if output.stat().st_size > MAX_MSIXUPLOAD_BYTES:
+            raise ValueError("MSIX upload exceeds the size limit")
+    except Exception:
+        output.unlink(missing_ok=True)
+        raise
     return output
 
 

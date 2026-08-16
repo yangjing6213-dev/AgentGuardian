@@ -49,6 +49,9 @@ def _copy_fixture(tmp_path: Path) -> Path:
     for relative in (
         "README.md",
         "docs/architecture.md",
+        "requirements-build.lock",
+        "requirements-dev.lock",
+        "scripts/build_windows_msix.py",
         "scripts/build_windows_portable.py",
         "scripts/run_personal_privacy_acceptance.py",
         "scripts/verify_wack_report.py",

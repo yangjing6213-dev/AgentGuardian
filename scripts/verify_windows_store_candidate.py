@@ -32,7 +32,11 @@ from scripts.verify_windows_release_candidate import (
 
 
 MAX_JSON_BYTES = 16 * 1024 * 1024
-MAX_EVIDENCE_BYTES = 4 * 1024 * 1024 * 1024
+MAX_MSIX_BYTES = 512 * 1024 * 1024
+MAX_MSIXUPLOAD_BYTES = 512 * 1024 * 1024
+MAX_INNER_ENTRY_BYTES = 256 * 1024 * 1024
+MAX_INNER_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
+MAX_EVIDENCE_ROOT_BYTES = 1024 * 1024 * 1024
 MAX_MANIFEST_FILES = 20_000
 MAX_APPROVED_LICENSE_REVIEW_BYTES = 256 * 1024
 MAX_APPROVED_LICENSE_REVIEW_BASE64_BYTES = (
@@ -64,6 +68,11 @@ _MSIX_WRAPPER_FILES = {
     "AppxManifest.xml",
     "[Content_Types].xml",
 }
+_MSIX_ASSET_FILES = (
+    "Assets/Square44x44Logo.png",
+    "Assets/Square150x150Logo.png",
+    "Assets/StoreLogo.png",
+)
 
 
 class StoreCandidateError(ValueError):
@@ -97,7 +106,7 @@ def materialize_license_review(
             template, "STORE_CANDIDATE_LICENSE_TEMPLATE_INVALID"
         )
         if (
-            template_value.get("schema_version") != 1
+            not _schema_is(template_value, "schema_version", 1)
             or template_value.get("status") != "pending"
             or any(
                 template_value.get(key) is not None
@@ -182,7 +191,11 @@ def validate_store_candidate(
         manifest_bytes = manifest_path.read_bytes()
     except OSError:
         raise StoreCandidateError("STORE_CANDIDATE_MANIFEST_INVALID") from None
-    if manifest != expected_manifest or manifest_bytes != canonical_json_bytes(manifest):
+    if (
+        not _schema_is(manifest, "schema", 1)
+        or manifest != expected_manifest
+        or manifest_bytes != canonical_json_bytes(manifest)
+    ):
         raise StoreCandidateError("STORE_CANDIDATE_MANIFEST_MISMATCH")
     checksum_path = root / _CHECKSUM_NAME
     try:
@@ -214,9 +227,10 @@ def validate_upload_allowlist(
 
 def _expected_manifest(root: Path, source_commit: str) -> dict[str, object]:
     upload = root / _upload_name(source_commit)
-    msix_entry, package_identity = _msixupload_package(upload, root)
+    msix_entry, package_identity, assets = _msixupload_package(upload, root)
     _validate_non_license_evidence(root, source_commit, msix_entry, package_identity)
     return {
+        "assets": assets,
         "evidence": {
             key: _file_entry(root / name) for key, name in _EVIDENCE_FILES.items()
         },
@@ -239,7 +253,7 @@ def _validate_non_license_evidence(
         "STORE_CANDIDATE_PAYLOAD_MANIFEST_INVALID",
     )
     if (
-        payload.get("schema") != 1
+        not _schema_is(payload, "schema", 1)
         or payload.get("algorithm") != "sha256"
         or not isinstance(payload.get("files"), list)
     ):
@@ -267,7 +281,7 @@ def _validate_non_license_evidence(
         "STORE_CANDIDATE_PRIVACY_INVALID",
     )
     if (
-        privacy.get("schema") != 1
+        not _schema_is(privacy, "schema", 1)
         or privacy.get("profile") != "personal_privacy_acceptance"
         or privacy.get("passed") is not True
     ):
@@ -297,7 +311,7 @@ def _validate_non_license_evidence(
     workflow_keys = {str(key).casefold() for key in workflow}
     license_origin = workflow.get("license_review_origin")
     if (
-        workflow.get("schema") != 1
+        not _schema_is(workflow, "schema", 1)
         or workflow.get("source_commit") != source_commit
         or workflow.get("store_submission") != "not_performed"
         or workflow.get("wack_session_state") != "active"
@@ -337,7 +351,7 @@ def _validate_non_license_evidence(
             "test_counts",
             "tool_version",
         }
-        or wack.get("schema") != 2
+        or not _schema_is(wack, "schema", 2)
         or wack.get("overall_result") != "PASS"
         or wack.get("source_commit") != source_commit
         or wack.get("source_commit_origin") != "candidate_input"
@@ -403,7 +417,10 @@ def _validate_license(root: Path, source_commit: str) -> None:
         root / _EVIDENCE_FILES["workflow_run"],
         "STORE_CANDIDATE_WORKFLOW_METADATA_INVALID",
     )
-    if review.get("schema_version") != 1 or review.get("status") != "approved":
+    if (
+        not _schema_is(review, "schema_version", 1)
+        or review.get("status") != "approved"
+    ):
         raise StoreCandidateError("STORE_CANDIDATE_LICENSE_REVIEW_REQUIRED")
     if workflow.get("license_review_origin") != "workflow_dispatch_input":
         raise StoreCandidateError("STORE_CANDIDATE_LICENSE_REVIEW_REQUIRED")
@@ -426,18 +443,22 @@ def _validate_license(root: Path, source_commit: str) -> None:
 
 def _msixupload_package(
     upload: Path, evidence_root: Path
-) -> tuple[dict[str, object], dict[str, str]]:
+) -> tuple[dict[str, object], dict[str, str], list[dict[str, object]]]:
     try:
+        if upload.stat(follow_symlinks=False).st_size > MAX_MSIXUPLOAD_BYTES:
+            raise StoreCandidateError("STORE_CANDIDATE_UPLOAD_INVALID")
         with zipfile.ZipFile(upload) as archive:
             infos = archive.infolist()
             if (
                 len(infos) != 1
                 or infos[0].is_dir()
                 or infos[0].flag_bits & 1
+                or infos[0].compress_type != zipfile.ZIP_STORED
+                or infos[0].compress_size != infos[0].file_size
                 or Path(infos[0].filename).name != infos[0].filename
                 or not infos[0].filename.casefold().endswith(".msix")
                 or infos[0].file_size <= 0
-                or infos[0].file_size > MAX_EVIDENCE_BYTES
+                or infos[0].file_size > MAX_MSIX_BYTES
             ):
                 raise StoreCandidateError("STORE_CANDIDATE_UPLOAD_INVALID")
             info = infos[0]
@@ -453,7 +474,7 @@ def _msixupload_package(
                     package, identity = read_msix_identity(extracted)
                 except WackEvidenceError:
                     raise StoreCandidateError("STORE_CANDIDATE_UPLOAD_INVALID") from None
-                _validate_msix_portable_evidence(package, evidence_root)
+                assets = _validate_msix_portable_evidence(package, evidence_root)
                 entry = {
                     "name": info.filename,
                     "sha256": _sha256_file(package),
@@ -463,14 +484,17 @@ def _msixupload_package(
         raise
     except (OSError, MemoryError, RuntimeError, zipfile.BadZipFile):
         raise StoreCandidateError("STORE_CANDIDATE_UPLOAD_INVALID") from None
-    return entry, identity
+    return entry, identity, assets
 
 
-def _validate_msix_portable_evidence(package: Path, evidence_root: Path) -> None:
+def _validate_msix_portable_evidence(
+    package: Path, evidence_root: Path
+) -> list[dict[str, object]]:
     try:
         with zipfile.ZipFile(package) as archive:
             portable: dict[str, zipfile.ZipInfo] = {}
             wrapper_files: set[str] = set()
+            asset_infos: dict[str, zipfile.ZipInfo] = {}
             seen: set[str] = set()
             infos = archive.infolist()
             if len(infos) > MAX_MANIFEST_FILES + 10:
@@ -484,27 +508,39 @@ def _validate_msix_portable_evidence(package: Path, evidence_root: Path) -> None
                 if folded in seen or info.flag_bits & 1:
                     raise StoreCandidateError(
                         "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
-                    )
+                )
                 seen.add(folded)
                 if info.is_dir():
+                    if _reserved_wrapper_path(name):
+                        raise StoreCandidateError(
+                            "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+                        )
                     continue
-                if info.file_size < 0 or info.file_size > MAX_EVIDENCE_BYTES:
+                if info.file_size < 0 or info.file_size > MAX_INNER_ENTRY_BYTES:
                     raise StoreCandidateError(
                         "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
                     )
                 total_uncompressed += info.file_size
-                if total_uncompressed > MAX_EVIDENCE_BYTES:
+                if total_uncompressed > MAX_INNER_UNCOMPRESSED_BYTES:
                     raise StoreCandidateError(
                         "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
                     )
-                if name in _MSIX_WRAPPER_FILES or name.startswith("Assets/"):
+                if name in _MSIX_WRAPPER_FILES:
                     wrapper_files.add(name)
                     continue
+                if name in _MSIX_ASSET_FILES:
+                    asset_infos[name] = info
+                    continue
+                if _reserved_wrapper_path(name):
+                    raise StoreCandidateError(
+                        "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+                    )
                 portable[name] = info
             if (
                 not portable
                 or len(portable) > MAX_MANIFEST_FILES
                 or not _MSIX_WRAPPER_FILES.issubset(wrapper_files)
+                or set(asset_infos) != set(_MSIX_ASSET_FILES)
             ):
                 raise StoreCandidateError(
                     "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
@@ -541,6 +577,14 @@ def _validate_msix_portable_evidence(package: Path, evidence_root: Path) -> None
             checksums_raw = _zip_entry_bytes(
                 archive, portable["SHA256SUMS"], MAX_JSON_BYTES
             )
+            assets = [
+                {
+                    "name": name,
+                    "sha256": _zip_entry_sha256(archive, asset_infos[name]),
+                    "size": asset_infos[name].file_size,
+                }
+                for name in _MSIX_ASSET_FILES
+            ]
     except StoreCandidateError:
         raise
     except (OSError, MemoryError, RuntimeError, zipfile.BadZipFile):
@@ -549,6 +593,7 @@ def _validate_msix_portable_evidence(package: Path, evidence_root: Path) -> None
         ) from None
     _validate_payload_manifest(payload_raw, actual)
     _validate_portable_checksums(checksums_raw, actual)
+    return assets
 
 
 def _validate_payload_manifest(
@@ -565,7 +610,7 @@ def _validate_payload_manifest(
         or raw != canonical_json_bytes(value)
         or set(value) != {"algorithm", "files", "schema"}
         or value.get("algorithm") != "sha256"
-        or value.get("schema") != 1
+        or not _schema_is(value, "schema", 1)
         or not isinstance(value.get("files"), list)
         or not value["files"]
         or len(value["files"]) > MAX_MANIFEST_FILES
@@ -585,7 +630,7 @@ def _validate_payload_manifest(
             path.casefold() in folded
             or type(size) is not int
             or size < 0
-            or size > MAX_EVIDENCE_BYTES
+            or size > MAX_INNER_ENTRY_BYTES
             or not _lower_hex(digest, 64)
         ):
             raise StoreCandidateError(
@@ -643,6 +688,16 @@ def _safe_archive_name(value: object) -> str:
     return _safe_manifest_path(candidate)
 
 
+def _reserved_wrapper_path(value: str) -> bool:
+    folded = value.casefold()
+    first = folded.split("/", 1)[0]
+    return (
+        first == "assets"
+        or first.startswith("appx")
+        or folded == "[content_types].xml"
+    )
+
+
 def _safe_manifest_path(value: object) -> str:
     if (
         type(value) is not str
@@ -687,7 +742,7 @@ def _zip_entry_sha256(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> str:
         with archive.open(info) as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 size += len(chunk)
-                if size > MAX_EVIDENCE_BYTES:
+                if size > MAX_INNER_ENTRY_BYTES:
                     raise StoreCandidateError(
                         "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
                     )
@@ -730,7 +785,7 @@ def _validate_external_license_shape(review: dict[str, Any]) -> None:
             "source_commit",
             "status",
         }
-        or review.get("schema_version") != 1
+        or not _schema_is(review, "schema_version", 1)
         or review.get("status") != "approved"
         or not _lower_hex(review.get("source_commit"), 40)
         or not _lower_hex(review.get("sbom_sha256"), 64)
@@ -835,6 +890,7 @@ def _validate_exact_files(
     if {path.name for path in children} != expected_names:
         raise StoreCandidateError(code)
     result: list[Path] = []
+    total_size = 0
     for path in children:
         try:
             size = path.stat(follow_symlinks=False).st_size
@@ -846,9 +902,11 @@ def _validate_exact_files(
             or not stat.S_ISREG(path.stat(follow_symlinks=False).st_mode)
             or path.is_symlink()
             or _has_reparse_component(path)
-            or size > MAX_EVIDENCE_BYTES
+            or size > MAX_EVIDENCE_ROOT_BYTES
+            or total_size > MAX_EVIDENCE_ROOT_BYTES - size
         ):
             raise StoreCandidateError(code)
+        total_size += size
         result.append(path)
     return tuple(sorted(result, key=lambda path: path.name))
 
@@ -887,6 +945,10 @@ def _lower_hex(value: object, length: int) -> bool:
         and len(value) == length
         and all(character in "0123456789abcdef" for character in value)
     )
+
+
+def _schema_is(value: dict[str, Any], key: str, expected: int) -> bool:
+    return type(value.get(key)) is int and value[key] == expected
 
 
 def _bounded_text(value: object) -> bool:
