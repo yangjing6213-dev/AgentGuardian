@@ -31,7 +31,6 @@ EXPECTED_REVIEWED_SOURCE_MODULES = (
     "dispositions.py",
     "domain.py",
     "evidence_state.py",
-    "file_integrity.py",
     "guidance.py",
     "remediation.py",
     "report_comparison.py",
@@ -235,10 +234,10 @@ def test_source_policy_manifest_exactly_matches_current_package() -> None:
 
     assert list(policy) == ["schema", "modules"]
     assert policy["schema"] == 1
-    assert len(EXPECTED_REVIEWED_SOURCE_MODULES) == 21
+    assert len(EXPECTED_REVIEWED_SOURCE_MODULES) == 20
     assert package_names == EXPECTED_REVIEWED_SOURCE_MODULES
     assert tuple(modules) == EXPECTED_REVIEWED_SOURCE_MODULES
-    assert len(modules) == 21
+    assert len(modules) == 20
     assert modules == {
         name: _canonical_source_digest(PACKAGE_ROOT / name)
         for name in EXPECTED_REVIEWED_SOURCE_MODULES
@@ -262,6 +261,67 @@ def test_source_policy_contract_rejects_an_accepted_seventeenth_module(
 
     with pytest.raises(AssertionError):
         test_source_policy_manifest_exactly_matches_current_package()
+
+
+def test_personal_runtime_package_has_no_process_or_dynamic_execution_calls() -> None:
+    forbidden_imports = {"importlib", "runpy", "subprocess"}
+    forbidden_calls = {
+        "__import__",
+        "_winapi.CreateProcess",
+        "asyncio.create_subprocess_exec",
+        "asyncio.create_subprocess_shell",
+        "compile",
+        "eval",
+        "exec",
+        "multiprocessing.Process",
+        "os.popen",
+        "os.startfile",
+        "os.system",
+        "runpy.run_module",
+        "runpy.run_path",
+    }
+    forbidden_prefixes = ("os.exec", "os.spawn", "subprocess.")
+    violations: list[str] = []
+
+    def dotted_name(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            owner = dotted_name(node.value)
+            return f"{owner}.{node.attr}" if owner else None
+        return None
+
+    for module in sorted(PACKAGE_ROOT.glob("*.py")):
+        tree = ast.parse(module.read_bytes(), filename=str(module))
+        aliases: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for item in node.names:
+                    root = item.name.split(".", 1)[0]
+                    aliases[item.asname or root] = item.name
+                    if root in forbidden_imports:
+                        violations.append(f"{module.name}:import:{item.name}")
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                root = node.module.split(".", 1)[0]
+                if root in forbidden_imports:
+                    violations.append(f"{module.name}:import:{node.module}")
+                for item in node.names:
+                    aliases[item.asname or item.name] = f"{node.module}.{item.name}"
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = dotted_name(node.func)
+            if not name:
+                continue
+            root, separator, suffix = name.partition(".")
+            resolved = aliases.get(root, root)
+            if separator:
+                resolved = f"{resolved}.{suffix}"
+            if resolved in forbidden_calls or resolved.startswith(forbidden_prefixes):
+                violations.append(f"{module.name}:call:{resolved}")
+
+    assert violations == []
 
 
 @pytest.mark.parametrize(
@@ -2180,3 +2240,39 @@ def test_docs_track_batch_6_local_gates_without_premature_release_claim() -> Non
     )
     assert "- [x] **Step 1: Commission a separate read-only review**" in candidate_plan
     assert "- [x] **Step 2: Resolve all important findings locally**" in candidate_plan
+
+
+def test_retired_release_report_is_historical_before_any_old_claims() -> None:
+    report = (
+        PROJECT_ROOT
+        / "docs"
+        / "reports"
+        / "windows-mvp-release-candidate-report.md"
+    ).read_text(encoding="utf-8")
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    status = "## Historical Snapshot Status"
+    normalized_report = " ".join(report.split())
+
+    assert report.index(status) < report.index("Release-candidate decision")
+    assert report.index(status) < report.index("Task 1 implements packaged MCP")
+    for required in (
+        "Covered runtime SHA: `6ccb5232f6eb3955890f89f7a1000df338db8e8a`",
+        "Snapshot date: `2026-08-16`",
+        "not current product or release evidence",
+        "dynamic adapter, PFX, and enterprise material described below is retired",
+        "Personal v1 supports static MCP configuration detection only",
+    ):
+        assert required in normalized_report
+
+    assert "[Historical Windows MVP release-candidate snapshot]" in readme
+    assert "[Windows MVP release-candidate 报告]" not in readme
+
+
+def test_readme_describes_current_release_verifier_without_checksum_claim() -> None:
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "SBOM/notices/checksums" not in readme
+    assert (
+        "Standalone checksum and release-manifest binding remains pending "
+        "Store-candidate work."
+    ) in readme

@@ -198,25 +198,42 @@ def test_msix_verifier_installs_launches_and_uninstalls_without_elevation() -> N
     assert "Remove-Item" not in verifier
 
 
-def test_personal_msix_and_active_workflows_have_no_dynamic_execution_contract() -> None:
-    verifier = (
-        PROJECT_ROOT / "scripts" / "verify_windows_msix.ps1"
-    ).read_text(encoding="utf-8")
-    workflows = tuple((PROJECT_ROOT / ".github" / "workflows").glob("*.yml"))
-    forbidden = (
-        "RequireMcp" + "AdapterAcceptance",
-        "Mcp" + "AdapterRelativePath",
-        "Mcp" + "AdapterEvidencePath",
-        "SIGNING" + "_PFX",
-        "AGENTGUARDIAN_SIGNING" + "_PFX",
-        "trusted_release",
+def test_retired_adapter_workflow_modules_and_scripts_are_absent() -> None:
+    retired_paths = (
+        ".github/workflows/windows-mvp-signed.yml",
+        "src/agentguardian/" + "mcp_" + "sandbox.py",
+        "src/agentguardian/windows_" + "appcontainer.py",
+        "src/agentguardian/windows_" + "code_signing.py",
+        "src/agentguardian/windows_" + "job_object.py",
+        "scripts/download_" + "trusted_" + "mcp_" + "adapter.py",
+        "scripts/run_windows_" + "mcp_" + "adapter_acceptance.py",
     )
 
-    assert not (PROJECT_ROOT / ".github" / "workflows" / "windows-mvp-signed.yml").exists()
-    assert all(value not in verifier for value in forbidden[:3])
-    for workflow in workflows:
-        content = workflow.read_text(encoding="utf-8")
-        assert all(value not in content for value in forbidden)
+    assert all(not (PROJECT_ROOT / relative).exists() for relative in retired_paths)
+
+
+def test_build_release_msix_and_workflows_have_no_retired_adapter_contract() -> None:
+    active_paths = (
+        PROJECT_ROOT / "scripts" / "build_windows_portable.py",
+        PROJECT_ROOT / "scripts" / "verify_windows_release_candidate.py",
+        PROJECT_ROOT / "scripts" / "verify_windows_msix.ps1",
+        *(PROJECT_ROOT / ".github" / "workflows").glob("*.yml"),
+    )
+    retired_contract = (
+        "download_" + "trusted_" + "mcp_" + "adapter.py",
+        "run_windows_" + "mcp_" + "adapter_acceptance.py",
+        "AgentGuardianMcp" + "Adapter.exe",
+        "MCP-" + "ADAPTER.json",
+        "--mcp-" + "adapter-",
+        "mcp_" + "adapter_",
+        "Mcp" + "Adapter",
+        "AGENTGUARDIAN_MCP_" + "ADAPTER",
+        "P" + "FX",
+    )
+
+    for path in active_paths:
+        content = path.read_text(encoding="utf-8").casefold()
+        assert all(value.casefold() not in content for value in retired_contract), path
 
 
 def test_task2_quality_review_cleanup_requeries_after_stale_removal_error() -> None:

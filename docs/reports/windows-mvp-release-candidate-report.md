@@ -1,5 +1,17 @@
 # AgentGuardian Windows MVP Release-Candidate Report
 
+## Historical Snapshot Status
+
+> **Historical exact-SHA snapshot only**
+>
+> Covered runtime SHA: `6ccb5232f6eb3955890f89f7a1000df338db8e8a`
+> Evidence/test revision: `1da903465f463d1421e7af2b20971da3d8c149bd`
+> Snapshot date: `2026-08-16`
+>
+> This report preserves evidence for those exact historical revisions. It is not current product or release evidence. The dynamic adapter, PFX, and enterprise material described below is retired and has no active product, packaging, workflow, or release contract.
+>
+> Current Personal v1 supports static MCP configuration detection only and does not execute MCP extensions or user-selected executables.
+
 Status date: 2026-08-16
 
 Release-candidate decision: `NO-GO`.

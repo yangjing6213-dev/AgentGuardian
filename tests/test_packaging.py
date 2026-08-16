@@ -191,6 +191,7 @@ def test_wheel_extracts_with_self_audit_resources_offline(tmp_path: Path) -> Non
         ]
 
     with zipfile.ZipFile(wheel) as archive:
+        assert "agentguardian/file_integrity.py" not in archive.namelist()
         metadata_name = next(
             name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
         )
