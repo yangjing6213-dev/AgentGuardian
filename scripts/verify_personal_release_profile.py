@@ -17,7 +17,6 @@ MAX_PROFILE_BYTES = 64 * 1024
 MAX_RUNTIME_SOURCE_BYTES = 256 * 1024
 _MAX_ARRAY_ITEMS = 128
 _MAX_VALUE_LENGTH = 256
-_MAX_REFERENCE_PARTS = 64
 _MAX_RUNTIME_AST_NODES = 16_384
 _PROFILE_KEYS = frozenset(
     {
@@ -26,7 +25,9 @@ _PROFILE_KEYS = frozenset(
         "forbidden_document_promises",
         "forbidden_payload_globs",
         "forbidden_runtime_imports",
-        "forbidden_runtime_references",
+        "forbidden_runtime_member_prefixes",
+        "forbidden_runtime_members",
+        "forbidden_runtime_names",
         "forbidden_runtime_symbols",
         "forbidden_source_globs",
         "forbidden_workflow_tokens",
@@ -114,11 +115,6 @@ def _validate_profile_value(value: dict[str, Any]) -> None:
     for key in _PATH_ARRAY_KEYS:
         if any(not _safe_relative_pattern(item) for item in value[key]):
             raise ProfileViolation("PROFILE_PATH_INVALID")
-    if any(
-        not _safe_reference_pattern(item)
-        for item in value["forbidden_runtime_references"]
-    ):
-        raise ProfileViolation("PROFILE_ARRAY_INVALID")
 
 
 def verify_profile(
@@ -226,17 +222,17 @@ def _verify_documents(root: Path, profile: dict[str, Any]) -> None:
         raise ProfileViolation("PROFILE_DOCUMENT_BOUNDARY_MISSING")
 
 
+# This policy matches explicit AST names/members; it does not evaluate Python.
 def _scan_runtime(tree: ast.AST, profile: dict[str, Any]) -> tuple[str, ...]:
-    aliases: dict[str, str | None] = {}
     imports: list[str] = []
-    references: list[ast.AST | str] = []
-    forbidden_symbols = {
-        value.casefold() for value in profile["forbidden_runtime_symbols"]
-    }
+    forbidden_names = {v.casefold() for v in profile["forbidden_runtime_names"]}
+    forbidden_members = {v.casefold() for v in profile["forbidden_runtime_members"]}
+    forbidden_prefixes = tuple(
+        v.casefold() for v in profile["forbidden_runtime_member_prefixes"]
+    )
+    forbidden_symbols = {v.casefold() for v in profile["forbidden_runtime_symbols"]}
 
-    node_count = 0
-    for node in ast.walk(tree):
-        node_count += 1
+    for node_count, node in enumerate(ast.walk(tree), 1):
         if node_count > _MAX_RUNTIME_AST_NODES:
             raise ProfileViolation("PROFILE_RUNTIME_ANALYSIS_LIMIT")
 
@@ -247,9 +243,6 @@ def _scan_runtime(tree: ast.AST, profile: dict[str, Any]) -> tuple[str, ...]:
                     raise ProfileViolation("PROFILE_RUNTIME_SYMBOL_FORBIDDEN")
                 if _module_matches(item.name, profile["forbidden_runtime_imports"]):
                     raise ProfileViolation("PROFILE_RUNTIME_IMPORT_FORBIDDEN")
-                bound = item.asname or item.name.split(".", 1)[0]
-                target = item.name if item.asname else bound
-                _bind_import_alias(aliases, bound, target)
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ""
             if module:
@@ -261,91 +254,67 @@ def _scan_runtime(tree: ast.AST, profile: dict[str, Any]) -> tuple[str, ...]:
             for item in node.names:
                 qualified = f"{module}.{item.name}" if module else item.name
                 imports.append(qualified)
-                if _module_matches(
-                    qualified, profile["forbidden_runtime_imports"]
-                ):
+                if _module_matches(qualified, profile["forbidden_runtime_imports"]):
                     raise ProfileViolation("PROFILE_RUNTIME_IMPORT_FORBIDDEN")
-                _bind_import_alias(aliases, item.asname or item.name, qualified)
-                references.append(qualified)
+                if (
+                    item.name.casefold() in forbidden_names
+                    or _forbidden_member(
+                        item.name, forbidden_members, forbidden_prefixes
+                    )
+                ):
+                    raise ProfileViolation("PROFILE_RUNTIME_REFERENCE_FORBIDDEN")
 
         symbol: str | None = None
         if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             symbol = node.name
         elif isinstance(node, ast.Name):
             symbol = node.id
-            if isinstance(node.ctx, ast.Load):
-                references.append(node)
+            if isinstance(node.ctx, ast.Load) and node.id.casefold() in forbidden_names:
+                raise ProfileViolation("PROFILE_RUNTIME_REFERENCE_FORBIDDEN")
         elif isinstance(node, ast.Attribute):
             symbol = node.attr
-            references.append(node)
+            if _forbidden_member(node.attr, forbidden_members, forbidden_prefixes):
+                raise ProfileViolation("PROFILE_RUNTIME_REFERENCE_FORBIDDEN")
+        elif isinstance(node, ast.Call):
+            member = _literal_getattr_member(node)
+            if member is not None and _forbidden_member(
+                member, forbidden_members, forbidden_prefixes
+            ):
+                raise ProfileViolation("PROFILE_RUNTIME_REFERENCE_FORBIDDEN")
         if symbol is not None and symbol.casefold() in forbidden_symbols:
             raise ProfileViolation("PROFILE_RUNTIME_SYMBOL_FORBIDDEN")
-
-    for reference in references:
-        qualified = (
-            reference
-            if isinstance(reference, str)
-            else _qualified_reference(reference, aliases)
-        )
-        if qualified is None or _reference_matches(
-            qualified, profile["forbidden_runtime_references"]
-        ):
-            raise ProfileViolation("PROFILE_RUNTIME_REFERENCE_FORBIDDEN")
     return tuple(imports)
 
 
-def _bind_import_alias(
-    aliases: dict[str, str | None], bound: str, target: str
-) -> None:
-    if bound not in aliases:
-        aliases[bound] = target
-    elif aliases[bound] != target:
-        aliases[bound] = None
+def _forbidden_member(
+    member: str, forbidden: set[str], prefixes: tuple[str, ...]
+) -> bool:
+    folded = member.casefold()
+    if folded in forbidden:
+        return True
+    # The exec prefix denotes process APIs; SQLite execute/execute* is retained.
+    return any(
+        folded != prefix
+        and not (prefix == "exec" and folded.startswith("execute"))
+        and folded.startswith(prefix)
+        for prefix in prefixes
+    )
+
+
+def _literal_getattr_member(node: ast.Call) -> str | None:
+    if (
+        not isinstance(node.func, ast.Name)
+        or node.func.id != "getattr"
+        or len(node.args) < 2
+        or not isinstance(node.args[1], ast.Constant)
+        or not isinstance(node.args[1].value, str)
+    ):
+        return None
+    return node.args[1].value
 
 
 def _has_forbidden_symbol_part(name: str, forbidden: set[str]) -> bool:
     return any(part.casefold() in forbidden for part in name.split("."))
-
-
-def _qualified_reference(
-    node: ast.AST, aliases: dict[str, str | None]
-) -> str | None:
-    parts: list[str] = []
-    while isinstance(node, ast.Attribute):
-        parts.append(node.attr)
-        if len(parts) > _MAX_REFERENCE_PARTS:
-            raise ProfileViolation("PROFILE_RUNTIME_ANALYSIS_LIMIT")
-        node = node.value
-    if not isinstance(node, ast.Name):
-        return ""
-    base = aliases.get(node.id, node.id)
-    if base is None:
-        return None
-    suffix = ".".join(reversed(parts))
-    return f"{base}.{suffix}" if suffix else base
-
-
-# Reference entries are case-insensitive exact names or terminal-* prefixes.
-def _reference_matches(name: str, patterns: list[str]) -> bool:
-    folded = name.casefold()
-    for pattern in patterns:
-        candidate = pattern.casefold()
-        if candidate.endswith("*"):
-            if folded.startswith(candidate[:-1]):
-                return True
-        elif folded == candidate:
-            return True
-    return False
-
-
-def _safe_reference_pattern(value: str) -> bool:
-    return (
-        not any(character in value for character in "?[]")
-        and (
-            "*" not in value
-            or (value.endswith("*") and value.count("*") == 1 and len(value) > 1)
-        )
-    )
 
 
 def _module_matches(name: str, families: list[str]) -> bool:

@@ -66,8 +66,10 @@ def test_repository_matches_canonical_personal_store_release_profile() -> None:
     verifier = _verifier()
     profile = _profile()
 
-    assert "forbidden_runtime_references" in profile
-    assert "forbidden_runtime_calls" not in profile
+    assert "forbidden_runtime_names" in profile
+    assert "forbidden_runtime_members" in profile
+    assert "forbidden_runtime_member_prefixes" in profile
+    assert "forbidden_runtime_references" not in profile
     assert PROFILE_PATH.read_bytes() == _canonical(profile)
     assert verifier.verify_profile(ROOT, PROFILE_PATH) == {
         "profile": "personal_store_release",
@@ -240,6 +242,13 @@ def test_payload_rejects_reparse_entry_deterministically(
         ("import openai\n", "PROFILE_RUNTIME_IMPORT_FORBIDDEN"),
         ("import anthropic\n", "PROFILE_RUNTIME_IMPORT_FORBIDDEN"),
         ("import sentry_sdk\n", "PROFILE_RUNTIME_IMPORT_FORBIDDEN"),
+        ("import builtins as b\nrunner = b.compile\n", "PROFILE_RUNTIME_IMPORT_FORBIDDEN"),
+        ("from builtins import eval as runner\n", "PROFILE_RUNTIME_IMPORT_FORBIDDEN"),
+        ("from os import system as runner\n", "PROFILE_RUNTIME_REFERENCE_FORBIDDEN"),
+        (
+            "from PySide6.QtCore import QProcess as process\n",
+            "PROFILE_RUNTIME_REFERENCE_FORBIDDEN",
+        ),
         ("exec('pass')\n", "PROFILE_RUNTIME_REFERENCE_FORBIDDEN"),
         (
             "import os\nos.system('command')\n",
@@ -269,17 +278,17 @@ def test_runtime_ast_rejects_removed_dynamic_llm_telemetry_and_process_code(
     (
         "import PySide6.QtCore\nPySide6.QtCore.QProcess.startDetached('tool')\n",
         "import PySide6.QtCore as qc\nqc.QProcess.start('tool')\n",
-        "import PySide6.QtCore as qc\nmodule = qc.QProcess\n",
+        "import PySide6.QtCore as qc\nmodule = qc\nproc = module.QProcess\n",
         "from PySide6.QtCore import QProcess\nrunner = QProcess.startDetached\nrunner('tool')\n",
         "import PySide6.QtCore\nproc = PySide6.QtCore.QProcess\nproc.start('tool')\n",
         "import PySide6.QtCore as qc\nfirst = qc.QProcess\nsecond = first\nsecond.start('tool')\n",
         "import PySide6.QtCore as qc\nfirst = qc.QProcess\nsecond = first\nfirst = second\nsecond.start('tool')\n",
-        "import builtins\nbuiltins.__import__('module')\n",
-        "import builtins\nbuiltins.eval('value')\n",
-        "import builtins\nbuiltins.exec('pass')\n",
-        "import builtins\nbuiltins.compile('pass', 'name', 'exec')\n",
-        "import builtins\nloader = builtins.__import__\nloader('module')\n",
-        "from builtins import eval as runner\n",
+        "import os\nmodule = os\nrunner = module.system\n",
+        "import multiprocessing\nrunner = multiprocessing.Process\n",
+        "runner = getattr(module, 'system')\n",
+        "runner = getattr(module, 'QProcess')\n",
+        "runner = getattr(module, 'popen')\n",
+        "runner = getattr(module, 'execv')\n",
         "runner = eval\n",
     ),
 )
@@ -332,6 +341,15 @@ def test_runtime_ast_preserves_benign_aliases_and_noncalled_literals(
         "open_database(':memory:')\n"
         "left = right\nright = left\n"
         "import os\npath_value = os.fspath('.')\n"
+        "safe_one = getattr(object(), 'st_file_attributes', 0)\n"
+        "safe_two = getattr(object(), 'FILE_ATTRIBUTE_REPARSE_POINT', 0)\n"
+        "class Library:\n"
+        "    def compile(self): return None\n"
+        "    def eval(self): return None\n"
+        "    def exec(self): return None\n"
+        "    def start(self): return None\n"
+        "library = Library()\n"
+        "library.compile(); library.eval(); library.exec(); library.start()\n"
         "DETECTOR_NAMES = ('subprocess.run', 'builtins.exec', 'QProcess.start')\n",
         encoding="utf-8",
     )
@@ -565,6 +583,16 @@ def test_runtime_ast_retains_ctypes_sqlite_and_file_write_capabilities(
         "import ctypes\nimport sqlite3\nfrom pathlib import Path\n"
         "sqlite3.connect(':memory:')\nPath('local').write_text('value')\n"
         "ctypes.c_void_p()\n",
+        encoding="utf-8",
+    )
+
+    (root / "src/agentguardian/rebound_aliases.py").write_text(
+        "def ctypes_value():\n"
+        "    import ctypes as library\n"
+        "    return library.c_void_p()\n"
+        "def sqlite_value():\n"
+        "    import sqlite3 as library\n"
+        "    return library.connect(':memory:')\n",
         encoding="utf-8",
     )
 
