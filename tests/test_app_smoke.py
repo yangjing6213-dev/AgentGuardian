@@ -4668,6 +4668,7 @@ def test_folder_selection_shows_only_short_name(qapp, monkeypatch, tmp_path):
         window.scope_exclusions_label,
         window.scope_mode_label,
         window.supported_data_checkbox,
+        window.supported_data_disclosure_label,
         window.scope_consent_checkbox,
     )
     assert all(widget.isVisible() for widget in preview_widgets)
@@ -4679,6 +4680,20 @@ def test_folder_selection_shows_only_short_name(qapp, monkeypatch, tmp_path):
     assert "医疗" not in window.supported_data_checkbox.text()
     assert "医疗" in window.supported_data_checkbox.toolTip()
     assert "国家秘密" in window.supported_data_checkbox.accessibleDescription()
+    disclosure = window.supported_data_disclosure_label
+    assert disclosure.objectName() == "supportedDataDisclosure"
+    assert disclosure.wordWrap()
+    assert disclosure.width() <= available_width
+    for required_class in (
+        "医疗",
+        "金融",
+        "身份/生物识别",
+        "法律特权",
+        "客户数据",
+        "其他受监管或高敏感真实数据",
+    ):
+        assert required_class in disclosure.text()
+        assert required_class in disclosure.accessibleDescription()
     assert not _global_rect(window.scope_consent_checkbox).intersects(
         _global_rect(window.scan_button)
     )

@@ -374,7 +374,7 @@ def _comparison_text(comparison: ReportComparison) -> str:
         f"新增限制：{added_limits}",
         f"已解除限制：{resolved_limits}",
     ]
-    if not comparison.baseline_supported_use_boundary_verified:
+    if not comparison.baseline.supported_use_boundary_verified:
         lines.insert(1, "历史基线未声明 Personal 边界；仅比较聚合数据。")
     return "\n".join(lines)
 
@@ -1073,6 +1073,25 @@ class AgentGuardianWindow(QMainWindow):
             self._supported_data_consent_changed
         )
         layout.addWidget(self.supported_data_checkbox)
+
+        unsupported_data_disclosure = (
+            "不支持医疗、金融、身份/生物识别、法律特权、客户数据，"
+            "以及其他受监管或高敏感真实数据。"
+        )
+        self.supported_data_disclosure_label = QLabel(
+            unsupported_data_disclosure
+        )
+        self.supported_data_disclosure_label.setObjectName(
+            "supportedDataDisclosure"
+        )
+        self.supported_data_disclosure_label.setWordWrap(True)
+        self.supported_data_disclosure_label.setAccessibleName(
+            "不支持的数据类别"
+        )
+        self.supported_data_disclosure_label.setAccessibleDescription(
+            unsupported_data_disclosure
+        )
+        layout.addWidget(self.supported_data_disclosure_label)
 
         self.scope_consent_checkbox = QCheckBox(
             "我已核对并同意仅扫描当前显示范围"

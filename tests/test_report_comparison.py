@@ -172,10 +172,10 @@ def test_historical_schema_1_is_explicit_and_cannot_claim_current_boundary() -> 
     assert current.supported_use_boundary == "personal_non_regulated_configuration"
     assert current.supported_use_boundary_verified is True
     assert comparison.baseline == historical
-    assert comparison.baseline_schema_version == 1
-    assert comparison.current_schema_version == 2
-    assert comparison.baseline_supported_use_boundary_verified is False
-    assert comparison.current_supported_use_boundary_verified is True
+    assert not hasattr(comparison, "baseline_schema_version")
+    assert not hasattr(comparison, "current_schema_version")
+    assert not hasattr(comparison, "baseline_supported_use_boundary_verified")
+    assert not hasattr(comparison, "current_supported_use_boundary_verified")
     assert comparison.technical_score_delta == 0
     assert comparison.reviewed_score_delta == 0
     assert comparison.finding_count_delta == 0
@@ -588,8 +588,8 @@ def test_legacy_report_derives_coverage_state_and_matches_schema_1() -> None:
         assert historical.schema_version == schema_version
         assert historical.supported_use_boundary is None
         assert historical.supported_use_boundary_verified is False
-        assert comparison.baseline_supported_use_boundary_verified is False
-        assert comparison.current_supported_use_boundary_verified is True
+        assert comparison.baseline.supported_use_boundary_verified is False
+        assert comparison.current.supported_use_boundary_verified is True
         assert comparison.technical_score_delta == 0
         assert comparison.reviewed_score_delta == 0
         assert comparison.coverage_delta == 0

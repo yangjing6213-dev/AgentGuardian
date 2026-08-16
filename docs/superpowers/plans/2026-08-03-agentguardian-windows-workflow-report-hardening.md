@@ -25,7 +25,7 @@ calls, or Batch 5/6 features.
 - Create `src/agentguardian/workflow.py`: immutable scope, consent, coverage, and
   finding-filter contracts.
 - Create `tests/test_workflow.py`: pure workflow-contract tests.
-- Modify `src/agentguardian/reporting.py`: report schema 2 and explicit coverage
+- Modify `src/agentguardian/reporting.py`: report schema 1 and explicit coverage
   state in deterministic JSON/HTML.
 - Modify `tests/test_reporting.py`: schema, consistency, escaping, and
   deterministic coverage tests.
@@ -159,7 +159,7 @@ Expected: all Task 1 tests pass and no whitespace errors.
 
 Commit: `Add workflow consent contracts`
 
-## Task 2: Add Report Schema 2 and Explicit Coverage Output
+## Task 2: Add Report Schema 1 and Explicit Coverage Output
 
 **Files:**
 - Modify: `src/agentguardian/reporting.py`
@@ -167,7 +167,7 @@ Commit: `Add workflow consent contracts`
 
 - [x] **Step 1: Write failing JSON schema tests**
 
-Require top-level `report_schema == 2` and required keyword-only `evaluated_at`
+Require top-level `report_schema == 1` and required keyword-only `evaluated_at`
 as a canonical UTC-seconds timestamp, with no hidden clock fallback. Identical
 inputs including that timestamp must produce byte-identical JSON and HTML.
 After bounded materialization, recompute the technical and reviewed scores exactly
@@ -198,7 +198,7 @@ payload = json.loads(
         evaluated_at=datetime(2026, 8, 3, 12, tzinfo=timezone.utc),
     )
 )
-assert payload["report_schema"] == 2
+assert payload["report_schema"] == 1
 assert payload["evaluated_at"] == "2026-08-03T12:00:00Z"
 assert payload["score"]["coverage_state"] == "limited"
 assert payload["reviewed_score"]["coverage_state"] == "limited"
@@ -212,7 +212,7 @@ Run: `rtk pytest -q -p no:cacheprovider tests/test_reporting.py -k 'schema or co
 
 Expected: missing schema and coverage-state fields.
 
-- [x] **Step 3: Implement schema 2 through the workflow classifier**
+- [x] **Step 3: Implement schema 1 through the workflow classifier**
 
 Call the single Task 1 classifier from `_validated_score_data`. Do not duplicate
 coverage rules in `reporting.py`.
@@ -327,12 +327,11 @@ Discard item-level values after aggregation.
 
 - [x] **Step 4: Write failing legacy-schema tests**
 
-Create exact all-open compatibility reports by changing `report_schema` to 1,
-removing `supported_use_boundary`, and then removing `evaluated_at` for old
-schema 1. Remove `report_schema` and score `coverage_state` for legacy schema 0.
-Require derived coverage state and independently recomputed equal scores. Reject
-any old-format non-open disposition, partial legacy/new hybrids, and unknown
-schema versions.
+Create exact all-open compatibility reports by removing `evaluated_at` for old
+schema 1, then removing `report_schema` and score `coverage_state` for legacy
+schema 0. Require derived coverage state and independently recomputed equal
+scores. Reject any old-format non-open disposition, partial legacy/new hybrids,
+and unknown schema versions.
 
 - [x] **Step 5: Implement only exact legacy compatibility**
 

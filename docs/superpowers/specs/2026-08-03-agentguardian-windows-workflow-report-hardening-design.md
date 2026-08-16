@@ -131,10 +131,9 @@ must include the statement that the result cannot establish safety. A complete
 scan may say only that the configured scope completed; it must not say the
 system, account, provider, or endpoint is safe.
 
-New reports declare `report_schema: 2`, include the fixed
-`supported_use_boundary`, include the explicit coverage state, and accept
-required keyword-only `evaluated_at` as a canonical UTC-seconds timestamp with
-no hidden clock fallback. The same validated instant drives
+New reports declare `report_schema: 1`, include the explicit coverage state,
+and accept required keyword-only `evaluated_at` as a canonical UTC-seconds
+timestamp with no hidden clock fallback. The same validated instant drives
 disposition evaluation, reviewed scoring, and serialization. Identical inputs,
 including `evaluated_at`, produce byte-identical JSON and HTML. After bounded
 materialization, renderers recompute the technical and reviewed scores exactly
@@ -189,14 +188,12 @@ The parser accepts only exact built-in JSON types, bounded strings and lists,
 `product == "AgentGuardian"`, and one of these schemas:
 
 - the exact pre-Batch-4 Founder Alpha report shape, treated as legacy schema 0;
-- either exact historical schema 1 shape without `supported_use_boundary`, with
-  or without `evaluated_at`; or
-- current `report_schema == 2` with the exact fixed `supported_use_boundary`
-  and canonical UTC-seconds `evaluated_at`.
+- the exact original schema 1 shape without `evaluated_at`; or
+- current `report_schema == 1` with canonical UTC-seconds `evaluated_at`.
 
 Legacy schema 0 and original schema 1 are accepted only when every disposition
 is `open` and both scores independently recompute. Any unverifiable non-open
-legacy disposition fails closed. Current schema 2 reconstructs each non-open
+legacy disposition fails closed. Current schema 1 reconstructs each non-open
 record and re-evaluates it at `evaluated_at`; future-created, expired-as-active,
 active-as-expired, invalid last-status, timestamp, or reviewed-score
 contradictions fail closed. This verifies internal consistency, not report
@@ -328,9 +325,9 @@ category; dependencies and binaries remain outside the static source audit.
 
 - Existing Batch 0-3 audit, disposition, and protected-state schemas remain
   unchanged.
-- New report schema 2 adds the fixed supported-use boundary to existing fields.
+- New report schema 1 is additive to the existing report fields.
 - Baseline comparison accepts only the exact legacy Founder Alpha shape and
-  schemas 1 and 2. It does not guess future schemas.
+  schema 1. It does not guess future schemas.
 - Old reports remain immutable; no migration or rewrite occurs.
 - Existing report exports remain complete and unfiltered.
 

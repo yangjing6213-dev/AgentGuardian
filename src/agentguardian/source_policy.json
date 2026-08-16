@@ -3,7 +3,7 @@
   "modules": {
     "__init__.py": "6bcb0e775f831e3d6acf1e8611abf9a7d54875ef1eb94032be1c0bd68ae0f92a",
     "__main__.py": "832caf5ea96c681db924078e0f5551c574e566cd34feb1298c9e34f82f48f673",
-    "app.py": "1e153d23e378324cb97bc08d9079a4d5b9e8d3a479f233a5081cce48a5e31c12",
+    "app.py": "8b3444f231be19cb7d1bf1e1f36c750b3ef9cb3133935a508d9c63e7faf26923",
     "browser_audit.py": "1e2631fcf355667f7a630d9dd74aef9d6dee98207d2afd6aad57b90a704d7017",
     "clipboard_audit.py": "152fa64217ba1a3146846b24a6e031a8b037a1e04ef96bc5bbfca4c30b681f86",
     "detectors.py": "49f2ec4e85918039b5bd824fb9d383b6c72d149dd093ac2a84a406d0a82d4815",
@@ -13,7 +13,7 @@
     "evidence_state.py": "7f83c1d830803d0ab978ce5d3e42a986ef4705faa8ed54191f533af00d7fdeef",
     "guidance.py": "fa73140c437c6dd6700b0e429640cfa18f620f4f656e1cc836707f264943e878",
     "remediation.py": "7a5e25ea455625255c38e1b46f921574ba258698d1ef640b997bb2fe0f3ee2fd",
-    "report_comparison.py": "4f01b30d73d292279f0fd71af247ae84cee0fc2764368bcaf521f8685dfe46b5",
+    "report_comparison.py": "09bc861bc0aa0464f371047aadd3637dbf7eb357e5db30dfd6eff418045ac5a0",
     "reporting.py": "f5be8090f1175ae09050635432ebf30e82c759bffb439721ea8819251791c6e6",
     "scoring.py": "ed04a103981b08e4fd55cb15e36a32487ee76db85c5d494fe4918f3b1092dd7d",
     "self_audit.py": "a08d8f256042a3dc65c79b8fb6aef217d520c8329ee1bac3857125cc68375a8a",

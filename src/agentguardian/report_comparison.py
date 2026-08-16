@@ -77,10 +77,6 @@ class ReportSummary:
 class ReportComparison:
     baseline: ReportSummary
     current: ReportSummary
-    baseline_schema_version: int
-    current_schema_version: int
-    baseline_supported_use_boundary_verified: bool
-    current_supported_use_boundary_verified: bool
     technical_score_delta: int
     reviewed_score_delta: int
     coverage_delta: float
@@ -174,14 +170,6 @@ def compare_report_summaries(
     return ReportComparison(
         baseline=baseline,
         current=current,
-        baseline_schema_version=baseline.schema_version,
-        current_schema_version=current.schema_version,
-        baseline_supported_use_boundary_verified=(
-            baseline.supported_use_boundary_verified
-        ),
-        current_supported_use_boundary_verified=(
-            current.supported_use_boundary_verified
-        ),
         technical_score_delta=current.technical_score - baseline.technical_score,
         reviewed_score_delta=current.reviewed_score - baseline.reviewed_score,
         coverage_delta=current.coverage - baseline.coverage,
