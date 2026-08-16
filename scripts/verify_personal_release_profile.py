@@ -16,9 +16,9 @@ from typing import Any
 MAX_PROFILE_BYTES = 64 * 1024
 _MAX_ARRAY_ITEMS = 128
 _MAX_VALUE_LENGTH = 256
-_MAX_ALIAS_DEPTH = 64
-_MAX_SIMPLE_ASSIGNMENTS = 512
 _MAX_ALIAS_VALUES = 128
+_MAX_REFERENCE_PARTS = 64
+_MAX_RUNTIME_OPERATIONS = 4096
 _PROFILE_KEYS = frozenset(
     {
         "active_document_paths",
@@ -168,9 +168,7 @@ def _verify_runtime(root: Path, profile: dict[str, Any]) -> None:
             tree = ast.parse(path.read_bytes())
         except (OSError, SyntaxError, ValueError):
             raise ProfileViolation("PROFILE_RUNTIME_SYNTAX_INVALID") from None
-        imports, aliases = _imports_and_aliases(tree)
-        if _has_forbidden_call(tree, aliases, profile["forbidden_runtime_calls"]):
-            raise ProfileViolation("PROFILE_RUNTIME_CALL_FORBIDDEN")
+        imports = _RuntimeAnalyzer(profile["forbidden_runtime_calls"]).analyze(tree)
         if any(
             _module_matches(name, profile["forbidden_runtime_imports"])
             for name in imports
@@ -224,78 +222,335 @@ def _verify_documents(root: Path, profile: dict[str, Any]) -> None:
         raise ProfileViolation("PROFILE_DOCUMENT_BOUNDARY_MISSING")
 
 
-def _imports_and_aliases(
-    tree: ast.AST,
-) -> tuple[
-    tuple[str, ...],
-    tuple[dict[str, frozenset[str]], dict[str, tuple[ast.AST, ...]]],
-]:
-    imports: list[str] = []
-    aliases: dict[str, set[str]] = {}
-    for node in ast.walk(tree):
+class _RuntimeAnalyzer:
+    """Bounded, statement-ordered alias analysis with isolated lexical scopes."""
+
+    def __init__(self, forbidden_calls: list[str]) -> None:
+        self._forbidden_calls = tuple(pattern.casefold() for pattern in forbidden_calls)
+        self._imports: list[str] = []
+        self._operations = 0
+
+    def analyze(self, tree: ast.Module) -> tuple[str, ...]:
+        self._statements(tree.body, {})
+        return tuple(self._imports)
+
+    def _spend(self, count: int = 1) -> None:
+        self._operations += count
+        if self._operations > _MAX_RUNTIME_OPERATIONS:
+            raise ProfileViolation("PROFILE_RUNTIME_ANALYSIS_LIMIT")
+
+    def _statements(
+        self,
+        statements: list[ast.stmt],
+        env: dict[str, frozenset[str]],
+        *,
+        function_parent: dict[str, frozenset[str]] | None = None,
+        depth: int = 0,
+    ) -> None:
+        if depth > _MAX_REFERENCE_PARTS:
+            raise ProfileViolation("PROFILE_RUNTIME_ANALYSIS_LIMIT")
+        for statement in statements:
+            self._statement(statement, env, function_parent, depth)
+
+    def _statement(
+        self,
+        node: ast.stmt,
+        env: dict[str, frozenset[str]],
+        function_parent: dict[str, frozenset[str]] | None,
+        depth: int,
+    ) -> None:
         if isinstance(node, ast.Import):
             for item in node.names:
-                imports.append(item.name)
+                self._spend()
+                self._imports.append(item.name)
                 bound = item.asname or item.name.split(".", 1)[0]
-                resolved = item.name if item.asname else bound
-                aliases.setdefault(bound, set()).add(resolved)
-        elif isinstance(node, ast.ImportFrom):
+                env[bound] = frozenset({item.name if item.asname else bound})
+            return
+        if isinstance(node, ast.ImportFrom):
             module = node.module or ""
             if module:
-                imports.append(module)
+                self._imports.append(module)
             for item in node.names:
+                self._spend()
                 qualified = f"{module}.{item.name}" if module else item.name
-                imports.append(qualified)
-                aliases.setdefault(item.asname or item.name, set()).add(qualified)
+                self._imports.append(qualified)
+                env[item.asname or item.name] = frozenset({qualified})
+            return
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            value = node.value
+            if value is not None:
+                self._expression(value, env, function_parent, depth)
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                self._expression(target, env, function_parent, depth)
+                self._assign(target, value, env)
+            return
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            self._function_expressions(node, env, function_parent, depth)
+            self._spend()
+            env[node.name] = frozenset({node.name})
+            parent = function_parent if function_parent is not None else env
+            child = dict(parent)
+            self._shadow_parameters(node.args, child)
+            self._statements(node.body, child, depth=depth + 1)
+            return
+        if isinstance(node, ast.ClassDef):
+            for expression in (*node.decorator_list, *node.bases, *node.keywords):
+                value = expression.value if isinstance(expression, ast.keyword) else expression
+                self._expression(value, env, function_parent, depth)
+            self._spend()
+            env[node.name] = frozenset({node.name})
+            outer = function_parent if function_parent is not None else env
+            self._statements(
+                node.body,
+                dict(env),
+                function_parent=dict(outer),
+                depth=depth + 1,
+            )
+            return
+        if isinstance(node, ast.If):
+            self._expression(node.test, env, function_parent, depth)
+            body_env = dict(env)
+            else_env = dict(env)
+            self._statements(
+                node.body, body_env, function_parent=function_parent, depth=depth + 1
+            )
+            self._statements(
+                node.orelse, else_env, function_parent=function_parent, depth=depth + 1
+            )
+            self._replace_with_merge(env, (body_env, else_env))
+            return
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+            if isinstance(node, (ast.For, ast.AsyncFor)):
+                self._expression(node.iter, env, function_parent, depth)
+                body_env = dict(env)
+                self._assign(node.target, None, body_env)
+            else:
+                self._expression(node.test, env, function_parent, depth)
+                body_env = dict(env)
+            self._statements(
+                node.body, body_env, function_parent=function_parent, depth=depth + 1
+            )
+            else_env = self._merged(env, (dict(env), body_env))
+            self._statements(
+                node.orelse, else_env, function_parent=function_parent, depth=depth + 1
+            )
+            self._replace_with_merge(env, (dict(env), body_env, else_env))
+            return
+        if isinstance(node, (ast.Try, ast.TryStar)):
+            body_env = dict(env)
+            self._statements(
+                node.body, body_env, function_parent=function_parent, depth=depth + 1
+            )
+            success_env = dict(body_env)
+            self._statements(
+                node.orelse,
+                success_env,
+                function_parent=function_parent,
+                depth=depth + 1,
+            )
+            outcomes = [success_env]
+            for handler in node.handlers:
+                handler_env = dict(env)
+                if handler.type is not None:
+                    self._expression(handler.type, handler_env, function_parent, depth)
+                if handler.name:
+                    handler_env[handler.name] = frozenset({handler.name})
+                self._statements(
+                    handler.body,
+                    handler_env,
+                    function_parent=function_parent,
+                    depth=depth + 1,
+                )
+                outcomes.append(handler_env)
+            merged = self._merged(env, tuple(outcomes))
+            self._statements(
+                node.finalbody,
+                merged,
+                function_parent=function_parent,
+                depth=depth + 1,
+            )
+            env.clear()
+            env.update(merged)
+            return
+        if isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                self._expression(item.context_expr, env, function_parent, depth)
+                if item.optional_vars is not None:
+                    self._assign(item.optional_vars, None, env)
+            self._statements(
+                node.body, env, function_parent=function_parent, depth=depth + 1
+            )
+            return
+        if isinstance(node, ast.Match):
+            self._expression(node.subject, env, function_parent, depth)
+            outcomes: list[dict[str, frozenset[str]]] = [dict(env)]
+            for case in node.cases:
+                case_env = dict(env)
+                if case.guard is not None:
+                    self._expression(case.guard, case_env, function_parent, depth)
+                self._statements(
+                    case.body,
+                    case_env,
+                    function_parent=function_parent,
+                    depth=depth + 1,
+                )
+                outcomes.append(case_env)
+            self._replace_with_merge(env, tuple(outcomes))
+            return
 
-    assignments = _simple_assignments(tree)
-    if len(assignments) > _MAX_SIMPLE_ASSIGNMENTS:
-        raise ProfileViolation("PROFILE_RUNTIME_CALL_FORBIDDEN")
-    assignment_map: dict[str, list[ast.AST]] = {}
-    for target, source in assignments:
-        assignment_map.setdefault(target, []).append(source)
-    return tuple(imports), (
-        {key: frozenset(values) for key, values in aliases.items()},
-        {key: tuple(values) for key, values in assignment_map.items()},
-    )
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.expr):
+                self._expression(child, env, function_parent, depth)
+        if isinstance(node, (ast.AugAssign, ast.Delete)):
+            targets = [node.target] if isinstance(node, ast.AugAssign) else node.targets
+            for target in targets:
+                self._assign(target, None, env)
 
+    def _expression(
+        self,
+        node: ast.AST,
+        env: dict[str, frozenset[str]],
+        function_parent: dict[str, frozenset[str]] | None,
+        depth: int,
+    ) -> None:
+        stack = [node]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, ast.Lambda):
+                for default in (*current.args.defaults, *current.args.kw_defaults):
+                    if default is not None:
+                        self._expression(default, env, function_parent, depth)
+                child = dict(function_parent if function_parent is not None else env)
+                self._shadow_parameters(current.args, child)
+                self._expression(current.body, child, None, depth + 1)
+                continue
+            if isinstance(current, ast.NamedExpr):
+                self._expression(current.value, env, function_parent, depth)
+                self._assign(current.target, current.value, env)
+                continue
+            if isinstance(current, ast.Call):
+                for name in self._reference(current.func, env):
+                    candidates = {name}
+                    if name.casefold().startswith("builtins."):
+                        candidates.add(name.rsplit(".", 1)[-1])
+                    if any(
+                        fnmatchcase(candidate.casefold(), pattern)
+                        for candidate in candidates
+                        for pattern in self._forbidden_calls
+                    ):
+                        raise ProfileViolation("PROFILE_RUNTIME_CALL_FORBIDDEN")
+            stack.extend(ast.iter_child_nodes(current))
 
-def _simple_assignments(tree: ast.AST) -> tuple[tuple[str, ast.AST], ...]:
-    assignments: list[tuple[int, int, str, ast.AST]] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and isinstance(node.value, (ast.Name, ast.Attribute)):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    assignments.append((node.lineno, node.col_offset, target.id, node.value))
-        elif (
-            isinstance(node, ast.AnnAssign)
-            and isinstance(node.target, ast.Name)
-            and isinstance(node.value, (ast.Name, ast.Attribute))
-        ):
-            assignments.append((node.lineno, node.col_offset, node.target.id, node.value))
-    assignments.sort(key=lambda value: (value[0], value[1], value[2]))
-    return tuple((target, source) for _, _, target, source in assignments)
+    def _assign(
+        self,
+        target: ast.AST,
+        value: ast.AST | None,
+        env: dict[str, frozenset[str]],
+    ) -> None:
+        if isinstance(target, ast.Name):
+            self._spend()
+            env[target.id] = (
+                self._reference(value, env)
+                if isinstance(value, (ast.Name, ast.Attribute))
+                else frozenset({target.id})
+            )
+            return
+        if isinstance(target, (ast.Tuple, ast.List)):
+            for item in target.elts:
+                self._assign(item, None, env)
 
+    def _reference(
+        self, node: ast.AST, env: dict[str, frozenset[str]]
+    ) -> frozenset[str]:
+        parts: list[str] = []
+        while isinstance(node, ast.Attribute):
+            parts.append(node.attr)
+            if len(parts) > _MAX_REFERENCE_PARTS:
+                raise ProfileViolation("PROFILE_RUNTIME_ANALYSIS_LIMIT")
+            node = node.value
+        if not isinstance(node, ast.Name):
+            return frozenset()
+        parents = env.get(node.id, frozenset({node.id}))
+        self._spend(1 + len(parents))
+        suffix = ".".join(reversed(parts))
+        resolved = frozenset(
+            f"{parent}.{suffix}" if suffix else parent for parent in parents
+        )
+        if len(resolved) > _MAX_ALIAS_VALUES:
+            raise ProfileViolation("PROFILE_RUNTIME_ANALYSIS_LIMIT")
+        return resolved
 
-def _has_forbidden_call(
-    tree: ast.AST,
-    aliases: tuple[dict[str, frozenset[str]], dict[str, tuple[ast.AST, ...]]],
-    patterns: list[str],
-) -> bool:
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        for name in _resolved_names(node.func, *aliases):
-            candidates = {name}
-            if name.casefold().startswith("builtins."):
-                candidates.add(name.rsplit(".", 1)[-1])
-            if any(
-                fnmatchcase(candidate.casefold(), pattern.casefold())
-                for candidate in candidates
-                for pattern in patterns
-            ):
-                return True
-    return False
+    def _shadow_parameters(
+        self, arguments: ast.arguments, env: dict[str, frozenset[str]]
+    ) -> None:
+        parameters = [
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+        ]
+        if arguments.vararg is not None:
+            parameters.append(arguments.vararg)
+        if arguments.kwarg is not None:
+            parameters.append(arguments.kwarg)
+        for parameter in parameters:
+            self._spend()
+            env[parameter.arg] = frozenset({parameter.arg})
+
+    def _function_expressions(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        env: dict[str, frozenset[str]],
+        function_parent: dict[str, frozenset[str]] | None,
+        depth: int,
+    ) -> None:
+        expressions: list[ast.expr] = [*node.decorator_list, *node.args.defaults]
+        expressions.extend(value for value in node.args.kw_defaults if value is not None)
+        expressions.extend(
+            argument.annotation
+            for argument in (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+            )
+            if argument.annotation is not None
+        )
+        if node.args.vararg is not None and node.args.vararg.annotation is not None:
+            expressions.append(node.args.vararg.annotation)
+        if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
+            expressions.append(node.args.kwarg.annotation)
+        if node.returns is not None:
+            expressions.append(node.returns)
+        for expression in expressions:
+            self._expression(expression, env, function_parent, depth)
+
+    def _merged(
+        self,
+        base: dict[str, frozenset[str]],
+        outcomes: tuple[dict[str, frozenset[str]], ...],
+    ) -> dict[str, frozenset[str]]:
+        merged = dict(base)
+        keys = set().union(*(outcome.keys() for outcome in outcomes))
+        for key in keys:
+            values_by_path = [outcome.get(key, frozenset({key})) for outcome in outcomes]
+            if all(values == values_by_path[0] for values in values_by_path[1:]):
+                merged[key] = values_by_path[0]
+                continue
+            values = frozenset().union(*values_by_path)
+            self._spend(1 + len(values))
+            if len(values) > _MAX_ALIAS_VALUES:
+                raise ProfileViolation("PROFILE_RUNTIME_ANALYSIS_LIMIT")
+            merged[key] = values
+        return merged
+
+    def _replace_with_merge(
+        self,
+        env: dict[str, frozenset[str]],
+        outcomes: tuple[dict[str, frozenset[str]], ...],
+    ) -> None:
+        merged = self._merged(env, outcomes)
+        env.clear()
+        env.update(merged)
 
 
 def _has_forbidden_symbol(
@@ -313,53 +568,6 @@ def _has_forbidden_symbol(
         if name is not None and name.casefold() in forbidden:
             return True
     return False
-
-
-def _resolved_names(
-    node: ast.AST,
-    aliases: dict[str, frozenset[str]],
-    assignments: dict[str, tuple[ast.AST, ...]],
-    *,
-    stack: frozenset[str] = frozenset(),
-    depth: int = 0,
-) -> frozenset[str]:
-    if depth > _MAX_ALIAS_DEPTH:
-        raise ProfileViolation("PROFILE_RUNTIME_CALL_FORBIDDEN")
-    if isinstance(node, ast.Name):
-        if node.id in stack:
-            return aliases.get(node.id, frozenset())
-        resolved = set(aliases.get(node.id, ()))
-        sources = assignments.get(node.id, ())
-        for source in sources:
-            resolved.update(
-                _resolved_names(
-                    source,
-                    aliases,
-                    assignments,
-                    stack=stack | {node.id},
-                    depth=depth + 1,
-                )
-            )
-        if not resolved and not sources:
-            resolved.add(node.id)
-        if len(resolved) > _MAX_ALIAS_VALUES:
-            raise ProfileViolation("PROFILE_RUNTIME_CALL_FORBIDDEN")
-        return frozenset(resolved)
-    if isinstance(node, ast.Attribute):
-        resolved = frozenset(
-            f"{parent}.{node.attr}"
-            for parent in _resolved_names(
-                node.value,
-                aliases,
-                assignments,
-                stack=stack,
-                depth=depth + 1,
-            )
-        )
-        if len(resolved) > _MAX_ALIAS_VALUES:
-            raise ProfileViolation("PROFILE_RUNTIME_CALL_FORBIDDEN")
-        return resolved
-    return frozenset()
 
 
 def _module_matches(name: str, families: list[str]) -> bool:

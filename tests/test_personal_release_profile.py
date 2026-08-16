@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -267,7 +268,6 @@ def test_runtime_ast_rejects_removed_dynamic_llm_telemetry_and_process_code(
         "import PySide6.QtCore\nproc = PySide6.QtCore.QProcess\nproc.start('tool')\n",
         "import PySide6.QtCore as qc\nfirst = qc.QProcess\nsecond = first\nsecond.start('tool')\n",
         "import PySide6.QtCore as qc\nfirst = qc.QProcess\nsecond = first\nfirst = second\nsecond.start('tool')\n",
-        "import PySide6.QtCore as qc\nproc = qc.QProcess\nproc = object\nproc.start('tool')\n",
         "import builtins\nbuiltins.__import__('module')\n",
         "import builtins\nbuiltins.eval('value')\n",
         "import builtins\nbuiltins.exec('pass')\n",
@@ -330,6 +330,147 @@ def test_runtime_ast_preserves_benign_aliases_and_noncalled_literals(
     assert verifier.verify_profile(
         root, root / "release_profiles/personal_store_release.json"
     )["status"] == "pass"
+
+
+def test_runtime_ast_keeps_identical_local_aliases_isolated(tmp_path: Path) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    (root / "src/agentguardian/benign_alias.py").write_text(
+        "import PySide6.QtCore as qc\n"
+        "def unused_forbidden_alias():\n"
+        "    runner = qc.QProcess.start\n"
+        "def benign_call():\n"
+        "    runner = print\n"
+        "    runner('ok')\n",
+        encoding="utf-8",
+    )
+
+    assert verifier.verify_profile(
+        root, root / "release_profiles/personal_store_release.json"
+    )["status"] == "pass"
+
+
+def test_runtime_ast_rejects_actual_local_forbidden_call_without_scope_leak(
+    tmp_path: Path,
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    (root / "src/agentguardian/hostile.py").write_text(
+        "import PySide6.QtCore as qc\n"
+        "def forbidden_call():\n"
+        "    runner = qc.QProcess.start\n"
+        "    runner('tool')\n"
+        "def benign_call():\n"
+        "    runner = print\n"
+        "    runner('ok')\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        verifier.ProfileViolation, match="^PROFILE_RUNTIME_CALL_FORBIDDEN$"
+    ):
+        verifier.verify_profile(
+            root, root / "release_profiles/personal_store_release.json"
+        )
+
+
+def test_runtime_ast_applies_straight_line_alias_shadowing(tmp_path: Path) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    source = root / "src/agentguardian/alias_order.py"
+    source.write_text(
+        "import PySide6.QtCore as qc\n"
+        "runner = qc.QProcess.start\n"
+        "runner = print\n"
+        "runner('ok')\n",
+        encoding="utf-8",
+    )
+    assert verifier.verify_profile(
+        root, root / "release_profiles/personal_store_release.json"
+    )["status"] == "pass"
+
+    source.write_text(
+        "import PySide6.QtCore as qc\n"
+        "runner = print\n"
+        "runner = qc.QProcess.start\n"
+        "runner('tool')\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        verifier.ProfileViolation, match="^PROFILE_RUNTIME_CALL_FORBIDDEN$"
+    ):
+        verifier.verify_profile(
+            root, root / "release_profiles/personal_store_release.json"
+        )
+
+
+def test_runtime_ast_isolates_nested_scope_and_parameter_shadowing(
+    tmp_path: Path,
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    (root / "src/agentguardian/benign_nested.py").write_text(
+        "import PySide6.QtCore as qc\n"
+        "runner = qc.QProcess.start\n"
+        "def outer():\n"
+        "    runner = print\n"
+        "    def inner(runner):\n"
+        "        runner('ok')\n"
+        "    inner(print)\n"
+        "    safe_lambda = lambda runner: runner('ok')\n"
+        "    safe_lambda(print)\n"
+        "outer()\n",
+        encoding="utf-8",
+    )
+
+    assert verifier.verify_profile(
+        root, root / "release_profiles/personal_store_release.json"
+    )["status"] == "pass"
+
+
+def test_runtime_ast_conservatively_merges_branch_aliases(tmp_path: Path) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    (root / "src/agentguardian/hostile.py").write_text(
+        "import PySide6.QtCore as qc\n"
+        "runner = print\n"
+        "if condition:\n"
+        "    runner = qc.QProcess.start\n"
+        "else:\n"
+        "    runner = print\n"
+        "runner('tool')\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        verifier.ProfileViolation, match="^PROFILE_RUNTIME_CALL_FORBIDDEN$"
+    ):
+        verifier.verify_profile(
+            root, root / "release_profiles/personal_store_release.json"
+        )
+
+
+def test_runtime_ast_budget_fails_closed_quickly_with_fixed_code(
+    tmp_path: Path,
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    source = "\n".join(f"alias_{index} = print" for index in range(5000)) + "\n"
+    (root / "src/agentguardian/hostile.py").write_text(source, encoding="utf-8")
+
+    started = time.monotonic()
+    with pytest.raises(
+        verifier.ProfileViolation, match="^PROFILE_RUNTIME_ANALYSIS_LIMIT$"
+    ) as caught:
+        verifier.verify_profile(
+            root, root / "release_profiles/personal_store_release.json"
+        )
+    elapsed = time.monotonic() - started
+
+    assert str(caught.value) == "PROFILE_RUNTIME_ANALYSIS_LIMIT"
+    assert str(root) not in str(caught.value)
+    assert source.strip() not in str(caught.value)
+    assert elapsed < 10.0
 
 
 def test_network_import_set_rejects_undeclared_and_missing_modules(tmp_path: Path) -> None:
