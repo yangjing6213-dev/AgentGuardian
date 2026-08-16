@@ -245,7 +245,11 @@ Stage only the files listed in Task 2 and commit with `rtk git commit -m "Make p
 - Modify: `scripts/build_windows_portable.py`
 - Modify: `scripts/verify_windows_release_candidate.py`
 - Modify: `scripts/verify_windows_msix.ps1`
-- Modify: `.github/workflows/windows-mvp-signed.yml`
+- Modify: `README.md`
+- Modify: `docs/architecture.md`
+- Modify: `docs/security/windows-mvp-threat-model.md`
+- Delete: `docs/security/enterprise-and-mcp-control-core.md`
+- Delete: `.github/workflows/windows-mvp-signed.yml`
 - Modify: `src/agentguardian/self_audit.py`
 - Modify: `src/agentguardian/source_policy.json`
 - Modify: `tests/test_windows_packaging.py`
@@ -305,9 +309,13 @@ Change `validate_release_candidate` and its CLI to require bundle, MSIX smoke ev
 
 Delete `RequireMcpAdapterAcceptance`, `McpAdapterRelativePath`, all expected adapter pins, the adapter evidence path, the installed-adapter execution block, and adapter fields from emitted evidence. Preserve package identity, source commit, trusted signature/Store origin, upgrade, launch, termination, uninstall, and residue checks.
 
-- [ ] **Step 4: Replace the old signed workflow with a non-publishing compatibility gate**
+- [ ] **Step 4: Delete the old signed-adapter workflow**
 
-Until Task 6 adds the Store workflow, reduce `.github/workflows/windows-mvp-signed.yml` to manual source/build/MSIX regression with no PFX secret, adapter variable, download, executable launch, or release claim. Name it `Windows personal package compatibility` and upload no public release.
+Delete `.github/workflows/windows-mvp-signed.yml`. The existing
+`windows-mvp.yml` remains the development package compatibility gate; Task 6
+adds the distinct Store-candidate workflow. Add a test that the retired workflow
+is absent and that no active workflow contains a PFX secret, adapter variable,
+adapter download, executable launch, or trusted-release claim.
 
 - [ ] **Step 5: Delete dynamic execution files and retain static MCP detection**
 
@@ -323,6 +331,12 @@ def test_personal_profile_retains_static_mcp_risk_detection():
     )
     assert any(finding.rule_id == "MCP_DANGEROUS_COMBINATION" for finding in findings)
 ```
+
+Delete `docs/security/enterprise-and-mcp-control-core.md`, remove dynamic MCP
+and signed-adapter claims from `README.md` and `docs/architecture.md`, and
+replace the dynamic-MCP threat row with the retained static-configuration
+detection boundary. Historical records under `docs/superpowers/` remain
+unchanged.
 
 - [ ] **Step 6: Regenerate policy and run regressions**
 
