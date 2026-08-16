@@ -4,20 +4,45 @@ from __future__ import annotations
 
 import argparse
 import ast
+from dataclasses import dataclass
 from functools import lru_cache
 from fnmatch import fnmatchcase
+import hashlib
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import stat
 import sys
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Iterable, Iterator, Mapping
 
 
 MAX_PROFILE_BYTES = 64 * 1024
 MAX_RUNTIME_SOURCE_BYTES = 256 * 1024
+_MAX_RUNTIME_AGGREGATE_BYTES = 8 * 1024 * 1024
+_MAX_WORKFLOW_FILE_BYTES = 256 * 1024
+_MAX_WORKFLOW_AGGREGATE_BYTES = 2 * 1024 * 1024
+_MAX_DOCUMENT_FILE_BYTES = 512 * 1024
+_MAX_DOCUMENT_AGGREGATE_BYTES = 4 * 1024 * 1024
+_MAX_TRAVERSAL_ENTRIES = 20_000
+_MAX_TRAVERSAL_DEPTH = 64
 _MAX_ARRAY_ITEMS = 128
 _MAX_VALUE_LENGTH = 256
 _MAX_RUNTIME_AST_NODES = 16_384
+_PROJECT_NOISE = frozenset(
+    {
+        ".analysis",
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+        "venv",
+    }
+)
 _PROFILE_KEYS = frozenset(
     {
         "active_document_paths",
@@ -58,6 +83,15 @@ class ProfileViolation(ValueError):
         self.code = code
 
 
+@dataclass(frozen=True)
+class ProfileSnapshot:
+    """Immutable canonical profile data shared by every verification stage."""
+
+    canonical_bytes: bytes
+    profile: Mapping[str, Any]
+    sha256: str
+
+
 def canonical_json_bytes(value: object) -> bytes:
     return (
         json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
@@ -65,28 +99,55 @@ def canonical_json_bytes(value: object) -> bytes:
     ).encode("ascii")
 
 
-def load_profile(profile_path: str | Path) -> dict[str, Any]:
-    path = Path(profile_path).absolute()
-    if _has_reparse_component(path):
-        raise ProfileViolation("PROFILE_REPARSE_POINT")
+def load_profile_snapshot(
+    project_root: str | Path, profile_path: str | Path
+) -> ProfileSnapshot:
+    root = _resolved_project_root(project_root)
+    path = _resolved_profile_path(root, profile_path)
+    raw = _read_bounded(path, MAX_PROFILE_BYTES, "PROFILE_JSON_TOO_LARGE")
+    return profile_snapshot_from_bytes(raw)
+
+
+def profile_snapshot_from_bytes(raw: bytes) -> ProfileSnapshot:
+    if not isinstance(raw, bytes):
+        raise ProfileViolation("PROFILE_JSON_INVALID")
+    if len(raw) > MAX_PROFILE_BYTES:
+        raise ProfileViolation("PROFILE_JSON_TOO_LARGE")
     try:
-        if not path.is_file():
-            raise ProfileViolation("PROFILE_JSON_INVALID")
-        size = path.stat().st_size
-        if size > MAX_PROFILE_BYTES:
-            raise ProfileViolation("PROFILE_JSON_TOO_LARGE")
-        raw = path.read_bytes()
         value = json.loads(raw.decode("ascii"), object_pairs_hook=_unique_object)
     except ProfileViolation:
         raise
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except (MemoryError, UnicodeError, json.JSONDecodeError):
         raise ProfileViolation("PROFILE_JSON_INVALID") from None
     if not isinstance(value, dict) or set(value) != _PROFILE_KEYS:
         raise ProfileViolation("PROFILE_SCHEMA_INVALID")
     if raw != canonical_json_bytes(value):
         raise ProfileViolation("PROFILE_JSON_INVALID")
     _validate_profile_value(value)
-    return value
+    frozen = MappingProxyType(
+        {
+            key: tuple(item) if isinstance(item, list) else item
+            for key, item in value.items()
+        }
+    )
+    return ProfileSnapshot(raw, frozen, hashlib.sha256(raw).hexdigest())
+
+
+def require_profile_snapshot_unchanged(
+    project_root: str | Path,
+    profile_path: str | Path,
+    snapshot: ProfileSnapshot,
+) -> None:
+    if not isinstance(snapshot, ProfileSnapshot):
+        raise ProfileViolation("PROFILE_SCHEMA_INVALID")
+    try:
+        root = _resolved_project_root(project_root)
+        path = _resolved_profile_path(root, profile_path)
+        raw = _read_bounded(path, MAX_PROFILE_BYTES, "PROFILE_SNAPSHOT_CHANGED")
+    except ProfileViolation:
+        raise ProfileViolation("PROFILE_SNAPSHOT_CHANGED") from None
+    if raw != snapshot.canonical_bytes:
+        raise ProfileViolation("PROFILE_SNAPSHOT_CHANGED")
 
 
 def _validate_profile_value(value: dict[str, Any]) -> None:
@@ -118,25 +179,16 @@ def _validate_profile_value(value: dict[str, Any]) -> None:
 
 
 def verify_profile(
-    project_root: str | Path, profile_path: str | Path
+    project_root: str | Path, snapshot: ProfileSnapshot
 ) -> dict[str, str]:
-    root = Path(project_root).absolute()
-    if not root.is_dir() or _has_reparse_component(root):
-        raise ProfileViolation("PROFILE_PROJECT_INVALID")
-    candidate = Path(profile_path)
-    candidate = candidate.absolute() if candidate.is_absolute() else (root / candidate).absolute()
-    try:
-        candidate.relative_to(root)
-    except ValueError:
-        raise ProfileViolation("PROFILE_PATH_INVALID") from None
-    profile = load_profile(candidate)
+    if not isinstance(snapshot, ProfileSnapshot):
+        raise ProfileViolation("PROFILE_SCHEMA_INVALID")
+    root = _resolved_project_root(project_root)
+    profile = snapshot.profile
 
-    source_entries = _project_entries(root, profile["forbidden_source_globs"])
-    if any(
-        _matches_any(relative, profile["forbidden_source_globs"])
-        for relative, _ in source_entries
-    ):
-        raise ProfileViolation("PROFILE_SOURCE_FORBIDDEN")
+    for relative, _ in _walk_project(root):
+        if _matches_any(relative, profile["forbidden_source_globs"]):
+            raise ProfileViolation("PROFILE_SOURCE_FORBIDDEN")
     for relative in profile["required_source_paths"]:
         if not _required_file(root, relative):
             raise ProfileViolation("PROFILE_REQUIRED_SOURCE_MISSING")
@@ -147,83 +199,127 @@ def verify_profile(
     return {"profile": "personal_store_release", "status": "pass"}
 
 
-def verify_payload(bundle_root: str | Path, profile: dict[str, Any]) -> None:
-    if not isinstance(profile, dict):
+def verify_payload(bundle_root: str | Path, snapshot: ProfileSnapshot) -> None:
+    if not isinstance(snapshot, ProfileSnapshot):
         raise ProfileViolation("PROFILE_SCHEMA_INVALID")
-    _validate_profile_value(profile)
     root = Path(bundle_root).absolute()
-    if not root.is_dir() or _has_reparse_component(root):
+    if _has_reparse_component(root):
         raise ProfileViolation("PROFILE_PAYLOAD_INVALID")
-    for relative, _ in _walk(root, root):
-        if _matches_any(relative, profile["forbidden_payload_globs"]):
+    try:
+        root = root.resolve(strict=True)
+    except OSError:
+        raise ProfileViolation("PROFILE_PAYLOAD_INVALID") from None
+    if not root.is_dir():
+        raise ProfileViolation("PROFILE_PAYLOAD_INVALID")
+    for relative, _ in _walk(
+        root,
+        root,
+        invalid_code="PROFILE_PAYLOAD_INVALID",
+        limit_code="PROFILE_PAYLOAD_TRAVERSAL_LIMIT",
+    ):
+        if _matches_any(relative, snapshot.profile["forbidden_payload_globs"]):
             raise ProfileViolation("PROFILE_PAYLOAD_FORBIDDEN")
 
 
-def _verify_runtime(root: Path, profile: dict[str, Any]) -> None:
+def _verify_runtime(root: Path, profile: Mapping[str, Any]) -> None:
     source_root = root / "src" / "agentguardian"
     modules: list[str] = []
-    for relative, path in _walk(source_root, root):
+    aggregate_bytes = 0
+    for relative, path in _walk_project(source_root, root):
         if not path.is_file() or path.suffix.casefold() != ".py":
             continue
         try:
-            with path.open("rb") as source_file:
-                source = source_file.read(MAX_RUNTIME_SOURCE_BYTES + 1)
-            if len(source) > MAX_RUNTIME_SOURCE_BYTES:
+            source = _read_bounded(
+                path, MAX_RUNTIME_SOURCE_BYTES, "PROFILE_RUNTIME_ANALYSIS_LIMIT"
+            )
+            aggregate_bytes += len(source)
+            if aggregate_bytes > _MAX_RUNTIME_AGGREGATE_BYTES:
                 raise ProfileViolation("PROFILE_RUNTIME_ANALYSIS_LIMIT")
             tree = ast.parse(source)
+        except (RecursionError, MemoryError, OverflowError, SystemError):
+            raise ProfileViolation("PROFILE_RUNTIME_ANALYSIS_LIMIT") from None
         except ProfileViolation:
             raise
-        except (OSError, SyntaxError, ValueError):
+        except (SyntaxError, ValueError):
             raise ProfileViolation("PROFILE_RUNTIME_SYNTAX_INVALID") from None
-        imports = _scan_runtime(tree, profile)
+        try:
+            imports = _scan_runtime(tree, profile)
+        except (RecursionError, MemoryError, OverflowError, SystemError):
+            raise ProfileViolation("PROFILE_RUNTIME_ANALYSIS_LIMIT") from None
         if any(
             _module_matches(name, profile["network_import_families"])
             for name in imports
         ):
             modules.append(relative)
-    if sorted(modules) != profile["declared_network_modules"]:
+    if tuple(sorted(modules)) != profile["declared_network_modules"]:
         raise ProfileViolation("PROFILE_NETWORK_SET_INVALID")
 
 
-def _verify_workflows(root: Path, forbidden_tokens: list[str]) -> None:
+def _verify_workflows(root: Path, forbidden_tokens: tuple[str, ...]) -> None:
     workflow_root = root / ".github" / "workflows"
     if not workflow_root.is_dir():
         return
-    for _, path in _walk(workflow_root, root):
+    aggregate_bytes = 0
+    for _, path in _walk_project(workflow_root, root):
         if not path.is_file() or path.suffix.casefold() not in {".yaml", ".yml"}:
             continue
         try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
+            raw = _read_bounded(
+                path, _MAX_WORKFLOW_FILE_BYTES, "PROFILE_WORKFLOW_INVALID"
+            )
+            aggregate_bytes += len(raw)
+            if aggregate_bytes > _MAX_WORKFLOW_AGGREGATE_BYTES:
+                raise ProfileViolation("PROFILE_WORKFLOW_INVALID")
+            text = raw.decode("utf-8")
+        except ProfileViolation:
+            raise
+        except UnicodeError:
             raise ProfileViolation("PROFILE_WORKFLOW_INVALID") from None
         folded = text.casefold()
         if any(token.casefold() in folded for token in forbidden_tokens):
             raise ProfileViolation("PROFILE_WORKFLOW_FORBIDDEN")
 
 
-def _verify_documents(root: Path, profile: dict[str, Any]) -> None:
-    entries = _project_entries(root, profile["active_document_paths"])
-    documents = [
-        path
-        for relative, path in entries
-        if path.is_file() and _matches_any(relative, profile["active_document_paths"])
-    ]
-    for pattern in profile["active_document_paths"]:
-        if not any(_glob_matches(path.relative_to(root).as_posix(), pattern) for path in documents):
-            raise ProfileViolation("PROFILE_DOCUMENT_INVALID")
-    try:
-        corpus = "\n".join(path.read_text(encoding="utf-8") for path in documents)
-    except (OSError, UnicodeError):
-        raise ProfileViolation("PROFILE_DOCUMENT_INVALID") from None
-    folded = corpus.casefold()
-    if any(fragment.casefold() in folded for fragment in profile["forbidden_document_promises"]):
-        raise ProfileViolation("PROFILE_DOCUMENT_FORBIDDEN")
-    if any(marker.casefold() not in folded for marker in profile["required_document_markers"]):
+def _verify_documents(root: Path, profile: Mapping[str, Any]) -> None:
+    patterns = profile["active_document_paths"]
+    matched_patterns: set[str] = set()
+    found_markers: set[str] = set()
+    aggregate_bytes = 0
+    for relative, path in _walk_project(root):
+        matching = tuple(pattern for pattern in patterns if _glob_matches(relative, pattern))
+        if not matching or not path.is_file():
+            continue
+        try:
+            raw = _read_bounded(
+                path, _MAX_DOCUMENT_FILE_BYTES, "PROFILE_DOCUMENT_INVALID"
+            )
+            aggregate_bytes += len(raw)
+            if aggregate_bytes > _MAX_DOCUMENT_AGGREGATE_BYTES:
+                raise ProfileViolation("PROFILE_DOCUMENT_INVALID")
+            folded = raw.decode("utf-8").casefold()
+        except ProfileViolation:
+            raise
+        except UnicodeError:
+            raise ProfileViolation("PROFILE_DOCUMENT_INVALID") from None
+        matched_patterns.update(matching)
+        if any(
+            fragment.casefold() in folded
+            for fragment in profile["forbidden_document_promises"]
+        ):
+            raise ProfileViolation("PROFILE_DOCUMENT_FORBIDDEN")
+        found_markers.update(
+            marker
+            for marker in profile["required_document_markers"]
+            if marker.casefold() in folded
+        )
+    if len(matched_patterns) != len(patterns):
+        raise ProfileViolation("PROFILE_DOCUMENT_INVALID")
+    if len(found_markers) != len(profile["required_document_markers"]):
         raise ProfileViolation("PROFILE_DOCUMENT_BOUNDARY_MISSING")
 
 
 # This policy matches explicit AST names/members; it does not evaluate Python.
-def _scan_runtime(tree: ast.AST, profile: dict[str, Any]) -> tuple[str, ...]:
+def _scan_runtime(tree: ast.AST, profile: Mapping[str, Any]) -> tuple[str, ...]:
     imports: list[str] = []
     forbidden_names = {v.casefold() for v in profile["forbidden_runtime_names"]}
     forbidden_members = {v.casefold() for v in profile["forbidden_runtime_members"]}
@@ -319,7 +415,7 @@ def _has_forbidden_symbol_part(name: str, forbidden: set[str]) -> bool:
     return any(part.casefold() in forbidden for part in name.split("."))
 
 
-def _module_matches(name: str, families: list[str]) -> bool:
+def _module_matches(name: str, families: Iterable[str]) -> bool:
     folded = name.casefold()
     return any(
         folded == family.casefold() or folded.startswith(family.casefold() + ".")
@@ -327,38 +423,80 @@ def _module_matches(name: str, families: list[str]) -> bool:
     )
 
 
-def _project_entries(root: Path, patterns: list[str]) -> tuple[tuple[str, Path], ...]:
-    heads = {pattern.split("/", 1)[0].casefold() for pattern in patterns}
-    entries: list[tuple[str, Path]] = []
-    try:
-        children = sorted(root.iterdir(), key=lambda path: (path.name.casefold(), path.name))
-    except OSError:
-        raise ProfileViolation("PROFILE_PROJECT_INVALID") from None
-    for child in children:
-        if child.name.casefold() in heads:
-            entries.extend(_walk(child, root))
-    return tuple(entries)
+def _walk_project(start: Path, root: Path | None = None) -> Iterator[tuple[str, Path]]:
+    project_root = root or start
+    return _walk(
+        start,
+        project_root,
+        invalid_code="PROFILE_PROJECT_INVALID",
+        limit_code="PROFILE_PROJECT_TRAVERSAL_LIMIT",
+        excluded_directories=_PROJECT_NOISE,
+    )
 
 
-def _walk(start: Path, root: Path) -> tuple[tuple[str, Path], ...]:
+def _walk(
+    start: Path,
+    root: Path,
+    *,
+    invalid_code: str,
+    limit_code: str,
+    excluded_directories: frozenset[str] = frozenset(),
+) -> Iterator[tuple[str, Path]]:
     if _is_reparse_point(start):
         raise ProfileViolation("PROFILE_REPARSE_POINT")
-    entries = [(start.relative_to(root).as_posix(), start)]
-    if not start.is_dir():
-        return tuple(entries)
-    try:
-        children = sorted(start.iterdir(), key=lambda path: (path.name.casefold(), path.name))
-    except OSError:
-        raise ProfileViolation("PROFILE_PROJECT_INVALID") from None
-    for child in children:
-        entries.extend(_walk(child, root))
-    return tuple(entries)
+    stack = [(start, len(start.relative_to(root).parts))]
+    seen: set[str] = set()
+    entry_count = 0
+    while stack:
+        path, depth = stack.pop()
+        if _is_reparse_point(path):
+            raise ProfileViolation("PROFILE_REPARSE_POINT")
+        relative = path.relative_to(root).as_posix()
+        if relative != ".":
+            folded = relative.casefold()
+            if folded in seen:
+                raise ProfileViolation(invalid_code)
+            seen.add(folded)
+            entry_count += 1
+            if entry_count > _MAX_TRAVERSAL_ENTRIES:
+                raise ProfileViolation(limit_code)
+            yield relative, path
+        try:
+            if not path.is_dir():
+                continue
+            children: list[Path] = []
+            for child in path.iterdir():
+                if _is_reparse_point(child):
+                    raise ProfileViolation("PROFILE_REPARSE_POINT")
+                if (
+                    child.name.casefold() in excluded_directories
+                    and child.is_dir()
+                ):
+                    continue
+                children.append(child)
+                if entry_count + len(children) > _MAX_TRAVERSAL_ENTRIES:
+                    raise ProfileViolation(limit_code)
+            if children and depth >= _MAX_TRAVERSAL_DEPTH:
+                raise ProfileViolation(limit_code)
+        except ProfileViolation:
+            raise
+        except OSError:
+            raise ProfileViolation(invalid_code) from None
+        stack.extend(
+            (child, depth + 1)
+            for child in sorted(
+                children,
+                key=lambda item: (item.name.casefold(), item.name),
+                reverse=True,
+            )
+        )
 
 
 def _required_file(root: Path, relative: str) -> bool:
-    path = root.joinpath(*PurePosixPath(relative).parts)
+    parts = relative.split("/")
+    path = root.joinpath(*parts)
     current = root
-    for part in PurePosixPath(relative).parts:
+    for part in parts:
         current = current / part
         if _is_reparse_point(current):
             raise ProfileViolation("PROFILE_REPARSE_POINT")
@@ -366,17 +504,23 @@ def _required_file(root: Path, relative: str) -> bool:
 
 
 def _safe_relative_pattern(value: str) -> bool:
-    path = PurePosixPath(value)
+    if (
+        not value
+        or "\\" in value
+        or value.startswith("/")
+        or value.endswith("/")
+        or "//" in value
+    ):
+        return False
+    parts = value.split("/")
     return (
-        bool(value)
-        and "\\" not in value
-        and not path.is_absolute()
-        and all(part not in {"", ".", ".."} for part in path.parts)
-        and ":" not in path.parts[0]
+        all(part not in {"", ".", ".."} for part in parts)
+        and ":" not in parts[0]
+        and not any(left == right == "**" for left, right in zip(parts, parts[1:]))
     )
 
 
-def _matches_any(path: str, patterns: list[str]) -> bool:
+def _matches_any(path: str, patterns: Iterable[str]) -> bool:
     return any(_glob_matches(path, pattern) for pattern in patterns)
 
 
@@ -410,6 +554,52 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return value
 
 
+def _resolved_project_root(project_root: str | Path) -> Path:
+    path = Path(project_root).absolute()
+    if _has_reparse_component(path):
+        raise ProfileViolation("PROFILE_PROJECT_INVALID")
+    try:
+        path = path.resolve(strict=True)
+    except OSError:
+        raise ProfileViolation("PROFILE_PROJECT_INVALID") from None
+    if not path.is_dir():
+        raise ProfileViolation("PROFILE_PROJECT_INVALID")
+    return path
+
+
+def _resolved_profile_path(root: Path, profile_path: str | Path) -> Path:
+    lexical = Path(profile_path)
+    if lexical.is_absolute():
+        candidate = lexical
+    else:
+        value = str(profile_path)
+        if not _safe_relative_pattern(value):
+            raise ProfileViolation("PROFILE_PATH_INVALID")
+        candidate = root.joinpath(*value.split("/"))
+    candidate = candidate.absolute()
+    if _has_reparse_component(candidate):
+        raise ProfileViolation("PROFILE_REPARSE_POINT")
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root)
+    except (OSError, ValueError):
+        raise ProfileViolation("PROFILE_PATH_INVALID") from None
+    if not resolved.is_file():
+        raise ProfileViolation("PROFILE_PATH_INVALID")
+    return resolved
+
+
+def _read_bounded(path: Path, limit: int, code: str) -> bytes:
+    try:
+        with path.open("rb") as source:
+            value = source.read(limit + 1)
+    except (OSError, MemoryError, OverflowError):
+        raise ProfileViolation(code) from None
+    if len(value) > limit:
+        raise ProfileViolation(code)
+    return value
+
+
 def _has_reparse_component(path: Path) -> bool:
     current = path
     while True:
@@ -437,10 +627,11 @@ def _is_reparse_point(path: Path) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-root", type=Path, required=True)
-    parser.add_argument("--profile", type=Path, required=True)
+    parser.add_argument("--profile", required=True)
     arguments = parser.parse_args()
     try:
-        result = verify_profile(arguments.project_root, arguments.profile)
+        snapshot = load_profile_snapshot(arguments.project_root, arguments.profile)
+        result = verify_profile(arguments.project_root, snapshot)
     except ProfileViolation as error:
         sys.stderr.buffer.write(canonical_json_bytes({"error": error.code, "status": "fail"}))
         return 1

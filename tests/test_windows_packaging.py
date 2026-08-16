@@ -12,6 +12,10 @@ from datetime import datetime, timezone
 
 import pytest
 
+from scripts.verify_personal_release_profile import (
+    ProfileViolation,
+    profile_snapshot_from_bytes,
+)
 from scripts.build_windows_portable import (
     artifact_manifest,
     build_portable,
@@ -64,6 +68,17 @@ def _prepare_portable_build(
 ) -> None:
     import scripts.build_windows_portable as build_module
 
+    snapshot = profile_snapshot_from_bytes(
+        (PROJECT_ROOT / "release_profiles/personal_store_release.json").read_bytes()
+    )
+
+    def record_snapshot(name: str):
+        def record(*args) -> None:
+            assert args[-1] is snapshot
+            events.append(name)
+
+        return record
+
     monkeypatch.setattr(build_module.sys, "platform", "win32")
     monkeypatch.setattr(build_module.sys, "version_info", (3, 12))
     monkeypatch.setattr(
@@ -80,20 +95,26 @@ def _prepare_portable_build(
     )
     monkeypatch.setattr(
         build_module,
-        "load_profile",
-        lambda *args: {"name": "personal_store_release"},
+        "load_profile_snapshot",
+        lambda *args: snapshot,
         raising=False,
     )
     monkeypatch.setattr(
         build_module,
         "verify_profile",
-        lambda *args: events.append("source_profile"),
+        record_snapshot("source_profile"),
         raising=False,
     )
     monkeypatch.setattr(
         build_module,
         "verify_payload",
-        lambda *args: events.append("payload_profile"),
+        record_snapshot("payload_profile"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        build_module,
+        "require_profile_snapshot_unchanged",
+        record_snapshot("snapshot_unchanged"),
         raising=False,
     )
     monkeypatch.setattr(
@@ -112,7 +133,7 @@ def _prepare_portable_build(
     monkeypatch.setattr(
         build_module,
         "_write_personal_profile_evidence",
-        lambda *args: events.append("profile_evidence"),
+        record_snapshot("profile_evidence"),
         raising=False,
     )
     monkeypatch.setattr(build_module, "deterministic_zip", lambda *args: None)
@@ -151,6 +172,7 @@ def test_portable_build_verifies_source_then_payload_and_records_profile_digest(
         "pyinstaller",
         "layout",
         "payload_profile",
+        "snapshot_unchanged",
         "profile_evidence",
         "evidence",
     ]
@@ -162,17 +184,58 @@ def test_personal_profile_evidence_is_canonical_and_digest_bound(tmp_path: Path)
     bundle = tmp_path / "bundle"
     bundle.mkdir()
     profile_path = PROJECT_ROOT / "release_profiles/personal_store_release.json"
-    build_module._write_personal_profile_evidence(bundle, profile_path)
+    snapshot = profile_snapshot_from_bytes(profile_path.read_bytes())
+    build_module._write_personal_profile_evidence(bundle, snapshot)
 
     evidence_path = bundle / "PERSONAL-RELEASE-PROFILE.json"
     evidence = json.loads(evidence_path.read_bytes())
     assert evidence == {
         "profile": "personal_store_release",
-        "profile_sha256": hashlib.sha256(profile_path.read_bytes()).hexdigest(),
+        "profile_sha256": snapshot.sha256,
         "schema": 1,
         "status": "pass",
     }
     assert evidence_path.read_bytes() == canonical_json_bytes(evidence)
+
+
+def test_portable_build_rejects_profile_mutation_before_evidence_and_zip(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import scripts.build_windows_portable as build_module
+    from scripts.verify_personal_release_profile import require_profile_snapshot_unchanged
+
+    project = tmp_path / "project"
+    profile_path = project / "release_profiles/personal_store_release.json"
+    profile_path.parent.mkdir(parents=True)
+    profile_path.write_bytes(
+        (PROJECT_ROOT / "release_profiles/personal_store_release.json").read_bytes()
+    )
+    events: list[str] = []
+    _prepare_portable_build(monkeypatch, commit="a" * 40, events=events)
+
+    def mutate_profile(*args, **kwargs) -> None:
+        events.append("pyinstaller")
+        profile_path.write_bytes(profile_path.read_bytes() + b" ")
+
+    monkeypatch.setattr(build_module.subprocess, "run", mutate_profile)
+    monkeypatch.setattr(
+        build_module,
+        "require_profile_snapshot_unchanged",
+        require_profile_snapshot_unchanged,
+    )
+    output = tmp_path / "output"
+
+    with pytest.raises(ProfileViolation, match="^PROFILE_SNAPSHOT_CHANGED$"):
+        build_module.build_portable(
+            project,
+            output,
+            source_commit="a" * 40,
+            built_at="2026-08-14T00:00:00Z",
+        )
+
+    assert "profile_evidence" not in events
+    assert "evidence" not in events
+    assert not tuple(output.glob("*.zip"))
 
 
 def test_portable_builder_cli_loads_project_package_without_pythonpath() -> None:
@@ -690,9 +753,15 @@ def test_portable_build_rechecks_git_context_after_pyinstaller(
     monkeypatch.setattr(build_module.sys, "version_info", (3, 12))
     monkeypatch.setattr(build_module, "_git", fake_git)
     monkeypatch.setattr(build_module, "validate_build_dependency_snapshot", lambda: {})
-    monkeypatch.setattr(build_module, "load_profile", lambda *args: {})
+    snapshot = profile_snapshot_from_bytes(
+        (PROJECT_ROOT / "release_profiles/personal_store_release.json").read_bytes()
+    )
+    monkeypatch.setattr(build_module, "load_profile_snapshot", lambda *args: snapshot)
     monkeypatch.setattr(build_module, "verify_profile", lambda *args: None)
     monkeypatch.setattr(build_module, "verify_payload", lambda *args: None)
+    monkeypatch.setattr(
+        build_module, "require_profile_snapshot_unchanged", lambda *args: None
+    )
     monkeypatch.setattr(build_module, "build_pyinstaller_command", lambda *args: ("fake",))
     monkeypatch.setattr(build_module.subprocess, "run", lambda *args, **kwargs: None)
     monkeypatch.setattr(build_module, "validate_frozen_layout", lambda *args: None)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import importlib
 import json
 import os
@@ -9,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -62,6 +62,13 @@ def _write_profile(root: Path, profile: dict[str, object]) -> Path:
     return path
 
 
+def _verify_profile(verifier, root: Path) -> dict[str, str]:
+    snapshot = verifier.load_profile_snapshot(
+        root, "release_profiles/personal_store_release.json"
+    )
+    return verifier.verify_profile(root, snapshot)
+
+
 def test_repository_matches_canonical_personal_store_release_profile() -> None:
     verifier = _verifier()
     profile = _profile()
@@ -71,7 +78,7 @@ def test_repository_matches_canonical_personal_store_release_profile() -> None:
     assert "forbidden_runtime_member_prefixes" in profile
     assert "forbidden_runtime_references" not in profile
     assert PROFILE_PATH.read_bytes() == _canonical(profile)
-    assert verifier.verify_profile(ROOT, PROFILE_PATH) == {
+    assert _verify_profile(verifier, ROOT) == {
         "profile": "personal_store_release",
         "status": "pass",
     }
@@ -96,7 +103,7 @@ def test_profile_rejects_unknown_or_unsorted_values(
     path = _write_profile(tmp_path, profile)
 
     with pytest.raises(verifier.ProfileViolation, match=f"^{code}$"):
-        verifier.load_profile(path)
+        verifier.load_profile_snapshot(tmp_path, path)
 
 
 def test_profile_rejects_duplicate_keys_and_oversized_json(tmp_path: Path) -> None:
@@ -104,11 +111,11 @@ def test_profile_rejects_duplicate_keys_and_oversized_json(tmp_path: Path) -> No
     path = tmp_path / "profile.json"
     path.write_bytes(b'{"schema":1,"schema":1}\n')
     with pytest.raises(verifier.ProfileViolation, match="^PROFILE_JSON_INVALID$"):
-        verifier.load_profile(path)
+        verifier.load_profile_snapshot(tmp_path, path)
 
     path.write_bytes(b" " * (64 * 1024 + 1))
     with pytest.raises(verifier.ProfileViolation, match="^PROFILE_JSON_TOO_LARGE$"):
-        verifier.load_profile(path)
+        verifier.load_profile_snapshot(tmp_path, path)
 
 
 @pytest.mark.parametrize("field,value", (("schema", 2), ("name", "personal_release")))
@@ -120,10 +127,22 @@ def test_profile_requires_exact_schema_and_name(
     profile[field] = value
 
     with pytest.raises(verifier.ProfileViolation, match="^PROFILE_SCHEMA_INVALID$"):
-        verifier.load_profile(_write_profile(tmp_path, profile))
+        verifier.load_profile_snapshot(tmp_path, _write_profile(tmp_path, profile))
 
 
-@pytest.mark.parametrize("value", ("/absolute/*.py", "../escape.py", "src\\bad.py"))
+@pytest.mark.parametrize(
+    "value",
+    (
+        "/absolute/*.py",
+        "C:/absolute/*.py",
+        "../escape.py",
+        "src/../escape.py",
+        "src/./bad.py",
+        "src//bad.py",
+        "src/bad.py/",
+        "src\\bad.py",
+    ),
+)
 def test_profile_rejects_unsafe_globs(tmp_path: Path, value: str) -> None:
     verifier = _verifier()
     profile = _profile()
@@ -133,7 +152,65 @@ def test_profile_rejects_unsafe_globs(tmp_path: Path, value: str) -> None:
     path = _write_profile(tmp_path, profile)
 
     with pytest.raises(verifier.ProfileViolation, match="^PROFILE_PATH_INVALID$"):
-        verifier.load_profile(path)
+        verifier.load_profile_snapshot(tmp_path, path)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ("", ".", "..", "../profile.json", "release_profiles/../profile.json", "release_profiles\\profile.json"),
+)
+def test_profile_snapshot_rejects_unsafe_relative_actual_paths(
+    tmp_path: Path, value: str
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+
+    with pytest.raises(verifier.ProfileViolation, match="^PROFILE_PATH_INVALID$") as caught:
+        verifier.load_profile_snapshot(root, value)
+
+    assert str(caught.value) == "PROFILE_PATH_INVALID"
+    assert str(root) not in str(caught.value)
+
+
+def test_profile_snapshot_rejects_symlink_escape_before_resolution(tmp_path: Path) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    shutil.copyfile(PROFILE_PATH, outside / "profile.json")
+    link = root / "release_profiles" / "linked"
+    try:
+        os.symlink(outside, link, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation is unavailable")
+
+    with pytest.raises(verifier.ProfileViolation, match="^PROFILE_REPARSE_POINT$") as caught:
+        verifier.load_profile_snapshot(root, "release_profiles/linked/profile.json")
+
+    assert str(caught.value) == "PROFILE_REPARSE_POINT"
+    assert str(outside) not in str(caught.value)
+
+
+def test_profile_snapshot_rejects_reparse_escape_deterministically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    linked = root / "release_profiles" / "linked"
+    linked.mkdir()
+    shutil.copyfile(PROFILE_PATH, linked / "profile.json")
+    original = verifier._is_reparse_point
+    monkeypatch.setattr(
+        verifier,
+        "_is_reparse_point",
+        lambda path: path == linked or original(path),
+    )
+
+    with pytest.raises(verifier.ProfileViolation, match="^PROFILE_REPARSE_POINT$") as caught:
+        verifier.load_profile_snapshot(root, "release_profiles/linked/profile.json")
+
+    assert str(caught.value) == "PROFILE_REPARSE_POINT"
+    assert str(linked) not in str(caught.value)
 
 
 def test_profile_rejects_case_colliding_globs(tmp_path: Path) -> None:
@@ -145,7 +222,7 @@ def test_profile_rejects_case_colliding_globs(tmp_path: Path) -> None:
     )
 
     with pytest.raises(verifier.ProfileViolation, match="^PROFILE_ARRAY_INVALID$"):
-        verifier.load_profile(_write_profile(tmp_path, profile))
+        verifier.load_profile_snapshot(tmp_path, _write_profile(tmp_path, profile))
 
 
 @pytest.mark.parametrize(
@@ -173,7 +250,44 @@ def test_profile_rejects_each_forbidden_source_class_case_insensitively(
     path.write_text("forbidden", encoding="utf-8")
 
     with pytest.raises(verifier.ProfileViolation, match="^PROFILE_SOURCE_FORBIDDEN$"):
-        verifier.verify_profile(root, root / "release_profiles/personal_store_release.json")
+        _verify_profile(verifier, root)
+
+
+def test_double_star_forbidden_source_glob_matches_nested_path(tmp_path: Path) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    profile = _profile()
+    profile["forbidden_source_globs"] = sorted(
+        [*profile["forbidden_source_globs"], "**/blocked.py"]
+    )
+    _write_profile(root, profile)
+    blocked = root / "unlisted" / "nested" / "blocked.py"
+    blocked.parent.mkdir(parents=True)
+    blocked.write_text("blocked", encoding="utf-8")
+
+    with pytest.raises(verifier.ProfileViolation, match="^PROFILE_SOURCE_FORBIDDEN$"):
+        snapshot = verifier.load_profile_snapshot(
+            root, "release_profiles/personal_store_release.json"
+        )
+        verifier.verify_profile(root, snapshot)
+
+
+def test_project_traversal_rejects_case_colliding_entries_when_supported(
+    tmp_path: Path,
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    directory = root / "collision"
+    directory.mkdir()
+    upper = directory / "Entry.txt"
+    lower = directory / "entry.txt"
+    upper.write_text("upper", encoding="utf-8")
+    lower.write_text("lower", encoding="utf-8")
+    if len(tuple(directory.iterdir())) != 2:
+        pytest.skip("case-distinct filenames are unavailable")
+
+    with pytest.raises(verifier.ProfileViolation, match="^PROFILE_PROJECT_INVALID$"):
+        _verify_profile(verifier, root)
 
 
 @pytest.mark.parametrize(
@@ -197,7 +311,7 @@ def test_payload_rejects_retired_names_under_any_prefix(
     path.write_bytes(b"synthetic")
 
     with pytest.raises(verifier.ProfileViolation, match="^PROFILE_PAYLOAD_FORBIDDEN$"):
-        verifier.verify_payload(bundle, _profile())
+        verifier.verify_payload(bundle, verifier.load_profile_snapshot(ROOT, PROFILE_PATH))
 
 
 def test_payload_rejects_symlink_or_reparse_entry_when_supported(tmp_path: Path) -> None:
@@ -212,7 +326,7 @@ def test_payload_rejects_symlink_or_reparse_entry_when_supported(tmp_path: Path)
         pytest.skip("symlink creation is unavailable")
 
     with pytest.raises(verifier.ProfileViolation, match="^PROFILE_REPARSE_POINT$"):
-        verifier.verify_payload(bundle, _profile())
+        verifier.verify_payload(bundle, verifier.load_profile_snapshot(ROOT, PROFILE_PATH))
 
 
 def test_payload_rejects_reparse_entry_deterministically(
@@ -231,7 +345,7 @@ def test_payload_rejects_reparse_entry_deterministically(
     )
 
     with pytest.raises(verifier.ProfileViolation, match="^PROFILE_REPARSE_POINT$"):
-        verifier.verify_payload(bundle, _profile())
+        verifier.verify_payload(bundle, verifier.load_profile_snapshot(ROOT, PROFILE_PATH))
 
 
 @pytest.mark.parametrize(
@@ -270,7 +384,7 @@ def test_runtime_ast_rejects_removed_dynamic_llm_telemetry_and_process_code(
     (root / "src/agentguardian/hostile.py").write_text(source, encoding="utf-8")
 
     with pytest.raises(verifier.ProfileViolation, match=f"^{code}$"):
-        verifier.verify_profile(root, root / "release_profiles/personal_store_release.json")
+        _verify_profile(verifier, root)
 
 
 @pytest.mark.parametrize(
@@ -293,9 +407,7 @@ def test_runtime_ast_rejects_all_wildcard_imports_before_name_analysis(
     with pytest.raises(
         verifier.ProfileViolation, match="^PROFILE_RUNTIME_WILDCARD_IMPORT_FORBIDDEN$"
     ) as caught:
-        verifier.verify_profile(
-            root, root / "release_profiles/personal_store_release.json"
-        )
+        _verify_profile(verifier, root)
 
     assert str(caught.value) == "PROFILE_RUNTIME_WILDCARD_IMPORT_FORBIDDEN"
     assert str(root) not in str(caught.value)
@@ -313,9 +425,10 @@ def test_runtime_ast_allows_explicit_allowed_imports(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    assert verifier.verify_profile(
-        root, root / "release_profiles/personal_store_release.json"
-    ) == {"profile": "personal_store_release", "status": "pass"}
+    assert _verify_profile(verifier, root) == {
+        "profile": "personal_store_release",
+        "status": "pass",
+    }
 
 
 @pytest.mark.parametrize(
@@ -347,9 +460,7 @@ def test_runtime_ast_rejects_qualified_and_aliased_forbidden_references(
     with pytest.raises(
         verifier.ProfileViolation, match="^PROFILE_RUNTIME_REFERENCE_FORBIDDEN$"
     ) as caught:
-        verifier.verify_profile(
-            root, root / "release_profiles/personal_store_release.json"
-        )
+        _verify_profile(verifier, root)
 
     assert str(caught.value) == "PROFILE_RUNTIME_REFERENCE_FORBIDDEN"
     assert str(root) not in str(caught.value)
@@ -367,9 +478,7 @@ def test_runtime_ast_rejects_subprocess_import_before_reference_scan(
     with pytest.raises(
         verifier.ProfileViolation, match="^PROFILE_RUNTIME_IMPORT_FORBIDDEN$"
     ) as caught:
-        verifier.verify_profile(
-            root, root / "release_profiles/personal_store_release.json"
-        )
+        _verify_profile(verifier, root)
 
     assert str(caught.value) == "PROFILE_RUNTIME_IMPORT_FORBIDDEN"
 
@@ -399,9 +508,7 @@ def test_runtime_ast_preserves_benign_aliases_and_noncalled_literals(
         encoding="utf-8",
     )
 
-    assert verifier.verify_profile(
-        root, root / "release_profiles/personal_store_release.json"
-    )["status"] == "pass"
+    assert _verify_profile(verifier, root)["status"] == "pass"
 
 
 def test_runtime_ast_allows_benign_same_names_without_forbidden_rhs(
@@ -419,9 +526,7 @@ def test_runtime_ast_allows_benign_same_names_without_forbidden_rhs(
         encoding="utf-8",
     )
 
-    assert verifier.verify_profile(
-        root, root / "release_profiles/personal_store_release.json"
-    )["status"] == "pass"
+    assert _verify_profile(verifier, root)["status"] == "pass"
 
 
 def test_runtime_ast_rejects_forbidden_reference_without_call(
@@ -440,9 +545,7 @@ def test_runtime_ast_rejects_forbidden_reference_without_call(
     with pytest.raises(
         verifier.ProfileViolation, match="^PROFILE_RUNTIME_REFERENCE_FORBIDDEN$"
     ):
-        verifier.verify_profile(
-            root, root / "release_profiles/personal_store_release.json"
-        )
+        _verify_profile(verifier, root)
 
 
 def test_runtime_ast_rejects_reference_even_when_later_shadowed(tmp_path: Path) -> None:
@@ -459,9 +562,7 @@ def test_runtime_ast_rejects_reference_even_when_later_shadowed(tmp_path: Path) 
     with pytest.raises(
         verifier.ProfileViolation, match="^PROFILE_RUNTIME_REFERENCE_FORBIDDEN$"
     ):
-        verifier.verify_profile(
-            root, root / "release_profiles/personal_store_release.json"
-        )
+        _verify_profile(verifier, root)
 
     source.write_text(
         "runner = print\n"
@@ -469,9 +570,7 @@ def test_runtime_ast_rejects_reference_even_when_later_shadowed(tmp_path: Path) 
         "runner(())\n",
         encoding="utf-8",
     )
-    assert verifier.verify_profile(
-        root, root / "release_profiles/personal_store_release.json"
-    )["status"] == "pass"
+    assert _verify_profile(verifier, root)["status"] == "pass"
 
 
 def test_runtime_ast_allows_nested_benign_names_and_parameter_shadowing(
@@ -492,9 +591,7 @@ def test_runtime_ast_allows_nested_benign_names_and_parameter_shadowing(
         encoding="utf-8",
     )
 
-    assert verifier.verify_profile(
-        root, root / "release_profiles/personal_store_release.json"
-    )["status"] == "pass"
+    assert _verify_profile(verifier, root)["status"] == "pass"
 
 
 def test_runtime_ast_scans_forbidden_reference_in_branch(tmp_path: Path) -> None:
@@ -514,9 +611,7 @@ def test_runtime_ast_scans_forbidden_reference_in_branch(tmp_path: Path) -> None
     with pytest.raises(
         verifier.ProfileViolation, match="^PROFILE_RUNTIME_REFERENCE_FORBIDDEN$"
     ):
-        verifier.verify_profile(
-            root, root / "release_profiles/personal_store_release.json"
-        )
+        _verify_profile(verifier, root)
 
 
 @pytest.mark.parametrize(
@@ -542,9 +637,7 @@ def test_runtime_ast_rejects_forbidden_reference_in_every_expression_context(
     with pytest.raises(
         verifier.ProfileViolation, match="^PROFILE_RUNTIME_REFERENCE_FORBIDDEN$"
     ) as caught:
-        verifier.verify_profile(
-            root, root / "release_profiles/personal_store_release.json"
-        )
+        _verify_profile(verifier, root)
 
     assert str(caught.value) == "PROFILE_RUNTIME_REFERENCE_FORBIDDEN"
     assert str(root) not in str(caught.value)
@@ -564,9 +657,7 @@ def test_runtime_ast_node_limit_fails_closed_quickly_with_fixed_code(
     with pytest.raises(
         verifier.ProfileViolation, match="^PROFILE_RUNTIME_ANALYSIS_LIMIT$"
     ) as caught:
-        verifier.verify_profile(
-            root, root / "release_profiles/personal_store_release.json"
-        )
+        _verify_profile(verifier, root)
     elapsed = time.monotonic() - started
 
     assert str(caught.value) == "PROFILE_RUNTIME_ANALYSIS_LIMIT"
@@ -584,9 +675,47 @@ def test_runtime_source_byte_limit_fails_with_fixed_code(tmp_path: Path) -> None
     with pytest.raises(
         verifier.ProfileViolation, match="^PROFILE_RUNTIME_ANALYSIS_LIMIT$"
     ):
-        verifier.verify_profile(
-            root, root / "release_profiles/personal_store_release.json"
-        )
+        _verify_profile(verifier, root)
+
+
+def test_runtime_parser_resource_failure_is_bounded_and_redacted(tmp_path: Path) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    source = "value = " + "+".join("1" for _ in range(12_000)) + "\n"
+    assert len(source.encode("utf-8")) < verifier.MAX_RUNTIME_SOURCE_BYTES
+    (root / "src/agentguardian/hostile.py").write_text(source, encoding="utf-8")
+
+    with pytest.raises(
+        verifier.ProfileViolation, match="^PROFILE_RUNTIME_ANALYSIS_LIMIT$"
+    ) as caught:
+        _verify_profile(verifier, root)
+
+    assert str(caught.value) == "PROFILE_RUNTIME_ANALYSIS_LIMIT"
+    assert str(root) not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "failure", (RecursionError, MemoryError, OverflowError, SystemError)
+)
+def test_runtime_parser_resource_exceptions_use_fixed_limit_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: type[BaseException],
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+
+    def fail_parse(_source: bytes):
+        raise failure()
+
+    monkeypatch.setattr(verifier, "ast", SimpleNamespace(parse=fail_parse))
+    with pytest.raises(
+        verifier.ProfileViolation, match="^PROFILE_RUNTIME_ANALYSIS_LIMIT$"
+    ) as caught:
+        _verify_profile(verifier, root)
+
+    assert str(caught.value) == "PROFILE_RUNTIME_ANALYSIS_LIMIT"
+    assert str(root) not in str(caught.value)
 
 
 def test_network_import_set_rejects_undeclared_and_missing_modules(tmp_path: Path) -> None:
@@ -596,14 +725,14 @@ def test_network_import_set_rejects_undeclared_and_missing_modules(tmp_path: Pat
         "from requests import get\n", encoding="utf-8"
     )
     with pytest.raises(verifier.ProfileViolation, match="^PROFILE_NETWORK_SET_INVALID$"):
-        verifier.verify_profile(root, root / "release_profiles/personal_store_release.json")
+        _verify_profile(verifier, root)
 
     (root / "src/agentguardian/hostile.py").unlink()
     (root / "src/agentguardian/share_verification.py").write_text(
         "def verify_public_share():\n    return None\n", encoding="utf-8"
     )
     with pytest.raises(verifier.ProfileViolation, match="^PROFILE_NETWORK_SET_INVALID$"):
-        verifier.verify_profile(root, root / "release_profiles/personal_store_release.json")
+        _verify_profile(verifier, root)
 
 
 def test_self_audit_detector_literals_do_not_false_positive(tmp_path: Path) -> None:
@@ -614,9 +743,7 @@ def test_self_audit_detector_literals_do_not_false_positive(tmp_path: Path) -> N
         encoding="utf-8",
     )
 
-    assert verifier.verify_profile(
-        root, root / "release_profiles/personal_store_release.json"
-    )["status"] == "pass"
+    assert _verify_profile(verifier, root)["status"] == "pass"
 
 
 def test_runtime_ast_retains_ctypes_sqlite_and_file_write_capabilities(
@@ -641,9 +768,7 @@ def test_runtime_ast_retains_ctypes_sqlite_and_file_write_capabilities(
         encoding="utf-8",
     )
 
-    assert verifier.verify_profile(
-        root, root / "release_profiles/personal_store_release.json"
-    )["status"] == "pass"
+    assert _verify_profile(verifier, root)["status"] == "pass"
 
 
 def test_workflow_allows_normal_build_commands_but_rejects_retired_contracts(
@@ -656,13 +781,11 @@ def test_workflow_allows_normal_build_commands_but_rejects_retired_contracts(
         "on: workflow_dispatch\njobs:\n  build:\n    steps:\n      - run: python scripts/build_windows_portable.py\n",
         encoding="utf-8",
     )
-    assert verifier.verify_profile(
-        root, root / "release_profiles/personal_store_release.json"
-    )["status"] == "pass"
+    assert _verify_profile(verifier, root)["status"] == "pass"
 
     workflow.write_text("env:\n  AGENTGUARDIAN_SIGNING_PFX: retired\n", encoding="utf-8")
     with pytest.raises(verifier.ProfileViolation, match="^PROFILE_WORKFLOW_FORBIDDEN$"):
-        verifier.verify_profile(root, root / "release_profiles/personal_store_release.json")
+        _verify_profile(verifier, root)
 
 
 def test_workflow_scans_yaml_suffix_case_insensitively(tmp_path: Path) -> None:
@@ -674,17 +797,100 @@ def test_workflow_scans_yaml_suffix_case_insensitively(tmp_path: Path) -> None:
         "      - run: python scripts/build_windows_portable.py\n",
         encoding="utf-8",
     )
-    assert verifier.verify_profile(
-        root, root / "release_profiles/personal_store_release.json"
-    )["status"] == "pass"
+    assert _verify_profile(verifier, root)["status"] == "pass"
 
     workflow.write_text(
         "env:\n  AGENTGUARDIAN_SIGNING_PFX: retired\n", encoding="utf-8"
     )
     with pytest.raises(verifier.ProfileViolation, match="^PROFILE_WORKFLOW_FORBIDDEN$"):
-        verifier.verify_profile(
-            root, root / "release_profiles/personal_store_release.json"
+        _verify_profile(verifier, root)
+
+
+def test_workflow_read_limit_fails_closed_without_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    workflow = root / ".github/workflows/oversized.yaml"
+    workflow.write_text("#" * 64, encoding="utf-8")
+    monkeypatch.setattr(verifier, "_MAX_WORKFLOW_FILE_BYTES", 32)
+
+    with pytest.raises(verifier.ProfileViolation, match="^PROFILE_WORKFLOW_INVALID$") as caught:
+        _verify_profile(verifier, root)
+
+    assert str(caught.value) == "PROFILE_WORKFLOW_INVALID"
+    assert str(workflow) not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "constant,code",
+    (
+        ("_MAX_DOCUMENT_FILE_BYTES", "PROFILE_DOCUMENT_INVALID"),
+        ("_MAX_DOCUMENT_AGGREGATE_BYTES", "PROFILE_DOCUMENT_INVALID"),
+    ),
+)
+def test_document_read_limits_fail_closed_without_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    constant: str,
+    code: str,
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    monkeypatch.setattr(verifier, constant, 32)
+
+    with pytest.raises(verifier.ProfileViolation, match=f"^{code}$") as caught:
+        _verify_profile(verifier, root)
+
+    assert str(caught.value) == code
+    assert str(root) not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "constant,value",
+    (("_MAX_TRAVERSAL_ENTRIES", 2), ("_MAX_TRAVERSAL_DEPTH", 1)),
+)
+def test_project_traversal_limits_fail_closed_without_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    constant: str,
+    value: int,
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    deep = root / "unlisted/a/b/c/value.txt"
+    deep.parent.mkdir(parents=True)
+    deep.write_text("value", encoding="utf-8")
+    monkeypatch.setattr(verifier, constant, value)
+
+    with pytest.raises(
+        verifier.ProfileViolation, match="^PROFILE_PROJECT_TRAVERSAL_LIMIT$"
+    ) as caught:
+        _verify_profile(verifier, root)
+
+    assert str(caught.value) == "PROFILE_PROJECT_TRAVERSAL_LIMIT"
+    assert str(deep) not in str(caught.value)
+
+
+def test_payload_traversal_limit_fails_closed_without_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    verifier = _verifier()
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "one").write_text("one", encoding="utf-8")
+    (bundle / "two").write_text("two", encoding="utf-8")
+    monkeypatch.setattr(verifier, "_MAX_TRAVERSAL_ENTRIES", 1)
+
+    with pytest.raises(
+        verifier.ProfileViolation, match="^PROFILE_PAYLOAD_TRAVERSAL_LIMIT$"
+    ) as caught:
+        verifier.verify_payload(
+            bundle, verifier.load_profile_snapshot(ROOT, PROFILE_PATH)
         )
+
+    assert str(caught.value) == "PROFILE_PAYLOAD_TRAVERSAL_LIMIT"
+    assert str(bundle) not in str(caught.value)
 
 
 def test_static_detector_source_remains_required(tmp_path: Path) -> None:
@@ -693,7 +899,7 @@ def test_static_detector_source_remains_required(tmp_path: Path) -> None:
     (root / "src/agentguardian/detectors.py").unlink()
 
     with pytest.raises(verifier.ProfileViolation, match="^PROFILE_REQUIRED_SOURCE_MISSING$"):
-        verifier.verify_profile(root, root / "release_profiles/personal_store_release.json")
+        _verify_profile(verifier, root)
 
 
 def test_active_docs_reject_positive_promises_but_allow_negative_boundaries(
@@ -707,9 +913,7 @@ def test_active_docs_reject_positive_promises_but_allow_negative_boundaries(
         + "\nHigh-sensitivity mode is not supported.\n",
         encoding="utf-8",
     )
-    assert verifier.verify_profile(
-        root, root / "release_profiles/personal_store_release.json"
-    )["status"] == "pass"
+    assert _verify_profile(verifier, root)["status"] == "pass"
 
     readme.write_text(
         readme.read_text(encoding="utf-8")
@@ -717,7 +921,48 @@ def test_active_docs_reject_positive_promises_but_allow_negative_boundaries(
         encoding="utf-8",
     )
     with pytest.raises(verifier.ProfileViolation, match="^PROFILE_DOCUMENT_FORBIDDEN$"):
-        verifier.verify_profile(root, root / "release_profiles/personal_store_release.json")
+        _verify_profile(verifier, root)
+
+
+@pytest.mark.parametrize(
+    "stale_claim",
+    (
+        "Offline enterprise policy enforcement is implemented",
+        "The desktop now exposes a local-only control-plane page",
+        "A network-neutral enterprise service boundary now enforces",
+        "A local transactional enterprise control-plane core is now implemented",
+        "High-sensitivity mode disables the share-verification UI",
+    ),
+)
+def test_active_readme_rejects_each_retired_implementation_claim(
+    tmp_path: Path, stale_claim: str
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    readme = root / "README.md"
+    readme.write_text(
+        readme.read_text(encoding="utf-8") + "\n" + stale_claim + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        verifier.ProfileViolation, match="^PROFILE_DOCUMENT_FORBIDDEN$"
+    ):
+        _verify_profile(verifier, root)
+
+
+def test_historical_report_and_superpowers_docs_are_excluded(tmp_path: Path) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    for relative in ("docs/reports/history.md", "docs/superpowers/history.md"):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "Offline enterprise policy enforcement is implemented\n",
+            encoding="utf-8",
+        )
+
+    assert _verify_profile(verifier, root)["status"] == "pass"
 
 
 def test_cli_emits_bounded_canonical_json_without_private_paths(tmp_path: Path) -> None:
@@ -731,6 +976,23 @@ def test_cli_emits_bounded_canonical_json_without_private_paths(tmp_path: Path) 
     assert passed.returncode == 0, passed.stderr
     assert passed.stdout == '{"profile":"personal_store_release","status":"pass"}\n'
     assert passed.stderr == ""
+
+    relative = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--project-root",
+            str(ROOT),
+            "--profile",
+            "release_profiles/personal_store_release.json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert relative.returncode == 0, relative.stderr
+    assert relative.stdout == '{"profile":"personal_store_release","status":"pass"}\n'
+    assert relative.stderr == ""
 
     root = _copy_fixture(tmp_path)
     forbidden = root / "src/agentguardian/mcp_sandbox.py"
@@ -752,10 +1014,3 @@ def test_cli_emits_bounded_canonical_json_without_private_paths(tmp_path: Path) 
     assert failed.returncode != 0
     assert "PROFILE_SOURCE_FORBIDDEN" in combined
     assert str(root) not in combined
-
-
-def test_profile_digest_is_stable_canonical_sha256() -> None:
-    assert len(PROFILE_PATH.read_bytes()) <= 64 * 1024
-    assert hashlib.sha256(PROFILE_PATH.read_bytes()).hexdigest() == hashlib.sha256(
-        _canonical(_profile())
-    ).hexdigest()

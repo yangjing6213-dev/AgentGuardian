@@ -25,7 +25,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from scripts.verify_personal_release_profile import (
-    load_profile,
+    ProfileSnapshot,
+    load_profile_snapshot,
+    require_profile_snapshot_unchanged,
     verify_payload,
     verify_profile,
 )
@@ -345,8 +347,8 @@ def build_portable(
     status = _git(project_root, "status", "--porcelain=v1", "--untracked-files=all")
     validate_git_build_context(head, status, source_commit)
     profile_path = project_root / "release_profiles" / "personal_store_release.json"
-    profile = load_profile(profile_path)
-    verify_profile(project_root, profile_path)
+    profile_snapshot = load_profile_snapshot(project_root, profile_path)
+    verify_profile(project_root, profile_snapshot)
     build_time = validate_build_time(built_at)
     build_dependencies = validate_build_dependency_snapshot()
     if output_root.exists():
@@ -366,18 +368,9 @@ def build_portable(
         env=environment,
         check=True,
     )
-    final_head = _git(project_root, "rev-parse", "HEAD")
-    final_status = _git(
-        project_root,
-        "status",
-        "--porcelain=v1",
-        "--untracked-files=all",
-    )
-    validate_git_build_context(final_head, final_status, source_commit)
     bundle_root = output_root / "dist" / "AgentGuardian"
     validate_frozen_layout(bundle_root, project_root)
-    verify_payload(bundle_root, profile)
-    _write_personal_profile_evidence(bundle_root, profile_path)
+    verify_payload(bundle_root, profile_snapshot)
     internal = bundle_root / "_internal"
     python_version, openssl_version = runtime_library_versions()
     components = portable_component_specs(
@@ -386,6 +379,16 @@ def build_portable(
         vc_runtime_version=_pe_version(internal / "VCRUNTIME140.dll"),
         ucrt_version=_pe_version(internal / "ucrtbase.dll"),
     )
+    final_head = _git(project_root, "rev-parse", "HEAD")
+    final_status = _git(
+        project_root,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+    )
+    validate_git_build_context(final_head, final_status, source_commit)
+    require_profile_snapshot_unchanged(project_root, profile_path, profile_snapshot)
+    _write_personal_profile_evidence(bundle_root, profile_snapshot)
     write_portable_evidence(
         bundle_root,
         project_root=project_root,
@@ -403,10 +406,12 @@ def build_portable(
     return bundle_root
 
 
-def _write_personal_profile_evidence(bundle_root: Path, profile_path: Path) -> None:
+def _write_personal_profile_evidence(
+    bundle_root: Path, profile_snapshot: ProfileSnapshot
+) -> None:
     evidence = {
         "profile": "personal_store_release",
-        "profile_sha256": hashlib.sha256(profile_path.read_bytes()).hexdigest(),
+        "profile_sha256": profile_snapshot.sha256,
         "schema": 1,
         "status": "pass",
     }

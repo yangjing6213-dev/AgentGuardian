@@ -11,6 +11,7 @@ import sys
 import pytest
 
 import scripts.verify_windows_release_candidate as release_evidence
+from scripts.verify_personal_release_profile import profile_snapshot_from_bytes
 from scripts.verify_windows_release_candidate import (
     ReleaseEvidenceError,
     validate_release_candidate,
@@ -21,6 +22,17 @@ COMMIT = "a" * 40
 PACKAGE_FULL_NAME = "yangjing6213dev.AgentGuardian_0.1.0.0_x64__publisher"
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE_PATH = ROOT / "release_profiles" / "personal_store_release.json"
+REAL_PROFILE_BYTES_FROM_COMMIT = release_evidence._profile_bytes_from_commit
+
+
+@pytest.fixture(autouse=True)
+def _bind_expected_commit_to_current_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        release_evidence,
+        "_profile_bytes_from_commit",
+        lambda _commit: PROFILE_PATH.read_bytes(),
+        raising=False,
+    )
 
 
 def test_personal_release_gate_has_no_dynamic_mcp_evidence_input() -> None:
@@ -153,22 +165,26 @@ def test_release_gate_reruns_repository_and_payload_profile_checks(
 ) -> None:
     bundle, evidence, license_review = _write_candidate(tmp_path)
     calls: list[str] = []
+    snapshots: list[object] = []
+
+    def record(name: str):
+        def callback(_root: Path, snapshot) -> None:
+            assert snapshot.sha256 == hashlib.sha256(PROFILE_PATH.read_bytes()).hexdigest()
+            calls.append(name)
+            snapshots.append(snapshot)
+
+        return callback
+
     monkeypatch.setattr(
         release_evidence,
         "verify_profile",
-        lambda *args: calls.append("source"),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        release_evidence,
-        "load_profile",
-        lambda *args: {"name": "personal_store_release"},
+        record("source"),
         raising=False,
     )
     monkeypatch.setattr(
         release_evidence,
         "verify_payload",
-        lambda *args: calls.append("payload"),
+        record("payload"),
         raising=False,
     )
 
@@ -182,6 +198,84 @@ def test_release_gate_reruns_repository_and_payload_profile_checks(
     )
 
     assert calls == ["source", "payload"]
+    assert snapshots[0] is snapshots[1]
+
+
+def test_release_gate_rejects_missing_profile_blob_from_expected_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle, evidence, license_review = _write_candidate(tmp_path)
+
+    def missing_blob(_commit: str) -> bytes:
+        raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_COMMIT_INVALID")
+
+    monkeypatch.setattr(release_evidence, "_profile_bytes_from_commit", missing_blob)
+
+    with pytest.raises(
+        ReleaseEvidenceError, match="^RELEASE_PERSONAL_PROFILE_COMMIT_INVALID$"
+    ):
+        validate_release_candidate(
+            bundle,
+            evidence,
+            expected_source_commit=COMMIT,
+            require_trusted_signature=True,
+            require_fresh_user_state=True,
+            license_review_path=license_review,
+        )
+
+
+def test_release_gate_rejects_workspace_profile_mismatch_with_commit_blob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle, evidence, license_review = _write_candidate(tmp_path)
+    profile = json.loads(PROFILE_PATH.read_bytes())
+    profile["forbidden_document_promises"] = sorted(
+        [*profile["forbidden_document_promises"], "retired alternate promise"]
+    )
+    committed_bytes = release_evidence.canonical_json_bytes(profile)
+    profile_snapshot_from_bytes(committed_bytes)
+    monkeypatch.setattr(
+        release_evidence,
+        "_profile_bytes_from_commit",
+        lambda _commit: committed_bytes,
+    )
+
+    with pytest.raises(
+        ReleaseEvidenceError, match="^RELEASE_PERSONAL_PROFILE_COMMIT_MISMATCH$"
+    ):
+        validate_release_candidate(
+            bundle,
+            evidence,
+            expected_source_commit=COMMIT,
+            require_trusted_signature=True,
+            require_fresh_user_state=True,
+            license_review_path=license_review,
+        )
+
+
+def test_profile_blob_loader_reads_exact_canonical_git_object() -> None:
+    head = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    value = REAL_PROFILE_BYTES_FROM_COMMIT(head)
+
+    snapshot = profile_snapshot_from_bytes(value)
+    assert snapshot.canonical_bytes == value
+    assert snapshot.sha256 == hashlib.sha256(value).hexdigest()
+
+
+def test_profile_blob_loader_missing_object_has_fixed_error() -> None:
+    with pytest.raises(
+        ReleaseEvidenceError, match="^RELEASE_PERSONAL_PROFILE_COMMIT_INVALID$"
+    ) as caught:
+        REAL_PROFILE_BYTES_FROM_COMMIT("0" * 40)
+
+    assert str(caught.value) == "RELEASE_PERSONAL_PROFILE_COMMIT_INVALID"
+    assert str(ROOT) not in str(caught.value)
 
 
 @pytest.mark.parametrize("mode", ("missing", "mismatch"))

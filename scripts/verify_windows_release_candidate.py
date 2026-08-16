@@ -7,6 +7,7 @@ from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import sys
 from typing import Any
 
@@ -17,9 +18,12 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from agentguardian.discovery import _has_reparse_component
 from scripts.verify_personal_release_profile import (
+    MAX_PROFILE_BYTES,
+    ProfileSnapshot,
     ProfileViolation,
     canonical_json_bytes,
-    load_profile,
+    profile_snapshot_from_bytes,
+    require_profile_snapshot_unchanged,
     verify_payload,
     verify_profile,
 )
@@ -52,13 +56,22 @@ def validate_release_candidate(
 
     profile_path = ROOT / "release_profiles" / "personal_store_release.json"
     try:
-        profile = load_profile(profile_path)
-        verify_profile(ROOT, profile_path)
+        profile_snapshot = profile_snapshot_from_bytes(
+            _profile_bytes_from_commit(expected_source_commit)
+        )
+    except ProfileViolation:
+        raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_COMMIT_INVALID") from None
+    try:
+        require_profile_snapshot_unchanged(ROOT, profile_path, profile_snapshot)
+    except ProfileViolation:
+        raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_COMMIT_MISMATCH") from None
+    try:
+        verify_profile(ROOT, profile_snapshot)
     except ProfileViolation:
         raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_INVALID") from None
-    _validate_personal_profile_evidence(bundle, profile_path)
+    _validate_personal_profile_evidence(bundle, profile_snapshot)
     try:
-        verify_payload(bundle, profile)
+        verify_payload(bundle, profile_snapshot)
     except ProfileViolation:
         raise ReleaseEvidenceError("RELEASE_PERSONAL_PAYLOAD_INVALID") from None
 
@@ -109,7 +122,9 @@ def validate_release_candidate(
     }
 
 
-def _validate_personal_profile_evidence(bundle: Path, profile_path: Path) -> None:
+def _validate_personal_profile_evidence(
+    bundle: Path, profile_snapshot: ProfileSnapshot
+) -> None:
     evidence_path = bundle / "PERSONAL-RELEASE-PROFILE.json"
     evidence = _json_file(
         evidence_path,
@@ -127,11 +142,44 @@ def _validate_personal_profile_evidence(bundle: Path, profile_path: Path) -> Non
     try:
         if evidence_path.read_bytes() != canonical_json_bytes(evidence):
             raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_EVIDENCE_INVALID")
-        expected_digest = hashlib.sha256(profile_path.read_bytes()).hexdigest()
     except OSError:
         raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_EVIDENCE_INVALID") from None
-    if evidence.get("profile_sha256") != expected_digest:
+    if evidence.get("profile_sha256") != profile_snapshot.sha256:
         raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_MISMATCH")
+
+
+def _profile_bytes_from_commit(source_commit: str) -> bytes:
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        process = subprocess.Popen(
+            (
+                "git",
+                "show",
+                f"{source_commit}:release_profiles/personal_store_release.json",
+            ),
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if process.stdout is None:
+            raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_COMMIT_INVALID")
+        value = process.stdout.read(MAX_PROFILE_BYTES + 1)
+        if len(value) > MAX_PROFILE_BYTES:
+            raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_COMMIT_INVALID")
+        if process.wait(timeout=10) != 0 or not value:
+            raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_COMMIT_INVALID")
+        return value
+    except ReleaseEvidenceError:
+        raise
+    except (MemoryError, OSError, OverflowError, subprocess.TimeoutExpired):
+        raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_COMMIT_INVALID") from None
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            try:
+                process.wait(timeout=1)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
 
 
 def _is_package_full_name(value: object) -> bool:
