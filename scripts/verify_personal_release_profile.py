@@ -244,6 +244,8 @@ def _scan_runtime(tree: ast.AST, profile: dict[str, Any]) -> tuple[str, ...]:
                 if _module_matches(item.name, profile["forbidden_runtime_imports"]):
                     raise ProfileViolation("PROFILE_RUNTIME_IMPORT_FORBIDDEN")
         elif isinstance(node, ast.ImportFrom):
+            if any(item.name == "*" for item in node.names):
+                raise ProfileViolation("PROFILE_RUNTIME_WILDCARD_IMPORT_FORBIDDEN")
             module = node.module or ""
             if module:
                 imports.append(module)

@@ -276,6 +276,51 @@ def test_runtime_ast_rejects_removed_dynamic_llm_telemetry_and_process_code(
 @pytest.mark.parametrize(
     "source",
     (
+        "from os import *\nsystem('command')\n",
+        "from os import *\nexecv('tool', ('tool',))\n",
+        "from multiprocessing import *\nProcess()\n",
+        "from asyncio import *\ncreate_subprocess_exec('tool')\n",
+        "from benign_module import *\nvalue = harmless\n",
+    ),
+)
+def test_runtime_ast_rejects_all_wildcard_imports_before_name_analysis(
+    tmp_path: Path, source: str
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    (root / "src/agentguardian/hostile.py").write_text(source, encoding="utf-8")
+
+    with pytest.raises(
+        verifier.ProfileViolation, match="^PROFILE_RUNTIME_WILDCARD_IMPORT_FORBIDDEN$"
+    ) as caught:
+        verifier.verify_profile(
+            root, root / "release_profiles/personal_store_release.json"
+        )
+
+    assert str(caught.value) == "PROFILE_RUNTIME_WILDCARD_IMPORT_FORBIDDEN"
+    assert str(root) not in str(caught.value)
+    assert source.strip() not in str(caught.value)
+
+
+def test_runtime_ast_allows_explicit_allowed_imports(tmp_path: Path) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    (root / "src/agentguardian/allowed_imports.py").write_text(
+        "from pathlib import Path\n"
+        "from sqlite3 import connect\n"
+        "path = Path('.')\n"
+        "connection = connect(':memory:')\n",
+        encoding="utf-8",
+    )
+
+    assert verifier.verify_profile(
+        root, root / "release_profiles/personal_store_release.json"
+    ) == {"profile": "personal_store_release", "status": "pass"}
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
         "import PySide6.QtCore\nPySide6.QtCore.QProcess.startDetached('tool')\n",
         "import PySide6.QtCore as qc\nqc.QProcess.start('tool')\n",
         "import PySide6.QtCore as qc\nmodule = qc\nproc = module.QProcess\n",
