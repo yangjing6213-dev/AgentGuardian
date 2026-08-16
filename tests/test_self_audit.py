@@ -1786,7 +1786,7 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
             "tooltip 仅含完整 basename",
         ),
         "architecture": (
-            "缺少 `evaluated_at` 的精确旧 schema 1 和 legacy schema 0",
+            "旧 schema 1 和 legacy schema 0 无论是否带 `evaluated_at` 都只接受全 `open` 处置",
             "不证明报告来源、内容真实性",
             "不匹配单个 finding",
             "不导出稳定的跨扫描 finding 标识符",
@@ -2058,7 +2058,7 @@ def _replace_document_text(
         ("README.md", "2026-08-03 的 Task 9 证据提交", "README"),
         (
             "docs/architecture.md",
-            "缺少 `evaluated_at` 的精确旧 schema 1 和 legacy schema 0",
+            "旧 schema 1 和 legacy schema 0 无论是否带 `evaluated_at` 都只接受全 `open` 处置",
             "architecture",
         ),
         (

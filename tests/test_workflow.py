@@ -216,6 +216,8 @@ def test_scope_preview_rejects_exact_regulated_data_components_without_leaks(
         Path("C:\\"),
         Path(r"C:\Users"),
         Path(r"c:\USERS\Alice"),
+        Path(r"D:\Users"),
+        Path(r"z:\uSeRs\Alice"),
         Path(r"C:\Users\Alice\Documents"),
         Path(r"C:\Users\Alice\Desktop"),
         Path(r"C:\Users\Alice\Downloads"),
@@ -239,6 +241,8 @@ def test_scope_preview_rejects_broad_roots_with_fixed_error(root: Path) -> None:
     (
         Path(r"C:\Users\Alice\.codex"),
         Path(r"C:\Users\Alice\source\ordinary-project"),
+        Path(r"D:\Users\Alice\.codex"),
+        Path(r"Z:\Users\Alice\source\ordinary-project"),
         Path(r"D:\Work\ordinary-project"),
         Path(r"C:\Synthetic\medical-project"),
         Path(r"C:\Synthetic\medicine"),
@@ -258,6 +262,31 @@ def test_scope_preview_allows_narrow_non_regulated_configuration_roots(
     preview = _build_preview((root,))
 
     assert preview.root_names == (root.name,)
+
+
+@pytest.mark.parametrize(
+    "component",
+    (
+        "ｍｅｄｉｃａｌ",
+        "ＦＩＮＡＮＣＩＡＬ．＿－ＲＥＣＯＲＤＳ",
+        "ＩＤＥＮＴＩＴＹ._-ＤＡＴＡ",
+    ),
+)
+def test_scope_policy_nfkc_normalizes_compatibility_forms_without_leaks(
+    component: str,
+) -> None:
+    with pytest.raises(ValueError) as captured:
+        _build_preview((Path(f"Z:/Synthetic/{component}/project"),))
+
+    assert str(captured.value) == "SCOPE_DATA_CLASS_UNSUPPORTED"
+    assert component.casefold() not in repr(captured.value).casefold()
+
+
+def test_scope_policy_does_not_claim_broader_homoglyph_detection() -> None:
+    # Cyrillic i is outside this bounded NFKC/exact-component lexical rule.
+    root = Path("C:/Synthetic/medіcal")
+
+    assert _build_preview((root,)).root_names == (root.name,)
 
 
 def test_scope_eligibility_checks_do_not_touch_filesystem(

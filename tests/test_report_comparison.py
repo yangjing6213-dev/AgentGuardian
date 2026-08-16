@@ -32,6 +32,7 @@ from agentguardian.workflow import CoverageState
 
 EVALUATED_AT = datetime(2026, 8, 3, 12, tzinfo=timezone.utc)
 ATTACKER_MARKER = r"C:\Synthetic\private\comparison-marker.txt"
+PRIVATE_MARKER = "private-comparison-marker"
 MAX_BASELINE_BYTES = MAX_REPORT_JSON_BYTES
 
 
@@ -123,6 +124,8 @@ def _assert_comparison_invalid(json_text: object) -> None:
     assert caught.value.__context__ is None
     assert ATTACKER_MARKER not in str(caught.value)
     assert ATTACKER_MARKER not in repr(caught.value)
+    assert PRIVATE_MARKER not in str(caught.value)
+    assert PRIVATE_MARKER not in repr(caught.value)
     assert ATTACKER_MARKER not in repr(
         (caught.value, caught.value.__cause__, caught.value.__context__)
     )
@@ -133,7 +136,10 @@ def test_current_schema_2_requires_exact_fixed_boundary() -> None:
 
     assert payload["report_schema"] == 2
     assert payload["supported_use_boundary"] == "personal_non_regulated_configuration"
-    parse_report_summary(json.dumps(payload))
+    summary = parse_report_summary(json.dumps(payload))
+    assert summary.schema_version == 2
+    assert summary.supported_use_boundary == "personal_non_regulated_configuration"
+    assert summary.supported_use_boundary_verified is True
 
     for invalid in ("enterprise", "PERSONAL_NON_REGULATED_CONFIGURATION"):
         forged = dict(payload)
@@ -147,6 +153,9 @@ def test_current_schema_2_requires_exact_fixed_boundary() -> None:
 
 def test_historical_schema_1_is_explicit_and_cannot_claim_current_boundary() -> None:
     current_payload = json.loads(_report_json())
+    for finding in current_payload["findings"]:
+        finding["disposition"] = {"status": "open"}
+    current_payload["reviewed_score"] = current_payload["score"]
     current = parse_report_summary(json.dumps(current_payload))
     historical_payload = dict(current_payload)
     historical_payload["report_schema"] = 1
@@ -155,10 +164,21 @@ def test_historical_schema_1_is_explicit_and_cannot_claim_current_boundary() -> 
 
     comparison = compare_report_summaries(historical, current)
 
-    assert historical == current
+    assert historical != current
+    assert historical.schema_version == 1
+    assert historical.supported_use_boundary is None
+    assert historical.supported_use_boundary_verified is False
+    assert current.schema_version == 2
+    assert current.supported_use_boundary == "personal_non_regulated_configuration"
+    assert current.supported_use_boundary_verified is True
     assert comparison.baseline == historical
-    assert not hasattr(historical, "supported_use_boundary")
-    assert not hasattr(comparison, "supported_use_boundary")
+    assert comparison.baseline_schema_version == 1
+    assert comparison.current_schema_version == 2
+    assert comparison.baseline_supported_use_boundary_verified is False
+    assert comparison.current_supported_use_boundary_verified is True
+    assert comparison.technical_score_delta == 0
+    assert comparison.reviewed_score_delta == 0
+    assert comparison.finding_count_delta == 0
 
     for boundary in ("personal_non_regulated_configuration", "enterprise"):
         contradictory = dict(historical_payload)
@@ -322,7 +342,7 @@ def _disposition_semantics_report_json() -> str:
     )
 
 
-def test_schema_1_renderer_report_reduces_to_immutable_summary() -> None:
+def test_schema_2_renderer_report_reduces_to_immutable_summary() -> None:
     summary = parse_report_summary(_report_json())
 
     assert summary.technical_score == 92
@@ -340,7 +360,7 @@ def test_schema_1_renderer_report_reduces_to_immutable_summary() -> None:
         summary.finding_count = 3  # type: ignore[misc]
 
 
-def test_schema_1_summary_discards_item_level_values() -> None:
+def test_schema_2_summary_discards_item_level_values() -> None:
     summary = parse_report_summary(_report_json())
     rendered = repr(summary)
 
@@ -356,9 +376,11 @@ def test_schema_1_summary_discards_item_level_values() -> None:
         assert private_value not in rendered
 
 
-def test_schema_1_recomputes_caps_roots_and_disposition_semantics() -> None:
+def test_schema_2_recomputes_caps_roots_and_disposition_semantics() -> None:
     summary = parse_report_summary(_disposition_semantics_report_json())
 
+    assert summary.schema_version == 2
+    assert summary.supported_use_boundary_verified is True
     assert summary.technical_score == 39
     assert summary.reviewed_score == 59
     assert summary.disposition_counts == (
@@ -396,6 +418,69 @@ def test_schema_2_evaluated_at_verifies_declared_disposition_state() -> None:
     payload["evaluated_at"] = "2026-08-03T12:00:00Z"
 
     assert parse_report_summary(json.dumps(payload)).reviewed_score == 99
+
+
+@pytest.mark.parametrize(
+    ("expected_status", "record_status", "expires_at"),
+    (
+        (
+            "false_positive",
+            DispositionStatus.FALSE_POSITIVE,
+            "2026-08-04T08:00:00Z",
+        ),
+        (
+            "accepted_risk",
+            DispositionStatus.ACCEPTED_RISK,
+            "2026-08-04T08:00:00Z",
+        ),
+        (
+            "expired",
+            DispositionStatus.FALSE_POSITIVE,
+            "2026-08-02T08:00:00Z",
+        ),
+    ),
+    ids=("false-positive", "accepted-risk", "expired"),
+)
+def test_schema_1_rejects_each_non_open_disposition_even_with_evaluated_at(
+    expected_status: str,
+    record_status: DispositionStatus,
+    expires_at: str,
+) -> None:
+    finding = Finding(
+        "LEGACY_RULE",
+        RiskDomain.PRIVACY,
+        Severity.MEDIUM,
+        "1" * 64,
+        (Evidence("legacy.json", "2" * 64, "masked legacy value"),),
+        "3" * 64,
+    )
+    record = DispositionRecord(
+        "3" * 64,
+        finding.rule_id,
+        record_status,
+        PRIVATE_MARKER,
+        "Local reviewer",
+        "2026-08-01T08:00:00Z",
+        expires_at,
+    )
+    payload = json.loads(
+        _render_report(
+            (finding,),
+            (record,),
+            coverage=1.0,
+            confidence=1.0,
+            limits=(),
+        )
+    )
+    assert payload["findings"][0]["disposition"]["status"] == expected_status
+    assert parse_report_summary(json.dumps(payload)).disposition_counts == (
+        (expected_status, 1),
+    )
+
+    payload["report_schema"] = 1
+    del payload["supported_use_boundary"]
+
+    _assert_comparison_invalid(json.dumps(payload))
 
 
 def test_old_schema_1_non_open_disposition_fails_closed() -> None:
@@ -493,9 +578,22 @@ def test_legacy_report_derives_coverage_state_and_matches_schema_1() -> None:
     del legacy["reviewed_score"]["coverage_state"]
 
     current = parse_report_summary(schema_2_text)
-    assert parse_report_summary(schema_1_text) == current
-    assert parse_report_summary(json.dumps(old_schema_1)) == current
-    assert parse_report_summary(json.dumps(legacy)) == current
+    for historical_text, schema_version in (
+        (schema_1_text, 1),
+        (json.dumps(old_schema_1), 1),
+        (json.dumps(legacy), 0),
+    ):
+        historical = parse_report_summary(historical_text)
+        comparison = compare_report_summaries(historical, current)
+        assert historical.schema_version == schema_version
+        assert historical.supported_use_boundary is None
+        assert historical.supported_use_boundary_verified is False
+        assert comparison.baseline_supported_use_boundary_verified is False
+        assert comparison.current_supported_use_boundary_verified is True
+        assert comparison.technical_score_delta == 0
+        assert comparison.reviewed_score_delta == 0
+        assert comparison.coverage_delta == 0
+        assert comparison.finding_count_delta == 0
 
 
 @pytest.mark.parametrize("hybrid", ("legacy_with_states", "schema_without_states"))
@@ -945,6 +1043,18 @@ def test_public_comparison_rejects_contradictory_summary_coverage(
         coverage=coverage,
         coverage_state=coverage_state,
         limits=limits,
+    )
+
+    _assert_summary_comparison_invalid(forged, valid)
+
+
+def test_public_comparison_rejects_non_open_legacy_summary_provenance() -> None:
+    valid = parse_report_summary(_report_json())
+    forged = replace(
+        valid,
+        schema_version=1,
+        supported_use_boundary=None,
+        supported_use_boundary_verified=False,
     )
 
     _assert_summary_comparison_invalid(forged, valid)

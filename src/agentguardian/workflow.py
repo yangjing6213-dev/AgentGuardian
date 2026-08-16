@@ -8,6 +8,7 @@ import os
 from pathlib import Path, PureWindowsPath
 from types import MappingProxyType
 from typing import Literal
+from unicodedata import normalize
 
 from .dispositions import (
     DispositionRecord,
@@ -33,7 +34,8 @@ _WINDOWS_RESERVED_DEVICE_NAMES = frozenset(
     | {f"lpt{number}" for number in range(1, 10)}
     | {f"{prefix}{number}" for prefix in ("com", "lpt") for number in "¹²³"}
 )
-# Exact after case-folding and retaining only Unicode alphanumeric characters.
+# Exact after NFKC/case-folding and retaining only Unicode alphanumeric characters.
+# Broader cross-script confusable or homoglyph detection is outside this lexical rule.
 _UNSUPPORTED_DATA_COMPONENTS = frozenset(
     {
         "medical",
@@ -585,7 +587,8 @@ def _validated_roots(roots: object) -> tuple[tuple[str, ...], tuple[str, ...]]:
 
 
 def _normalized_policy_component(value: str) -> str:
-    return "".join(character for character in value.casefold() if character.isalnum())
+    folded = normalize("NFKC", value).casefold()
+    return "".join(character for character in folded if character.isalnum())
 
 
 def _is_broad_scope_root(
@@ -594,8 +597,7 @@ def _is_broad_scope_root(
 ) -> bool:
     folded = tuple(component.casefold() for component in components)
     return (
-        path.drive.casefold() == "c:"
-        and len(folded) in (1, 2)
+        len(folded) in (1, 2)
         and folded[0] == "users"
     ) or path.name.casefold() in _BROAD_ROOT_NAMES
 

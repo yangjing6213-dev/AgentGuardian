@@ -32,6 +32,13 @@ def _chrome_history(path: Path) -> None:
         connection.commit()
 
 
+def _approve_personal_scope(window, root: Path) -> None:
+    window._set_scope_roots((root,), status="ready")
+    window.supported_data_checkbox.setChecked(True)
+    window.scope_consent_checkbox.setChecked(True)
+    assert window._personal_scope_ready()
+
+
 def test_browser_audit_is_user_triggered_and_does_not_expose_path(
     qapp, monkeypatch, tmp_path: Path
 ):
@@ -52,7 +59,7 @@ def test_browser_audit_is_user_triggered_and_does_not_expose_path(
         window.browser_kind_combo.findData(BrowserKind.CHROME)
     )
 
-    window.supported_data_checkbox.setChecked(True)
+    _approve_personal_scope(window, tmp_path / "ordinary-project")
     window.browser_button.click()
 
     assert "浏览器元数据审计完成" in window.status_label.text()
@@ -61,7 +68,9 @@ def test_browser_audit_is_user_triggered_and_does_not_expose_path(
     window.close()
 
 
-def test_clipboard_audit_is_explicit_and_keeps_report_masked(qapp, monkeypatch):
+def test_clipboard_audit_is_explicit_and_keeps_report_masked(
+    qapp, monkeypatch, tmp_path
+):
     raw_secret = "sk-proj-synthetic-clipboard-ui-secret-123456"
 
     class Clipboard:
@@ -80,7 +89,7 @@ def test_clipboard_audit_is_explicit_and_keeps_report_masked(qapp, monkeypatch):
     )
     window = create_window()
 
-    window.supported_data_checkbox.setChecked(True)
+    _approve_personal_scope(window, tmp_path / "ordinary-project")
     window.clipboard_button.click()
 
     payload = json.loads(window.report_json)
@@ -95,7 +104,7 @@ def test_clipboard_audit_is_explicit_and_keeps_report_masked(qapp, monkeypatch):
     window.close()
 
 
-def test_clipboard_audit_cancel_does_not_read_clipboard(qapp, monkeypatch):
+def test_clipboard_audit_cancel_does_not_read_clipboard(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(
         app_module.QMessageBox,
         "question",
@@ -112,7 +121,7 @@ def test_clipboard_audit_cancel_does_not_read_clipboard(qapp, monkeypatch):
     )
     window = create_window()
 
-    window.supported_data_checkbox.setChecked(True)
+    _approve_personal_scope(window, tmp_path / "ordinary-project")
     window.clipboard_button.click()
 
     assert "Clipboard audit cancelled" in window.status_label.text()

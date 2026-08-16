@@ -846,6 +846,9 @@ def test_report_page_comparison_selection_requires_parseable_current_report(qapp
 
 def test_comparison_category_rows_show_baseline_current_and_signed_delta() -> None:
     baseline = ReportSummary(
+        schema_version=2,
+        supported_use_boundary="personal_non_regulated_configuration",
+        supported_use_boundary_verified=True,
         technical_score=80,
         reviewed_score=82,
         coverage=1.0,
@@ -861,6 +864,9 @@ def test_comparison_category_rows_show_baseline_current_and_signed_delta() -> No
         limits=(),
     )
     current = ReportSummary(
+        schema_version=2,
+        supported_use_boundary="personal_non_regulated_configuration",
+        supported_use_boundary_verified=True,
         technical_score=70,
         reviewed_score=76,
         coverage=1.0,
@@ -879,6 +885,8 @@ def test_comparison_category_rows_show_baseline_current_and_signed_delta() -> No
     text = app_module._comparison_text(
         compare_report_summaries(baseline, current)
     )
+
+    assert "历史基线未声明 Personal 边界" not in text
 
     rule_rows = (
         "ALPHA: 基线 2 | 当前 0 | 差值 -2",
@@ -903,6 +911,43 @@ def test_comparison_category_rows_show_baseline_current_and_signed_delta() -> No
         assert [text.index(row) for row in rows] == sorted(
             text.index(row) for row in rows
         )
+
+
+def test_comparison_text_marks_legacy_baseline_boundary_unverified() -> None:
+    baseline = ReportSummary(
+        schema_version=1,
+        supported_use_boundary=None,
+        supported_use_boundary_verified=False,
+        technical_score=100,
+        reviewed_score=100,
+        coverage=1.0,
+        coverage_state=app_module.CoverageState.COMPLETE,
+        finding_count=0,
+        rule_counts=(),
+        severity_counts=(),
+        disposition_counts=(),
+        limits=(),
+    )
+    current = ReportSummary(
+        schema_version=2,
+        supported_use_boundary="personal_non_regulated_configuration",
+        supported_use_boundary_verified=True,
+        technical_score=100,
+        reviewed_score=100,
+        coverage=1.0,
+        coverage_state=app_module.CoverageState.COMPLETE,
+        finding_count=0,
+        rule_counts=(),
+        severity_counts=(),
+        disposition_counts=(),
+        limits=(),
+    )
+
+    text = app_module._comparison_text(
+        compare_report_summaries(baseline, current)
+    )
+
+    assert "历史基线未声明 Personal 边界；仅比较聚合数据。" in text
 
 
 def test_comparison_valid_secret_bearing_baseline_retains_only_aggregates(
@@ -4628,6 +4673,12 @@ def test_folder_selection_shows_only_short_name(qapp, monkeypatch, tmp_path):
     assert all(widget.isVisible() for widget in preview_widgets)
     for upper, lower in zip(preview_widgets, preview_widgets[1:]):
         assert not _global_rect(upper).intersects(_global_rect(lower))
+    available_width = window.width() - window.sidebar.width() - 48
+    assert available_width == 724
+    assert window.supported_data_checkbox.sizeHint().width() <= available_width
+    assert "医疗" not in window.supported_data_checkbox.text()
+    assert "医疗" in window.supported_data_checkbox.toolTip()
+    assert "国家秘密" in window.supported_data_checkbox.accessibleDescription()
     assert not _global_rect(window.scope_consent_checkbox).intersects(
         _global_rect(window.scan_button)
     )
@@ -4645,8 +4696,9 @@ def test_supported_data_boundary_is_a_separate_required_confirmation(
 
     window.supported_data_checkbox.setChecked(True)
 
-    assert window.browser_button.isEnabled()
-    assert window.clipboard_button.isEnabled()
+    assert not window._personal_scope_ready()
+    assert not window.browser_button.isEnabled()
+    assert not window.clipboard_button.isEnabled()
     assert not window.scan_button.isEnabled()
 
     window._set_scope_roots(
@@ -4660,12 +4712,41 @@ def test_supported_data_boundary_is_a_separate_required_confirmation(
     assert not window.scan_button.isEnabled()
     window.supported_data_checkbox.setChecked(True)
     assert window.scan_button.isEnabled()
+    assert window._personal_scope_ready()
+    assert window.browser_button.isEnabled()
+    assert window.clipboard_button.isEnabled()
 
     window.supported_data_checkbox.setChecked(False)
 
     assert not window.scope_consent_checkbox.isChecked()
     assert window._scope_consent is None
     assert not window.scan_button.isEnabled()
+    assert not window.browser_button.isEnabled()
+    assert not window.clipboard_button.isEnabled()
+    window.close()
+
+
+def test_personal_scope_readiness_rejects_no_preview_unchecked_and_stale_consent(
+    qapp, tmp_path
+):
+    window = create_window()
+    window.supported_data_checkbox.setChecked(True)
+    assert not window._personal_scope_ready()
+
+    current_root = tmp_path / "current-project"
+    stale_root = tmp_path / "stale-project"
+    window._set_scope_roots((current_root,), status="ready")
+    window.supported_data_checkbox.setChecked(True)
+    assert not window.scope_consent_checkbox.isChecked()
+    assert not window._personal_scope_ready()
+
+    window.scope_consent_checkbox.setChecked(True)
+    assert window._personal_scope_ready()
+
+    stale_preview = app_module._scope_preview_for((stale_root,))
+    window._scope_consent = app_module.bind_scope_consent(stale_preview)
+    window._update_optional_audit_enabled()
+    assert not window._personal_scope_ready()
     assert not window.browser_button.isEnabled()
     assert not window.clipboard_button.isEnabled()
     window.close()
@@ -4822,7 +4903,7 @@ def test_start_scan_requires_boundary_and_scope_consent_before_callbacks(
 
 
 def test_clipboard_callback_requires_boundary_and_action_confirmation(
-    qapp, monkeypatch
+    qapp, monkeypatch, tmp_path
 ):
     reads = []
     audits = []
@@ -4860,6 +4941,29 @@ def test_clipboard_callback_requires_boundary_and_action_confirmation(
     window._scan_clipboard_once()
     assert reads == []
     assert audits == []
+    assert questions == []
+
+    window._set_scope_roots((tmp_path / "ordinary-project",), status="ready")
+    window.supported_data_checkbox.setChecked(True)
+    window._scan_clipboard_once()
+    assert reads == []
+    assert audits == []
+    assert questions == []
+
+    window.scope_consent_checkbox.setChecked(True)
+    stale_preview = app_module._scope_preview_for((tmp_path / "stale-project",))
+    window._scope_consent = app_module.bind_scope_consent(stale_preview)
+    window._scan_clipboard_once()
+    assert reads == []
+    assert audits == []
+    assert questions == []
+
+    window.scope_consent_checkbox.setChecked(False)
+    window.scope_consent_checkbox.setChecked(True)
+    window._scan_clipboard_once()
+    assert reads == []
+    assert audits == []
+    assert len(questions) == 1
 
     question.answer = QMessageBox.StandardButton.Yes
     window._scan_clipboard_once()
@@ -4909,6 +5013,29 @@ def test_browser_callback_requires_boundary_and_metadata_confirmation(
     window._select_browser_database()
     assert dialogs == []
     assert audits == []
+    assert questions == []
+
+    window._set_scope_roots((tmp_path / "ordinary-project",), status="ready")
+    window.supported_data_checkbox.setChecked(True)
+    window._select_browser_database()
+    assert dialogs == []
+    assert audits == []
+    assert questions == []
+
+    window.scope_consent_checkbox.setChecked(True)
+    stale_preview = app_module._scope_preview_for((tmp_path / "stale-project",))
+    window._scope_consent = app_module.bind_scope_consent(stale_preview)
+    window._select_browser_database()
+    assert dialogs == []
+    assert audits == []
+    assert questions == []
+
+    window.scope_consent_checkbox.setChecked(False)
+    window.scope_consent_checkbox.setChecked(True)
+    window._select_browser_database()
+    assert dialogs == []
+    assert audits == []
+    assert len(questions) == 1
 
     question.answer = QMessageBox.StandardButton.Yes
     window._select_browser_database()

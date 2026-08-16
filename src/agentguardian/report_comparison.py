@@ -59,6 +59,9 @@ class _InvalidReport(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class ReportSummary:
+    schema_version: int
+    supported_use_boundary: str | None
+    supported_use_boundary_verified: bool
     technical_score: int
     reviewed_score: int
     coverage: float
@@ -74,6 +77,10 @@ class ReportSummary:
 class ReportComparison:
     baseline: ReportSummary
     current: ReportSummary
+    baseline_schema_version: int
+    current_schema_version: int
+    baseline_supported_use_boundary_verified: bool
+    current_supported_use_boundary_verified: bool
     technical_score_delta: int
     reviewed_score_delta: int
     coverage_delta: float
@@ -167,6 +174,14 @@ def compare_report_summaries(
     return ReportComparison(
         baseline=baseline,
         current=current,
+        baseline_schema_version=baseline.schema_version,
+        current_schema_version=current.schema_version,
+        baseline_supported_use_boundary_verified=(
+            baseline.supported_use_boundary_verified
+        ),
+        current_supported_use_boundary_verified=(
+            current.supported_use_boundary_verified
+        ),
         technical_score_delta=current.technical_score - baseline.technical_score,
         reviewed_score_delta=current.reviewed_score - baseline.reviewed_score,
         coverage_delta=current.coverage - baseline.coverage,
@@ -300,20 +315,16 @@ def _report_summary(payload: object) -> ReportSummary:
         "supported_use_boundary",
         "evaluated_at",
     }:
-        schema = 2
-        legacy = False
+        schema_version = 2
         evaluated_at = _domain_call(parse_utc, payload["evaluated_at"])
     elif set(payload) == common_keys | {"report_schema", "evaluated_at"}:
-        schema = 1
-        legacy = False
+        schema_version = 1
         evaluated_at = _domain_call(parse_utc, payload["evaluated_at"])
     elif set(payload) == common_keys | {"report_schema"}:
-        schema = 1
-        legacy = False
+        schema_version = 1
         evaluated_at = None
     elif set(payload) == common_keys:
-        schema = None
-        legacy = True
+        schema_version = 0
         evaluated_at = None
     else:
         raise _InvalidReport
@@ -322,14 +333,14 @@ def _report_summary(payload: object) -> ReportSummary:
         type(report["product"]) is not str
         or report["product"] != _PRODUCT
         or (
-            not legacy
+            schema_version != 0
             and (
                 type(report["report_schema"]) is not int
-                or report["report_schema"] != schema
+                or report["report_schema"] != schema_version
             )
         )
         or (
-            schema == 2
+            schema_version == 2
             and (
                 type(report["supported_use_boundary"]) is not str
                 or report["supported_use_boundary"] != SUPPORTED_USE_BOUNDARY
@@ -339,8 +350,9 @@ def _report_summary(payload: object) -> ReportSummary:
         raise _InvalidReport
     _safe_annotation(report["version"], 32)
     _safe_annotation(report["rule_version"], 32)
-    technical = _validated_score(report["score"], legacy=legacy)
-    reviewed = _validated_score(report["reviewed_score"], legacy=legacy)
+    legacy_score = schema_version == 0
+    technical = _validated_score(report["score"], legacy=legacy_score)
+    reviewed = _validated_score(report["reviewed_score"], legacy=legacy_score)
     technical_score = technical.score
     reviewed_score = reviewed.score
     if (
@@ -356,8 +368,14 @@ def _report_summary(payload: object) -> ReportSummary:
         technical_score,
         reviewed_score,
         evaluated_at,
+        schema_version,
     )
     return ReportSummary(
+        schema_version=schema_version,
+        supported_use_boundary=(
+            SUPPORTED_USE_BOUNDARY if schema_version == 2 else None
+        ),
+        supported_use_boundary_verified=schema_version == 2,
         technical_score=technical_score.total,
         reviewed_score=reviewed_score.total,
         coverage=float(technical_score.coverage),
@@ -435,6 +453,7 @@ def _aggregate_findings(
     technical_score: Score,
     reviewed_score: Score,
     evaluated_at: object,
+    schema_version: int,
 ) -> tuple[int, Counter[str], Counter[str], Counter[str]]:
     findings = _exact_list(value, MAX_REPORT_FINDINGS)
     rules: Counter[str] = Counter()
@@ -493,7 +512,10 @@ def _aggregate_findings(
             tuple(evidence_items),
         )
         disposition_state = _validated_disposition(
-            finding["disposition"], validated_finding, evaluated_at
+            finding["disposition"],
+            validated_finding,
+            evaluated_at,
+            schema_version,
         )
         technical_findings.append(validated_finding)
         if disposition_state != DispositionStatus.FALSE_POSITIVE.value:
@@ -525,6 +547,7 @@ def _validated_disposition(
     value: object,
     finding: Finding,
     evaluated_at: object,
+    schema_version: int,
 ) -> str:
     if type(value) is not dict:
         raise _InvalidReport
@@ -534,6 +557,8 @@ def _validated_disposition(
     if status == "open":
         _exact_object(value, {"status"})
         return status
+    if schema_version != 2:
+        raise _InvalidReport
     if type(evaluated_at) is not datetime:
         raise _InvalidReport
     keys = {"status", "reason", "reviewer", "created_at", "expires_at"}
@@ -659,6 +684,9 @@ def _validate_summary(value: object) -> None:
     missing = False
     try:
         technical_score = value.technical_score
+        schema_version = value.schema_version
+        supported_use_boundary = value.supported_use_boundary
+        supported_use_boundary_verified = value.supported_use_boundary_verified
         reviewed_score = value.reviewed_score
         coverage = value.coverage
         coverage_state = value.coverage_state
@@ -672,7 +700,24 @@ def _validate_summary(value: object) -> None:
     if missing:
         raise _InvalidReport
     if (
-        type(technical_score) is not int
+        type(schema_version) is not int
+        or schema_version not in (0, 1, 2)
+        or (
+            schema_version == 2
+            and (
+                type(supported_use_boundary) is not str
+                or supported_use_boundary != SUPPORTED_USE_BOUNDARY
+                or supported_use_boundary_verified is not True
+            )
+        )
+        or (
+            schema_version != 2
+            and (
+                supported_use_boundary is not None
+                or supported_use_boundary_verified is not False
+            )
+        )
+        or type(technical_score) is not int
         or not 0 <= technical_score <= 100
         or type(reviewed_score) is not int
         or not 0 <= reviewed_score <= 100
@@ -691,6 +736,11 @@ def _validate_summary(value: object) -> None:
         lambda item: item in _DISPOSITION_STATES,
         finding_count,
     )
+    if schema_version != 2 and (
+        technical_score != reviewed_score
+        or any(status != "open" for status, _count in disposition_counts)
+    ):
+        raise _InvalidReport
     validated_limits = _validated_summary_limits(limits)
     summary_score = _domain_call(
         Score,

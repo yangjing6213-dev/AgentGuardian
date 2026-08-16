@@ -374,6 +374,8 @@ def _comparison_text(comparison: ReportComparison) -> str:
         f"新增限制：{added_limits}",
         f"已解除限制：{resolved_limits}",
     ]
+    if not comparison.baseline_supported_use_boundary_verified:
+        lines.insert(1, "历史基线未声明 Personal 边界；仅比较聚合数据。")
     return "\n".join(lines)
 
 
@@ -1057,11 +1059,15 @@ class AgentGuardianWindow(QMainWindow):
             layout.addWidget(label)
 
         self.supported_data_checkbox = QCheckBox(
-            "我确认仅处理个人非受监管配置；不含医疗、金融、身份/生物识别、"
-            "法律特权、客户数据集、国家秘密或同等高敏感真实数据"
+            "我确认数据符合个人非受监管配置边界"
         )
+        supported_data_description = (
+            "仅支持个人非受监管配置；不含医疗、金融、身份/生物识别、"
+            "法律特权、客户数据集、国家秘密或同等高敏感真实数据。"
+        )
+        self.supported_data_checkbox.setToolTip(supported_data_description)
         self.supported_data_checkbox.setAccessibleDescription(
-            "确认数据符合个人非受监管配置产品边界"
+            supported_data_description
         )
         self.supported_data_checkbox.toggled.connect(
             self._supported_data_consent_changed
@@ -1386,8 +1392,8 @@ class AgentGuardianWindow(QMainWindow):
             return
 
     def _select_browser_database(self) -> None:
-        if self.is_scanning or not self.supported_data_checkbox.isChecked():
-            self.status_label.setText("请先确认个人非受监管配置产品边界。")
+        if not self._personal_scope_ready():
+            self.status_label.setText("请先确认产品边界并同意当前审计范围。")
             return
         answer = QMessageBox.question(
             self,
@@ -1402,7 +1408,7 @@ class AgentGuardianWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             self.status_label.setText("浏览器数据库审计已取消。")
             return
-        if self.is_scanning or not self.supported_data_checkbox.isChecked():
+        if not self._personal_scope_ready():
             return
         selected, _selected_filter = QFileDialog.getOpenFileName(
             self,
@@ -1412,7 +1418,7 @@ class AgentGuardianWindow(QMainWindow):
         )
         if not selected:
             return
-        if self.is_scanning or not self.supported_data_checkbox.isChecked():
+        if not self._personal_scope_ready():
             return
         try:
             browser = BrowserKind(self.browser_kind_combo.currentData())
@@ -1437,8 +1443,8 @@ class AgentGuardianWindow(QMainWindow):
         )
 
     def _scan_clipboard_once(self) -> None:
-        if self.is_scanning or not self.supported_data_checkbox.isChecked():
-            self.status_label.setText("请先确认个人非受监管配置产品边界。")
+        if not self._personal_scope_ready():
+            self.status_label.setText("请先确认产品边界并同意当前审计范围。")
             return
         answer = QMessageBox.question(
             self,
@@ -1452,7 +1458,7 @@ class AgentGuardianWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             self.status_label.setText("Clipboard audit cancelled.")
             return
-        if self.is_scanning or not self.supported_data_checkbox.isChecked():
+        if not self._personal_scope_ready():
             return
         try:
             result = audit_clipboard_once(
@@ -1637,6 +1643,7 @@ class AgentGuardianWindow(QMainWindow):
                 self.scope_consent_checkbox.setChecked(False)
                 self.scope_consent_checkbox.blockSignals(False)
                 self.status_label.setText("请重新核对并同意当前审计范围。")
+        self._update_optional_audit_enabled()
         self._update_scan_enabled()
 
     def _supported_data_consent_changed(self, checked: bool) -> None:
@@ -1650,6 +1657,7 @@ class AgentGuardianWindow(QMainWindow):
         self.scope_consent_checkbox.blockSignals(True)
         self.scope_consent_checkbox.setChecked(False)
         self.scope_consent_checkbox.blockSignals(False)
+        self._update_optional_audit_enabled()
         self._update_scan_enabled()
 
     def _revoke_confirmations(self) -> None:
@@ -1660,28 +1668,30 @@ class AgentGuardianWindow(QMainWindow):
         self._update_optional_audit_enabled()
 
     def _update_optional_audit_enabled(self) -> None:
-        enabled = not self.is_scanning and self.supported_data_checkbox.isChecked()
+        enabled = self._personal_scope_ready()
         self.browser_button.setEnabled(enabled)
         self.clipboard_button.setEnabled(enabled)
 
-    def _update_scan_enabled(self) -> None:
-        enabled = False
+    def _personal_scope_ready(self) -> bool:
         try:
+            preview = self._scope_preview
+            consent = self._scope_consent
             expected_preview = _scope_preview_for(self._roots)
-            enabled = (
+            return (
                 not self.is_scanning
-                and self.supported_data_checkbox.isChecked()
-                and self.scope_consent_checkbox.isChecked()
-                and type(self._scope_preview) is ScopePreview
-                and self._scope_preview == expected_preview
-                and scope_consent_matches(
-                    self._scope_consent,
-                    expected_preview,
-                )
+                and self.supported_data_checkbox.isChecked() is True
+                and self.scope_consent_checkbox.isChecked() is True
+                and preview is not None
+                and consent is not None
+                and type(preview) is ScopePreview
+                and preview == expected_preview
+                and scope_consent_matches(consent, preview)
             )
         except Exception:
-            enabled = False
-        self.scan_button.setEnabled(enabled)
+            return False
+
+    def _update_scan_enabled(self) -> None:
+        self.scan_button.setEnabled(self._personal_scope_ready())
 
     def _clear_scope(self, status: str) -> None:
         self._invalidate_report()
@@ -1811,19 +1821,9 @@ class AgentGuardianWindow(QMainWindow):
 
     def _start_scan(self) -> None:
         try:
-            expected_preview = _scope_preview_for(self._roots)
-            if (
-                self.is_scanning
-                or not self.supported_data_checkbox.isChecked()
-                or not self.scope_consent_checkbox.isChecked()
-                or type(self._scope_preview) is not ScopePreview
-                or self._scope_preview != expected_preview
-                or not scope_consent_matches(
-                    self._scope_consent,
-                    expected_preview,
-                )
-            ):
+            if not self._personal_scope_ready():
                 raise ValueError
+            expected_preview = _scope_preview_for(self._roots)
         except Exception:  # noqa: BLE001 - fixed scan-consent boundary
             self._revoke_confirmations()
             self.status_label.setText("请重新核对并同意当前审计范围。")

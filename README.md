@@ -51,8 +51,8 @@
 - 可解释的六领域评分，以及只含脱敏证据的本地 JSON/HTML 报告。
 - 带原因、复核人和有限有效期的本地误报/接受风险处置，以及技术分和复核分。
 - 范围、发现、报告三个页面组成的极简 PySide6 桌面流程。
-- 用户逐项选择的 Chrome/Edge/Firefox 浏览器数据库元数据只读审计；只保留固定计数，不保留 URL、Cookie、密码或页面正文。
-- 用户一次性点击触发的剪贴板内存检测；只保留脱敏 findings，不写回、不保存原文。
+- 用户确认产品边界和当前范围后逐项选择的 Chrome/Edge/Firefox 浏览器数据库元数据只读审计；只保留固定计数，不保留 URL、Cookie、密码或页面正文。
+- 用户确认产品边界和当前范围后一次性点击触发的剪贴板内存检测；只保留脱敏 findings，不写回、不保存原文。
 - 独立的公开 HTTP(S) 分享可达性验证；只读取受限公开响应，不发送扫描文件、凭据或聊天内容。
 - Personal v1 不支持高敏感现实数据，不提供对应的产品模式或就绪证据。JSON、HTML 和导出报告仍只保留脱敏证据；剪贴板原文不留存、浏览器临时副本删除和临时工作区清理均有验收测试。联网分享验证仅在用户显式输入公开 URL 后执行，只读取受限公开响应且不发送任何审计数据；报告导出由用户显式选择保存路径，并保留 UNC、reparse、父目录稳定性、扫描根目录外和独占创建保护。
 - 受控自动修复内核的固定单文件替换动作：dry-run、显式确认、目标哈希重查、同目录备份、原子替换和条件回滚；不执行任意命令。
@@ -80,7 +80,7 @@ DPAPI 不能抵御已经控制同一 Windows 用户会话的程序，状态也�
 
 覆盖结果明确分为 `complete`、`limited` 和 `no_supported_files`。不完整结果不能用于确认安全；`complete` 也只表示配置范围完成，不能证明系统、账户、Provider 或端点安全。严重性、风险领域和处置状态筛选仅影响界面可见行，导出仍包含完整当前审计，分数、受保护状态和报告内容不会因筛选改变。
 
-报告比较仅支持 JSON，由用户显式选择不超过 2 MiB 的本地 AgentGuardian 报告。JSON 导出与导入共享最多 2,000 个 findings、4,000 条 evidence 和 2 MiB UTF-8 的预算；HTML 共享前两项数量上限。新 report schema 1 写入规范 UTC 秒级 `evaluated_at`；`evaluated_at` 是无默认值的 keyword-only 必填参数，生成器不读取隐藏时钟，相同输入（包括该时点）必须生成逐字节相同的 JSON 和 HTML。生成器先有界物化 findings 和处置，再以声明分数的 coverage、confidence、limits 精确复算技术分和复核分；省略 reviewed score 时使用复算值，任何声明矛盾固定失败。导入时按同一时点重新验证每项非 `open` 处置及复核分。缺少 `evaluated_at` 的旧 schema 1 和 legacy schema 0 仅在所有处置均为 `open`、复核分可独立重算时兼容；不可验证的非 `open` 状态失败关闭。规则版本、cap reason 和规则 ID 使用与解析器一致的安全元数据契约。聚合比较结果只在内存中瞬态保留，不保存完整路径、原始 JSON、证据、指纹或处置详情；长基线文件名只在界面省略显示，tooltip 仅含完整 basename。校验不证明报告真实性，也不匹配单个 finding，不导出稳定的跨扫描 finding 标识符。显式读取一个基线文件不会增加环境目录扫描、网络、API 调用或写入能力。
+报告比较仅支持 JSON，由用户显式选择不超过 2 MiB 的本地 AgentGuardian 报告。JSON 导出与导入共享最多 2,000 个 findings、4,000 条 evidence 和 2 MiB UTF-8 的预算；HTML 共享前两项数量上限。新 report schema 2 固定写入 `supported_use_boundary=personal_non_regulated_configuration` 和规范 UTC 秒级 `evaluated_at`；`evaluated_at` 是无默认值的 keyword-only 必填参数，生成器不读取隐藏时钟，相同输入（包括该时点）必须生成逐字节相同的 JSON 和 HTML。生成器先有界物化 findings 和处置，再以声明分数的 coverage、confidence、limits 精确复算技术分和复核分；省略 reviewed score 时使用复算值，任何声明矛盾固定失败。schema 2 导入按同一时点重新验证每项非 `open` 处置及复核分；旧 schema 1 和 legacy schema 0 仅在所有处置均为 `open`、复核分可独立重算时兼容。解析摘要保留 schema 与边界验证状态；历史基线明确标记边界未验证，界面仅比较聚合数据。规则版本、cap reason 和规则 ID 使用与解析器一致的安全元数据契约。聚合比较结果只在内存中瞬态保留，不保存完整路径、原始 JSON、证据、指纹或处置详情；长基线文件名只在界面省略显示，tooltip 仅含完整 basename。校验不证明报告真实性，也不匹配单个 finding，不导出稳定的跨扫描 finding 标识符。显式读取一个基线文件不会增加环境目录扫描、网络、API 调用或写入能力。
 
 残余限制包括同一用户控制、路径竞态、主机时钟、路径别名、聚合碰撞，以及静态自审计不覆盖依赖和二进制。2026-08-03 的 Task 9 证据提交 `991bf81bb520e7f2ec12f331fbbe714f03212507` 记录了 Python 3.14 和隔离的 Python 3.12 完整门禁均为 `1174 passed, 8 skipped, 0 failed`；该结果是绑定该提交的历史证据，不是当前 HEAD 的新鲜完整门禁。8 项真实 symlink 用例当时因本机 symlink 创建权限不足而跳过，junction 已测试；这些 skip 不算对应 symlink 场景通过。
 

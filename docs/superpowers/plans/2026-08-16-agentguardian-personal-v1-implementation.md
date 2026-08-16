@@ -511,7 +511,7 @@ Expected: `FAIL` before traversal or scanning.
 
 - [ ] **Step 2: Add a fixed eligibility contract to scope preview**
 
-Add `SUPPORTED_USE_BOUNDARY = "personal_non_regulated_configuration"` and exact case-folded selector rejection. Keep existing drive-root, UNC, device, reparse, path-count, selector-count, and size limits. Add `supported_use_boundary` to `ScopePreview` and its consent digest so eligibility cannot change after confirmation.
+Add `SUPPORTED_USE_BOUNDARY = "personal_non_regulated_configuration"` and exact NFKC/case-folded lexical selector rejection. Keep existing drive-root, UNC, device, reparse, path-count, selector-count, and size limits. Add `supported_use_boundary` to `ScopePreview` and its consent digest so eligibility cannot change after confirmation. NFKC compatibility forms are covered; broader cross-script homoglyph classification remains outside this bounded rule.
 
 - [ ] **Step 3: Add concise mandatory UI confirmation**
 
@@ -519,12 +519,15 @@ Add one unchecked `supported_data_checkbox` immediately before the existing scop
 
 ```python
 self.supported_data_checkbox = QCheckBox(
-    "我确认所选范围不含医疗、金融、身份/生物识别、法律特权、客户数据或其他受监管高敏感真实数据"
+    "我确认数据符合个人非受监管配置边界"
+)
+self.supported_data_checkbox.setToolTip(
+    "仅支持个人非受监管配置；不含医疗、金融、身份/生物识别、法律特权、客户数据集、国家秘密或同等高敏感真实数据。"
 )
 self.supported_data_checkbox.toggled.connect(self._supported_data_changed)
 ```
 
-Require both confirmations in `_update_scan_enabled`, clear both whenever roots or preview change, and read no clipboard or file before both are valid.
+Require both confirmations in one shared readiness predicate used by scan, clipboard, and browser callbacks and button state. Clear both whenever roots or preview change, and read no clipboard, browser database, or file before both are valid.
 
 - [ ] **Step 4: Record the boundary without recording content or full paths**
 
