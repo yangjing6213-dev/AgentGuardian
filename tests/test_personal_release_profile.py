@@ -46,6 +46,7 @@ def _copy_fixture(tmp_path: Path) -> Path:
         "docs/architecture.md",
         "scripts/build_windows_portable.py",
         "scripts/run_personal_privacy_acceptance.py",
+        "scripts/verify_wack_report.py",
         "scripts/verify_windows_release_candidate.py",
         "release_profiles/personal_store_release.json",
     ):

@@ -227,7 +227,11 @@ def write_portable_evidence(
         raise ValueError("source commit must be a full lowercase SHA-1")
     if not built_at.endswith("Z"):
         raise ValueError("build time must be canonical UTC")
-    if artifact_status not in {"unsigned_development_only", "trusted_release"}:
+    if artifact_status not in {
+        "store_submission_candidate",
+        "unsigned_development_only",
+        "trusted_release",
+    }:
         raise ValueError("artifact status is invalid")
     shutil.copyfile(project_root / "LICENSE", bundle_root / "LICENSE")
     shutil.copyfile(
@@ -339,7 +343,11 @@ def build_portable(
 ) -> Path:
     if sys.platform != "win32" or sys.version_info[:2] != (3, 12):
         raise RuntimeError("portable builds require Windows Python 3.12")
-    if artifact_status not in {"unsigned_development_only", "trusted_release"}:
+    if artifact_status not in {
+        "store_submission_candidate",
+        "unsigned_development_only",
+        "trusted_release",
+    }:
         raise ValueError("artifact status is invalid")
     project_root = project_root.resolve()
     output_root = output_root.resolve()
@@ -460,7 +468,11 @@ def main() -> int:
     parser.add_argument("--built-at", required=True)
     parser.add_argument(
         "--artifact-status",
-        choices=("unsigned_development_only", "trusted_release"),
+        choices=(
+            "store_submission_candidate",
+            "unsigned_development_only",
+            "trusted_release",
+        ),
         default="unsigned_development_only",
     )
     arguments = parser.parse_args()

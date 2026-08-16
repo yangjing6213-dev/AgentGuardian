@@ -6,8 +6,10 @@ import argparse
 import re
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 from xml.sax.saxutils import escape
+import zipfile
 
 
 _IDENTITY_NAME = re.compile(r"^[A-Za-z0-9.-]{3,50}$")
@@ -15,6 +17,7 @@ _VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)\.(\d+)$")
 _CERTIFICATE_THUMBPRINT = re.compile(r"^[0-9A-Fa-f]{40}$")
 _LOGO_SOURCE = "assets/brand/agentguardian-mark-512.png"
 _TIMESTAMP_URL = "http://timestamp.digicert.com"
+_ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
 
 def msix_manifest_bytes(
@@ -45,7 +48,7 @@ def msix_manifest_bytes(
         '         xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"\n'
         '         IgnorableNamespaces="uap rescap">\n'
         f'  <Identity Name="{escaped["identity"]}" Publisher="{escaped["publisher"]}" '
-        f'Version="{escaped["version"]}" />\n'
+        f'Version="{escaped["version"]}" ProcessorArchitecture="x64" />\n'
         '  <Properties>\n'
         f'    <DisplayName>{escaped["display_name"]}</DisplayName>\n'
         '    <PublisherDisplayName>AgentGuardian</PublisherDisplayName>\n'
@@ -143,6 +146,40 @@ def makeappx_pack_command(
     )
 
 
+def deterministic_msixupload(package_path: Path, destination: Path) -> Path:
+    """Create the Store-recommended upload container without signing claims."""
+    package = package_path.resolve()
+    output = destination.resolve()
+    if (
+        not package_path.is_absolute()
+        or not package.is_file()
+        or package_path.is_symlink()
+        or package.suffix.casefold() != ".msix"
+    ):
+        raise ValueError("MSIX package path is invalid")
+    if (
+        not destination.is_absolute()
+        or destination.suffix.casefold() != ".msixupload"
+        or output.exists()
+        or output == package
+    ):
+        raise ValueError("MSIX upload output path is invalid")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    info = zipfile.ZipInfo(package.name, date_time=_ZIP_TIMESTAMP)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.create_system = 3
+    info.external_attr = (stat.S_IFREG | 0o644) << 16
+    with zipfile.ZipFile(
+        output,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+        compresslevel=9,
+    ) as archive:
+        with package.open("rb") as source, archive.open(info, "w") as target:
+            shutil.copyfileobj(source, target, length=1024 * 1024)
+    return output
+
+
 def signtool_sign_by_thumbprint_command(
     signtool_executable: str,
     package_path: Path,
@@ -183,13 +220,22 @@ def _validate_manifest_values(identity_name: str, publisher: str, version: str) 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Stage a Windows MSIX package.")
-    parser.add_argument("--bundle-root", type=Path, required=True)
-    parser.add_argument("--stage-root", type=Path, required=True)
+    parser.add_argument("--bundle-root", type=Path)
+    parser.add_argument("--stage-root", type=Path)
     parser.add_argument("--project-root", type=Path, default=Path(__file__).parents[1])
-    parser.add_argument("--identity-name", required=True)
-    parser.add_argument("--publisher", required=True)
+    parser.add_argument("--identity-name")
+    parser.add_argument("--publisher")
     parser.add_argument("--version", default="0.1.0.0")
+    parser.add_argument("--msixupload-package", type=Path)
+    parser.add_argument("--msixupload-output", type=Path)
     args = parser.parse_args()
+    if args.msixupload_package is not None or args.msixupload_output is not None:
+        if args.msixupload_package is None or args.msixupload_output is None:
+            parser.error("both MSIX upload paths are required")
+        deterministic_msixupload(args.msixupload_package, args.msixupload_output)
+        return 0
+    if None in (args.bundle_root, args.stage_root, args.identity_name, args.publisher):
+        parser.error("bundle, stage, identity, and publisher are required")
     build_msix_stage(
         args.bundle_root,
         args.stage_root,

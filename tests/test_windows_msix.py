@@ -42,6 +42,7 @@ def test_manifest_declares_full_trust_executable_and_required_logos() -> None:
 
     assert 'Name="yangjing6213dev.AgentGuardian"' in manifest
     assert 'Publisher="CN=AgentGuardian Test"' in manifest
+    assert 'ProcessorArchitecture="x64"' in manifest
     assert 'Executable="AgentGuardian.exe"' in manifest
     assert 'EntryPoint="Windows.FullTrustApplication"' in manifest
     assert '<Logo>Assets/StoreLogo.png</Logo>' in manifest

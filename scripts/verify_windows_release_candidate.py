@@ -6,7 +6,7 @@ import argparse
 from datetime import datetime
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import subprocess
 import sys
 from typing import Any
@@ -28,6 +28,7 @@ from scripts.verify_personal_release_profile import (
     verify_profile,
 )
 MAX_JSON_BYTES = 4 * 1024 * 1024
+MAX_MANIFEST_FILES = 20_000
 _UNKNOWN_LICENSES = frozenset({"NOASSERTION", "UNKNOWN", "NONE"})
 _PACKAGE_NAME_PREFIX = "yangjing6213dev.AgentGuardian_"
 
@@ -44,6 +45,7 @@ def validate_release_candidate(
     require_trusted_signature: bool,
     require_fresh_user_state: bool,
     license_review_path: str | Path | None = None,
+    wack_evidence_path: str | Path | None = None,
 ) -> dict[str, object]:
     bundle = _directory(bundle_root, "RELEASE_BUNDLE_INVALID")
     evidence = _json_file(smoke_evidence_path, "RELEASE_SMOKE_EVIDENCE_INVALID")
@@ -74,12 +76,11 @@ def validate_release_candidate(
         verify_payload(bundle, profile_snapshot)
     except ProfileViolation:
         raise ReleaseEvidenceError("RELEASE_PERSONAL_PAYLOAD_INVALID") from None
+    _validate_payload_integrity(bundle)
 
     metadata = _json_file(bundle / "BUILD-METADATA.json", "RELEASE_BUILD_METADATA_INVALID")
     if metadata.get("source_commit") != expected_source_commit:
         raise ReleaseEvidenceError("RELEASE_SOURCE_COMMIT_MISMATCH")
-    if metadata.get("artifact_status") != "trusted_release":
-        raise ReleaseEvidenceError("RELEASE_ARTIFACT_STATUS_UNTRUSTED")
 
     component_licenses = _validate_sbom_and_notices(bundle)
     if require_trusted_signature:
@@ -89,6 +90,8 @@ def validate_release_candidate(
             expected_source_commit,
             component_licenses,
         )
+    if metadata.get("artifact_status") != "trusted_release":
+        raise ReleaseEvidenceError("RELEASE_ARTIFACT_STATUS_UNTRUSTED")
     signature_mode = evidence.get("signature_mode")
     signature = evidence.get("signature")
     result = evidence.get("result")
@@ -103,6 +106,12 @@ def validate_release_candidate(
     package_full_name = evidence.get("package_full_name")
     if not _is_package_full_name(package_full_name):
         raise ReleaseEvidenceError("RELEASE_PACKAGE_IDENTITY_INVALID")
+    wack_status = "not_provided"
+    if wack_evidence_path is not None:
+        wack = _validate_wack_evidence(wack_evidence_path, expected_source_commit)
+        if not package_full_name.startswith(f"{wack['package_identity']}_"):
+            raise ReleaseEvidenceError("RELEASE_WACK_EVIDENCE_INVALID")
+        wack_status = "complete"
     if require_fresh_user_state and (
         evidence.get("fresh_user_state") is not True
         or result.get("app_data_residue") is not False
@@ -113,12 +122,15 @@ def validate_release_candidate(
             raise ReleaseEvidenceError(f"RELEASE_SMOKE_{key.upper()}_FAILED")
     if result.get("package_residue") is not False:
         raise ReleaseEvidenceError("RELEASE_PACKAGE_RESIDUE")
+    if require_trusted_signature and wack_status != "complete":
+        raise ReleaseEvidenceError("RELEASE_WACK_EVIDENCE_REQUIRED")
     return {
         "passed": True,
         "source_commit": expected_source_commit,
         "signature_mode": signature_mode,
         "fresh_user_state": evidence.get("fresh_user_state") is True,
         "license_review": "complete",
+        "wack": wack_status,
     }
 
 
@@ -146,6 +158,166 @@ def _validate_personal_profile_evidence(
         raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_EVIDENCE_INVALID") from None
     if evidence.get("profile_sha256") != profile_snapshot.sha256:
         raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_MISMATCH")
+
+
+def _validate_payload_integrity(bundle: Path) -> None:
+    manifest_path = bundle / "PAYLOAD-MANIFEST.json"
+    manifest = _json_file(manifest_path, "RELEASE_PAYLOAD_MANIFEST_INVALID")
+    if set(manifest) != {"algorithm", "files", "schema"} or (
+        manifest.get("algorithm") != "sha256" or manifest.get("schema") != 1
+    ):
+        raise ReleaseEvidenceError("RELEASE_PAYLOAD_MANIFEST_INVALID")
+    try:
+        if manifest_path.read_bytes() != canonical_json_bytes(manifest):
+            raise ReleaseEvidenceError("RELEASE_PAYLOAD_MANIFEST_INVALID")
+    except OSError:
+        raise ReleaseEvidenceError("RELEASE_PAYLOAD_MANIFEST_INVALID") from None
+    files = _integrity_files(bundle)
+    payload_files = tuple(
+        path
+        for path in files
+        if path.name not in {"PAYLOAD-MANIFEST.json", "SHA256SUMS"}
+    )
+    expected_manifest = [_integrity_entry(bundle, path) for path in payload_files]
+    if manifest.get("files") != expected_manifest:
+        raise ReleaseEvidenceError("RELEASE_PAYLOAD_MANIFEST_INVALID")
+
+    checksum_path = _safe_local_path(bundle / "SHA256SUMS", "RELEASE_CHECKSUMS_INVALID")
+    try:
+        if not _regular_file(checksum_path) or checksum_path.stat().st_size > MAX_JSON_BYTES:
+            raise ReleaseEvidenceError("RELEASE_CHECKSUMS_INVALID")
+        actual = checksum_path.read_bytes()
+    except OSError:
+        raise ReleaseEvidenceError("RELEASE_CHECKSUMS_INVALID") from None
+    checksum_files = tuple(path for path in files if path.name != "SHA256SUMS")
+    expected = "".join(
+        f"{_sha256_file(path)} *{path.relative_to(bundle).as_posix()}\n"
+        for path in checksum_files
+    ).encode("ascii")
+    if actual != expected:
+        raise ReleaseEvidenceError("RELEASE_CHECKSUMS_INVALID")
+
+
+def _integrity_files(bundle: Path) -> tuple[Path, ...]:
+    try:
+        files = tuple(
+            sorted(
+                (path for path in bundle.rglob("*") if path.is_file()),
+                key=lambda path: path.relative_to(bundle).as_posix(),
+            )
+        )
+    except OSError:
+        raise ReleaseEvidenceError("RELEASE_PAYLOAD_MANIFEST_INVALID") from None
+    if len(files) > MAX_MANIFEST_FILES:
+        raise ReleaseEvidenceError("RELEASE_PAYLOAD_MANIFEST_INVALID")
+    folded: set[str] = set()
+    for path in files:
+        relative = path.relative_to(bundle).as_posix()
+        pure = PurePosixPath(relative)
+        if (
+            not relative
+            or "\\" in relative
+            or pure.is_absolute()
+            or any(part in {"", ".", ".."} for part in pure.parts)
+            or relative.casefold() in folded
+            or _has_reparse_component(path)
+        ):
+            raise ReleaseEvidenceError("RELEASE_PAYLOAD_MANIFEST_INVALID")
+        folded.add(relative.casefold())
+    return files
+
+
+def _integrity_entry(bundle: Path, path: Path) -> dict[str, object]:
+    try:
+        size = path.stat(follow_symlinks=False).st_size
+    except OSError:
+        raise ReleaseEvidenceError("RELEASE_PAYLOAD_MANIFEST_INVALID") from None
+    return {
+        "path": path.relative_to(bundle).as_posix(),
+        "sha256": _sha256_file(path),
+        "size": size,
+    }
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        raise ReleaseEvidenceError("RELEASE_PAYLOAD_MANIFEST_INVALID") from None
+    return digest.hexdigest()
+
+
+def _regular_file(path: Path) -> bool:
+    try:
+        return path.is_file() and not path.is_symlink() and not _has_reparse_component(path)
+    except OSError:
+        return False
+
+
+def _validate_wack_evidence(
+    evidence_path: str | Path, expected_source_commit: str
+) -> dict[str, Any]:
+    evidence = _json_file(evidence_path, "RELEASE_WACK_EVIDENCE_INVALID")
+    expected_keys = {
+        "generated_at",
+        "overall_result",
+        "package_identity",
+        "report_sha256",
+        "schema",
+        "source_commit",
+        "test_counts",
+        "tool_version",
+    }
+    counts = evidence.get("test_counts")
+    if (
+        set(evidence) != expected_keys
+        or evidence.get("schema") != 1
+        or evidence.get("source_commit") != expected_source_commit
+        or evidence.get("overall_result") != "PASS"
+        or not _lower_hex(evidence.get("report_sha256"), 64)
+        or not _bounded_text(evidence.get("package_identity"))
+        or not _bounded_text(evidence.get("tool_version"))
+        or not isinstance(counts, dict)
+        or set(counts) != {"failed", "passed", "requirements", "tests", "total"}
+        or any(type(counts.get(key)) is not int for key in counts)
+        or any(counts[key] < 0 for key in counts)
+        or counts["failed"] != 0
+        or counts["total"] <= 0
+        or counts["passed"] != counts["total"]
+        or counts["requirements"] + counts["tests"] != counts["total"]
+    ):
+        raise ReleaseEvidenceError("RELEASE_WACK_EVIDENCE_INVALID")
+    try:
+        generated = datetime.strptime(evidence.get("generated_at"), "%Y-%m-%dT%H:%M:%SZ")
+        path = _safe_local_path(evidence_path, "RELEASE_WACK_EVIDENCE_INVALID")
+        if path.read_bytes() != canonical_json_bytes(evidence):
+            raise ReleaseEvidenceError("RELEASE_WACK_EVIDENCE_INVALID")
+    except (OSError, TypeError, ValueError):
+        raise ReleaseEvidenceError("RELEASE_WACK_EVIDENCE_INVALID") from None
+    if generated.strftime("%Y-%m-%dT%H:%M:%SZ") != evidence["generated_at"]:
+        raise ReleaseEvidenceError("RELEASE_WACK_EVIDENCE_INVALID")
+    return evidence
+
+
+def _lower_hex(value: object, length: int) -> bool:
+    return (
+        type(value) is str
+        and len(value) == length
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _bounded_text(value: object) -> bool:
+    return (
+        type(value) is str
+        and bool(value)
+        and value == value.strip()
+        and len(value) <= 256
+        and all(ord(character) >= 32 for character in value)
+    )
 
 
 def _profile_bytes_from_commit(source_commit: str) -> bytes:
@@ -363,6 +535,7 @@ def main() -> int:
     parser.add_argument("--require-trusted-signature", action="store_true")
     parser.add_argument("--require-fresh-user-state", action="store_true")
     parser.add_argument("--license-review", type=Path)
+    parser.add_argument("--wack-evidence", type=Path)
     args = parser.parse_args()
     try:
         result = validate_release_candidate(
@@ -372,6 +545,7 @@ def main() -> int:
             require_trusted_signature=args.require_trusted_signature,
             require_fresh_user_state=args.require_fresh_user_state,
             license_review_path=args.license_review,
+            wack_evidence_path=args.wack_evidence,
         )
     except ReleaseEvidenceError as error:
         parser.error(str(error))

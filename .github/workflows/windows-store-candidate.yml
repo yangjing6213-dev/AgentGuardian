@@ -1,0 +1,227 @@
+name: Windows Store submission candidate evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_source_commit:
+        required: true
+        type: string
+      store_identity_name:
+        required: true
+        type: string
+      store_publisher:
+        required: true
+        type: string
+      store_version:
+        required: true
+        type: string
+      wack_tool_path:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    runs-on: windows-latest
+    env:
+      EXPECTED_SOURCE_COMMIT: ${{ inputs.expected_source_commit }}
+      STORE_IDENTITY_NAME: ${{ inputs.store_identity_name }}
+      STORE_PUBLISHER: ${{ inputs.store_publisher }}
+      STORE_VERSION: ${{ inputs.store_version }}
+      WACK_TOOL_PATH: ${{ inputs.wack_tool_path }}
+    steps:
+      - name: Validate exact lowercase source commit input
+        shell: pwsh
+        run: |
+          if ($env:EXPECTED_SOURCE_COMMIT -cnotmatch '^[0-9a-f]{40}$') {
+            throw "expected_source_commit must be a lowercase 40-character SHA"
+          }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.expected_source_commit }}
+          fetch-depth: 1
+
+      - name: Verify exact clean checkout and commit time
+        shell: pwsh
+        run: |
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -cne $env:EXPECTED_SOURCE_COMMIT) {
+            throw "checked out HEAD does not match expected_source_commit"
+          }
+          $status = git status --porcelain=v1 --untracked-files=all
+          if ($status) { throw "Store candidate checkout must be clean" }
+          $commitEpoch = [int64](git show -s --format=%ct HEAD)
+          $commitUtc = [DateTimeOffset]::FromUnixTimeSeconds($commitEpoch).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+          "COMMIT_UTC=$commitUtc" >> $env:GITHUB_ENV
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install hash-locked development dependencies
+        shell: pwsh
+        run: |
+          python -c "import platform; assert platform.machine().casefold() in {'amd64','x86_64'}, 'x64 build runner is required'"
+          python -m pip install --require-hashes -r requirements-dev.lock
+
+      - name: Run full test suite
+        shell: pwsh
+        run: python -m pytest -q -p no:cacheprovider
+
+      - name: Run Personal privacy, brand, compile, and source gates
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "$pwd\.analysis\store-evidence" -Force | Out-Null
+          python scripts/run_personal_privacy_acceptance.py `
+            --evidence-path "$pwd\.analysis\personal-privacy-acceptance.json"
+          python scripts/check_brand_assets.py
+          python -m compileall -q src scripts tests
+          $env:PYTHONPATH = "$pwd\src"
+          python -c "from agentguardian.self_audit import static_capability_findings; assert static_capability_findings() == ('DATABASE_CAPABILITY','NETWORK_MODULE_IMPORT','USER_DATA_WRITE')"
+          python scripts/verify_personal_release_profile.py `
+            --project-root "$pwd" `
+            --profile "$pwd\release_profiles\personal_store_release.json" `
+            > "$pwd\.analysis\store-evidence\profile-result.json"
+          Copy-Item -LiteralPath "$pwd\.analysis\personal-privacy-acceptance.json" `
+            -Destination "$pwd\.analysis\store-evidence\privacy-result.json"
+
+      - name: Install hash-locked build dependencies
+        shell: pwsh
+        run: python -m pip install --require-hashes -r requirements-build.lock
+
+      - name: Build x64 portable candidate A
+        shell: pwsh
+        run: |
+          python scripts/build_windows_portable.py `
+            --output-root "$pwd\.analysis\portable-a" `
+            --source-commit $env:EXPECTED_SOURCE_COMMIT `
+            --built-at $env:COMMIT_UTC `
+            --artifact-status store_submission_candidate
+
+      - name: Build x64 portable candidate B
+        shell: pwsh
+        run: |
+          python scripts/build_windows_portable.py `
+            --output-root "$pwd\.analysis\portable-b" `
+            --source-commit $env:EXPECTED_SOURCE_COMMIT `
+            --built-at $env:COMMIT_UTC `
+            --artifact-status store_submission_candidate
+
+      - name: Compare portable ZIP bytes and SHA-256
+        shell: pwsh
+        run: |
+          $zipsA = @(Get-ChildItem -LiteralPath "$pwd\.analysis\portable-a" -Filter '*.zip' -File -Recurse)
+          $zipsB = @(Get-ChildItem -LiteralPath "$pwd\.analysis\portable-b" -Filter '*.zip' -File -Recurse)
+          if ($zipsA.Count -ne 1) { throw "portable build A must contain one ZIP" }
+          if ($zipsB.Count -ne 1) { throw "portable build B must contain one ZIP" }
+          $zipA = $zipsA[0]
+          $zipB = $zipsB[0]
+          $hashA = (Get-FileHash -Algorithm SHA256 -LiteralPath $zipA.FullName).Hash
+          $hashB = (Get-FileHash -Algorithm SHA256 -LiteralPath $zipB.FullName).Hash
+          if ($hashA -cne $hashB) { throw "portable ZIP SHA-256 mismatch" }
+          $bytesA = [System.IO.File]::ReadAllBytes($zipA.FullName)
+          $bytesB = [System.IO.File]::ReadAllBytes($zipB.FullName)
+          if (-not [System.Linq.Enumerable]::SequenceEqual[byte]($bytesA, $bytesB)) {
+            throw "portable ZIP byte mismatch"
+          }
+
+      - name: Locate Windows SDK packaging tool
+        shell: pwsh
+        run: |
+          $makeappx = Get-ChildItem -LiteralPath "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter MakeAppx.exe -Recurse -File | Sort-Object FullName | Select-Object -Last 1
+          if ($null -eq $makeappx) { throw "Windows SDK MakeAppx.exe is required" }
+          "MAKEAPPX=$($makeappx.FullName)" >> $env:GITHUB_ENV
+
+      - name: Build Store-identity MSIX and deterministic msixupload
+        shell: pwsh
+        run: |
+          $evidence = "$pwd\.analysis\store-evidence"
+          python scripts/build_windows_msix.py `
+            --bundle-root "$pwd\.analysis\portable-a\dist\AgentGuardian" `
+            --stage-root "$pwd\.analysis\store-msix-stage" `
+            --project-root "$pwd" `
+            --identity-name $env:STORE_IDENTITY_NAME `
+            --publisher $env:STORE_PUBLISHER `
+            --version $env:STORE_VERSION
+          & $env:MAKEAPPX pack `
+            /d "$pwd\.analysis\store-msix-stage" `
+            /p "$pwd\.analysis\AgentGuardian-store.msix"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/build_windows_msix.py `
+            --msixupload-package "$pwd\.analysis\AgentGuardian-store.msix" `
+            --msixupload-output "$evidence\AgentGuardian-$($env:EXPECTED_SOURCE_COMMIT).msixupload"
+          Copy-Item "$pwd\.analysis\portable-a\dist\AgentGuardian\SHA256SUMS" "$evidence\portable-SHA256SUMS"
+          Copy-Item "$pwd\.analysis\portable-a\dist\AgentGuardian\AgentGuardian.cdx.json" "$evidence\AgentGuardian.cdx.json"
+          Copy-Item "$pwd\.analysis\portable-a\dist\AgentGuardian\THIRD_PARTY_NOTICES.md" "$evidence\THIRD_PARTY_NOTICES.md"
+          Copy-Item "$pwd\.analysis\portable-a\dist\AgentGuardian\BUILD-METADATA.json" "$evidence\provenance.json"
+          Copy-Item "$pwd\.analysis\portable-a\dist\AgentGuardian\PAYLOAD-MANIFEST.json" "$evidence\release-manifest.json"
+
+      - name: Record bounded workflow metadata
+        shell: pwsh
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          python -c "import json,os,pathlib; value={'schema':1,'source_commit':os.environ['EXPECTED_SOURCE_COMMIT'],'commit_utc':os.environ['COMMIT_UTC'],'run_id':os.environ['RUN_ID'],'run_attempt':os.environ['RUN_ATTEMPT'],'store_identity_name':os.environ['STORE_IDENTITY_NAME'],'store_version':os.environ['STORE_VERSION'],'wack_ci_capability':'not_verified','store_submission':'not_performed'}; pathlib.Path('.analysis/store-evidence/workflow-run.json').write_text(json.dumps(value,ensure_ascii=True,sort_keys=True,separators=(',',':'))+'\n',encoding='ascii')"
+
+      - name: Run Windows App Certification Kit in required active user session
+        shell: pwsh
+        run: |
+          # Microsoft contract: appcert.exe reset, then test with package and report paths.
+          # WACK requires an active user session; this CI capability is not verified.
+          $tool = (python scripts/verify_wack_report.py --validate-tool-path $env:WACK_TOOL_PATH).Trim()
+          & $tool reset
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $report = "$pwd\.analysis\store-evidence\wack-report.xml"
+          & $tool test `
+            -appxpackagepath "$pwd\.analysis\AgentGuardian-store.msix" `
+            -reportoutputpath $report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $generatedAt = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+          python scripts/verify_wack_report.py `
+            --report $report `
+            --evidence-root "$pwd\.analysis\store-evidence" `
+            --source-commit $env:EXPECTED_SOURCE_COMMIT `
+            --expected-package-identity $env:STORE_IDENTITY_NAME `
+            --generated-at $generatedAt `
+            --output "$pwd\.analysis\store-evidence\wack-summary.json"
+
+      - name: Final formal release gate remains fail closed
+        if: always()
+        shell: pwsh
+        run: |
+          python scripts/verify_windows_release_candidate.py `
+            --bundle-root "$pwd\.analysis\portable-a\dist\AgentGuardian" `
+            --smoke-evidence "$pwd\.analysis\store-evidence\wack-summary.json" `
+            --expected-source-commit $env:EXPECTED_SOURCE_COMMIT `
+            --require-trusted-signature `
+            --require-fresh-user-state `
+            --license-review "$pwd\docs\security\windows-license-review.json" `
+            --wack-evidence "$pwd\.analysis\store-evidence\wack-summary.json"
+          if ($LASTEXITCODE -eq 0) {
+            throw "Store candidate must not pass the formal release gate"
+          }
+          exit $LASTEXITCODE
+
+      - name: Upload bounded candidate evidence only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: agentguardian-store-candidate-${{ inputs.expected_source_commit }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            .analysis/store-evidence/AgentGuardian-${{ inputs.expected_source_commit }}.msixupload
+            .analysis/store-evidence/portable-SHA256SUMS
+            .analysis/store-evidence/AgentGuardian.cdx.json
+            .analysis/store-evidence/THIRD_PARTY_NOTICES.md
+            .analysis/store-evidence/provenance.json
+            .analysis/store-evidence/release-manifest.json
+            .analysis/store-evidence/profile-result.json
+            .analysis/store-evidence/privacy-result.json
+            .analysis/store-evidence/wack-summary.json
+            .analysis/store-evidence/workflow-run.json

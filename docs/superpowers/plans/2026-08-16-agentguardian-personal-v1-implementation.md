@@ -578,7 +578,11 @@ def test_store_candidate_workflow_is_manual_exact_sha_and_non_publishing():
     assert "personal_store_release" in workflow
     assert "Windows App Certification Kit" in workflow
     assert "actions/upload-artifact" in workflow
-    assert "release" not in workflow.casefold()
+    assert "gh release" not in workflow.casefold()
+    assert "/releases" not in workflow.casefold()
+    assert "partnercenter" not in workflow.casefold()
+    assert "partner center" not in workflow.casefold()
+    assert "actions/deploy" not in workflow.casefold()
     assert "PFX" not in workflow
     assert "MCP_ADAPTER" not in workflow
 ```

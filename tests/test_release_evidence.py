@@ -46,6 +46,7 @@ def test_personal_release_gate_has_no_dynamic_mcp_evidence_input() -> None:
         "require_trusted_signature",
         "require_fresh_user_state",
         "license_review_path",
+        "wack_evidence_path",
     )
 
 
@@ -137,11 +138,69 @@ def _write_candidate(
         ),
         encoding="utf-8",
     )
+    _write_integrity_manifests(bundle)
     return bundle, evidence, license_review
+
+
+def _write_integrity_manifests(bundle: Path) -> None:
+    files = tuple(
+        sorted(
+            path
+            for path in bundle.rglob("*")
+            if path.is_file()
+            and path.name not in {"PAYLOAD-MANIFEST.json", "SHA256SUMS"}
+        )
+    )
+    manifest = {
+        "schema": 1,
+        "algorithm": "sha256",
+        "files": [
+            {
+                "path": path.relative_to(bundle).as_posix(),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "size": path.stat().st_size,
+            }
+            for path in files
+        ],
+    }
+    manifest_path = bundle / "PAYLOAD-MANIFEST.json"
+    manifest_path.write_bytes(release_evidence.canonical_json_bytes(manifest))
+    checksum_files = tuple(sorted((*files, manifest_path)))
+    (bundle / "SHA256SUMS").write_text(
+        "".join(
+            f"{hashlib.sha256(path.read_bytes()).hexdigest()} *{path.relative_to(bundle).as_posix()}\n"
+            for path in checksum_files
+        ),
+        encoding="ascii",
+        newline="\n",
+    )
+
+
+def _write_wack_summary(tmp_path: Path) -> Path:
+    path = tmp_path / "wack-summary.json"
+    value = {
+        "generated_at": "2026-08-17T00:00:00Z",
+        "overall_result": "PASS",
+        "package_identity": "yangjing6213dev.AgentGuardian",
+        "report_sha256": "d" * 64,
+        "schema": 1,
+        "source_commit": COMMIT,
+        "test_counts": {
+            "failed": 0,
+            "passed": 2,
+            "requirements": 1,
+            "tests": 1,
+            "total": 2,
+        },
+        "tool_version": "10.0.26100.0",
+    }
+    path.write_bytes(release_evidence.canonical_json_bytes(value))
+    return path
 
 
 def test_release_gate_accepts_only_trusted_fresh_evidence(tmp_path: Path) -> None:
     bundle, evidence, license_review = _write_candidate(tmp_path)
+    wack_summary = _write_wack_summary(tmp_path)
 
     result = validate_release_candidate(
         bundle,
@@ -150,6 +209,7 @@ def test_release_gate_accepts_only_trusted_fresh_evidence(tmp_path: Path) -> Non
         require_trusted_signature=True,
         require_fresh_user_state=True,
         license_review_path=license_review,
+        wack_evidence_path=wack_summary,
     )
 
     assert result == {
@@ -158,13 +218,65 @@ def test_release_gate_accepts_only_trusted_fresh_evidence(tmp_path: Path) -> Non
         "signature_mode": "trusted_signed",
         "fresh_user_state": True,
         "license_review": "complete",
+        "wack": "complete",
     }
+
+
+def test_release_gate_rejects_manifest_checksum_or_wack_drift(tmp_path: Path) -> None:
+    bundle, evidence, license_review = _write_candidate(tmp_path)
+    wack_summary = _write_wack_summary(tmp_path)
+    (bundle / "THIRD_PARTY_NOTICES.md").write_text("changed", encoding="utf-8")
+
+    with pytest.raises(
+        ReleaseEvidenceError, match="^RELEASE_PAYLOAD_MANIFEST_INVALID$"
+    ):
+        validate_release_candidate(
+            bundle,
+            evidence,
+            expected_source_commit=COMMIT,
+            require_trusted_signature=True,
+            require_fresh_user_state=True,
+            license_review_path=license_review,
+            wack_evidence_path=wack_summary,
+        )
+    second = tmp_path / "second"
+    second.mkdir()
+    bundle, evidence, license_review = _write_candidate(second)
+    wack_summary = _write_wack_summary(second)
+    wack = json.loads(wack_summary.read_text(encoding="utf-8"))
+    wack["source_commit"] = "b" * 40
+    wack_summary.write_bytes(release_evidence.canonical_json_bytes(wack))
+    with pytest.raises(ReleaseEvidenceError, match="^RELEASE_WACK_EVIDENCE_INVALID$"):
+        validate_release_candidate(
+            bundle,
+            evidence,
+            expected_source_commit=COMMIT,
+            require_trusted_signature=True,
+            require_fresh_user_state=True,
+            license_review_path=license_review,
+            wack_evidence_path=wack_summary,
+        )
+
+
+def test_release_gate_rejects_committed_pending_license_template(tmp_path: Path) -> None:
+    bundle, evidence, _license_review = _write_candidate(tmp_path)
+
+    with pytest.raises(ReleaseEvidenceError, match="^RELEASE_LICENSE_REVIEW_REQUIRED$"):
+        validate_release_candidate(
+            bundle,
+            evidence,
+            expected_source_commit=COMMIT,
+            require_trusted_signature=True,
+            require_fresh_user_state=True,
+            license_review_path=ROOT / "docs/security/windows-license-review.json",
+        )
 
 
 def test_release_gate_reruns_repository_and_payload_profile_checks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     bundle, evidence, license_review = _write_candidate(tmp_path)
+    wack_summary = _write_wack_summary(tmp_path)
     calls: list[str] = []
     snapshots: list[object] = []
 
@@ -196,10 +308,25 @@ def test_release_gate_reruns_repository_and_payload_profile_checks(
         require_trusted_signature=True,
         require_fresh_user_state=True,
         license_review_path=license_review,
+        wack_evidence_path=wack_summary,
     )
 
     assert calls == ["source", "payload"]
     assert snapshots[0] is snapshots[1]
+
+
+def test_trusted_release_gate_requires_wack_evidence(tmp_path: Path) -> None:
+    bundle, evidence, license_review = _write_candidate(tmp_path)
+
+    with pytest.raises(ReleaseEvidenceError, match="^RELEASE_WACK_EVIDENCE_REQUIRED$"):
+        validate_release_candidate(
+            bundle,
+            evidence,
+            expected_source_commit=COMMIT,
+            require_trusted_signature=True,
+            require_fresh_user_state=True,
+            license_review_path=license_review,
+        )
 
 
 def test_release_gate_rejects_missing_profile_blob_from_expected_commit(
@@ -450,6 +577,7 @@ def test_release_gate_rejects_unknown_license_and_source_mismatch(tmp_path: Path
         ),
         encoding="utf-8",
     )
+    _write_integrity_manifests(bundle)
 
     with pytest.raises(ReleaseEvidenceError, match="RELEASE_LICENSE_REVIEW_REQUIRED"):
         validate_release_candidate(
@@ -472,6 +600,7 @@ def test_release_gate_rejects_unknown_license_and_source_mismatch(tmp_path: Path
         ),
         encoding="utf-8",
     )
+    _write_integrity_manifests(bundle)
     with pytest.raises(ReleaseEvidenceError, match="RELEASE_SOURCE_COMMIT_MISMATCH"):
         validate_release_candidate(
             bundle,
