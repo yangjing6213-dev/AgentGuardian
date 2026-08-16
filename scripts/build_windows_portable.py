@@ -21,7 +21,14 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
+
+from scripts.verify_personal_release_profile import (
+    load_profile,
+    verify_payload,
+    verify_profile,
+)
 
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 _UNUSED_QT_GUI_PLUGINS = {
@@ -337,6 +344,9 @@ def build_portable(
     head = _git(project_root, "rev-parse", "HEAD")
     status = _git(project_root, "status", "--porcelain=v1", "--untracked-files=all")
     validate_git_build_context(head, status, source_commit)
+    profile_path = project_root / "release_profiles" / "personal_store_release.json"
+    profile = load_profile(profile_path)
+    verify_profile(project_root, profile_path)
     build_time = validate_build_time(built_at)
     build_dependencies = validate_build_dependency_snapshot()
     if output_root.exists():
@@ -366,6 +376,8 @@ def build_portable(
     validate_git_build_context(final_head, final_status, source_commit)
     bundle_root = output_root / "dist" / "AgentGuardian"
     validate_frozen_layout(bundle_root, project_root)
+    verify_payload(bundle_root, profile)
+    _write_personal_profile_evidence(bundle_root, profile_path)
     internal = bundle_root / "_internal"
     python_version, openssl_version = runtime_library_versions()
     components = portable_component_specs(
@@ -389,6 +401,18 @@ def build_portable(
         output_root / f"AgentGuardian-0.1.0-windows-x64-{source_commit[:12]}.zip",
     )
     return bundle_root
+
+
+def _write_personal_profile_evidence(bundle_root: Path, profile_path: Path) -> None:
+    evidence = {
+        "profile": "personal_store_release",
+        "profile_sha256": hashlib.sha256(profile_path.read_bytes()).hexdigest(),
+        "schema": 1,
+        "status": "pass",
+    }
+    (bundle_root / "PERSONAL-RELEASE-PROFILE.json").write_bytes(
+        canonical_json_bytes(evidence)
+    )
 
 
 def _git(project_root: Path, *arguments: str) -> str:

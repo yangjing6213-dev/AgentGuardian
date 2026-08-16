@@ -1,3 +1,4 @@
+import hashlib
 import json
 import inspect
 import os
@@ -72,8 +73,34 @@ def _prepare_portable_build(
     )
     monkeypatch.setattr(build_module, "validate_build_dependency_snapshot", lambda: {})
     monkeypatch.setattr(build_module, "build_pyinstaller_command", lambda *args: ("fake",))
-    monkeypatch.setattr(build_module.subprocess, "run", lambda *args, **kwargs: None)
-    monkeypatch.setattr(build_module, "validate_frozen_layout", lambda *args: None)
+    monkeypatch.setattr(
+        build_module.subprocess,
+        "run",
+        lambda *args, **kwargs: events.append("pyinstaller"),
+    )
+    monkeypatch.setattr(
+        build_module,
+        "load_profile",
+        lambda *args: {"name": "personal_store_release"},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        build_module,
+        "verify_profile",
+        lambda *args: events.append("source_profile"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        build_module,
+        "verify_payload",
+        lambda *args: events.append("payload_profile"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        build_module,
+        "validate_frozen_layout",
+        lambda *args: events.append("layout"),
+    )
     monkeypatch.setattr(build_module, "runtime_library_versions", lambda: ("3.12.2", "3.0.13"))
     monkeypatch.setattr(build_module, "_pe_version", lambda path: "14.0.0.0")
     monkeypatch.setattr(build_module, "portable_component_specs", lambda **kwargs: ())
@@ -81,6 +108,12 @@ def _prepare_portable_build(
         build_module,
         "write_portable_evidence",
         lambda *args, **kwargs: events.append("evidence"),
+    )
+    monkeypatch.setattr(
+        build_module,
+        "_write_personal_profile_evidence",
+        lambda *args: events.append("profile_evidence"),
+        raising=False,
     )
     monkeypatch.setattr(build_module, "deterministic_zip", lambda *args: None)
 
@@ -95,6 +128,51 @@ def test_personal_portable_builder_has_no_dynamic_mcp_inputs() -> None:
         "built_at",
         "artifact_status",
     )
+
+
+def test_portable_build_verifies_source_then_payload_and_records_profile_digest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import scripts.build_windows_portable as build_module
+
+    events: list[str] = []
+    _prepare_portable_build(monkeypatch, commit="a" * 40, events=events)
+
+    build_module.build_portable(
+        tmp_path,
+        tmp_path / "output",
+        source_commit="a" * 40,
+        built_at="2026-08-14T00:00:00Z",
+    )
+
+    assert events == [
+        "source_profile",
+        "pyinstaller",
+        "layout",
+        "payload_profile",
+        "profile_evidence",
+        "evidence",
+    ]
+
+
+def test_personal_profile_evidence_is_canonical_and_digest_bound(tmp_path: Path) -> None:
+    import scripts.build_windows_portable as build_module
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    profile_path = PROJECT_ROOT / "release_profiles/personal_store_release.json"
+    build_module._write_personal_profile_evidence(bundle, profile_path)
+
+    evidence_path = bundle / "PERSONAL-RELEASE-PROFILE.json"
+    evidence = json.loads(evidence_path.read_bytes())
+    assert evidence == {
+        "profile": "personal_store_release",
+        "profile_sha256": hashlib.sha256(profile_path.read_bytes()).hexdigest(),
+        "schema": 1,
+        "status": "pass",
+    }
+    assert evidence_path.read_bytes() == canonical_json_bytes(evidence)
 
 
 def test_portable_builder_cli_loads_project_package_without_pythonpath() -> None:
@@ -612,6 +690,9 @@ def test_portable_build_rechecks_git_context_after_pyinstaller(
     monkeypatch.setattr(build_module.sys, "version_info", (3, 12))
     monkeypatch.setattr(build_module, "_git", fake_git)
     monkeypatch.setattr(build_module, "validate_build_dependency_snapshot", lambda: {})
+    monkeypatch.setattr(build_module, "load_profile", lambda *args: {})
+    monkeypatch.setattr(build_module, "verify_profile", lambda *args: None)
+    monkeypatch.setattr(build_module, "verify_payload", lambda *args: None)
     monkeypatch.setattr(build_module, "build_pyinstaller_command", lambda *args: ("fake",))
     monkeypatch.setattr(build_module.subprocess, "run", lambda *args, **kwargs: None)
     monkeypatch.setattr(build_module, "validate_frozen_layout", lambda *args: None)
@@ -619,6 +700,7 @@ def test_portable_build_rechecks_git_context_after_pyinstaller(
     monkeypatch.setattr(build_module, "_pe_version", lambda path: "14.0.0.0")
     monkeypatch.setattr(build_module, "portable_component_specs", lambda **kwargs: ())
     monkeypatch.setattr(build_module, "write_portable_evidence", lambda *args, **kwargs: None)
+    monkeypatch.setattr(build_module, "_write_personal_profile_evidence", lambda *args: None)
     monkeypatch.setattr(build_module, "deterministic_zip", lambda *args: None)
 
     build_module.build_portable(

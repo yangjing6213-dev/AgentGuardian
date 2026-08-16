@@ -20,6 +20,7 @@ from scripts.verify_windows_release_candidate import (
 COMMIT = "a" * 40
 PACKAGE_FULL_NAME = "yangjing6213dev.AgentGuardian_0.1.0.0_x64__publisher"
 ROOT = Path(__file__).resolve().parents[1]
+PROFILE_PATH = ROOT / "release_profiles" / "personal_store_release.json"
 
 
 def test_personal_release_gate_has_no_dynamic_mcp_evidence_input() -> None:
@@ -43,6 +44,24 @@ def _write_candidate(
     (bundle / "BUILD-METADATA.json").write_text(
         json.dumps({"artifact_status": "trusted_release", "source_commit": COMMIT}),
         encoding="utf-8",
+    )
+    profile_bytes = PROFILE_PATH.read_bytes() if PROFILE_PATH.is_file() else b"missing"
+    profile_evidence = {
+        "profile": "personal_store_release",
+        "profile_sha256": hashlib.sha256(profile_bytes).hexdigest(),
+        "schema": 1,
+        "status": "pass",
+    }
+    (bundle / "PERSONAL-RELEASE-PROFILE.json").write_bytes(
+        (
+            json.dumps(
+                profile_evidence,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("ascii")
     )
     sbom_path = bundle / "AgentGuardian.cdx.json"
     sbom_path.write_text(
@@ -127,6 +146,93 @@ def test_release_gate_accepts_only_trusted_fresh_evidence(tmp_path: Path) -> Non
         "fresh_user_state": True,
         "license_review": "complete",
     }
+
+
+def test_release_gate_reruns_repository_and_payload_profile_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle, evidence, license_review = _write_candidate(tmp_path)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        release_evidence,
+        "verify_profile",
+        lambda *args: calls.append("source"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        release_evidence,
+        "load_profile",
+        lambda *args: {"name": "personal_store_release"},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        release_evidence,
+        "verify_payload",
+        lambda *args: calls.append("payload"),
+        raising=False,
+    )
+
+    validate_release_candidate(
+        bundle,
+        evidence,
+        expected_source_commit=COMMIT,
+        require_trusted_signature=True,
+        require_fresh_user_state=True,
+        license_review_path=license_review,
+    )
+
+    assert calls == ["source", "payload"]
+
+
+@pytest.mark.parametrize("mode", ("missing", "mismatch"))
+def test_release_gate_rejects_missing_or_mismatched_profile_evidence(
+    tmp_path: Path, mode: str
+) -> None:
+    bundle, evidence, license_review = _write_candidate(tmp_path)
+    profile_evidence = bundle / "PERSONAL-RELEASE-PROFILE.json"
+    if mode == "missing":
+        profile_evidence.unlink()
+    else:
+        value = json.loads(profile_evidence.read_text(encoding="utf-8"))
+        value["profile_sha256"] = "0" * 64
+        profile_evidence.write_text(
+            json.dumps(
+                value,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="ascii",
+        )
+
+    with pytest.raises(
+        ReleaseEvidenceError,
+        match="^RELEASE_PERSONAL_PROFILE_(EVIDENCE_INVALID|MISMATCH)$",
+    ):
+        validate_release_candidate(
+            bundle,
+            evidence,
+            expected_source_commit=COMMIT,
+            require_trusted_signature=True,
+            require_fresh_user_state=True,
+            license_review_path=license_review,
+        )
+
+
+def test_release_gate_rejects_retired_payload_residue(tmp_path: Path) -> None:
+    bundle, evidence, license_review = _write_candidate(tmp_path)
+    (bundle / "McpAdapter-x64.exe").write_bytes(b"synthetic")
+
+    with pytest.raises(ReleaseEvidenceError, match="^RELEASE_PERSONAL_PAYLOAD_INVALID$"):
+        validate_release_candidate(
+            bundle,
+            evidence,
+            expected_source_commit=COMMIT,
+            require_trusted_signature=True,
+            require_fresh_user_state=True,
+            license_review_path=license_review,
+        )
 
 
 def test_release_verifier_cli_help_runs_without_pythonpath(tmp_path: Path) -> None:

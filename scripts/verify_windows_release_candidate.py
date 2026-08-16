@@ -12,9 +12,17 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from agentguardian.discovery import _has_reparse_component
+from scripts.verify_personal_release_profile import (
+    ProfileViolation,
+    canonical_json_bytes,
+    load_profile,
+    verify_payload,
+    verify_profile,
+)
 MAX_JSON_BYTES = 4 * 1024 * 1024
 _UNKNOWN_LICENSES = frozenset({"NOASSERTION", "UNKNOWN", "NONE"})
 _PACKAGE_NAME_PREFIX = "yangjing6213dev.AgentGuardian_"
@@ -41,6 +49,18 @@ def validate_release_candidate(
         or any(character not in "0123456789abcdef" for character in expected_source_commit)
     ):
         raise ReleaseEvidenceError("RELEASE_SOURCE_COMMIT_INVALID")
+
+    profile_path = ROOT / "release_profiles" / "personal_store_release.json"
+    try:
+        profile = load_profile(profile_path)
+        verify_profile(ROOT, profile_path)
+    except ProfileViolation:
+        raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_INVALID") from None
+    _validate_personal_profile_evidence(bundle, profile_path)
+    try:
+        verify_payload(bundle, profile)
+    except ProfileViolation:
+        raise ReleaseEvidenceError("RELEASE_PERSONAL_PAYLOAD_INVALID") from None
 
     metadata = _json_file(bundle / "BUILD-METADATA.json", "RELEASE_BUILD_METADATA_INVALID")
     if metadata.get("source_commit") != expected_source_commit:
@@ -87,6 +107,31 @@ def validate_release_candidate(
         "fresh_user_state": evidence.get("fresh_user_state") is True,
         "license_review": "complete",
     }
+
+
+def _validate_personal_profile_evidence(bundle: Path, profile_path: Path) -> None:
+    evidence_path = bundle / "PERSONAL-RELEASE-PROFILE.json"
+    evidence = _json_file(
+        evidence_path,
+        "RELEASE_PERSONAL_PROFILE_EVIDENCE_INVALID",
+    )
+    expected_keys = {"profile", "profile_sha256", "schema", "status"}
+    if (
+        set(evidence) != expected_keys
+        or evidence.get("profile") != "personal_store_release"
+        or type(evidence.get("schema")) is not int
+        or evidence.get("schema") != 1
+        or evidence.get("status") != "pass"
+    ):
+        raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_EVIDENCE_INVALID")
+    try:
+        if evidence_path.read_bytes() != canonical_json_bytes(evidence):
+            raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_EVIDENCE_INVALID")
+        expected_digest = hashlib.sha256(profile_path.read_bytes()).hexdigest()
+    except OSError:
+        raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_EVIDENCE_INVALID") from None
+    if evidence.get("profile_sha256") != expected_digest:
+        raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_MISMATCH")
 
 
 def _is_package_full_name(value: object) -> bool:
