@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import socket
 import sqlite3
+import subprocess
 import sys
 import tempfile
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -28,15 +30,49 @@ from agentguardian.discovery import _has_reparse_component  # noqa: E402
 
 
 _RAW_MARKER = "".join(("sk", "-", "proj", "-", "PERSONAL_PRIVACY_CANARY"))
+_OBSERVATION_SCOPE = (
+    "python_stdlib_socket_dns",
+    "python_stdlib_socket_tcp_udp",
+    "python_subprocess_launch",
+)
 
 
 def _text_omits_path(text: str, path: Path) -> bool:
     folded = text.casefold()
-    values = {os.fspath(path), path.as_posix()}
-    values.update(
-        json.dumps(value, ensure_ascii=False)[1:-1] for value in tuple(values)
-    )
+    native = os.fspath(path)
+    values = {
+        native,
+        path.as_posix(),
+        native.replace("/", "\\"),
+        native.replace("\\", "/"),
+    }
     return all(value.casefold() not in folded for value in values)
+
+
+def _structured_value_omits_path(value: object, path: Path) -> bool:
+    if isinstance(value, str):
+        return _text_omits_path(value, path)
+    if isinstance(value, list):
+        return all(_structured_value_omits_path(item, path) for item in value)
+    if isinstance(value, dict):
+        return all(
+            _structured_value_omits_path(key, path)
+            and _structured_value_omits_path(item, path)
+            for key, item in value.items()
+        )
+    return True
+
+
+def _json_omits_path(document: str, path: Path) -> bool:
+    try:
+        value = json.loads(document)
+    except (json.JSONDecodeError, RecursionError):
+        return False
+    return _structured_value_omits_path(value, path)
+
+
+def _html_omits_path(document: str, path: Path) -> bool:
+    return _text_omits_path(html.unescape(document), path)
 
 
 def _validated_sample_root(value: str | Path) -> Path:
@@ -52,28 +88,62 @@ def _validated_sample_root(value: str | Path) -> Path:
     return root
 
 
+class _ObservedAcceptanceAttempt(Exception):
+    pass
+
+
+class _BoundedObservation:
+    def __init__(self) -> None:
+        self.categories: list[str] = []
+        self.workspace_path: Path | None = None
+        self.sample_path: Path | None = None
+
+    @property
+    def attempted(self) -> bool:
+        return bool(self.categories)
+
+    def block(self, category: str) -> None:
+        if category not in self.categories:
+            self.categories.append(category)
+        raise _ObservedAcceptanceAttempt
+
+    def evidence(self) -> dict[str, object]:
+        return {
+            "scope": list(_OBSERVATION_SCOPE),
+            "native_extension_or_os_traffic": "not_observed",
+            "attempt_categories": sorted(self.categories),
+        }
+
+
 @contextmanager
-def _deny_network_requests(events: list[str]):
-    def blocked(name: str):
+def _deny_network_requests(observation: _BoundedObservation):
+    def blocked(category: str):
         def record(*args: object, **kwargs: object) -> None:
-            events.append(name)
-            raise RuntimeError("PERSONAL_PRIVACY_ACCEPTANCE_FAILED")
+            observation.block(category)
 
         return record
 
-    with (
-        patch.object(socket, "getaddrinfo", blocked("getaddrinfo")),
-        patch.object(socket, "create_connection", blocked("create_connection")),
-        patch.object(socket.socket, "connect", blocked("connect")),
-        patch.object(socket.socket, "connect_ex", blocked("connect_ex")),
-    ):
+    targets = (
+        (socket, "getaddrinfo", "dns"),
+        (socket, "create_connection", "tcp"),
+        (socket.socket, "connect", "tcp"),
+        (socket.socket, "connect_ex", "tcp"),
+        (socket.socket, "sendto", "udp"),
+        (socket.socket, "sendmsg", "udp"),
+        (subprocess, "Popen", "subprocess"),
+    )
+    with ExitStack() as stack:
+        for owner, name, category in targets:
+            if hasattr(owner, name):
+                stack.enter_context(patch.object(owner, name, blocked(category)))
         yield
 
 
-def run_acceptance(
+def _run_acceptance_observed(
     evidence_path: str | Path,
     *,
     sample_root: str | Path | None = None,
+    observation: _BoundedObservation,
 ) -> dict[str, object]:
     destination = Path(evidence_path).resolve()
     if not destination.parent.is_dir():
@@ -81,15 +151,15 @@ def run_acceptance(
     supplied_root = (
         None if sample_root is None else _validated_sample_root(sample_root)
     )
-    network_events: list[str] = []
     workspace_path: Path
 
-    with _deny_network_requests(network_events):
+    with _deny_network_requests(observation):
         with tempfile.TemporaryDirectory(
             dir=destination.parent,
             prefix="agentguardian-personal-privacy-",
         ) as workspace:
             workspace_path = Path(workspace)
+            observation.workspace_path = workspace_path
             if supplied_root is None:
                 scan_root = workspace_path / "scan"
                 scan_root.mkdir()
@@ -101,6 +171,7 @@ def run_acceptance(
             else:
                 scan_root = supplied_root
                 source_kind = "supplied_sanitized_sample"
+            observation.sample_path = scan_root
             roots = (scan_root,)
             outcome = _run_audit(
                 roots,
@@ -116,23 +187,23 @@ def run_acceptance(
                 "json_redacted": _RAW_MARKER not in report_json,
                 "html_redacted": _RAW_MARKER not in report_html,
                 "export_redacted": _RAW_MARKER not in exported_report,
-                "sample_path_absent_from_json": _text_omits_path(
+                "sample_path_absent_from_json": _json_omits_path(
                     report_json, scan_root
                 ),
-                "sample_path_absent_from_html": _text_omits_path(
+                "sample_path_absent_from_html": _html_omits_path(
                     report_html, scan_root
                 ),
-                "sample_path_absent_from_export": _text_omits_path(
+                "sample_path_absent_from_export": _json_omits_path(
                     exported_report, scan_root
                 ),
-                "workspace_path_absent_from_json": _text_omits_path(
+                "workspace_path_absent_from_json": _json_omits_path(
                     report_json, workspace_path
                 ),
-                "workspace_path_absent_from_html": _text_omits_path(
+                "workspace_path_absent_from_html": _html_omits_path(
                     report_html, workspace_path
                 ),
                 "workspace_path_absent_from_export": (
-                    _text_omits_path(exported_report, workspace_path)
+                    _json_omits_path(exported_report, workspace_path)
                 ),
             }
 
@@ -186,7 +257,7 @@ def run_acceptance(
         ),
         "temporary_workspace_cleaned": workspace_cleanup,
         "raw_markers_absent": raw_markers_absent_from_outputs,
-        "default_api_call": bool(network_events),
+        "default_api_call": observation.attempted,
     }
     result: dict[str, object] = {
         "schema": 1,
@@ -202,15 +273,16 @@ def run_acceptance(
         },
         "clipboard": clipboard_checks,
         "browser": browser_checks,
+        "network_observation": observation.evidence(),
         "workspace_cleanup": workspace_cleanup,
     }
     evidence_probe = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
     evidence_checks = {
         "raw_marker_absent_from_evidence": _RAW_MARKER not in evidence_probe,
-        "sample_path_absent_from_evidence": _text_omits_path(
+        "sample_path_absent_from_evidence": _json_omits_path(
             evidence_probe, scan_root
         ),
-        "workspace_path_absent_from_evidence": _text_omits_path(
+        "workspace_path_absent_from_evidence": _json_omits_path(
             evidence_probe, workspace_path
         ),
     }
@@ -246,8 +318,8 @@ def run_acceptance(
     evidence = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
     final_evidence_checks = {
         "raw_marker_absent_from_evidence": _RAW_MARKER not in evidence,
-        "sample_path_absent_from_evidence": _text_omits_path(evidence, scan_root),
-        "workspace_path_absent_from_evidence": _text_omits_path(
+        "sample_path_absent_from_evidence": _json_omits_path(evidence, scan_root),
+        "workspace_path_absent_from_evidence": _json_omits_path(
             evidence, workspace_path
         ),
     }
@@ -259,6 +331,104 @@ def run_acceptance(
     if result["passed"] is not True:
         raise RuntimeError("PERSONAL_PRIVACY_ACCEPTANCE_FAILED")
     return result
+
+
+def _observed_attempt_failure(
+    observation: _BoundedObservation,
+) -> tuple[dict[str, object], str]:
+    workspace_cleanup = (
+        observation.workspace_path is None
+        or not observation.workspace_path.exists()
+    )
+    report_checks = {
+        "json_redacted": False,
+        "html_redacted": False,
+        "export_redacted": False,
+        "sample_path_absent_from_json": False,
+        "sample_path_absent_from_html": False,
+        "sample_path_absent_from_export": False,
+        "workspace_path_absent_from_json": False,
+        "workspace_path_absent_from_html": False,
+        "workspace_path_absent_from_export": False,
+    }
+    result: dict[str, object] = {
+        "schema": 1,
+        "profile": "personal_privacy_acceptance",
+        "passed": False,
+        "claims": {
+            "redacted_reports": False,
+            "clipboard_raw_retained": None,
+            "browser_snapshot_cleaned": False,
+            "temporary_workspace_cleaned": workspace_cleanup,
+            "raw_markers_absent": False,
+            "default_api_call": observation.attempted,
+        },
+        "report": report_checks,
+        "sample": {
+            "source_kind": "not_completed",
+            "finding_count": 0,
+            "coverage": 0.0,
+            "incomplete": True,
+        },
+        "clipboard": {
+            "scanned": False,
+            "raw_data_retained": None,
+            "raw_marker_in_findings": False,
+        },
+        "browser": {
+            "temporary_copy_removed": False,
+            "raw_data_retained": None,
+        },
+        "network_observation": observation.evidence(),
+        "workspace_cleanup": workspace_cleanup,
+    }
+    evidence_probe = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+    evidence_checks = {
+        "raw_marker_absent_from_evidence": _RAW_MARKER not in evidence_probe,
+        "sample_path_absent_from_evidence": (
+            observation.sample_path is None
+            or _json_omits_path(evidence_probe, observation.sample_path)
+        ),
+        "workspace_path_absent_from_evidence": (
+            observation.workspace_path is None
+            or _json_omits_path(evidence_probe, observation.workspace_path)
+        ),
+    }
+    report_checks.update(evidence_checks)
+    evidence = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+    final_checks = {
+        "raw_marker_absent_from_evidence": _RAW_MARKER not in evidence,
+        "sample_path_absent_from_evidence": (
+            observation.sample_path is None
+            or _json_omits_path(evidence, observation.sample_path)
+        ),
+        "workspace_path_absent_from_evidence": (
+            observation.workspace_path is None
+            or _json_omits_path(evidence, observation.workspace_path)
+        ),
+    }
+    if final_checks != evidence_checks or not all(final_checks.values()):
+        raise RuntimeError("PERSONAL_PRIVACY_ACCEPTANCE_FAILED")
+    return result, evidence
+
+
+def run_acceptance(
+    evidence_path: str | Path,
+    *,
+    sample_root: str | Path | None = None,
+) -> dict[str, object]:
+    observation = _BoundedObservation()
+    try:
+        return _run_acceptance_observed(
+            evidence_path,
+            sample_root=sample_root,
+            observation=observation,
+        )
+    except _ObservedAcceptanceAttempt:
+        destination = Path(evidence_path).resolve()
+        result, evidence = _observed_attempt_failure(observation)
+        destination.write_text(evidence, encoding="utf-8", newline="\n")
+        raise RuntimeError("PERSONAL_PRIVACY_ACCEPTANCE_FAILED") from None
 
 
 def main() -> int:

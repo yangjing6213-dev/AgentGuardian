@@ -1,6 +1,5 @@
 import importlib.util
 import json
-from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +18,7 @@ TOP_LEVEL_FIELDS = (
     "sample",
     "clipboard",
     "browser",
+    "network_observation",
     "workspace_cleanup",
 )
 CLAIM_FIELDS = (
@@ -91,6 +91,15 @@ def test_personal_privacy_acceptance_writes_exact_redacted_evidence(
     assert result["browser"] == {
         "temporary_copy_removed": True,
         "raw_data_retained": False,
+    }
+    assert result["network_observation"] == {
+        "scope": [
+            "python_stdlib_socket_dns",
+            "python_stdlib_socket_tcp_udp",
+            "python_subprocess_launch",
+        ],
+        "native_extension_or_os_traffic": "not_observed",
+        "attempt_categories": [],
     }
     assert result["workspace_cleanup"] is True
     evidence = evidence_path.read_text(encoding="utf-8")
@@ -188,25 +197,79 @@ def test_personal_privacy_claims_are_computed_from_observed_failures(
     assert result["claims"]["clipboard_raw_retained"] is True
 
 
-def test_default_api_claim_tracks_bounded_network_probe(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("attempt_kind", "expected_category"),
+    (
+        ("dns", "dns"),
+        ("tcp", "tcp"),
+        ("udp", "udp"),
+        ("subprocess", "subprocess"),
+    ),
+)
+def test_real_blocker_records_safe_failure_and_restores_patches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attempt_kind: str,
+    expected_category: str,
 ) -> None:
     module = _load_acceptance_module()
-    evidence_path = tmp_path / "network-attempt.json"
+    evidence_root = tmp_path / "网络观察"
+    evidence_root.mkdir()
+    evidence_path = evidence_root / f"{attempt_kind}.json"
+    observed_workspace_paths = []
+    targets = [
+        (module.socket, "getaddrinfo"),
+        (module.socket, "create_connection"),
+        (module.socket.socket, "connect"),
+        (module.socket.socket, "connect_ex"),
+        (module.socket.socket, "sendto"),
+        (module.subprocess, "Popen"),
+    ]
+    if hasattr(module.socket.socket, "sendmsg"):
+        targets.append((module.socket.socket, "sendmsg"))
+    originals = [(owner, name, getattr(owner, name)) for owner, name in targets]
 
-    @contextmanager
-    def observed_attempt(events):
-        events.append("synthetic-network-attempt")
-        yield
+    def attempting_audit(roots, **kwargs):
+        observed_workspace_paths.append(str(Path(roots[0]).parent))
+        if attempt_kind == "dns":
+            module.socket.getaddrinfo("private-target.invalid", 443)
+        elif attempt_kind == "tcp":
+            module.socket.create_connection(("private-target.invalid", 443))
+        elif attempt_kind == "udp":
+            with module.socket.socket(
+                module.socket.AF_INET, module.socket.SOCK_DGRAM
+            ) as client:
+                client.sendto(b"private-payload", ("127.0.0.1", 9))
+        else:
+            module.subprocess.Popen(["private-command"])
 
-    monkeypatch.setattr(module, "_deny_network_requests", observed_attempt)
+    monkeypatch.setattr(module, "_run_audit", attempting_audit)
 
     with pytest.raises(RuntimeError, match="^PERSONAL_PRIVACY_ACCEPTANCE_FAILED$"):
         module.run_acceptance(evidence_path)
 
-    result = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence = evidence_path.read_text(encoding="utf-8")
+    result = json.loads(evidence)
     assert result["passed"] is False
     assert result["claims"]["default_api_call"] is True
+    assert result["network_observation"]["attempt_categories"] == [
+        expected_category
+    ]
+    assert result["network_observation"]["native_extension_or_os_traffic"] == (
+        "not_observed"
+    )
+    assert result["workspace_cleanup"] is True
+    assert len(observed_workspace_paths) == 1
+    for forbidden in (
+        "private-target.invalid",
+        "private-payload",
+        "private-command",
+        observed_workspace_paths[0],
+        RAW_MARKER,
+    ):
+        assert forbidden not in evidence
+    for owner, name, original in originals:
+        assert getattr(owner, name) is original
 
 
 def test_workspace_only_report_leak_fails_without_leaking_evidence(
@@ -240,3 +303,105 @@ def test_workspace_only_report_leak_fails_without_leaking_evidence(
     assert result["report"]["workspace_path_absent_from_export"] is False
     assert observed_workspace_paths[0] not in evidence
     assert json.dumps(observed_workspace_paths[0])[1:-1] not in evidence
+
+
+def test_unicode_escaped_sample_path_fails_with_safe_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_acceptance_module()
+    sample_root = (tmp_path / "非英文样本").resolve()
+    sample_root.mkdir()
+    evidence_path = tmp_path / "unicode-json-leak.json"
+    encoded_path = json.dumps(str(sample_root), ensure_ascii=True)
+
+    def leaking_audit(roots, **kwargs):
+        return SimpleNamespace(
+            report_json=f'{{"path":{encoded_path}}}',
+            report_html="<p>safe</p>",
+            findings=(object(),),
+            score=SimpleNamespace(coverage=1.0, incomplete=False),
+        )
+
+    monkeypatch.setattr(module, "_run_audit", leaking_audit)
+
+    with pytest.raises(RuntimeError, match="^PERSONAL_PRIVACY_ACCEPTANCE_FAILED$"):
+        module.run_acceptance(evidence_path, sample_root=sample_root)
+
+    evidence = evidence_path.read_text(encoding="utf-8")
+    result = json.loads(evidence)
+    assert result["passed"] is False
+    assert result["report"]["sample_path_absent_from_json"] is False
+    assert result["report"]["sample_path_absent_from_export"] is False
+    assert str(sample_root) not in evidence
+    assert encoded_path[1:-1] not in evidence
+
+
+def test_html_entity_workspace_path_fails_with_safe_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_acceptance_module()
+    evidence_root = tmp_path / "非英文工作区"
+    evidence_root.mkdir()
+    evidence_path = evidence_root / "html-entity-leak.json"
+    observed_workspace_paths = []
+    encoded_paths = []
+
+    def leaking_audit(roots, **kwargs):
+        workspace_path = str(Path(roots[0]).parent)
+        encoded_path = workspace_path.encode("ascii", "xmlcharrefreplace").decode()
+        observed_workspace_paths.append(workspace_path)
+        encoded_paths.append(encoded_path)
+        return SimpleNamespace(
+            report_json="{}",
+            report_html=f"<p>{encoded_path}</p>",
+            findings=(object(),),
+            score=SimpleNamespace(coverage=1.0, incomplete=False),
+        )
+
+    monkeypatch.setattr(module, "_run_audit", leaking_audit)
+
+    with pytest.raises(RuntimeError, match="^PERSONAL_PRIVACY_ACCEPTANCE_FAILED$"):
+        module.run_acceptance(evidence_path)
+
+    evidence = evidence_path.read_text(encoding="utf-8")
+    result = json.loads(evidence)
+    assert result["passed"] is False
+    assert result["report"]["workspace_path_absent_from_html"] is False
+    assert observed_workspace_paths[0] not in evidence
+    assert encoded_paths[0] not in evidence
+
+
+def test_malformed_report_json_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_acceptance_module()
+    evidence_path = tmp_path / "malformed-report.json"
+    monkeypatch.setattr(
+        module,
+        "_run_audit",
+        lambda *args, **kwargs: SimpleNamespace(
+            report_json="{",
+            report_html="<p>safe</p>",
+            findings=(object(),),
+            score=SimpleNamespace(coverage=1.0, incomplete=False),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="^PERSONAL_PRIVACY_ACCEPTANCE_FAILED$"):
+        module.run_acceptance(evidence_path)
+
+    result = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert result["passed"] is False
+    assert result["report"]["sample_path_absent_from_json"] is False
+    assert result["report"]["workspace_path_absent_from_json"] is False
+
+
+def test_readme_describes_current_personal_privacy_invariants() -> None:
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    retired_mode = "高敏感" + "模式"
+    retired_evidence_term = "readi" + "ness"
+
+    assert retired_mode not in readme
+    assert retired_evidence_term not in readme.casefold()
+    assert "Personal v1 不支持高敏感现实数据" in readme
+    assert "联网分享验证仅在用户显式输入公开 URL 后执行" in readme
