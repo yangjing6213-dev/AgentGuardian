@@ -1075,7 +1075,7 @@ class AgentGuardianWindow(QMainWindow):
         layout.addWidget(self.supported_data_checkbox)
 
         unsupported_data_disclosure = (
-            "不支持医疗、金融、身份/生物识别、法律特权、客户数据，"
+            "不支持医疗、金融、身份/生物识别、法律特权、客户数据、国家秘密，"
             "以及其他受监管或高敏感真实数据。"
         )
         self.supported_data_disclosure_label = QLabel(

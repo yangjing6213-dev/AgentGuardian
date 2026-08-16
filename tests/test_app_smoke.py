@@ -4690,6 +4690,7 @@ def test_folder_selection_shows_only_short_name(qapp, monkeypatch, tmp_path):
         "身份/生物识别",
         "法律特权",
         "客户数据",
+        "国家秘密",
         "其他受监管或高敏感真实数据",
     ):
         assert required_class in disclosure.text()
