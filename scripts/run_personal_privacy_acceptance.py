@@ -30,11 +30,6 @@ from agentguardian.discovery import _has_reparse_component  # noqa: E402
 
 
 _RAW_MARKER = "".join(("sk", "-", "proj", "-", "PERSONAL_PRIVACY_CANARY"))
-_OBSERVATION_SCOPE = (
-    "python_stdlib_socket_dns",
-    "python_stdlib_socket_tcp_udp",
-    "python_subprocess_launch",
-)
 
 
 def _text_omits_path(text: str, path: Path) -> bool:
@@ -92,6 +87,22 @@ class _ObservedAcceptanceAttempt(Exception):
     pass
 
 
+def _observation_targets() -> tuple[tuple[object, str, str, str], ...]:
+    targets = [
+        (socket, "getaddrinfo", "dns", "socket.getaddrinfo"),
+        (socket, "create_connection", "tcp", "socket.create_connection"),
+        (socket.socket, "connect", "tcp", "socket.socket.connect"),
+        (socket.socket, "connect_ex", "tcp", "socket.socket.connect_ex"),
+        (socket.socket, "sendto", "udp", "socket.socket.sendto"),
+    ]
+    if hasattr(socket.socket, "sendmsg"):
+        targets.append(
+            (socket.socket, "sendmsg", "udp", "socket.socket.sendmsg")
+        )
+    targets.append((subprocess, "Popen", "subprocess", "subprocess.Popen"))
+    return tuple(targets)
+
+
 class _BoundedObservation:
     def __init__(self) -> None:
         self.categories: list[str] = []
@@ -109,8 +120,17 @@ class _BoundedObservation:
 
     def evidence(self) -> dict[str, object]:
         return {
-            "scope": list(_OBSERVATION_SCOPE),
-            "native_extension_or_os_traffic": "not_observed",
+            "intercepted_call_sites": [
+                identifier for *_, identifier in _observation_targets()
+            ],
+            "limitations": {
+                "pre_bound_aliases": "not_observed",
+                "socket_apis_outside_listed_call_sites": "not_observed",
+                "native_extensions": "not_observed",
+                "direct_os_calls": "not_observed",
+                "concurrent_threads": "unsupported",
+            },
+            "default_api_call_within_declared_boundary": self.attempted,
             "attempt_categories": sorted(self.categories),
         }
 
@@ -123,19 +143,9 @@ def _deny_network_requests(observation: _BoundedObservation):
 
         return record
 
-    targets = (
-        (socket, "getaddrinfo", "dns"),
-        (socket, "create_connection", "tcp"),
-        (socket.socket, "connect", "tcp"),
-        (socket.socket, "connect_ex", "tcp"),
-        (socket.socket, "sendto", "udp"),
-        (socket.socket, "sendmsg", "udp"),
-        (subprocess, "Popen", "subprocess"),
-    )
     with ExitStack() as stack:
-        for owner, name, category in targets:
-            if hasattr(owner, name):
-                stack.enter_context(patch.object(owner, name, blocked(category)))
+        for owner, name, category, _identifier in _observation_targets():
+            stack.enter_context(patch.object(owner, name, blocked(category)))
         yield
 
 

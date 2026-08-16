@@ -92,13 +92,26 @@ def test_personal_privacy_acceptance_writes_exact_redacted_evidence(
         "temporary_copy_removed": True,
         "raw_data_retained": False,
     }
+    expected_call_sites = [
+        "socket.getaddrinfo",
+        "socket.create_connection",
+        "socket.socket.connect",
+        "socket.socket.connect_ex",
+        "socket.socket.sendto",
+    ]
+    if hasattr(module.socket.socket, "sendmsg"):
+        expected_call_sites.append("socket.socket.sendmsg")
+    expected_call_sites.append("subprocess.Popen")
     assert result["network_observation"] == {
-        "scope": [
-            "python_stdlib_socket_dns",
-            "python_stdlib_socket_tcp_udp",
-            "python_subprocess_launch",
-        ],
-        "native_extension_or_os_traffic": "not_observed",
+        "intercepted_call_sites": expected_call_sites,
+        "limitations": {
+            "pre_bound_aliases": "not_observed",
+            "socket_apis_outside_listed_call_sites": "not_observed",
+            "native_extensions": "not_observed",
+            "direct_os_calls": "not_observed",
+            "concurrent_threads": "unsupported",
+        },
+        "default_api_call_within_declared_boundary": False,
         "attempt_categories": [],
     }
     assert result["workspace_cleanup"] is True
@@ -255,9 +268,16 @@ def test_real_blocker_records_safe_failure_and_restores_patches(
     assert result["network_observation"]["attempt_categories"] == [
         expected_category
     ]
-    assert result["network_observation"]["native_extension_or_os_traffic"] == (
-        "not_observed"
-    )
+    assert result["network_observation"][
+        "default_api_call_within_declared_boundary"
+    ] is True
+    assert result["network_observation"]["limitations"] == {
+        "pre_bound_aliases": "not_observed",
+        "socket_apis_outside_listed_call_sites": "not_observed",
+        "native_extensions": "not_observed",
+        "direct_os_calls": "not_observed",
+        "concurrent_threads": "unsupported",
+    }
     assert result["workspace_cleanup"] is True
     assert len(observed_workspace_paths) == 1
     for forbidden in (
@@ -270,6 +290,40 @@ def test_real_blocker_records_safe_failure_and_restores_patches(
         assert forbidden not in evidence
     for owner, name, original in originals:
         assert getattr(owner, name) is original
+
+
+def test_observation_boundary_matches_patches_and_discloses_unlisted_apis() -> None:
+    module = _load_acceptance_module()
+    observation = module._BoundedObservation()
+    targets = [
+        (module.socket, "getaddrinfo", "socket.getaddrinfo"),
+        (module.socket, "create_connection", "socket.create_connection"),
+        (module.socket.socket, "connect", "socket.socket.connect"),
+        (module.socket.socket, "connect_ex", "socket.socket.connect_ex"),
+        (module.socket.socket, "sendto", "socket.socket.sendto"),
+    ]
+    if hasattr(module.socket.socket, "sendmsg"):
+        targets.append(
+            (module.socket.socket, "sendmsg", "socket.socket.sendmsg")
+        )
+    targets.append((module.subprocess, "Popen", "subprocess.Popen"))
+    originals = [(owner, name, getattr(owner, name)) for owner, name, _ in targets]
+    original_gethostbyname = module.socket.gethostbyname
+    pre_bound_getaddrinfo = module.socket.getaddrinfo
+
+    with module._deny_network_requests(observation):
+        for owner, name, original in originals:
+            assert getattr(owner, name) is not original
+        assert module.socket.gethostbyname is original_gethostbyname
+        assert pre_bound_getaddrinfo is originals[0][2]
+
+    evidence = observation.evidence()
+    assert evidence["intercepted_call_sites"] == [item[2] for item in targets]
+    assert "socket.gethostbyname" not in evidence["intercepted_call_sites"]
+    assert evidence["limitations"]["pre_bound_aliases"] == "not_observed"
+    assert evidence["limitations"][
+        "socket_apis_outside_listed_call_sites"
+    ] == "not_observed"
 
 
 def test_workspace_only_report_leak_fails_without_leaking_evidence(
