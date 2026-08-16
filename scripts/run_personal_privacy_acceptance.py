@@ -30,6 +30,15 @@ from agentguardian.discovery import _has_reparse_component  # noqa: E402
 _RAW_MARKER = "".join(("sk", "-", "proj", "-", "PERSONAL_PRIVACY_CANARY"))
 
 
+def _text_omits_path(text: str, path: Path) -> bool:
+    folded = text.casefold()
+    values = {os.fspath(path), path.as_posix()}
+    values.update(
+        json.dumps(value, ensure_ascii=False)[1:-1] for value in tuple(values)
+    )
+    return all(value.casefold() not in folded for value in values)
+
+
 def _validated_sample_root(value: str | Path) -> Path:
     root = Path(value)
     if (
@@ -103,14 +112,28 @@ def run_acceptance(
             report_path = workspace_path / "report.json"
             export_new_report(report_path, report_json, roots)
             exported_report = report_path.read_text(encoding="utf-8")
-            sample_path = os.fspath(scan_root)
             report_checks = {
                 "json_redacted": _RAW_MARKER not in report_json,
                 "html_redacted": _RAW_MARKER not in report_html,
                 "export_redacted": _RAW_MARKER not in exported_report,
-                "sample_path_absent_from_json": sample_path not in report_json,
-                "sample_path_absent_from_html": sample_path not in report_html,
-                "sample_path_absent_from_export": sample_path not in exported_report,
+                "sample_path_absent_from_json": _text_omits_path(
+                    report_json, scan_root
+                ),
+                "sample_path_absent_from_html": _text_omits_path(
+                    report_html, scan_root
+                ),
+                "sample_path_absent_from_export": _text_omits_path(
+                    exported_report, scan_root
+                ),
+                "workspace_path_absent_from_json": _text_omits_path(
+                    report_json, workspace_path
+                ),
+                "workspace_path_absent_from_html": _text_omits_path(
+                    report_html, workspace_path
+                ),
+                "workspace_path_absent_from_export": (
+                    _text_omits_path(exported_report, workspace_path)
+                ),
             }
 
             clipboard = audit_clipboard_once(
@@ -143,7 +166,7 @@ def run_acceptance(
                 "temporary_copy_removed": browser.temporary_copy_removed,
                 "raw_data_retained": browser.raw_data_retained,
             }
-            raw_markers_absent = (
+            raw_markers_absent_from_outputs = (
                 report_checks["json_redacted"]
                 and report_checks["html_redacted"]
                 and report_checks["export_redacted"]
@@ -162,10 +185,41 @@ def run_acceptance(
             and not browser_checks["raw_data_retained"]
         ),
         "temporary_workspace_cleaned": workspace_cleanup,
-        "raw_markers_absent": raw_markers_absent,
+        "raw_markers_absent": raw_markers_absent_from_outputs,
         "default_api_call": bool(network_events),
     }
-    passed = (
+    result: dict[str, object] = {
+        "schema": 1,
+        "profile": "personal_privacy_acceptance",
+        "passed": False,
+        "claims": claims,
+        "report": report_checks,
+        "sample": {
+            "source_kind": source_kind,
+            "finding_count": len(outcome.findings),
+            "coverage": outcome.score.coverage,
+            "incomplete": outcome.score.incomplete,
+        },
+        "clipboard": clipboard_checks,
+        "browser": browser_checks,
+        "workspace_cleanup": workspace_cleanup,
+    }
+    evidence_probe = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+    evidence_checks = {
+        "raw_marker_absent_from_evidence": _RAW_MARKER not in evidence_probe,
+        "sample_path_absent_from_evidence": _text_omits_path(
+            evidence_probe, scan_root
+        ),
+        "workspace_path_absent_from_evidence": _text_omits_path(
+            evidence_probe, workspace_path
+        ),
+    }
+    report_checks.update(evidence_checks)
+    claims["raw_markers_absent"] = (
+        raw_markers_absent_from_outputs
+        and all(evidence_checks.values())
+    )
+    result["passed"] = (
         all(report_checks.values())
         and outcome.findings != ()
         and clipboard_checks
@@ -189,24 +243,17 @@ def run_acceptance(
             "default_api_call": False,
         }
     )
-    result: dict[str, object] = {
-        "schema": 1,
-        "profile": "personal_privacy_acceptance",
-        "passed": passed,
-        "claims": claims,
-        "report": report_checks,
-        "sample": {
-            "source_kind": source_kind,
-            "finding_count": len(outcome.findings),
-            "coverage": outcome.score.coverage,
-            "incomplete": outcome.score.incomplete,
-        },
-        "clipboard": clipboard_checks,
-        "browser": browser_checks,
-        "workspace_cleanup": workspace_cleanup,
-    }
     evidence = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
-    if _RAW_MARKER in evidence or os.fspath(scan_root) in evidence:
+    final_evidence_checks = {
+        "raw_marker_absent_from_evidence": _RAW_MARKER not in evidence,
+        "sample_path_absent_from_evidence": _text_omits_path(evidence, scan_root),
+        "workspace_path_absent_from_evidence": _text_omits_path(
+            evidence, workspace_path
+        ),
+    }
+    if final_evidence_checks != evidence_checks or not all(
+        final_evidence_checks.values()
+    ):
         raise RuntimeError("PERSONAL_PRIVACY_ACCEPTANCE_FAILED")
     destination.write_text(evidence, encoding="utf-8", newline="\n")
     if result["passed"] is not True:

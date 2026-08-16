@@ -42,31 +42,6 @@ def _load_acceptance_module():
     return module
 
 
-def _all_fields(value: object) -> tuple[str, ...]:
-    fields: list[str] = []
-    if isinstance(value, dict):
-        for key, item in value.items():
-            fields.append(str(key))
-            fields.extend(_all_fields(item))
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            fields.extend(_all_fields(item))
-    elif isinstance(value, str):
-        fields.append(value)
-    return tuple(fields)
-
-
-def _assert_no_retired_product_fields(result: dict[str, object]) -> None:
-    serialized_fields = "\n".join(_all_fields(result)).lower()
-    forbidden = (
-        "high" + "_sensitivity",
-        "sensitive" + "_mode",
-        "readiness",
-        "enabled" + "_policy",
-    )
-    assert not any(term in serialized_fields for term in forbidden)
-
-
 def test_personal_privacy_acceptance_writes_exact_redacted_evidence(
     tmp_path: Path,
 ) -> None:
@@ -95,7 +70,19 @@ def test_personal_privacy_acceptance_writes_exact_redacted_evidence(
         "sample_path_absent_from_json": True,
         "sample_path_absent_from_html": True,
         "sample_path_absent_from_export": True,
+        "workspace_path_absent_from_json": True,
+        "workspace_path_absent_from_html": True,
+        "workspace_path_absent_from_export": True,
+        "raw_marker_absent_from_evidence": True,
+        "sample_path_absent_from_evidence": True,
+        "workspace_path_absent_from_evidence": True,
     }
+    assert tuple(result["sample"]) == (
+        "source_kind",
+        "finding_count",
+        "coverage",
+        "incomplete",
+    )
     assert result["clipboard"] == {
         "scanned": True,
         "raw_data_retained": False,
@@ -111,7 +98,6 @@ def test_personal_privacy_acceptance_writes_exact_redacted_evidence(
     assert RAW_MARKER not in evidence
     assert str(tmp_path) not in evidence
     assert Path.home().name.lower() not in evidence.lower()
-    _assert_no_retired_product_fields(result)
 
 
 def test_personal_privacy_acceptance_uses_supplied_sanitized_sample(
@@ -221,3 +207,36 @@ def test_default_api_claim_tracks_bounded_network_probe(
     result = json.loads(evidence_path.read_text(encoding="utf-8"))
     assert result["passed"] is False
     assert result["claims"]["default_api_call"] is True
+
+
+def test_workspace_only_report_leak_fails_without_leaking_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_acceptance_module()
+    evidence_path = tmp_path / "workspace-leak.json"
+    observed_workspace_paths = []
+
+    def leaking_audit(roots, **kwargs):
+        workspace_path = str(Path(roots[0]).parent)
+        observed_workspace_paths.append(workspace_path)
+        return SimpleNamespace(
+            report_json=json.dumps({"path": workspace_path}),
+            report_html=f"<p>{workspace_path}</p>",
+            findings=(object(),),
+            score=SimpleNamespace(coverage=1.0, incomplete=False),
+        )
+
+    monkeypatch.setattr(module, "_run_audit", leaking_audit)
+
+    with pytest.raises(RuntimeError, match="^PERSONAL_PRIVACY_ACCEPTANCE_FAILED$"):
+        module.run_acceptance(evidence_path)
+
+    assert len(observed_workspace_paths) == 1
+    evidence = evidence_path.read_text(encoding="utf-8")
+    result = json.loads(evidence)
+    assert result["passed"] is False
+    assert result["report"]["workspace_path_absent_from_json"] is False
+    assert result["report"]["workspace_path_absent_from_html"] is False
+    assert result["report"]["workspace_path_absent_from_export"] is False
+    assert observed_workspace_paths[0] not in evidence
+    assert json.dumps(observed_workspace_paths[0])[1:-1] not in evidence
