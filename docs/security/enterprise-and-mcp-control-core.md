@@ -112,7 +112,7 @@ remain pending. Predecessor `f4b3d5c5bfd9bd4f8f6733ac9dad491c7d2bb47e`
 passed exact-SHA push and Draft PR CI plus both Windows package checks. Pre-repair
 HEAD `1af14022acc47a053d6393bea05a171a913ca84a` failed Windows run
 `31907590797` when POSIX replacement bypassed the held-file assumption. Current
-branch HEAD `1da903465f463d1421e7af2b20971da3d8c149bd`, with runtime hardening from
+implementation/test revision `1da903465f463d1421e7af2b20971da3d8c149bd`, with runtime hardening from
 `6ccb5232f6eb3955890f89f7a1000df338db8e8a`, passed exact-SHA push and Draft PR
 CI plus both Windows package checks.
 
