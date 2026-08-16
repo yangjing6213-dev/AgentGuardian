@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import shutil
 import subprocess
 import sys
@@ -231,6 +231,34 @@ def test_profile_snapshot_rejects_unsafe_native_relative_path_objects(
 
     with pytest.raises(verifier.ProfileViolation, match="^PROFILE_PATH_INVALID$"):
         verifier.load_profile_snapshot(root, value)
+
+
+def test_profile_path_rejects_windows_rooted_relative_before_filesystem_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    verifier = _verifier()
+
+    class SimulatedWindowsPath(PureWindowsPath):
+        def absolute(self):
+            return self
+
+    probes: list[PureWindowsPath] = []
+
+    def reject_probe(path: PureWindowsPath) -> bool:
+        probes.append(path)
+        pytest.fail("rooted-relative profile path reached filesystem inspection")
+
+    monkeypatch.setattr(verifier, "Path", SimulatedWindowsPath)
+    monkeypatch.setattr(verifier, "_has_reparse_component", reject_probe)
+
+    with pytest.raises(verifier.ProfileViolation, match="^PROFILE_PATH_INVALID$") as caught:
+        verifier._resolved_profile_path(
+            SimulatedWindowsPath("C:/project"),
+            SimulatedWindowsPath(r"\Windows\win.ini"),
+        )
+
+    assert str(caught.value) == "PROFILE_PATH_INVALID"
+    assert probes == []
 
 
 def test_profile_snapshot_rejects_symlink_escape_before_resolution(tmp_path: Path) -> None:

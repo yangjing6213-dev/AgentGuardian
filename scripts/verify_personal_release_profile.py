@@ -582,6 +582,7 @@ def _resolved_profile_path(root: Path, profile_path: str | Path) -> Path:
         parts = lexical.parts
         if (
             lexical.drive
+            or lexical.root
             or not parts
             or any(part in {"", ".", ".."} or ":" in part for part in parts)
         ):
