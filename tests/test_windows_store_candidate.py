@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
+from datetime import datetime, timedelta, timezone
 import hashlib
 import importlib
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import zipfile
 
 import pytest
@@ -44,16 +47,71 @@ def _canonical(value: object) -> bytes:
     ).encode("ascii")
 
 
-def _write_msix(path: Path, *, version: str = VERSION) -> Path:
+def _write_msix(
+    path: Path,
+    *,
+    version: str = VERSION,
+    processor_architecture: str = "x64",
+    portable_files: dict[str, bytes] | None = None,
+    extra_entries: dict[str, bytes] | None = None,
+) -> Path:
     manifest = msix_manifest_bytes(
         identity_name=PACKAGE_IDENTITY,
         publisher=PUBLISHER,
         version=version,
     )
+    manifest = manifest.replace(
+        b'ProcessorArchitecture="x64"',
+        f'ProcessorArchitecture="{processor_architecture}"'.encode("ascii"),
+    )
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("AppxManifest.xml", manifest)
-        archive.writestr("AgentGuardian.exe", b"synthetic executable")
+        for name, body in (
+            portable_files or {"AgentGuardian.exe": b"synthetic executable"}
+        ).items():
+            archive.writestr(name, body)
+        for name in (
+            "Assets/Square44x44Logo.png",
+            "Assets/Square150x150Logo.png",
+            "Assets/StoreLogo.png",
+        ):
+            archive.writestr(name, b"synthetic png")
+        archive.writestr("AppxBlockMap.xml", b"synthetic block map")
+        archive.writestr("[Content_Types].xml", b"synthetic content types")
+        for name, body in (extra_entries or {}).items():
+            archive.writestr(name, body)
     return path
+
+
+def _portable_bundle_files(
+    sbom_bytes: bytes, notices: bytes, provenance: bytes
+) -> dict[str, bytes]:
+    files = {
+        "AgentGuardian.exe": b"synthetic executable",
+        "LICENSE": b"synthetic license\n",
+        "THIRD_PARTY_NOTICES.md": notices,
+        "AgentGuardian.cdx.json": sbom_bytes,
+        "BUILD-METADATA.json": provenance,
+        "_internal/runtime.dll": b"synthetic runtime",
+    }
+    payload = {
+        "algorithm": "sha256",
+        "files": [
+            {
+                "path": name,
+                "sha256": hashlib.sha256(body).hexdigest(),
+                "size": len(body),
+            }
+            for name, body in sorted(files.items())
+        ],
+        "schema": 1,
+    }
+    files["PAYLOAD-MANIFEST.json"] = _canonical(payload)
+    files["SHA256SUMS"] = "".join(
+        f"{hashlib.sha256(body).hexdigest()} *{name}\n"
+        for name, body in sorted(files.items())
+    ).encode("ascii")
+    return files
 
 
 def _write_report(root: Path, body: bytes | str | None = None) -> Path:
@@ -85,6 +143,7 @@ def test_store_candidate_workflow_is_manual_exact_sha_and_non_publishing() -> No
         "wack_tool_path",
     ):
         assert f"{name}:\n        required: true" in workflow
+    assert "approved_license_review_base64:\n        required: false" in workflow
     assert "^[0-9a-f]{40}$" in workflow
     assert "ref: ${{ inputs.expected_source_commit }}" in workflow
     assert "git rev-parse HEAD" in workflow
@@ -125,12 +184,12 @@ def test_store_candidate_workflow_runs_reproducible_bounded_candidate_gate() -> 
         "--msixupload-package",
         "verify_wack_report.py",
         "verify_windows_store_candidate.py",
-        "[Environment]::UserInteractive",
-        "GetCurrentProcess().SessionId",
-        "appcert.exe reset",
-        "-appxpackagepath",
-        "-reportoutputpath",
+        "APPROVED_LICENSE_REVIEW_BASE64",
+        "--materialize-license-review",
+        "--check-active-session",
+        "--run-tool",
         "candidate-SHA256SUMS",
+        "portable-SHA256SUMS",
         "payload-manifest.json",
         "release-manifest.json",
         "if-no-files-found: error",
@@ -143,14 +202,23 @@ def test_store_candidate_workflow_runs_reproducible_bounded_candidate_gate() -> 
     assert "--smoke-evidence" not in workflow
     assert "--wack-evidence" not in workflow
     assert "name: agentguardian-store-evidence-${{ inputs.expected_source_commit }}" in workflow
-    assert "wack_user_interactive" in workflow
-    assert "wack_session_id" in workflow
+    assert "wack_session_state" in workflow
+    assert "license_review_origin" in workflow
+    assert "wack_user_interactive" not in workflow
+    assert "wack_session_id" not in workflow
+    assert "[Environment]::UserInteractive" not in workflow
+    assert "& $tool reset" not in workflow
+    assert "& $tool test" not in workflow
     assert "username" not in workflow.casefold()
+    metadata_step = workflow.split("- name: Record bounded workflow metadata", 1)[1].split(
+        "- name:", 1
+    )[0]
+    assert "approved_license_review_base64" not in metadata_step.casefold()
 
     upload_paths = workflow.split("path: |", 1)[1]
     assert "wack-report.xml" not in upload_paths
     assert ".msix\n" not in upload_paths
-    assert upload_paths.count(".analysis/store-evidence/") == 12
+    assert upload_paths.count(".analysis/store-evidence/") == 13
 
 
 def test_msixupload_is_a_deterministic_zip_containing_only_the_msix(
@@ -216,6 +284,188 @@ def test_wack_commands_match_microsoft_contract(tmp_path: Path) -> None:
         "-reportoutputpath",
         str(report),
     )
+
+
+def test_wts_session_gate_accepts_only_wtsactive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wack = _wack()
+    monkeypatch.setattr(wack, "_query_wts_connect_state", lambda: 0, raising=False)
+    assert wack.current_wack_session_state() == "active"
+
+    monkeypatch.setattr(wack, "_query_wts_connect_state", lambda: 1, raising=False)
+    with pytest.raises(wack.WackEvidenceError, match="^WACK_SESSION_NOT_ACTIVE$"):
+        wack.current_wack_session_state()
+
+
+def test_wack_wrapper_binds_new_report_and_unchanged_package_to_one_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wack = _wack()
+    program_files = tmp_path / "Program Files (x86)"
+    tool = (
+        program_files
+        / "Windows Kits"
+        / "10"
+        / "App Certification Kit"
+        / "appcert.exe"
+    )
+    tool.parent.mkdir(parents=True)
+    tool.write_bytes(b"synthetic tool")
+    monkeypatch.setenv("ProgramFiles(x86)", str(program_files))
+    package = _write_msix(tmp_path / "AgentGuardian.msix")
+    evidence_root = tmp_path / "raw-wack"
+    evidence_root.mkdir()
+    report = evidence_root / "wack-report.xml"
+    started = datetime.now(timezone.utc) - timedelta(seconds=5)
+    completed = started + timedelta(seconds=1)
+    times = iter((started, completed))
+    monkeypatch.setattr(wack, "_utc_now", lambda: next(times), raising=False)
+    monkeypatch.setattr(
+        wack, "current_wack_session_state", lambda: "active", raising=False
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(tuple(command))
+        assert kwargs == {"check": False, "timeout": wack.WACK_COMMAND_TIMEOUT_SECONDS}
+        if command[1] == "test":
+            report.write_bytes(WACK_FIXTURE.read_bytes())
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(wack.subprocess, "run", fake_run)
+
+    result = wack.run_wack_tool(
+        tool,
+        package,
+        report,
+        evidence_root,
+        source_commit=COMMIT,
+    )
+
+    assert calls == list(wack.wack_commands(tool, package, report))
+    package_sha = hashlib.sha256(package.read_bytes()).hexdigest()
+    assert result["package_sha256"] == package_sha
+    assert result["invocation"] == {
+        "binding_mode": "same_process_invocation",
+        "package_sha_after": package_sha,
+        "package_sha_before": package_sha,
+        "report_created_after_start": True,
+        "started_at": started.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    assert result["generated_at"] == completed.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_wack_wrapper_rejects_preexisting_report_or_package_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wack = _wack()
+    program_files = tmp_path / "Program Files (x86)"
+    tool = (
+        program_files
+        / "Windows Kits"
+        / "10"
+        / "App Certification Kit"
+        / "appcert.exe"
+    )
+    tool.parent.mkdir(parents=True)
+    tool.write_bytes(b"synthetic tool")
+    monkeypatch.setenv("ProgramFiles(x86)", str(program_files))
+    package = _write_msix(tmp_path / "AgentGuardian.msix")
+    evidence_root = tmp_path / "raw-wack"
+    evidence_root.mkdir()
+    report = _write_report(evidence_root)
+    monkeypatch.setattr(
+        wack, "current_wack_session_state", lambda: "active", raising=False
+    )
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        wack.subprocess,
+        "run",
+        lambda command, **_kwargs: calls.append(tuple(command)),
+    )
+    with pytest.raises(wack.WackEvidenceError, match="^WACK_REPORT_PATH_INVALID$"):
+        wack.run_wack_tool(
+            tool, package, report, evidence_root, source_commit=COMMIT
+        )
+    assert calls == []
+
+    report.unlink()
+    times = iter(
+        (
+            datetime.now(timezone.utc) - timedelta(seconds=5),
+            datetime.now(timezone.utc),
+        )
+    )
+    monkeypatch.setattr(wack, "_utc_now", lambda: next(times), raising=False)
+
+    def mutate_package(command, **_kwargs):
+        if command[1] == "test":
+            report.write_bytes(WACK_FIXTURE.read_bytes())
+            package.write_bytes(package.read_bytes() + b"changed")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(wack.subprocess, "run", mutate_package)
+    with pytest.raises(wack.WackEvidenceError, match="^WACK_PACKAGE_CHANGED$"):
+        wack.run_wack_tool(
+            tool, package, report, evidence_root, source_commit=COMMIT
+        )
+
+
+def test_wack_wrapper_rejects_preexisting_report_directory_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wack = _wack()
+    evidence_root = tmp_path / "raw-wack"
+    evidence_root.mkdir()
+    report = evidence_root / "wack-report.xml"
+    monkeypatch.setattr(
+        wack.os.path,
+        "lexists",
+        lambda value: Path(value) == report,
+    )
+
+    with pytest.raises(wack.WackEvidenceError, match="^WACK_REPORT_PATH_INVALID$"):
+        wack._new_report_path(report, evidence_root)
+
+
+def test_wack_wrapper_rejects_report_mtime_before_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wack = _wack()
+    program_files = tmp_path / "Program Files (x86)"
+    tool = (
+        program_files
+        / "Windows Kits"
+        / "10"
+        / "App Certification Kit"
+        / "appcert.exe"
+    )
+    tool.parent.mkdir(parents=True)
+    tool.write_bytes(b"synthetic tool")
+    monkeypatch.setenv("ProgramFiles(x86)", str(program_files))
+    package = _write_msix(tmp_path / "AgentGuardian.msix")
+    evidence_root = tmp_path / "raw-wack"
+    evidence_root.mkdir()
+    report = evidence_root / "wack-report.xml"
+    started = datetime.now(timezone.utc) - timedelta(seconds=5)
+    monkeypatch.setattr(wack, "_utc_now", lambda: started, raising=False)
+    monkeypatch.setattr(
+        wack, "current_wack_session_state", lambda: "active", raising=False
+    )
+
+    def old_report(command, **_kwargs):
+        if command[1] == "test":
+            report.write_bytes(WACK_FIXTURE.read_bytes())
+            old = started.timestamp() - 10
+            os.utime(report, (old, old))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(wack.subprocess, "run", old_report)
+    with pytest.raises(wack.WackEvidenceError, match="^WACK_REPORT_NOT_NEW$"):
+        wack.run_wack_tool(
+            tool, package, report, evidence_root, source_commit=COMMIT
+        )
 
 
 def test_reviewed_wack_fixture_emits_canonical_summary_bound_to_msix(
@@ -346,13 +596,15 @@ def _write_candidate_inputs(
     license_status: str = "approved",
     license_source: str = COMMIT,
     license_sbom: str | None = None,
+    create_evidence: bool = True,
+    extra_msix_entries: dict[str, bytes] | None = None,
+    payload_override: dict[str, object] | None = None,
+    checksums_override: bytes | None = None,
+    wack_binding_mode: str = "same_process_invocation",
 ) -> Path:
     candidate = _candidate()
     root = tmp_path / "evidence"
     root.mkdir()
-    package = _write_msix(tmp_path / "AgentGuardian-store.msix")
-    upload = root / f"AgentGuardian-{COMMIT}.msixupload"
-    deterministic_msixupload(package, upload)
 
     sbom = {
         "bomFormat": "CycloneDX",
@@ -368,22 +620,40 @@ def _write_candidate_inputs(
         },
         "specVersion": "1.6",
     }
-    (root / "AgentGuardian.cdx.json").write_bytes(_canonical(sbom))
-    (root / "THIRD_PARTY_NOTICES.md").write_text(
-        "PySide6 6.11.1\nLGPL-3.0-only\n", encoding="utf-8", newline="\n"
+    sbom_bytes = _canonical(sbom)
+    notices = b"PySide6 6.11.1\nLGPL-3.0-only\n"
+    provenance = _canonical(
+        {
+            "artifact_status": "store_submission_candidate",
+            "built_at": "2026-08-17T00:00:00Z",
+            "source_commit": COMMIT,
+        }
     )
+    portable_files = _portable_bundle_files(sbom_bytes, notices, provenance)
+    if payload_override is not None:
+        portable_files["PAYLOAD-MANIFEST.json"] = _canonical(payload_override)
+        portable_files["SHA256SUMS"] = "".join(
+            f"{hashlib.sha256(body).hexdigest()} *{name}\n"
+            for name, body in sorted(portable_files.items())
+            if name != "SHA256SUMS"
+        ).encode("ascii")
+    if checksums_override is not None:
+        portable_files["SHA256SUMS"] = checksums_override
+    package = _write_msix(
+        tmp_path / "AgentGuardian-store.msix",
+        portable_files=portable_files,
+        extra_entries=extra_msix_entries,
+    )
+    upload = root / f"AgentGuardian-{COMMIT}.msixupload"
+    deterministic_msixupload(package, upload)
+
+    (root / "AgentGuardian.cdx.json").write_bytes(sbom_bytes)
+    (root / "THIRD_PARTY_NOTICES.md").write_bytes(notices)
     (root / "payload-manifest.json").write_bytes(
-        _canonical({"algorithm": "sha256", "files": [], "schema": 1})
+        portable_files["PAYLOAD-MANIFEST.json"]
     )
-    (root / "provenance.json").write_bytes(
-        _canonical(
-            {
-                "artifact_status": "store_submission_candidate",
-                "built_at": "2026-08-17T00:00:00Z",
-                "source_commit": COMMIT,
-            }
-        )
-    )
+    (root / "portable-SHA256SUMS").write_bytes(portable_files["SHA256SUMS"])
+    (root / "provenance.json").write_bytes(provenance)
     (root / "profile-result.json").write_bytes(
         _canonical({"profile": "personal_store_release", "status": "pass"})
     )
@@ -404,20 +674,15 @@ def _write_candidate_inputs(
         source_commit=COMMIT,
         generated_at="2026-08-17T00:00:00Z",
     )
+    package_sha = hashlib.sha256(package.read_bytes()).hexdigest()
+    wack_summary["invocation"] = {
+        "binding_mode": wack_binding_mode,
+        "package_sha_after": package_sha,
+        "package_sha_before": package_sha,
+        "report_created_after_start": True,
+        "started_at": "2026-08-16T23:59:59Z",
+    }
     (root / "wack-summary.json").write_bytes(_canonical(wack_summary))
-    (root / "workflow-run.json").write_bytes(
-        _canonical(
-            {
-                "run_attempt": "1",
-                "run_id": "123",
-                "schema": 1,
-                "source_commit": COMMIT,
-                "store_submission": "not_performed",
-                "wack_session_id": 1,
-                "wack_user_interactive": True,
-            }
-        )
-    )
     sbom_digest = hashlib.sha256((root / "AgentGuardian.cdx.json").read_bytes()).hexdigest()
     review = {
         "components": [
@@ -436,8 +701,32 @@ def _write_candidate_inputs(
         "source_commit": license_source,
         "status": license_status,
     }
-    (root / "windows-license-review.json").write_bytes(_canonical(review))
-    candidate.create_candidate_evidence(root, expected_source_commit=COMMIT)
+    encoded_review = (
+        ""
+        if license_status == "pending"
+        else base64.b64encode(_canonical(review)).decode("ascii")
+    )
+    origin = candidate.materialize_license_review(
+        root,
+        ROOT / "docs" / "security" / "windows-license-review.json",
+        encoded_review,
+        expected_source_commit=COMMIT,
+    )
+    (root / "workflow-run.json").write_bytes(
+        _canonical(
+            {
+                "license_review_origin": origin,
+                "run_attempt": "1",
+                "run_id": "123",
+                "schema": 1,
+                "source_commit": COMMIT,
+                "store_submission": "not_performed",
+                "wack_session_state": "active",
+            }
+        )
+    )
+    if create_evidence:
+        candidate.create_candidate_evidence(root, expected_source_commit=COMMIT)
     return root
 
 
@@ -469,6 +758,7 @@ def test_store_candidate_manifest_and_checksums_bind_complete_chain(
         "license_review",
         "notices",
         "payload_manifest",
+        "portable_checksums",
         "privacy_result",
         "profile_result",
         "provenance",
@@ -476,8 +766,10 @@ def test_store_candidate_manifest_and_checksums_bind_complete_chain(
         "wack_summary",
         "workflow_run",
     }
+    workflow = json.loads((root / "workflow-run.json").read_text(encoding="ascii"))
+    assert workflow["license_review_origin"] == "workflow_dispatch_input"
     checksum_lines = (root / "candidate-SHA256SUMS").read_text(encoding="ascii").splitlines()
-    assert len(checksum_lines) == 11
+    assert len(checksum_lines) == 12
     assert all("candidate-SHA256SUMS" not in line for line in checksum_lines)
     assert any("release-manifest.json" in line for line in checksum_lines)
 
@@ -498,15 +790,102 @@ def test_store_candidate_license_gate_fails_closed(
     code: str,
 ) -> None:
     candidate = _candidate()
-    root = _write_candidate_inputs(
-        tmp_path,
-        license_status=license_status,
-        license_source=license_source,
-        license_sbom=license_sbom,
+    with pytest.raises(candidate.StoreCandidateError, match=f"^{code}$"):
+        root = _write_candidate_inputs(
+            tmp_path,
+            license_status=license_status,
+            license_source=license_source,
+            license_sbom=license_sbom,
+        )
+        candidate.validate_store_candidate(root, expected_source_commit=COMMIT)
+
+
+def test_external_license_input_is_strict_canonical_bounded_and_not_self_referential(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate()
+    root = tmp_path / "evidence"
+    root.mkdir()
+    sbom = _canonical({"bomFormat": "CycloneDX", "components": []})
+    (root / "AgentGuardian.cdx.json").write_bytes(sbom)
+    review = {
+        "components": [],
+        "reviewed_at": "2026-08-17T00:00:00Z",
+        "reviewer": "reviewer@example.test",
+        "sbom_sha256": hashlib.sha256(sbom).hexdigest(),
+        "schema_version": 1,
+        "source_commit": COMMIT,
+        "status": "approved",
+    }
+    noncanonical = json.dumps(review, indent=2).encode("ascii")
+
+    for encoded in (
+        "not-base64!",
+        base64.b64encode(noncanonical).decode("ascii"),
+        "A" * (candidate.MAX_APPROVED_LICENSE_REVIEW_BASE64_BYTES + 1),
+    ):
+        with pytest.raises(
+            candidate.StoreCandidateError,
+            match="^STORE_CANDIDATE_LICENSE_INPUT_INVALID$",
+        ):
+            candidate.materialize_license_review(
+                root,
+                ROOT / "docs" / "security" / "windows-license-review.json",
+                encoded,
+                expected_source_commit=COMMIT,
+            )
+        assert not (root / "windows-license-review.json").exists()
+
+
+def test_empty_license_input_materializes_only_repository_pending_template(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate()
+    root = tmp_path / "evidence"
+    root.mkdir()
+
+    origin = candidate.materialize_license_review(
+        root,
+        ROOT / "docs" / "security" / "windows-license-review.json",
+        "",
+        expected_source_commit=COMMIT,
     )
 
-    with pytest.raises(candidate.StoreCandidateError, match=f"^{code}$"):
-        candidate.validate_store_candidate(root, expected_source_commit=COMMIT)
+    assert origin == "repository_pending_template"
+    assert (root / "windows-license-review.json").read_bytes() == (
+        ROOT / "docs" / "security" / "windows-license-review.json"
+    ).read_bytes()
+
+
+def test_license_materialization_cli_uses_empty_dispatch_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    candidate = _candidate()
+    root = tmp_path / "evidence"
+    root.mkdir()
+    monkeypatch.delenv("APPROVED_LICENSE_REVIEW_BASE64", raising=False)
+    monkeypatch.setattr(
+        candidate.sys,
+        "argv",
+        [
+            "verify_windows_store_candidate.py",
+            "--evidence-root",
+            str(root),
+            "--expected-source-commit",
+            COMMIT,
+            "--materialize-license-review",
+            "--repository-license-template",
+            str(ROOT / "docs" / "security" / "windows-license-review.json"),
+        ],
+    )
+
+    assert candidate.main() == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "license_review_origin": "repository_pending_template",
+        "status": "materialized",
+    }
 
 
 def test_store_candidate_recomputes_manifest_checksums_and_upload_msix(
@@ -519,6 +898,31 @@ def test_store_candidate_recomputes_manifest_checksums_and_upload_msix(
 
     with pytest.raises(candidate.StoreCandidateError, match="^STORE_CANDIDATE_MANIFEST_MISMATCH$"):
         candidate.validate_store_candidate(root, expected_source_commit=COMMIT)
+
+
+def test_store_candidate_accepts_only_same_process_wack_binding(tmp_path: Path) -> None:
+    candidate = _candidate()
+    with pytest.raises(
+        candidate.StoreCandidateError, match="^STORE_CANDIDATE_WACK_INVALID$"
+    ):
+        _write_candidate_inputs(tmp_path, wack_binding_mode="report_only")
+
+
+def test_store_candidate_rejects_non_x64_msix(tmp_path: Path) -> None:
+    candidate = _candidate()
+    root = tmp_path / "evidence"
+    root.mkdir()
+    package = _write_msix(
+        tmp_path / "AgentGuardian-store.msix",
+        processor_architecture="arm64",
+    )
+    upload = root / f"AgentGuardian-{COMMIT}.msixupload"
+    deterministic_msixupload(package, upload)
+
+    with pytest.raises(
+        candidate.StoreCandidateError, match="^STORE_CANDIDATE_UPLOAD_INVALID$"
+    ):
+        candidate._msixupload_package(upload, root)
 
 
 def test_store_candidate_rejects_msixupload_with_more_than_one_msix(
@@ -534,6 +938,109 @@ def test_store_candidate_rejects_msixupload_with_more_than_one_msix(
         candidate.validate_store_candidate(root, expected_source_commit=COMMIT)
 
 
+@pytest.mark.parametrize(
+    "name",
+    (
+        "AgentGuardian.cdx.json",
+        "THIRD_PARTY_NOTICES.md",
+        "payload-manifest.json",
+        "portable-SHA256SUMS",
+        "provenance.json",
+    ),
+)
+def test_store_candidate_requires_external_sidecars_to_match_msix_bytes(
+    tmp_path: Path, name: str
+) -> None:
+    candidate = _candidate()
+    root = _write_candidate_inputs(tmp_path, create_evidence=False)
+    (root / name).write_bytes(b"changed\n")
+
+    with pytest.raises(
+        candidate.StoreCandidateError,
+        match="^STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID$",
+    ):
+        candidate.create_candidate_evidence(root, expected_source_commit=COMMIT)
+
+
+@pytest.mark.parametrize(
+    "payload_override",
+    (
+        {"algorithm": "sha256", "files": [], "schema": 1},
+        {
+            "algorithm": "sha256",
+            "files": [
+                {"path": "../escape", "sha256": "0" * 64, "size": 1}
+            ],
+            "schema": 1,
+        },
+        {
+            "algorithm": "sha256",
+            "files": [
+                {
+                    "path": "AgentGuardian.exe",
+                    "sha256": "0" * 64,
+                    "size": 4 * 1024 * 1024 * 1024 + 1,
+                }
+            ],
+            "schema": 1,
+        },
+        {
+            "algorithm": "sha256",
+            "files": [
+                {"path": "AgentGuardian.exe", "sha256": "0" * 64, "size": 1},
+                {"path": "AgentGuardian.exe", "sha256": "0" * 64, "size": 1},
+            ],
+            "schema": 1,
+        },
+    ),
+)
+def test_store_candidate_rejects_empty_duplicate_or_traversing_payload_manifest(
+    tmp_path: Path, payload_override: dict[str, object]
+) -> None:
+    candidate = _candidate()
+    root = _write_candidate_inputs(
+        tmp_path,
+        create_evidence=False,
+        payload_override=payload_override,
+    )
+
+    with pytest.raises(
+        candidate.StoreCandidateError,
+        match="^STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID$",
+    ):
+        candidate.create_candidate_evidence(root, expected_source_commit=COMMIT)
+
+
+def test_store_candidate_rejects_traversing_portable_checksums(tmp_path: Path) -> None:
+    candidate = _candidate()
+    root = _write_candidate_inputs(
+        tmp_path,
+        create_evidence=False,
+        checksums_override=("0" * 64 + " *../escape\n").encode("ascii"),
+    )
+
+    with pytest.raises(
+        candidate.StoreCandidateError,
+        match="^STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID$",
+    ):
+        candidate.create_candidate_evidence(root, expected_source_commit=COMMIT)
+
+
+def test_store_candidate_rejects_uncovered_portable_msix_entry(tmp_path: Path) -> None:
+    candidate = _candidate()
+    root = _write_candidate_inputs(
+        tmp_path,
+        create_evidence=False,
+        extra_msix_entries={"uncovered.dll": b"not in portable evidence"},
+    )
+
+    with pytest.raises(
+        candidate.StoreCandidateError,
+        match="^STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID$",
+    ):
+        candidate.create_candidate_evidence(root, expected_source_commit=COMMIT)
+
+
 def test_store_candidate_upload_allowlist_is_exact_and_safe(tmp_path: Path) -> None:
     candidate = _candidate()
     root = _write_candidate_inputs(tmp_path)
@@ -544,6 +1051,7 @@ def test_store_candidate_upload_allowlist_is_exact_and_safe(tmp_path: Path) -> N
         "THIRD_PARTY_NOTICES.md",
         "candidate-SHA256SUMS",
         "payload-manifest.json",
+        "portable-SHA256SUMS",
         "privacy-result.json",
         "profile-result.json",
         "provenance.json",

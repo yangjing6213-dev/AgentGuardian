@@ -7,18 +7,24 @@ Whether a hosted CI runner provides that capability is deliberately unverified.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+import ctypes
+from ctypes import wintypes
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import xml.etree.ElementTree as ET
 import zipfile
 
 
 MAX_REPORT_BYTES = 16 * 1024 * 1024
 MAX_MANIFEST_BYTES = 1024 * 1024
+WACK_COMMAND_TIMEOUT_SECONDS = 60 * 60
+_WTS_ACTIVE = 0
+_WTS_CONNECT_STATE = 8
 
 
 class WackEvidenceError(ValueError):
@@ -70,6 +76,77 @@ def wack_commands(
             str(report_path),
         ),
     )
+
+
+def current_wack_session_state() -> str:
+    if _query_wts_connect_state() != _WTS_ACTIVE:
+        raise WackEvidenceError("WACK_SESSION_NOT_ACTIVE")
+    return "active"
+
+
+def run_wack_tool(
+    tool_value: str | Path,
+    package_value: str | Path,
+    report_value: str | Path,
+    evidence_root: str | Path,
+    *,
+    source_commit: str,
+) -> dict[str, object]:
+    current_wack_session_state()
+    tool = validate_wack_tool_path(tool_value)
+    package = _bounded_package_path(package_value)
+    report = _new_report_path(report_value, evidence_root)
+    if not _lower_sha(source_commit):
+        raise WackEvidenceError("WACK_SOURCE_COMMIT_INVALID")
+    package_sha_before = _sha256_file(package, "WACK_PACKAGE_INVALID")
+    started = _utc_now()
+    started_at = _format_utc(started)
+    try:
+        for command in wack_commands(tool, package, report):
+            completed = subprocess.run(
+                command,
+                check=False,
+                timeout=WACK_COMMAND_TIMEOUT_SECONDS,
+            )
+            if completed.returncode != 0:
+                raise WackEvidenceError("WACK_TOOL_EXECUTION_FAILED")
+    except WackEvidenceError:
+        raise
+    except (OSError, subprocess.SubprocessError):
+        raise WackEvidenceError("WACK_TOOL_EXECUTION_FAILED") from None
+
+    package_sha_after = _sha256_file(package, "WACK_PACKAGE_INVALID")
+    if package_sha_after != package_sha_before:
+        raise WackEvidenceError("WACK_PACKAGE_CHANGED")
+    bounded_report = _bounded_report_path(report, evidence_root)
+    try:
+        report_stat = bounded_report.stat(follow_symlinks=False)
+    except OSError:
+        raise WackEvidenceError("WACK_REPORT_PATH_INVALID") from None
+    started_ns = int(started.timestamp() * 1_000_000_000)
+    if report_stat.st_mtime_ns < started_ns or report_stat.st_ctime_ns < started_ns:
+        raise WackEvidenceError("WACK_REPORT_NOT_NEW")
+    completed_at = _utc_now()
+    if completed_at < started:
+        raise WackEvidenceError("WACK_REPORT_NOT_NEW")
+    generated_at = _format_utc(completed_at)
+    result = verify_wack_report(
+        bounded_report,
+        evidence_root,
+        package_path=package,
+        source_commit=source_commit,
+        generated_at=generated_at,
+    )
+    if result["package_sha256"] != package_sha_after:
+        raise WackEvidenceError("WACK_PACKAGE_CHANGED")
+    result["invocation"] = {
+        "binding_mode": "same_process_invocation",
+        "package_sha_after": package_sha_after,
+        "package_sha_before": package_sha_before,
+        "report_created_after_start": True,
+        "started_at": started_at,
+    }
+    return result
 
 
 def verify_wack_report(
@@ -279,6 +356,78 @@ def _bounded_report_path(report_value: str | Path, root_value: str | Path) -> Pa
     return resolved_report
 
 
+def _new_report_path(report_value: str | Path, root_value: str | Path) -> Path:
+    report = Path(report_value)
+    root = Path(root_value)
+    if (
+        not report.is_absolute()
+        or not root.is_absolute()
+        or report.anchor.startswith("\\\\")
+        or root.anchor.startswith("\\\\")
+        or os.path.lexists(report)
+        or _has_reparse_component(root)
+    ):
+        raise WackEvidenceError("WACK_REPORT_PATH_INVALID")
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved_parent = report.parent.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise WackEvidenceError("WACK_REPORT_PATH_INVALID") from None
+    if (
+        not resolved_root.is_dir()
+        or resolved_parent != resolved_root
+        or report.name != "wack-report.xml"
+        or _has_reparse_component(resolved_parent)
+    ):
+        raise WackEvidenceError("WACK_REPORT_PATH_INVALID")
+    return resolved_parent / report.name
+
+
+def _query_wts_connect_state() -> int:
+    if os.name != "nt":
+        raise WackEvidenceError("WACK_SESSION_QUERY_FAILED")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    wtsapi32 = ctypes.WinDLL("wtsapi32", use_last_error=True)
+    session_id = wintypes.DWORD()
+    kernel32.GetCurrentProcessId.argtypes = ()
+    kernel32.GetCurrentProcessId.restype = wintypes.DWORD
+    kernel32.ProcessIdToSessionId.argtypes = (
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    kernel32.ProcessIdToSessionId.restype = wintypes.BOOL
+    process_id = kernel32.GetCurrentProcessId()
+    if not kernel32.ProcessIdToSessionId(process_id, ctypes.byref(session_id)):
+        raise WackEvidenceError("WACK_SESSION_QUERY_FAILED")
+
+    buffer = ctypes.c_void_p()
+    returned = wintypes.DWORD()
+    wtsapi32.WTSQuerySessionInformationW.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    wtsapi32.WTSQuerySessionInformationW.restype = wintypes.BOOL
+    wtsapi32.WTSFreeMemory.argtypes = (ctypes.c_void_p,)
+    wtsapi32.WTSFreeMemory.restype = None
+    if not wtsapi32.WTSQuerySessionInformationW(
+        None,
+        session_id.value,
+        _WTS_CONNECT_STATE,
+        ctypes.byref(buffer),
+        ctypes.byref(returned),
+    ):
+        raise WackEvidenceError("WACK_SESSION_QUERY_FAILED")
+    try:
+        if returned.value != ctypes.sizeof(wintypes.DWORD) or not buffer.value:
+            raise WackEvidenceError("WACK_SESSION_QUERY_FAILED")
+        return ctypes.cast(buffer, ctypes.POINTER(wintypes.DWORD)).contents.value
+    finally:
+        wtsapi32.WTSFreeMemory(buffer)
+
+
 def _has_reparse_component(path: Path) -> bool:
     current = Path(path.anchor)
     for part in path.parts[1:]:
@@ -330,14 +479,24 @@ def _utc_seconds(value: str) -> None:
         raise WackEvidenceError("WACK_GENERATED_AT_INVALID")
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _format_utc(value: datetime) -> str:
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--validate-tool-path", type=Path)
+    parser.add_argument("--check-active-session", action="store_true")
+    parser.add_argument("--run-tool", action="store_true")
+    parser.add_argument("--tool", type=Path)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--evidence-root", type=Path)
     parser.add_argument("--package", type=Path)
     parser.add_argument("--source-commit")
-    parser.add_argument("--generated-at")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     try:
@@ -349,31 +508,48 @@ def main() -> int:
                     args.evidence_root,
                     args.package,
                     args.source_commit,
-                    args.generated_at,
                     args.output,
+                    args.tool,
                 )
-            ):
+            ) or args.check_active_session or args.run_tool:
                 parser.error("tool validation cannot be combined with report validation")
             print(validate_wack_tool_path(args.validate_tool_path))
             return 0
+        if args.check_active_session:
+            if any(
+                value is not None
+                for value in (
+                    args.tool,
+                    args.report,
+                    args.evidence_root,
+                    args.package,
+                    args.source_commit,
+                    args.output,
+                )
+            ) or args.run_tool:
+                parser.error("session validation cannot be combined")
+            print(current_wack_session_state())
+            return 0
+        if not args.run_tool:
+            parser.error("one WACK operation is required")
         if any(
             value is None
             for value in (
+                args.tool,
                 args.report,
                 args.evidence_root,
                 args.package,
                 args.source_commit,
-                args.generated_at,
                 args.output,
             )
         ):
-            parser.error("all report validation arguments are required")
-        result = verify_wack_report(
+            parser.error("all WACK run arguments are required")
+        result = run_wack_tool(
+            args.tool,
+            args.package,
             args.report,
             args.evidence_root,
-            package_path=args.package,
             source_commit=args.source_commit,
-            generated_at=args.generated_at,
         )
         output = args.output
         if (

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 from datetime import datetime
 import hashlib
 import json
-from pathlib import Path
+import os
+from pathlib import Path, PurePosixPath
 import shutil
 import stat
 import sys
@@ -30,18 +33,36 @@ from scripts.verify_windows_release_candidate import (
 
 MAX_JSON_BYTES = 16 * 1024 * 1024
 MAX_EVIDENCE_BYTES = 4 * 1024 * 1024 * 1024
+MAX_MANIFEST_FILES = 20_000
+MAX_APPROVED_LICENSE_REVIEW_BYTES = 256 * 1024
+MAX_APPROVED_LICENSE_REVIEW_BASE64_BYTES = (
+    4 * ((MAX_APPROVED_LICENSE_REVIEW_BYTES + 2) // 3)
+)
 _MANIFEST_NAME = "release-manifest.json"
 _CHECKSUM_NAME = "candidate-SHA256SUMS"
 _EVIDENCE_FILES = {
     "license_review": "windows-license-review.json",
     "notices": "THIRD_PARTY_NOTICES.md",
     "payload_manifest": "payload-manifest.json",
+    "portable_checksums": "portable-SHA256SUMS",
     "privacy_result": "privacy-result.json",
     "profile_result": "profile-result.json",
     "provenance": "provenance.json",
     "sbom": "AgentGuardian.cdx.json",
     "wack_summary": "wack-summary.json",
     "workflow_run": "workflow-run.json",
+}
+_PORTABLE_SIDECARS = {
+    "AgentGuardian.cdx.json": "AgentGuardian.cdx.json",
+    "BUILD-METADATA.json": "provenance.json",
+    "PAYLOAD-MANIFEST.json": "payload-manifest.json",
+    "SHA256SUMS": "portable-SHA256SUMS",
+    "THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+}
+_MSIX_WRAPPER_FILES = {
+    "AppxBlockMap.xml",
+    "AppxManifest.xml",
+    "[Content_Types].xml",
 }
 
 
@@ -54,6 +75,81 @@ def canonical_json_bytes(value: object) -> bytes:
         json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
         + "\n"
     ).encode("ascii")
+
+
+def materialize_license_review(
+    evidence_root: str | Path,
+    repository_template: str | Path,
+    approved_base64: str,
+    *,
+    expected_source_commit: str,
+) -> str:
+    root = _evidence_root(evidence_root)
+    _require_source_commit(expected_source_commit)
+    output = root / _EVIDENCE_FILES["license_review"]
+    if output.exists() or type(approved_base64) is not str:
+        raise StoreCandidateError("STORE_CANDIDATE_LICENSE_INPUT_INVALID")
+    if approved_base64 == "":
+        template = _regular_local_file(
+            repository_template, "STORE_CANDIDATE_LICENSE_TEMPLATE_INVALID"
+        )
+        template_value = _json_file(
+            template, "STORE_CANDIDATE_LICENSE_TEMPLATE_INVALID"
+        )
+        if (
+            template_value.get("schema_version") != 1
+            or template_value.get("status") != "pending"
+            or any(
+                template_value.get(key) is not None
+                for key in ("source_commit", "sbom_sha256", "reviewed_at", "reviewer")
+            )
+            or not isinstance(template_value.get("components"), list)
+            or not template_value["components"]
+            or any(
+                not isinstance(component, dict)
+                or component.get("redistribution") != "pending"
+                for component in template_value["components"]
+            )
+        ):
+            raise StoreCandidateError("STORE_CANDIDATE_LICENSE_TEMPLATE_INVALID")
+        try:
+            with template.open("rb") as source, output.open("xb") as destination:
+                shutil.copyfileobj(source, destination, length=1024 * 1024)
+        except OSError:
+            raise StoreCandidateError(
+                "STORE_CANDIDATE_LICENSE_TEMPLATE_INVALID"
+            ) from None
+        return "repository_pending_template"
+
+    if (
+        len(approved_base64) > MAX_APPROVED_LICENSE_REVIEW_BASE64_BYTES
+        or not approved_base64.isascii()
+    ):
+        raise StoreCandidateError("STORE_CANDIDATE_LICENSE_INPUT_INVALID")
+    try:
+        raw = base64.b64decode(approved_base64, validate=True)
+    except (binascii.Error, ValueError):
+        raise StoreCandidateError("STORE_CANDIDATE_LICENSE_INPUT_INVALID") from None
+    if not raw or len(raw) > MAX_APPROVED_LICENSE_REVIEW_BYTES:
+        raise StoreCandidateError("STORE_CANDIDATE_LICENSE_INPUT_INVALID")
+    try:
+        review = json.loads(raw.decode("ascii"))
+    except (UnicodeError, json.JSONDecodeError, RecursionError):
+        raise StoreCandidateError("STORE_CANDIDATE_LICENSE_INPUT_INVALID") from None
+    if not isinstance(review, dict) or raw != canonical_json_bytes(review):
+        raise StoreCandidateError("STORE_CANDIDATE_LICENSE_INPUT_INVALID")
+    _validate_external_license_shape(review)
+    if review["source_commit"] != expected_source_commit:
+        raise StoreCandidateError("STORE_CANDIDATE_LICENSE_SOURCE_MISMATCH")
+    sbom_path = root / _EVIDENCE_FILES["sbom"]
+    if review["sbom_sha256"] != _sha256_file(sbom_path):
+        raise StoreCandidateError("STORE_CANDIDATE_LICENSE_SBOM_MISMATCH")
+    try:
+        with output.open("xb") as handle:
+            handle.write(raw)
+    except OSError:
+        raise StoreCandidateError("STORE_CANDIDATE_LICENSE_INPUT_INVALID") from None
+    return "workflow_dispatch_input"
 
 
 def create_candidate_evidence(
@@ -198,15 +294,22 @@ def _validate_non_license_evidence(
         root / _EVIDENCE_FILES["workflow_run"],
         "STORE_CANDIDATE_WORKFLOW_METADATA_INVALID",
     )
-    session_id = workflow.get("wack_session_id")
+    workflow_keys = {str(key).casefold() for key in workflow}
+    license_origin = workflow.get("license_review_origin")
     if (
         workflow.get("schema") != 1
         or workflow.get("source_commit") != source_commit
         or workflow.get("store_submission") != "not_performed"
-        or workflow.get("wack_user_interactive") is not True
-        or type(session_id) is not int
-        or session_id == 0
-        or "username" in {str(key).casefold() for key in workflow}
+        or workflow.get("wack_session_state") != "active"
+        or license_origin
+        not in {"repository_pending_template", "workflow_dispatch_input"}
+        or workflow_keys
+        & {
+            "approved_license_review_base64",
+            "username",
+            "wack_session_id",
+            "wack_user_interactive",
+        }
     ):
         raise StoreCandidateError("STORE_CANDIDATE_WORKFLOW_METADATA_INVALID")
 
@@ -217,10 +320,12 @@ def _validate_non_license_evidence(
     counts = wack.get("test_counts")
     report_fields = wack.get("report_fields")
     package = wack.get("package_identity")
+    invocation = wack.get("invocation")
     if (
         set(wack)
         != {
             "generated_at",
+            "invocation",
             "overall_result",
             "package_identity",
             "package_sha256",
@@ -242,6 +347,19 @@ def _validate_non_license_evidence(
         or wack.get("package_sha256") != msix_entry["sha256"]
         or not _lower_hex(wack.get("report_sha256"), 64)
         or not _bounded_text(wack.get("tool_version"))
+        or not isinstance(invocation, dict)
+        or set(invocation)
+        != {
+            "binding_mode",
+            "package_sha_after",
+            "package_sha_before",
+            "report_created_after_start",
+            "started_at",
+        }
+        or invocation.get("binding_mode") != "same_process_invocation"
+        or invocation.get("package_sha_before") != msix_entry["sha256"]
+        or invocation.get("package_sha_after") != msix_entry["sha256"]
+        or invocation.get("report_created_after_start") is not True
         or not isinstance(report_fields, dict)
         or set(report_fields)
         != {
@@ -267,6 +385,9 @@ def _validate_non_license_evidence(
     ):
         raise StoreCandidateError("STORE_CANDIDATE_WACK_INVALID")
     _utc_seconds(wack.get("generated_at"), "STORE_CANDIDATE_WACK_INVALID")
+    _utc_seconds(invocation.get("started_at"), "STORE_CANDIDATE_WACK_INVALID")
+    if invocation["started_at"] > wack["generated_at"]:
+        raise StoreCandidateError("STORE_CANDIDATE_WACK_INVALID")
     wack_path = root / _EVIDENCE_FILES["wack_summary"]
     try:
         if wack_path.read_bytes() != canonical_json_bytes(wack):
@@ -278,7 +399,13 @@ def _validate_non_license_evidence(
 def _validate_license(root: Path, source_commit: str) -> None:
     review_path = root / _EVIDENCE_FILES["license_review"]
     review = _json_file(review_path, "STORE_CANDIDATE_LICENSE_REVIEW_REQUIRED")
+    workflow = _json_file(
+        root / _EVIDENCE_FILES["workflow_run"],
+        "STORE_CANDIDATE_WORKFLOW_METADATA_INVALID",
+    )
     if review.get("schema_version") != 1 or review.get("status") != "approved":
+        raise StoreCandidateError("STORE_CANDIDATE_LICENSE_REVIEW_REQUIRED")
+    if workflow.get("license_review_origin") != "workflow_dispatch_input":
         raise StoreCandidateError("STORE_CANDIDATE_LICENSE_REVIEW_REQUIRED")
     if review.get("source_commit") != source_commit:
         raise StoreCandidateError("STORE_CANDIDATE_LICENSE_SOURCE_MISMATCH")
@@ -326,6 +453,7 @@ def _msixupload_package(
                     package, identity = read_msix_identity(extracted)
                 except WackEvidenceError:
                     raise StoreCandidateError("STORE_CANDIDATE_UPLOAD_INVALID") from None
+                _validate_msix_portable_evidence(package, evidence_root)
                 entry = {
                     "name": info.filename,
                     "sha256": _sha256_file(package),
@@ -336,6 +464,243 @@ def _msixupload_package(
     except (OSError, MemoryError, RuntimeError, zipfile.BadZipFile):
         raise StoreCandidateError("STORE_CANDIDATE_UPLOAD_INVALID") from None
     return entry, identity
+
+
+def _validate_msix_portable_evidence(package: Path, evidence_root: Path) -> None:
+    try:
+        with zipfile.ZipFile(package) as archive:
+            portable: dict[str, zipfile.ZipInfo] = {}
+            wrapper_files: set[str] = set()
+            seen: set[str] = set()
+            infos = archive.infolist()
+            if len(infos) > MAX_MANIFEST_FILES + 10:
+                raise StoreCandidateError(
+                    "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+                )
+            total_uncompressed = 0
+            for info in infos:
+                name = _safe_archive_name(info.filename)
+                folded = name.casefold()
+                if folded in seen or info.flag_bits & 1:
+                    raise StoreCandidateError(
+                        "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+                    )
+                seen.add(folded)
+                if info.is_dir():
+                    continue
+                if info.file_size < 0 or info.file_size > MAX_EVIDENCE_BYTES:
+                    raise StoreCandidateError(
+                        "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+                    )
+                total_uncompressed += info.file_size
+                if total_uncompressed > MAX_EVIDENCE_BYTES:
+                    raise StoreCandidateError(
+                        "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+                    )
+                if name in _MSIX_WRAPPER_FILES or name.startswith("Assets/"):
+                    wrapper_files.add(name)
+                    continue
+                portable[name] = info
+            if (
+                not portable
+                or len(portable) > MAX_MANIFEST_FILES
+                or not _MSIX_WRAPPER_FILES.issubset(wrapper_files)
+            ):
+                raise StoreCandidateError(
+                    "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+                )
+            for internal, external in _PORTABLE_SIDECARS.items():
+                info = portable.get(internal)
+                if info is None:
+                    raise StoreCandidateError(
+                        "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+                    )
+                internal_bytes = _zip_entry_bytes(archive, info, MAX_JSON_BYTES)
+                try:
+                    external_path = evidence_root / external
+                    if external_path.stat(follow_symlinks=False).st_size > MAX_JSON_BYTES:
+                        raise StoreCandidateError(
+                            "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+                        )
+                    external_bytes = external_path.read_bytes()
+                except OSError:
+                    raise StoreCandidateError(
+                        "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+                    ) from None
+                if internal_bytes != external_bytes:
+                    raise StoreCandidateError(
+                        "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+                    )
+
+            actual: dict[str, tuple[int, str]] = {}
+            for name, info in portable.items():
+                actual[name] = (info.file_size, _zip_entry_sha256(archive, info))
+            payload_raw = _zip_entry_bytes(
+                archive, portable["PAYLOAD-MANIFEST.json"], MAX_JSON_BYTES
+            )
+            checksums_raw = _zip_entry_bytes(
+                archive, portable["SHA256SUMS"], MAX_JSON_BYTES
+            )
+    except StoreCandidateError:
+        raise
+    except (OSError, MemoryError, RuntimeError, zipfile.BadZipFile):
+        raise StoreCandidateError(
+            "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+        ) from None
+    _validate_payload_manifest(payload_raw, actual)
+    _validate_portable_checksums(checksums_raw, actual)
+
+
+def _validate_payload_manifest(
+    raw: bytes, actual: dict[str, tuple[int, str]]
+) -> None:
+    try:
+        value = json.loads(raw.decode("ascii"))
+    except (UnicodeError, json.JSONDecodeError, RecursionError):
+        raise StoreCandidateError(
+            "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+        ) from None
+    if (
+        not isinstance(value, dict)
+        or raw != canonical_json_bytes(value)
+        or set(value) != {"algorithm", "files", "schema"}
+        or value.get("algorithm") != "sha256"
+        or value.get("schema") != 1
+        or not isinstance(value.get("files"), list)
+        or not value["files"]
+        or len(value["files"]) > MAX_MANIFEST_FILES
+    ):
+        raise StoreCandidateError("STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID")
+    entries: dict[str, tuple[int, str]] = {}
+    folded: set[str] = set()
+    for entry in value["files"]:
+        if not isinstance(entry, dict) or set(entry) != {"path", "sha256", "size"}:
+            raise StoreCandidateError(
+                "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+            )
+        path = _safe_manifest_path(entry.get("path"))
+        size = entry.get("size")
+        digest = entry.get("sha256")
+        if (
+            path.casefold() in folded
+            or type(size) is not int
+            or size < 0
+            or size > MAX_EVIDENCE_BYTES
+            or not _lower_hex(digest, 64)
+        ):
+            raise StoreCandidateError(
+                "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+            )
+        folded.add(path.casefold())
+        entries[path] = (size, digest)
+    expected_names = set(actual) - {"PAYLOAD-MANIFEST.json", "SHA256SUMS"}
+    if set(entries) != expected_names or any(
+        entries[name] != actual[name] for name in entries
+    ):
+        raise StoreCandidateError("STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID")
+
+
+def _validate_portable_checksums(
+    raw: bytes, actual: dict[str, tuple[int, str]]
+) -> None:
+    try:
+        text = raw.decode("ascii")
+    except UnicodeError:
+        raise StoreCandidateError(
+            "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+        ) from None
+    if not text or not text.endswith("\n") or "\r" in text:
+        raise StoreCandidateError("STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID")
+    entries: dict[str, str] = {}
+    folded: set[str] = set()
+    lines = text.splitlines()
+    if not lines or len(lines) > MAX_MANIFEST_FILES:
+        raise StoreCandidateError("STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID")
+    for line in lines:
+        if len(line) < 67 or line[64:66] != " *":
+            raise StoreCandidateError(
+                "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+            )
+        digest = line[:64]
+        path = _safe_manifest_path(line[66:])
+        if not _lower_hex(digest, 64) or path.casefold() in folded:
+            raise StoreCandidateError(
+                "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+            )
+        folded.add(path.casefold())
+        entries[path] = digest
+    expected_names = set(actual) - {"SHA256SUMS"}
+    if set(entries) != expected_names or any(
+        entries[name] != actual[name][1] for name in entries
+    ):
+        raise StoreCandidateError("STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID")
+
+
+def _safe_archive_name(value: object) -> str:
+    if type(value) is not str or not value or "\\" in value or len(value) > 1024:
+        raise StoreCandidateError("STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID")
+    candidate = value[:-1] if value.endswith("/") else value
+    return _safe_manifest_path(candidate)
+
+
+def _safe_manifest_path(value: object) -> str:
+    if (
+        type(value) is not str
+        or not value
+        or "\\" in value
+        or ":" in value
+        or len(value) > 1024
+    ):
+        raise StoreCandidateError("STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID")
+    path = PurePosixPath(value)
+    if (
+        path.is_absolute()
+        or path.as_posix() != value
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or any(ord(character) < 32 for character in value)
+    ):
+        raise StoreCandidateError("STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID")
+    return value
+
+
+def _zip_entry_bytes(
+    archive: zipfile.ZipFile, info: zipfile.ZipInfo, maximum: int
+) -> bytes:
+    if info.file_size > maximum:
+        raise StoreCandidateError("STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID")
+    try:
+        with archive.open(info) as handle:
+            value = handle.read(maximum + 1)
+    except (OSError, RuntimeError, zipfile.BadZipFile):
+        raise StoreCandidateError(
+            "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+        ) from None
+    if len(value) != info.file_size or len(value) > maximum:
+        raise StoreCandidateError("STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID")
+    return value
+
+
+def _zip_entry_sha256(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> str:
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with archive.open(info) as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                size += len(chunk)
+                if size > MAX_EVIDENCE_BYTES:
+                    raise StoreCandidateError(
+                        "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+                    )
+                digest.update(chunk)
+    except StoreCandidateError:
+        raise
+    except (OSError, RuntimeError, zipfile.BadZipFile):
+        raise StoreCandidateError(
+            "STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID"
+        ) from None
+    if size != info.file_size:
+        raise StoreCandidateError("STORE_CANDIDATE_PORTABLE_EVIDENCE_INVALID")
+    return digest.hexdigest()
 
 
 def _expected_checksums(root: Path, source_commit: str) -> bytes:
@@ -351,6 +716,81 @@ def _file_entry(path: Path) -> dict[str, object]:
     except OSError:
         raise StoreCandidateError("STORE_CANDIDATE_INPUT_INVALID") from None
     return {"name": path.name, "sha256": _sha256_file(path), "size": size}
+
+
+def _validate_external_license_shape(review: dict[str, Any]) -> None:
+    if (
+        set(review)
+        != {
+            "components",
+            "reviewed_at",
+            "reviewer",
+            "sbom_sha256",
+            "schema_version",
+            "source_commit",
+            "status",
+        }
+        or review.get("schema_version") != 1
+        or review.get("status") != "approved"
+        or not _lower_hex(review.get("source_commit"), 40)
+        or not _lower_hex(review.get("sbom_sha256"), 64)
+        or not _bounded_text(review.get("reviewer"))
+        or not isinstance(review.get("components"), list)
+        or not review["components"]
+        or len(review["components"]) > MAX_MANIFEST_FILES
+    ):
+        raise StoreCandidateError("STORE_CANDIDATE_LICENSE_INPUT_INVALID")
+    _utc_seconds(
+        review.get("reviewed_at"), "STORE_CANDIDATE_LICENSE_INPUT_INVALID"
+    )
+    fields = {
+        "evidence_url",
+        "license_expression",
+        "name",
+        "redistribution",
+        "version",
+    }
+    seen: set[tuple[str, str]] = set()
+    for component in review["components"]:
+        if not isinstance(component, dict) or set(component) != fields:
+            raise StoreCandidateError("STORE_CANDIDATE_LICENSE_INPUT_INVALID")
+        name = component.get("name")
+        version = component.get("version")
+        expression = component.get("license_expression")
+        evidence_url = component.get("evidence_url")
+        key = (name, version) if isinstance(name, str) and isinstance(version, str) else None
+        if (
+            key is None
+            or key in seen
+            or not _bounded_text(name)
+            or not _bounded_text(version)
+            or not _bounded_text(expression)
+            or component.get("redistribution") != "approved"
+            or type(evidence_url) is not str
+            or not evidence_url.startswith("https://")
+            or any(character.isspace() for character in evidence_url)
+        ):
+            raise StoreCandidateError("STORE_CANDIDATE_LICENSE_INPUT_INVALID")
+        seen.add(key)
+
+
+def _regular_local_file(value: str | Path, code: str) -> Path:
+    path = Path(value)
+    if (
+        not path.is_absolute()
+        or path.anchor.startswith("\\\\")
+        or path.is_symlink()
+        or _has_reparse_component(path)
+    ):
+        raise StoreCandidateError(code)
+    try:
+        resolved = path.resolve(strict=True)
+        size = resolved.stat(follow_symlinks=False).st_size
+    except (OSError, RuntimeError):
+        raise StoreCandidateError(code) from None
+    if not stat.S_ISREG(resolved.stat(follow_symlinks=False).st_mode) or size > MAX_JSON_BYTES:
+        raise StoreCandidateError(code)
+    return resolved
 
 
 def _json_file(path: Path, code: str) -> dict[str, Any]:
@@ -475,10 +915,25 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--create", action="store_true")
     mode.add_argument("--check-upload-allowlist", action="store_true")
+    mode.add_argument("--materialize-license-review", action="store_true")
+    parser.add_argument("--repository-license-template", type=Path)
     args = parser.parse_args()
     try:
-        if args.create:
-            result: object = create_candidate_evidence(
+        if args.materialize_license_review:
+            if args.repository_license_template is None:
+                parser.error("repository license template is required")
+            origin = materialize_license_review(
+                args.evidence_root,
+                args.repository_license_template,
+                os.environ.get("APPROVED_LICENSE_REVIEW_BASE64", ""),
+                expected_source_commit=args.expected_source_commit,
+            )
+            result: object = {
+                "license_review_origin": origin,
+                "status": "materialized",
+            }
+        elif args.create:
+            result = create_candidate_evidence(
                 args.evidence_root,
                 expected_source_commit=args.expected_source_commit,
             )
