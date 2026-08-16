@@ -64,8 +64,11 @@ def _write_profile(root: Path, profile: dict[str, object]) -> Path:
 
 def test_repository_matches_canonical_personal_store_release_profile() -> None:
     verifier = _verifier()
+    profile = _profile()
 
-    assert PROFILE_PATH.read_bytes() == _canonical(_profile())
+    assert "forbidden_runtime_references" in profile
+    assert "forbidden_runtime_calls" not in profile
+    assert PROFILE_PATH.read_bytes() == _canonical(profile)
     assert verifier.verify_profile(ROOT, PROFILE_PATH) == {
         "profile": "personal_store_release",
         "status": "pass",
@@ -237,8 +240,11 @@ def test_payload_rejects_reparse_entry_deterministically(
         ("import openai\n", "PROFILE_RUNTIME_IMPORT_FORBIDDEN"),
         ("import anthropic\n", "PROFILE_RUNTIME_IMPORT_FORBIDDEN"),
         ("import sentry_sdk\n", "PROFILE_RUNTIME_IMPORT_FORBIDDEN"),
-        ("exec('pass')\n", "PROFILE_RUNTIME_CALL_FORBIDDEN"),
-        ("import os\nos.system('command')\n", "PROFILE_RUNTIME_CALL_FORBIDDEN"),
+        ("exec('pass')\n", "PROFILE_RUNTIME_REFERENCE_FORBIDDEN"),
+        (
+            "import os\nos.system('command')\n",
+            "PROFILE_RUNTIME_REFERENCE_FORBIDDEN",
+        ),
         (
             "from .mcp_sandbox import run_mcp_sandbox\n",
             "PROFILE_RUNTIME_SYMBOL_FORBIDDEN",
@@ -263,7 +269,7 @@ def test_runtime_ast_rejects_removed_dynamic_llm_telemetry_and_process_code(
     (
         "import PySide6.QtCore\nPySide6.QtCore.QProcess.startDetached('tool')\n",
         "import PySide6.QtCore as qc\nqc.QProcess.start('tool')\n",
-        "import PySide6.QtCore as qc\nmodule = qc\nmodule.QProcess.start('tool')\n",
+        "import PySide6.QtCore as qc\nmodule = qc.QProcess\n",
         "from PySide6.QtCore import QProcess\nrunner = QProcess.startDetached\nrunner('tool')\n",
         "import PySide6.QtCore\nproc = PySide6.QtCore.QProcess\nproc.start('tool')\n",
         "import PySide6.QtCore as qc\nfirst = qc.QProcess\nsecond = first\nsecond.start('tool')\n",
@@ -273,9 +279,11 @@ def test_runtime_ast_rejects_removed_dynamic_llm_telemetry_and_process_code(
         "import builtins\nbuiltins.exec('pass')\n",
         "import builtins\nbuiltins.compile('pass', 'name', 'exec')\n",
         "import builtins\nloader = builtins.__import__\nloader('module')\n",
+        "from builtins import eval as runner\n",
+        "runner = eval\n",
     ),
 )
-def test_runtime_ast_rejects_qualified_and_aliased_forbidden_calls(
+def test_runtime_ast_rejects_qualified_and_aliased_forbidden_references(
     tmp_path: Path, source: str
 ) -> None:
     verifier = _verifier()
@@ -283,18 +291,18 @@ def test_runtime_ast_rejects_qualified_and_aliased_forbidden_calls(
     (root / "src/agentguardian/hostile.py").write_text(source, encoding="utf-8")
 
     with pytest.raises(
-        verifier.ProfileViolation, match="^PROFILE_RUNTIME_CALL_FORBIDDEN$"
+        verifier.ProfileViolation, match="^PROFILE_RUNTIME_REFERENCE_FORBIDDEN$"
     ) as caught:
         verifier.verify_profile(
             root, root / "release_profiles/personal_store_release.json"
         )
 
-    assert str(caught.value) == "PROFILE_RUNTIME_CALL_FORBIDDEN"
+    assert str(caught.value) == "PROFILE_RUNTIME_REFERENCE_FORBIDDEN"
     assert str(root) not in str(caught.value)
     assert source.strip() not in str(caught.value)
 
 
-def test_runtime_ast_resolves_subprocess_callable_assignment_before_import_gate(
+def test_runtime_ast_rejects_subprocess_import_before_reference_scan(
     tmp_path: Path,
 ) -> None:
     verifier = _verifier()
@@ -303,13 +311,13 @@ def test_runtime_ast_resolves_subprocess_callable_assignment_before_import_gate(
     (root / "src/agentguardian/hostile.py").write_text(source, encoding="utf-8")
 
     with pytest.raises(
-        verifier.ProfileViolation, match="^PROFILE_RUNTIME_CALL_FORBIDDEN$"
+        verifier.ProfileViolation, match="^PROFILE_RUNTIME_IMPORT_FORBIDDEN$"
     ) as caught:
         verifier.verify_profile(
             root, root / "release_profiles/personal_store_release.json"
         )
 
-    assert str(caught.value) == "PROFILE_RUNTIME_CALL_FORBIDDEN"
+    assert str(caught.value) == "PROFILE_RUNTIME_IMPORT_FORBIDDEN"
 
 
 def test_runtime_ast_preserves_benign_aliases_and_noncalled_literals(
@@ -323,6 +331,7 @@ def test_runtime_ast_preserves_benign_aliases_and_noncalled_literals(
         "open_database = connect\n"
         "open_database(':memory:')\n"
         "left = right\nright = left\n"
+        "import os\npath_value = os.fspath('.')\n"
         "DETECTOR_NAMES = ('subprocess.run', 'builtins.exec', 'QProcess.start')\n",
         encoding="utf-8",
     )
@@ -332,13 +341,15 @@ def test_runtime_ast_preserves_benign_aliases_and_noncalled_literals(
     )["status"] == "pass"
 
 
-def test_runtime_ast_keeps_identical_local_aliases_isolated(tmp_path: Path) -> None:
+def test_runtime_ast_allows_benign_same_names_without_forbidden_rhs(
+    tmp_path: Path,
+) -> None:
     verifier = _verifier()
     root = _copy_fixture(tmp_path)
     (root / "src/agentguardian/benign_alias.py").write_text(
-        "import PySide6.QtCore as qc\n"
-        "def unused_forbidden_alias():\n"
-        "    runner = qc.QProcess.start\n"
+        "def first():\n"
+        "    runner = len\n"
+        "    return runner(())\n"
         "def benign_call():\n"
         "    runner = print\n"
         "    runner('ok')\n",
@@ -350,31 +361,28 @@ def test_runtime_ast_keeps_identical_local_aliases_isolated(tmp_path: Path) -> N
     )["status"] == "pass"
 
 
-def test_runtime_ast_rejects_actual_local_forbidden_call_without_scope_leak(
+def test_runtime_ast_rejects_forbidden_reference_without_call(
     tmp_path: Path,
 ) -> None:
     verifier = _verifier()
     root = _copy_fixture(tmp_path)
     (root / "src/agentguardian/hostile.py").write_text(
         "import PySide6.QtCore as qc\n"
-        "def forbidden_call():\n"
+        "def forbidden_reference():\n"
         "    runner = qc.QProcess.start\n"
-        "    runner('tool')\n"
-        "def benign_call():\n"
-        "    runner = print\n"
-        "    runner('ok')\n",
+        "    return runner\n",
         encoding="utf-8",
     )
 
     with pytest.raises(
-        verifier.ProfileViolation, match="^PROFILE_RUNTIME_CALL_FORBIDDEN$"
+        verifier.ProfileViolation, match="^PROFILE_RUNTIME_REFERENCE_FORBIDDEN$"
     ):
         verifier.verify_profile(
             root, root / "release_profiles/personal_store_release.json"
         )
 
 
-def test_runtime_ast_applies_straight_line_alias_shadowing(tmp_path: Path) -> None:
+def test_runtime_ast_rejects_reference_even_when_later_shadowed(tmp_path: Path) -> None:
     verifier = _verifier()
     root = _copy_fixture(tmp_path)
     source = root / "src/agentguardian/alias_order.py"
@@ -385,35 +393,33 @@ def test_runtime_ast_applies_straight_line_alias_shadowing(tmp_path: Path) -> No
         "runner('ok')\n",
         encoding="utf-8",
     )
-    assert verifier.verify_profile(
-        root, root / "release_profiles/personal_store_release.json"
-    )["status"] == "pass"
-
-    source.write_text(
-        "import PySide6.QtCore as qc\n"
-        "runner = print\n"
-        "runner = qc.QProcess.start\n"
-        "runner('tool')\n",
-        encoding="utf-8",
-    )
     with pytest.raises(
-        verifier.ProfileViolation, match="^PROFILE_RUNTIME_CALL_FORBIDDEN$"
+        verifier.ProfileViolation, match="^PROFILE_RUNTIME_REFERENCE_FORBIDDEN$"
     ):
         verifier.verify_profile(
             root, root / "release_profiles/personal_store_release.json"
         )
 
+    source.write_text(
+        "runner = print\n"
+        "runner = len\n"
+        "runner(())\n",
+        encoding="utf-8",
+    )
+    assert verifier.verify_profile(
+        root, root / "release_profiles/personal_store_release.json"
+    )["status"] == "pass"
 
-def test_runtime_ast_isolates_nested_scope_and_parameter_shadowing(
+
+def test_runtime_ast_allows_nested_benign_names_and_parameter_shadowing(
     tmp_path: Path,
 ) -> None:
     verifier = _verifier()
     root = _copy_fixture(tmp_path)
     (root / "src/agentguardian/benign_nested.py").write_text(
-        "import PySide6.QtCore as qc\n"
-        "runner = qc.QProcess.start\n"
+        "runner = print\n"
         "def outer():\n"
-        "    runner = print\n"
+        "    runner = len\n"
         "    def inner(runner):\n"
         "        runner('ok')\n"
         "    inner(print)\n"
@@ -428,7 +434,7 @@ def test_runtime_ast_isolates_nested_scope_and_parameter_shadowing(
     )["status"] == "pass"
 
 
-def test_runtime_ast_conservatively_merges_branch_aliases(tmp_path: Path) -> None:
+def test_runtime_ast_scans_forbidden_reference_in_branch(tmp_path: Path) -> None:
     verifier = _verifier()
     root = _copy_fixture(tmp_path)
     (root / "src/agentguardian/hostile.py").write_text(
@@ -443,19 +449,52 @@ def test_runtime_ast_conservatively_merges_branch_aliases(tmp_path: Path) -> Non
     )
 
     with pytest.raises(
-        verifier.ProfileViolation, match="^PROFILE_RUNTIME_CALL_FORBIDDEN$"
+        verifier.ProfileViolation, match="^PROFILE_RUNTIME_REFERENCE_FORBIDDEN$"
     ):
         verifier.verify_profile(
             root, root / "release_profiles/personal_store_release.json"
         )
 
 
-def test_runtime_ast_budget_fails_closed_quickly_with_fixed_code(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import os\nfor callback in (os.system,):\n    pass\n",
+        "import os\ncallbacks = [os.system for _ in range(1)]\n",
+        "import os\ndef run(callback=os.system):\n    return callback\n",
+        "import os\nregister(os.system)\n",
+        "from functools import partial\nimport os\ncallback = partial(os.system, 'tool')\n",
+        "import os\ntry:\n    callback = os.system\nexcept Exception:\n    pass\n",
+        "import os\nif (callback := os.system):\n    pass\n",
+        "import os\ndef callback():\n    return os.system\n",
+    ),
+)
+def test_runtime_ast_rejects_forbidden_reference_in_every_expression_context(
+    tmp_path: Path, source: str
 ) -> None:
     verifier = _verifier()
     root = _copy_fixture(tmp_path)
-    source = "\n".join(f"alias_{index} = print" for index in range(5000)) + "\n"
+    (root / "src/agentguardian/hostile.py").write_text(source, encoding="utf-8")
+
+    with pytest.raises(
+        verifier.ProfileViolation, match="^PROFILE_RUNTIME_REFERENCE_FORBIDDEN$"
+    ) as caught:
+        verifier.verify_profile(
+            root, root / "release_profiles/personal_store_release.json"
+        )
+
+    assert str(caught.value) == "PROFILE_RUNTIME_REFERENCE_FORBIDDEN"
+    assert str(root) not in str(caught.value)
+    assert source.strip() not in str(caught.value)
+
+
+@pytest.mark.parametrize("statement", ("pass\n", "0\n"))
+def test_runtime_ast_node_limit_fails_closed_quickly_with_fixed_code(
+    tmp_path: Path, statement: str
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    source = statement * 20_000
     (root / "src/agentguardian/hostile.py").write_text(source, encoding="utf-8")
 
     started = time.monotonic()
@@ -471,6 +510,20 @@ def test_runtime_ast_budget_fails_closed_quickly_with_fixed_code(
     assert str(root) not in str(caught.value)
     assert source.strip() not in str(caught.value)
     assert elapsed < 10.0
+
+
+def test_runtime_source_byte_limit_fails_with_fixed_code(tmp_path: Path) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    source = root / "src/agentguardian/hostile.py"
+    source.write_bytes(b"#" * (256 * 1024 + 1))
+
+    with pytest.raises(
+        verifier.ProfileViolation, match="^PROFILE_RUNTIME_ANALYSIS_LIMIT$"
+    ):
+        verifier.verify_profile(
+            root, root / "release_profiles/personal_store_release.json"
+        )
 
 
 def test_network_import_set_rejects_undeclared_and_missing_modules(tmp_path: Path) -> None:
