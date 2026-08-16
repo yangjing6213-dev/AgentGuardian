@@ -109,14 +109,19 @@ real organization adapter/certificate. Required repository variables, signing
 material, an approved `windows-license-review.json`, real sanitized-sample human
 signoff, and independent clean-machine install/upgrade/run/uninstall evidence
 remain pending. Predecessor `f4b3d5c5bfd9bd4f8f6733ac9dad491c7d2bb47e`
-passed exact-SHA push and Draft PR CI plus both Windows package checks; current
-code-bearing SHA `4d88e0b0123e7f4a6651fa43eb4afd652e4f152c` remains pending
+passed exact-SHA push and Draft PR CI plus both Windows package checks. Pre-repair
+HEAD `1af14022acc47a053d6393bea05a171a913ca84a` failed Windows run
+`31907590797` when POSIX replacement bypassed the held-file assumption; current
+code-bearing SHA `6ccb5232f6eb3955890f89f7a1000df338db8e8a` remains pending
 remote revalidation.
 
-Residual Minor/defense-in-depth items are the non-atomic boundary between reparse
-validation and final executable `CreateFileW`; traditional, parent-directory,
-and `FileRenameInfoEx` POSIX replacement attempts were blocked by the held file
-on current Windows/NTFS. Multi-signature signer-index binding,
+Runtime now accepts the fixed adapter only when Windows resolves the exact
+`yangjing6213dev.AgentGuardian` Store/line-of-business package under the Program
+Files `WindowsApps` repository, `Install == Effective`, Mutable and External
+roots are absent, and the complete path denies the current token dangerous
+mutation rights. Residual work includes the non-atomic boundary between those
+checks and final `CreateProcessW`; the claim excludes administrator/SYSTEM and
+a compromised deployment service. Multi-signature signer-index binding,
 evidence-output parent-path TOCTOU, and synchronous AppX operations bounded only
 by the outer workflow timeout remain open. Remote
 device enrollment, remote policy distribution, and a remote administrator

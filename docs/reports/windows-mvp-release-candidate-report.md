@@ -9,15 +9,15 @@ Windows MVP remains incomplete. Production safety is not established.
 ## Candidate Boundary
 
 - Local gate implementation and unified local evidence baseline: historical `90e6edad53bee48adca58d508d193fc855c1db7d`.
-- The current clean code-bearing hardening HEAD is `4d88e0b0123e7f4a6651fa43eb4afd652e4f152c`. It adds one shared streaming SHA-256 helper with an exact 64 MiB adapter limit across runtime launch, trusted staging, packaged acceptance, and final release verification. It retains runtime WinTrust handle binding, packaged MCP adapter staging, bounded direct artifact acquisition, staged-adapter locking through evidence and ZIP generation, trusted MSIX adapter acceptance, final release-evidence binding, and fail-closed signing-material cleanup. This report is a documentation-only follow-up to that SHA.
+- The current clean code-bearing hardening HEAD is `6ccb5232f6eb3955890f89f7a1000df338db8e8a`. It repairs the cross-environment MCP path-replacement gap exposed by GitHub Windows run `31907590797`. Runtime now binds the fixed adapter to the OS-resolved `yangjing6213dev.AgentGuardian` Store/line-of-business package under the Program Files `WindowsApps` repository, requires `Install == Effective`, rejects Mutable and all External package paths, and fails closed when the complete path is mutable by the current token. The existing streaming 64 MiB limit, WinTrust handle binding, trusted staging, packaged acceptance, and final evidence controls remain in place. This report is a documentation-only follow-up to that SHA.
 - The first independent review of the previous evidence-sync HEAD found 7 Important and 2 Minor findings. A second independent review of `305eeb4e1a143a245323a9b54d8fe27314a4e16c` found 2 further Important findings; both were remediated in `90e6eda`. A focused third independent re-review found no Critical or Important findings and one Minor; it did not execute tests independently.
 - OpenAI Provider remains local detection and manual guidance only; the default product path makes no provider API call and performs no endpoint verification.
-- The remote-tracking reference was `f4b3d5c5bfd9bd4f8f6733ac9dad491c7d2bb47e` when this report was prepared. Its exact-SHA push and Draft PR CI plus both Windows package checks succeeded, but it predates the current candidate baseline.
+- Pre-repair remote HEAD `1af14022acc47a053d6393bea05a171a913ca84a` failed Windows run `31907590797`: `FileRenameInfoEx` POSIX replacement succeeded while the old file handle remained open. Predecessor `f4b3d5c5bfd9bd4f8f6733ac9dad491c7d2bb47e` remains the latest exact SHA whose push and Draft PR CI plus both Windows package checks all succeeded.
 
 ## Current Follow-up Evidence
 
 Fresh local verification on clean code-bearing SHA
-`4d88e0b0123e7f4a6651fa43eb4afd652e4f152c` recorded `1542 passed, 11 skipped`
+`6ccb5232f6eb3955890f89f7a1000df338db8e8a` recorded `1563 passed, 11 skipped`
 for the full suite and `47 passed, 1 skipped` for
 `scripts/run_windows_mvp_security_gate.py`. The command
 `python -m compileall src scripts tests` exited 0 and `git diff --check` was
@@ -28,7 +28,9 @@ fresh full-suite evidence above.
 
 Task 1 implements packaged MCP adapter acceptance after a completed
 same-identity trusted MSIX upgrade. Acceptance requires an exact source SHA,
-fresh user state, strict installed package path and reparse checks, actual
+fresh user state, an exact OS-resolved package full name, Store/line-of-business
+origin, Program Files `WindowsApps` installation, `Install == Effective`, no
+Mutable or External package roots, strict reparse and path-rights checks, actual
 installed adapter execution under AppContainer plus a Job Object, and bounded
 evidence binding the adapter bytes, exact X.500 publisher subject, exact DER
 certificate SHA-256, completed native sandbox metadata, and
@@ -52,20 +54,19 @@ The current bounded-hashing slice applies the downloader's 64 MiB artifact
 boundary to runtime launch, source and staged build verification, packaged MCP
 acceptance, and the final trusted-release evidence gate. Hashing is streaming;
 exact-limit files are accepted, while `64 MiB + 1 byte` fails before launch,
-copy, or evidence creation. A real sparse-file boundary test and a real Windows
-`FileRenameInfoEx` POSIX replacement probe are included. Manifest and ZIP code
+copy, or evidence creation. A real sparse-file boundary test and a cross-environment
+Windows `FileRenameInfoEx` POSIX replacement probe are included. Manifest and ZIP code
 may still hold up to the bounded 64 MiB artifact in memory.
 
-Task 1, Task 2, trusted-artifact acquisition, and bounded adapter hashing passed independent
+Task 1, Task 2, trusted-artifact acquisition, bounded adapter hashing, and the
+packaged-path identity repair passed independent
 specification or quality/security review with no remaining Critical or Important
-issues. The focused runtime handle-binding review initially raised one Important
-path-identity concern, then withdrew it after a real Windows test demonstrated
-that parent-directory replacement fails while the final executable handle is
-held and succeeds after release. Its final result was PASS with no Critical or
-Important findings. The bounded-hashing review's two initial Important findings
-were both resolved or withdrawn after final-release gate remediation and a real
-Windows POSIX replacement probe; final re-review was PASS with no Critical or
-Important findings. Predecessor `f4b3d5c5bfd9bd4f8f6733ac9dad491c7d2bb47e`
+issues. The packaged-path review initially rejected an ACL-only fix because
+pre-held handles and development/external packages could preserve a replacement
+path. It passed only after the runtime was limited to a Windows-managed immutable
+install root, exact package identity, trusted package origin, `Install == Effective`,
+and explicit Mutable/External rejection. This is evidence for the documented
+standard-user model, not administrator/SYSTEM compromise. Predecessor `f4b3d5c5bfd9bd4f8f6733ac9dad491c7d2bb47e`
 passed exact-SHA push and Draft PR CI plus both Windows package checks.
 Historical successful CI remains evidence only for its exact historical SHA.
 
@@ -89,8 +90,8 @@ change the release decision.
 
 | Gate | Current revalidation | Scope |
 | --- | --- | --- |
-| Windows MVP security gate | `47 passed, 1 skipped` | Fresh run of `scripts/run_windows_mvp_security_gate.py` at `4d88e0b0123e7f4a6651fa43eb4afd652e4f152c`. The allowed skip is not reported as a pass. |
-| Python 3.14 full suite | `1542 passed, 11 skipped` | Fresh full-suite run at the exact SHA above. |
+| Windows MVP security gate | `47 passed, 1 skipped` | Fresh run of `scripts/run_windows_mvp_security_gate.py` at `6ccb5232f6eb3955890f89f7a1000df338db8e8a`. The allowed skip is not reported as a pass. |
+| Python 3.14 full suite | `1563 passed, 11 skipped` | Fresh full-suite run at the exact SHA above. |
 | Source, script, and test compilation | Exit 0 | Fresh `python -m compileall -q src scripts tests`. |
 | Latest completed exact-SHA GitHub CI | `VERIFIED` | At predecessor `f4b3d5c5bfd9bd4f8f6733ac9dad491c7d2bb47e`, push CI `31906131946`, push Windows `31906131948`, Draft PR CI `31906133527`, and Draft PR Windows `31906133509` all completed successfully. The Windows package remains unsigned CI smoke. |
 | Brand validation | Historical exit 0 | Existing brand-asset contract; not rerun for this documentation sync. |
@@ -102,7 +103,7 @@ For traceability, the earlier Batch 6 evidence baseline remains recorded as
 `1322 passed, 8 skipped` on Python 3.14 and `1321 passed, 9 skipped` on the
 hash-locked Python 3.12 environment. The prior `ef571a1` result was
 `1426 passed, 11 skipped`; neither historical count replaces the current
-`4d88e0b` local result above.
+`6ccb523` local result above.
 
 ## Performance Evidence
 
@@ -122,8 +123,8 @@ This evidence does not cover the 10,000-file functional maximum, whole-process r
 - Independent read-only review: `COMPLETED WITH 7 IMPORTANT AND 2 MINOR FINDINGS` on the prior evidence-sync HEAD; those findings were remediated locally.
 - Second independent re-review: `COMPLETED WITH 2 IMPORTANT AND 3 MINOR FINDINGS` on `305eeb4`; both Important findings were remediated in `90e6eda`.
 - Third independent re-review: `COMPLETED WITH NO CRITICAL/IMPORTANT FINDINGS AND 1 MINOR`; the reviewer did not execute tests independently, so runtime confirmation remains the separately recorded local-gate evidence.
-- Task 1, Task 2, trusted-artifact acquisition, runtime WinTrust handle-binding, and bounded adapter hashing independent specification or quality/security review: `COMPLETED`; no Critical or Important issues remain. This does not provide external-material or trusted-release acceptance.
-- Latest completed exact-SHA GitHub CI: `VERIFIED` for predecessor `f4b3d5c5bfd9bd4f8f6733ac9dad491c7d2bb47e`; push CI `31906131946`, push Windows `31906131948`, Draft PR CI `31906133527`, and Draft PR Windows `31906133509` all succeeded. Current local SHA `4d88e0b0123e7f4a6651fa43eb4afd652e4f152c` remains pending remote revalidation.
+- Task 1, Task 2, trusted-artifact acquisition, runtime WinTrust handle-binding, bounded adapter hashing, and packaged-path identity independent specification or quality/security review: `COMPLETED`; no Critical or Important issues remain for the documented standard-user model. This does not provide external-material or trusted-release acceptance.
+- Latest completed all-green exact-SHA GitHub CI: `VERIFIED` for predecessor `f4b3d5c5bfd9bd4f8f6733ac9dad491c7d2bb47e`; push CI `31906131946`, push Windows `31906131948`, Draft PR CI `31906133527`, and Draft PR Windows `31906133509` all succeeded. Pre-repair HEAD `1af14022acc47a053d6393bea05a171a913ca84a` failed Windows run `31907590797`; current code-bearing SHA `6ccb5232f6eb3955890f89f7a1000df338db8e8a` remains pending remote revalidation.
 - Historical `e8013dc` label: Current exact-SHA GitHub CI: `VERIFIED`. It does not cover the current local SHA.
 - Historical label: GitHub-hosted Windows runner provenance: `VERIFIED AS CI EVIDENCE ONLY`. It does not cover the current local SHA or replace an independent clean Windows machine.
 - Trusted code signing: `PENDING`.
@@ -136,7 +137,7 @@ This evidence does not cover the 10,000-file functional maximum, whole-process r
 - License and redistribution review: `PENDING`.
 - Required repository variables, organization signing material, approved `windows-license-review.json`, real sanitized-sample human signoff, and independent clean-machine install/upgrade/run/uninstall evidence: `PENDING`.
 - Remote enterprise console, device enrollment, and distribution: `UNIMPLEMENTED`.
-- Residual Minor/defense-in-depth items: reparse validation and the final executable `CreateFileW` are not atomic, although traditional, parent-directory, and `FileRenameInfoEx` POSIX replacement attempts were blocked by the held file on current Windows/NTFS; multi-signature signer-index binding; evidence-output parent-path TOCTOU; and synchronous AppX operations bounded only by the outer workflow timeout.
+- Residual items: package/path checks and final `CreateProcessW` are not one atomic kernel operation; the current boundary therefore excludes administrator/SYSTEM and a compromised deployment service. Multi-signature signer-index binding, evidence-output parent-path TOCTOU, and synchronous AppX operations bounded only by the outer workflow timeout remain open.
 
 The trusted-signature workflow remains fail-closed and has not been dispatched
 or passed with a real organization adapter/certificate. No certificate material
