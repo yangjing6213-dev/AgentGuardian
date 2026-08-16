@@ -33,16 +33,25 @@ _WINDOWS_RESERVED_DEVICE_NAMES = frozenset(
     | {f"lpt{number}" for number in range(1, 10)}
     | {f"{prefix}{number}" for prefix in ("com", "lpt") for number in "¹²³"}
 )
-# Exact after case-folding and removing common word separators.
+# Exact after case-folding and retaining only Unicode alphanumeric characters.
 _UNSUPPORTED_DATA_COMPONENTS = frozenset(
     {
+        "medical",
         "medicalrecords",
+        "patient",
         "patientdata",
+        "financial",
         "financialrecords",
+        "identity",
         "identitydata",
+        "biometric",
         "biometricdata",
+        "privileged",
+        "legal",
         "privilegedlegal",
+        "customerdata",
         "customerdataset",
+        "statesecret",
         "statesecrets",
     }
 )
@@ -576,7 +585,7 @@ def _validated_roots(roots: object) -> tuple[tuple[str, ...], tuple[str, ...]]:
 
 
 def _normalized_policy_component(value: str) -> str:
-    return value.casefold().translate(str.maketrans("", "", "-_ "))
+    return "".join(character for character in value.casefold() if character.isalnum())
 
 
 def _is_broad_scope_root(

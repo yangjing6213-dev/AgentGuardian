@@ -300,19 +300,19 @@ def _report_summary(payload: object) -> ReportSummary:
         "supported_use_boundary",
         "evaluated_at",
     }:
-        current = True
+        schema = 2
         legacy = False
         evaluated_at = _domain_call(parse_utc, payload["evaluated_at"])
     elif set(payload) == common_keys | {"report_schema", "evaluated_at"}:
-        current = False
+        schema = 1
         legacy = False
         evaluated_at = _domain_call(parse_utc, payload["evaluated_at"])
     elif set(payload) == common_keys | {"report_schema"}:
-        current = False
+        schema = 1
         legacy = False
         evaluated_at = None
     elif set(payload) == common_keys:
-        current = False
+        schema = None
         legacy = True
         evaluated_at = None
     else:
@@ -325,11 +325,11 @@ def _report_summary(payload: object) -> ReportSummary:
             not legacy
             and (
                 type(report["report_schema"]) is not int
-                or report["report_schema"] != 1
+                or report["report_schema"] != schema
             )
         )
         or (
-            current
+            schema == 2
             and (
                 type(report["supported_use_boundary"]) is not str
                 or report["supported_use_boundary"] != SUPPORTED_USE_BOUNDARY

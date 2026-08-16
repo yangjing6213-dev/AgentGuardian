@@ -50,19 +50,30 @@ WINDOWS_RESERVED_COMPONENTS = tuple(
     )
     for variant in (name, f"{name.lower()}.txt")
 )
-UNSUPPORTED_DATA_COMPONENTS = tuple(
-    separator.join(words)
-    for words in (
-        ("medical", "records"),
-        ("patient", "data"),
-        ("financial", "records"),
-        ("identity", "data"),
-        ("biometric", "data"),
-        ("privileged", "legal"),
-        ("customer", "dataset"),
-        ("state", "secrets"),
-    )
-    for separator in ("-", "_", " ", "")
+UNSUPPORTED_DATA_COMPONENTS = (
+    "medical",
+    "patient",
+    "financial",
+    "identity",
+    "biometric",
+    "privileged",
+    "legal",
+    *(
+        separator.join(words)
+        for words in (
+            ("medical", "records"),
+            ("patient", "data"),
+            ("financial", "records"),
+            ("identity", "data"),
+            ("biometric", "data"),
+            ("privileged", "legal"),
+            ("customer", "data"),
+            ("customer", "dataset"),
+            ("state", "secret"),
+            ("state", "secrets"),
+        )
+        for separator in ("", "-", "_", " ", ".", "._-")
+    ),
 )
 
 
@@ -188,7 +199,7 @@ def test_scope_preview_rejects_exact_regulated_data_components_without_leaks(
     component: str,
     position: str,
 ) -> None:
-    variant = component.upper() if "_" in component else component.title()
+    variant = component.upper()
     suffix = "/ordinary-project" if position == "intermediate" else ""
 
     with pytest.raises(ValueError) as captured:
@@ -230,6 +241,15 @@ def test_scope_preview_rejects_broad_roots_with_fixed_error(root: Path) -> None:
         Path(r"C:\Users\Alice\source\ordinary-project"),
         Path(r"D:\Work\ordinary-project"),
         Path(r"C:\Synthetic\medical-project"),
+        Path(r"C:\Synthetic\medicine"),
+        Path(r"C:\Synthetic\patients"),
+        Path(r"C:\Synthetic\financial-tools"),
+        Path(r"C:\Synthetic\identity-service"),
+        Path(r"C:\Synthetic\biometrics-lab"),
+        Path(r"C:\Synthetic\legality"),
+        Path(r"C:\Synthetic\customer-success"),
+        Path(r"C:\Synthetic\state-machine"),
+        Path(r"C:\Synthetic\project"),
     ),
 )
 def test_scope_preview_allows_narrow_non_regulated_configuration_roots(

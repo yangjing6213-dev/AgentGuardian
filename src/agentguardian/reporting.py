@@ -65,7 +65,7 @@ def render_json(
         report = {
             "product": _PRODUCT,
             "version": __version__,
-            "report_schema": 1,
+            "report_schema": 2,
             "supported_use_boundary": SUPPORTED_USE_BOUNDARY,
             "evaluated_at": evaluated_timestamp,
             "rule_version": rule_version,

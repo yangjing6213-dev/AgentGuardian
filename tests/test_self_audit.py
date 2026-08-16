@@ -62,7 +62,7 @@ payload = json.loads(
         evaluated_at=datetime(2026, 8, 3, 12, tzinfo=timezone.utc),
     )
 )
-assert payload["report_schema"] == 1
+assert payload["report_schema"] == 2
 assert payload["evaluated_at"] == "2026-08-03T12:00:00Z"
 assert payload["score"]["coverage_state"] == "limited"
 assert payload["reviewed_score"]["coverage_state"] == "limited"
@@ -1700,7 +1700,7 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
     assert payload == {
         "product": "AgentGuardian",
         "version": __version__,
-        "report_schema": 1,
+        "report_schema": 2,
         "supported_use_boundary": "personal_non_regulated_configuration",
         "evaluated_at": "2026-08-03T12:00:00Z",
         "rule_version": "rules-1",

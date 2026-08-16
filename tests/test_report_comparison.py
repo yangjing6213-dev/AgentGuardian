@@ -128,21 +128,54 @@ def _assert_comparison_invalid(json_text: object) -> None:
     )
 
 
-def test_current_report_validates_fixed_boundary_and_accepts_old_schema_1() -> None:
+def test_current_schema_2_requires_exact_fixed_boundary() -> None:
     payload = json.loads(_report_json())
 
-    assert payload["report_schema"] == 1
+    assert payload["report_schema"] == 2
     assert payload["supported_use_boundary"] == "personal_non_regulated_configuration"
-    current = parse_report_summary(json.dumps(payload))
+    parse_report_summary(json.dumps(payload))
 
     for invalid in ("enterprise", "PERSONAL_NON_REGULATED_CONFIGURATION"):
         forged = dict(payload)
         forged["supported_use_boundary"] = invalid
         _assert_comparison_invalid(json.dumps(forged))
 
-    old_schema_1 = dict(payload)
-    del old_schema_1["supported_use_boundary"]
-    assert parse_report_summary(json.dumps(old_schema_1)) == current
+    missing_boundary = dict(payload)
+    del missing_boundary["supported_use_boundary"]
+    _assert_comparison_invalid(json.dumps(missing_boundary))
+
+
+def test_historical_schema_1_is_explicit_and_cannot_claim_current_boundary() -> None:
+    current_payload = json.loads(_report_json())
+    current = parse_report_summary(json.dumps(current_payload))
+    historical_payload = dict(current_payload)
+    historical_payload["report_schema"] = 1
+    del historical_payload["supported_use_boundary"]
+    historical = parse_report_summary(json.dumps(historical_payload))
+
+    comparison = compare_report_summaries(historical, current)
+
+    assert historical == current
+    assert comparison.baseline == historical
+    assert not hasattr(historical, "supported_use_boundary")
+    assert not hasattr(comparison, "supported_use_boundary")
+
+    for boundary in ("personal_non_regulated_configuration", "enterprise"):
+        contradictory = dict(historical_payload)
+        contradictory["supported_use_boundary"] = boundary
+        _assert_comparison_invalid(json.dumps(contradictory))
+
+    extra_shape = dict(historical_payload)
+    extra_shape["boundary_evidence"] = True
+    _assert_comparison_invalid(json.dumps(extra_shape))
+
+
+@pytest.mark.parametrize("schema", (0, 3, True))
+def test_unsupported_report_schema_fails_closed(schema: object) -> None:
+    payload = json.loads(_report_json())
+    payload["report_schema"] = schema
+
+    _assert_comparison_invalid(json.dumps(payload))
 
 
 def _assert_summary_comparison_invalid(baseline: object, current: object) -> None:
@@ -358,7 +391,7 @@ def test_score_recomputation_rejects_independent_contradictions(
     _assert_comparison_invalid(json.dumps(payload))
 
 
-def test_schema_1_evaluated_at_verifies_declared_disposition_state() -> None:
+def test_schema_2_evaluated_at_verifies_declared_disposition_state() -> None:
     payload = json.loads(_report_json())
     payload["evaluated_at"] = "2026-08-03T12:00:00Z"
 
@@ -367,6 +400,8 @@ def test_schema_1_evaluated_at_verifies_declared_disposition_state() -> None:
 
 def test_old_schema_1_non_open_disposition_fails_closed() -> None:
     payload = json.loads(_report_json())
+    payload["report_schema"] = 1
+    del payload["supported_use_boundary"]
     del payload["evaluated_at"]
     disposition = payload["findings"][1]["disposition"]
     disposition["created_at"] = "2020-01-01T00:00:00Z"
@@ -377,6 +412,7 @@ def test_old_schema_1_non_open_disposition_fails_closed() -> None:
 
 def test_legacy_schema_0_non_open_disposition_fails_closed() -> None:
     payload = json.loads(_report_json())
+    del payload["supported_use_boundary"]
     del payload["report_schema"]
     del payload["evaluated_at"]
     del payload["score"]["coverage_state"]
@@ -420,7 +456,7 @@ def test_legacy_schema_0_non_open_disposition_fails_closed() -> None:
         "active-as-expired",
     ),
 )
-def test_schema_1_rejects_unverifiable_disposition_time_claims(
+def test_schema_2_rejects_unverifiable_disposition_time_claims(
     evaluated_at: str,
     status: str,
     created_at: str,
@@ -439,22 +475,25 @@ def test_schema_1_rejects_unverifiable_disposition_time_claims(
 
 
 def test_legacy_report_derives_coverage_state_and_matches_schema_1() -> None:
-    schema_1 = json.loads(_report_json())
-    for finding in schema_1["findings"]:
+    schema_2 = json.loads(_report_json())
+    for finding in schema_2["findings"]:
         finding["disposition"] = {"status": "open"}
-    schema_1["reviewed_score"] = schema_1["score"]
+    schema_2["reviewed_score"] = schema_2["score"]
+    schema_2_text = json.dumps(schema_2)
+    schema_1 = json.loads(schema_2_text)
+    schema_1["report_schema"] = 1
+    del schema_1["supported_use_boundary"]
     schema_1_text = json.dumps(schema_1)
     old_schema_1 = json.loads(schema_1_text)
-    del old_schema_1["supported_use_boundary"]
     del old_schema_1["evaluated_at"]
     legacy = json.loads(schema_1_text)
-    del legacy["supported_use_boundary"]
     del legacy["report_schema"]
     del legacy["evaluated_at"]
     del legacy["score"]["coverage_state"]
     del legacy["reviewed_score"]["coverage_state"]
 
-    current = parse_report_summary(schema_1_text)
+    current = parse_report_summary(schema_2_text)
+    assert parse_report_summary(schema_1_text) == current
     assert parse_report_summary(json.dumps(old_schema_1)) == current
     assert parse_report_summary(json.dumps(legacy)) == current
 
@@ -473,7 +512,7 @@ def test_legacy_partial_hybrids_fail_closed(hybrid: str) -> None:
 
 def test_legacy_unknown_schema_fails_closed() -> None:
     payload = json.loads(_report_json())
-    payload["report_schema"] = 2
+    payload["report_schema"] = 3
 
     _assert_comparison_invalid(json.dumps(payload))
 

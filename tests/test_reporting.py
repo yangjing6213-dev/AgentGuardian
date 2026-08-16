@@ -1001,6 +1001,7 @@ def test_render_json_contains_safe_complete_deterministic_report() -> None:
     assert first == json.dumps(report, ensure_ascii=False, indent=2)
     assert report["product"] == "AgentGuardian"
     assert report["version"] == "0.1.0"
+    assert report["report_schema"] == 2
     assert (
         report["supported_use_boundary"]
         == "personal_non_regulated_configuration"
@@ -1081,7 +1082,7 @@ def test_render_json_schema_exposes_exact_coverage_state(
         )
     )
 
-    assert report["report_schema"] == 1
+    assert report["report_schema"] == 2
     assert (
         report["supported_use_boundary"]
         == "personal_non_regulated_configuration"
