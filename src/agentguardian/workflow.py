@@ -18,7 +18,8 @@ from .dispositions import (
 from .domain import Evidence, Finding, RiskDomain, Score, Severity
 
 
-SCOPE_PREVIEW_CONTRACT_VERSION = 1
+SUPPORTED_USE_BOUNDARY = "personal_non_regulated_configuration"
+SCOPE_PREVIEW_CONTRACT_VERSION = 2
 _PATH_TYPE = type(Path())
 _COVERAGE_ERROR = "COVERAGE_INVALID"
 _FINDING_FILTER_ERROR = "FINDING_FILTER_INVALID"
@@ -31,6 +32,22 @@ _WINDOWS_RESERVED_DEVICE_NAMES = frozenset(
     | {f"com{number}" for number in range(1, 10)}
     | {f"lpt{number}" for number in range(1, 10)}
     | {f"{prefix}{number}" for prefix in ("com", "lpt") for number in "¹²³"}
+)
+# Exact after case-folding and removing common word separators.
+_UNSUPPORTED_DATA_COMPONENTS = frozenset(
+    {
+        "medicalrecords",
+        "patientdata",
+        "financialrecords",
+        "identitydata",
+        "biometricdata",
+        "privilegedlegal",
+        "customerdataset",
+        "statesecrets",
+    }
+)
+_BROAD_ROOT_NAMES = frozenset(
+    {"documents", "desktop", "downloads", "onedrive", "pictures", "videos", "music"}
 )
 
 
@@ -98,6 +115,7 @@ class ScopePreview:
     max_bytes: int
     max_findings: int
     max_evidence: int
+    supported_use_boundary: str
     contract_version: int
     local_only: bool
     read_only: bool
@@ -113,6 +131,7 @@ class ScopePreview:
 
 @dataclass(frozen=True, slots=True)
 class ScopeConsent:
+    supported_use_boundary: str
     contract_version: int
     _root_identity: tuple[str, ...] = field(repr=False)
 
@@ -150,6 +169,7 @@ def build_scope_preview(
         max_bytes=caps[2],
         max_findings=caps[3],
         max_evidence=caps[4],
+        supported_use_boundary=SUPPORTED_USE_BOUNDARY,
         contract_version=SCOPE_PREVIEW_CONTRACT_VERSION,
         local_only=True,
         read_only=True,
@@ -164,7 +184,11 @@ def build_scope_preview(
 def bind_scope_consent(preview: ScopePreview) -> ScopeConsent:
     _validate_scope_preview(preview)
     root_identity, _ = _validated_roots(preview._roots)
-    return ScopeConsent(preview.contract_version, root_identity)
+    return ScopeConsent(
+        preview.supported_use_boundary,
+        preview.contract_version,
+        root_identity,
+    )
 
 
 def scope_consent_matches(consent: object, preview: object) -> bool:
@@ -173,7 +197,8 @@ def scope_consent_matches(consent: object, preview: object) -> bool:
         _validate_scope_preview(preview)
         root_identity, _ = _validated_roots(preview._roots)
         return (
-            consent.contract_version == preview.contract_version
+            consent.supported_use_boundary == preview.supported_use_boundary
+            and consent.contract_version == preview.contract_version
             and consent._root_identity == root_identity
         )
     except Exception:
@@ -473,6 +498,8 @@ def _validate_scope_preview(preview: ScopePreview) -> None:
         or preview.root_names != root_names
         or preview.selectors != _validated_selectors(preview.selectors)
         or len(set(normalized_roots)) != len(normalized_roots)
+        or type(preview.supported_use_boundary) is not str
+        or preview.supported_use_boundary != SUPPORTED_USE_BOUNDARY
         or type(preview.contract_version) is not int
         or preview.contract_version != SCOPE_PREVIEW_CONTRACT_VERSION
         or any(
@@ -502,7 +529,9 @@ def _validate_scope_consent(consent: object) -> None:
     if type(consent) is not ScopeConsent:
         raise TypeError("consent must be an exact ScopeConsent")
     if (
-        type(consent.contract_version) is not int
+        type(consent.supported_use_boundary) is not str
+        or consent.supported_use_boundary != SUPPORTED_USE_BOUNDARY
+        or type(consent.contract_version) is not int
         or consent.contract_version != SCOPE_PREVIEW_CONTRACT_VERSION
         or type(consent._root_identity) is not tuple
         or not consent._root_identity
@@ -526,8 +555,17 @@ def _validated_roots(roots: object) -> tuple[tuple[str, ...], tuple[str, ...]]:
         if not windows_path.is_absolute() or not windows_path.drive:
             raise ValueError("roots must be absolute drive-qualified paths")
         if windows_path.root and windows_path == PureWindowsPath(windows_path.anchor):
-            raise ValueError("Windows root paths are not allowed")
+            raise ValueError("SCOPE_TOO_BROAD")
         _validate_windows_path_components(windows_path)
+        components = windows_path.parts[1:]
+        if any(
+            _normalized_policy_component(component)
+            in _UNSUPPORTED_DATA_COMPONENTS
+            for component in components
+        ):
+            raise ValueError("SCOPE_DATA_CLASS_UNSUPPORTED")
+        if _is_broad_scope_root(windows_path, components):
+            raise ValueError("SCOPE_TOO_BROAD")
         name = windows_path.name
         _validate_short_name(name)
         normalized.append(
@@ -535,6 +573,22 @@ def _validated_roots(roots: object) -> tuple[tuple[str, ...], tuple[str, ...]]:
         )
         names.append(name)
     return tuple(normalized), tuple(names)
+
+
+def _normalized_policy_component(value: str) -> str:
+    return value.casefold().translate(str.maketrans("", "", "-_ "))
+
+
+def _is_broad_scope_root(
+    path: PureWindowsPath,
+    components: tuple[str, ...],
+) -> bool:
+    folded = tuple(component.casefold() for component in components)
+    return (
+        path.drive.casefold() == "c:"
+        and len(folded) in (1, 2)
+        and folded[0] == "users"
+    ) or path.name.casefold() in _BROAD_ROOT_NAMES
 
 
 def _validated_selectors(selectors: object) -> tuple[str, ...]:

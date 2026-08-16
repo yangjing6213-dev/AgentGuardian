@@ -43,10 +43,16 @@ def test_browser_audit_is_user_triggered_and_does_not_expose_path(
         "getOpenFileName",
         lambda *args, **kwargs: (str(database), "Chrome History"),
     )
+    monkeypatch.setattr(
+        app_module.QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
     window.browser_kind_combo.setCurrentIndex(
         window.browser_kind_combo.findData(BrowserKind.CHROME)
     )
 
+    window.supported_data_checkbox.setChecked(True)
     window.browser_button.click()
 
     assert "浏览器元数据审计完成" in window.status_label.text()
@@ -74,9 +80,14 @@ def test_clipboard_audit_is_explicit_and_keeps_report_masked(qapp, monkeypatch):
     )
     window = create_window()
 
+    window.supported_data_checkbox.setChecked(True)
     window.clipboard_button.click()
 
     payload = json.loads(window.report_json)
+    assert (
+        payload["supported_use_boundary"]
+        == "personal_non_regulated_configuration"
+    )
     assert payload["findings"]
     assert raw_secret not in window.report_json
     assert raw_secret not in window.report_html
@@ -101,6 +112,7 @@ def test_clipboard_audit_cancel_does_not_read_clipboard(qapp, monkeypatch):
     )
     window = create_window()
 
+    window.supported_data_checkbox.setChecked(True)
     window.clipboard_button.click()
 
     assert "Clipboard audit cancelled" in window.status_label.text()

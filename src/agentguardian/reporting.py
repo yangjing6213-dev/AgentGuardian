@@ -25,6 +25,7 @@ from .scoring import score as calculate_score
 from .workflow import (
     COVERAGE_LIMIT_LABELS,
     COVERAGE_STATE_LABELS,
+    SUPPORTED_USE_BOUNDARY,
     CoverageState,
     classify_coverage,
 )
@@ -65,6 +66,7 @@ def render_json(
             "product": _PRODUCT,
             "version": __version__,
             "report_schema": 1,
+            "supported_use_boundary": SUPPORTED_USE_BOUNDARY,
             "evaluated_at": evaluated_timestamp,
             "rule_version": rule_version,
             "score": technical,
@@ -111,6 +113,9 @@ def render_html(
             "<body>",
             f"<h1>{_text(_PRODUCT)}</h1>",
             f"<p>Version: {_text(__version__)}</p>",
+            "<p>Supported use boundary: "
+            f"{_text(SUPPORTED_USE_BOUNDARY)} "
+            "(personal non-regulated configuration only).</p>",
             f"<p>Rule version: {_text(rule_version)}</p>",
             f"<p>Evaluated at: {_text(evaluated_timestamp)}</p>",
         ]

@@ -50,6 +50,20 @@ WINDOWS_RESERVED_COMPONENTS = tuple(
     )
     for variant in (name, f"{name.lower()}.txt")
 )
+UNSUPPORTED_DATA_COMPONENTS = tuple(
+    separator.join(words)
+    for words in (
+        ("medical", "records"),
+        ("patient", "data"),
+        ("financial", "records"),
+        ("identity", "data"),
+        ("biometric", "data"),
+        ("privileged", "legal"),
+        ("customer", "dataset"),
+        ("state", "secrets"),
+    )
+    for separator in ("-", "_", " ", "")
+)
 
 
 class ExplosiveEquality:
@@ -105,6 +119,7 @@ def test_scope_preview_is_pure_private_and_immutable(monkeypatch: pytest.MonkeyP
     assert preview.unc_roots_excluded is True
     assert preview.drive_roots_excluded is True
     assert preview.reparse_paths_excluded is True
+    assert preview.supported_use_boundary == "personal_non_regulated_configuration"
     _assert_full_paths_not_in_repr(preview, ROOTS)
     with pytest.raises(FrozenInstanceError):
         preview.max_files = 1  # type: ignore[misc]
@@ -165,6 +180,82 @@ def test_scope_preview_rejects_duplicate_windows_root_identities() -> None:
 def test_scope_preview_rejects_drive_unc_and_unsafe_names(root: Path) -> None:
     with pytest.raises(ValueError):
         _build_preview((root,))
+
+
+@pytest.mark.parametrize("component", UNSUPPORTED_DATA_COMPONENTS)
+@pytest.mark.parametrize("position", ("intermediate", "final"))
+def test_scope_preview_rejects_exact_regulated_data_components_without_leaks(
+    component: str,
+    position: str,
+) -> None:
+    variant = component.upper() if "_" in component else component.title()
+    suffix = "/ordinary-project" if position == "intermediate" else ""
+
+    with pytest.raises(ValueError) as captured:
+        _build_preview((Path(f"C:/Synthetic/{variant}{suffix}"),))
+
+    assert str(captured.value) == "SCOPE_DATA_CLASS_UNSUPPORTED"
+    assert component.casefold() not in repr(captured.value).casefold()
+    assert variant.casefold() not in repr(captured.value).casefold()
+
+
+@pytest.mark.parametrize(
+    "root",
+    (
+        Path("C:\\"),
+        Path(r"C:\Users"),
+        Path(r"c:\USERS\Alice"),
+        Path(r"C:\Users\Alice\Documents"),
+        Path(r"C:\Users\Alice\Desktop"),
+        Path(r"C:\Users\Alice\Downloads"),
+        Path(r"C:\Users\Alice\OneDrive"),
+        Path(r"C:\Users\Alice\Pictures"),
+        Path(r"C:\Users\Alice\Videos"),
+        Path(r"C:\Users\Alice\Music"),
+        Path(r"D:\Work\Documents"),
+    ),
+)
+def test_scope_preview_rejects_broad_roots_with_fixed_error(root: Path) -> None:
+    with pytest.raises(ValueError) as captured:
+        _build_preview((root,))
+
+    assert str(captured.value) == "SCOPE_TOO_BROAD"
+    assert os.fspath(root).casefold() not in repr(captured.value).casefold()
+
+
+@pytest.mark.parametrize(
+    "root",
+    (
+        Path(r"C:\Users\Alice\.codex"),
+        Path(r"C:\Users\Alice\source\ordinary-project"),
+        Path(r"D:\Work\ordinary-project"),
+        Path(r"C:\Synthetic\medical-project"),
+    ),
+)
+def test_scope_preview_allows_narrow_non_regulated_configuration_roots(
+    root: Path,
+) -> None:
+    preview = _build_preview((root,))
+
+    assert preview.root_names == (root.name,)
+
+
+def test_scope_eligibility_checks_do_not_touch_filesystem(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("scope eligibility touched the filesystem")
+
+    monkeypatch.setattr(Path, "stat", fail)
+    monkeypatch.setattr(Path, "resolve", fail)
+    monkeypatch.setattr(Path, "iterdir", fail)
+    monkeypatch.setattr(os, "scandir", fail)
+    monkeypatch.setattr(os, "listdir", fail)
+
+    with pytest.raises(ValueError, match="^SCOPE_DATA_CLASS_UNSUPPORTED$"):
+        _build_preview((Path(r"C:\Synthetic\patient_data\project"),))
+    with pytest.raises(ValueError, match="^SCOPE_TOO_BROAD$"):
+        _build_preview((Path(r"C:\Users\Alice\Downloads"),))
 
 
 @pytest.mark.parametrize(
@@ -279,6 +370,7 @@ def test_consent_binds_to_normalized_roots_without_path_repr() -> None:
 
     consent = bind_scope_consent(preview)
 
+    assert consent.supported_use_boundary == preview.supported_use_boundary
     assert scope_consent_matches(consent, preview) is True
     assert scope_consent_matches(consent, equivalent) is True
     _assert_full_paths_not_in_repr(consent, preview._roots)
@@ -313,11 +405,27 @@ def test_consent_rejects_changed_order_root_and_version() -> None:
         (Path(r"C:\Synthetic\first"), Path(r"C:\Synthetic\third"))
     )
     changed_version = _build_preview(preview._roots)
-    object.__setattr__(changed_version, "contract_version", 2)
+    object.__setattr__(changed_version, "contract_version", 1)
 
     assert scope_consent_matches(consent, reversed_preview) is False
     assert scope_consent_matches(consent, changed_root) is False
     assert scope_consent_matches(consent, changed_version) is False
+
+
+@pytest.mark.parametrize("target", ("preview", "consent"))
+def test_consent_rejects_forged_supported_use_boundary(target: str) -> None:
+    preview = _build_preview()
+    consent = bind_scope_consent(preview)
+
+    if target == "preview":
+        object.__setattr__(preview, "supported_use_boundary", "enterprise")
+    else:
+        object.__setattr__(consent, "supported_use_boundary", "enterprise")
+
+    assert scope_consent_matches(consent, preview) is False
+    if target == "preview":
+        with pytest.raises(ValueError):
+            bind_scope_consent(preview)
 
 
 def test_consent_rejects_subclasses_and_forged_mutable_fields() -> None:

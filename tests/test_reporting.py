@@ -1001,6 +1001,10 @@ def test_render_json_contains_safe_complete_deterministic_report() -> None:
     assert first == json.dumps(report, ensure_ascii=False, indent=2)
     assert report["product"] == "AgentGuardian"
     assert report["version"] == "0.1.0"
+    assert (
+        report["supported_use_boundary"]
+        == "personal_non_regulated_configuration"
+    )
     assert report["evaluated_at"] == "2026-08-02T12:00:00Z"
     assert report["rule_version"] == "规则-1"
     assert report["score"] == {
@@ -1078,6 +1082,10 @@ def test_render_json_schema_exposes_exact_coverage_state(
     )
 
     assert report["report_schema"] == 1
+    assert (
+        report["supported_use_boundary"]
+        == "personal_non_regulated_configuration"
+    )
     assert report["score"]["coverage_state"] == coverage_state
     assert report["reviewed_score"]["coverage_state"] == coverage_state
 
@@ -1388,6 +1396,11 @@ def test_render_html_contains_requested_score_and_finding_fields() -> None:
         rule_version="规则-1",
         evaluated_at=EVALUATED_AT,
     )
+
+    assert "personal_non_regulated_configuration" in rendered
+    assert "personal non-regulated configuration" in rendered.lower()
+    assert r"C:\Users\Alice\Downloads" not in rendered
+    assert "patient-data" not in rendered
 
     for value in (
         "AgentGuardian",
@@ -1780,6 +1793,7 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
                 (
                     ("COVERAGE_LIMIT_LABELS", None),
                     ("COVERAGE_STATE_LABELS", None),
+                    ("SUPPORTED_USE_BOUNDARY", None),
                     ("CoverageState", None),
                     ("classify_coverage", None),
                 ),

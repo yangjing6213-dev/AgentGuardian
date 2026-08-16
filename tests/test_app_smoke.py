@@ -91,6 +91,8 @@ def _wait_for_scan(window, application, timeout: float = 5.0) -> None:
 
 
 def _approve_current_scope(window) -> None:
+    window.supported_data_checkbox.setChecked(True)
+    assert window.supported_data_checkbox.isChecked()
     window.scope_consent_checkbox.setChecked(True)
     assert window.scope_consent_checkbox.isChecked()
     assert window.scan_button.isEnabled()
@@ -1186,6 +1188,7 @@ def test_comparison_scan_lifecycle_resets_transient_state(
     else:
         window._roots = (root,)
         window._scope_preview = app_module._scope_preview_for((root,))
+        window.supported_data_checkbox.setChecked(True)
         window.scope_consent_checkbox.setEnabled(True)
         window.scope_consent_checkbox.setChecked(True)
         monkeypatch.setattr(
@@ -4560,6 +4563,7 @@ def test_folder_selection_shows_only_short_name(qapp, monkeypatch, tmp_path):
     assert str(selected) not in window.root_display_label.text()
     assert window._scope_preview.root_count == 1
     assert window._scope_preview.root_names == ("selected-root",)
+    assert not window.supported_data_checkbox.isChecked()
     assert not window.scope_consent_checkbox.isChecked()
     assert window._scope_consent is None
     assert not window.scan_button.isEnabled()
@@ -4618,6 +4622,7 @@ def test_folder_selection_shows_only_short_name(qapp, monkeypatch, tmp_path):
         window.scope_limits_label,
         window.scope_exclusions_label,
         window.scope_mode_label,
+        window.supported_data_checkbox,
         window.scope_consent_checkbox,
     )
     assert all(widget.isVisible() for widget in preview_widgets)
@@ -4626,6 +4631,68 @@ def test_folder_selection_shows_only_short_name(qapp, monkeypatch, tmp_path):
     assert not _global_rect(window.scope_consent_checkbox).intersects(
         _global_rect(window.scan_button)
     )
+    window.close()
+
+
+def test_supported_data_boundary_is_a_separate_required_confirmation(
+    qapp, tmp_path
+):
+    window = create_window()
+
+    assert not window.supported_data_checkbox.isChecked()
+    assert not window.browser_button.isEnabled()
+    assert not window.clipboard_button.isEnabled()
+
+    window.supported_data_checkbox.setChecked(True)
+
+    assert window.browser_button.isEnabled()
+    assert window.clipboard_button.isEnabled()
+    assert not window.scan_button.isEnabled()
+
+    window._set_scope_roots(
+        (tmp_path / "ordinary-project",),
+        status="ready",
+    )
+
+    assert not window.supported_data_checkbox.isChecked()
+    assert not window.scope_consent_checkbox.isChecked()
+    window.scope_consent_checkbox.setChecked(True)
+    assert not window.scan_button.isEnabled()
+    window.supported_data_checkbox.setChecked(True)
+    assert window.scan_button.isEnabled()
+
+    window.supported_data_checkbox.setChecked(False)
+
+    assert not window.scope_consent_checkbox.isChecked()
+    assert window._scope_consent is None
+    assert not window.scan_button.isEnabled()
+    assert not window.browser_button.isEnabled()
+    assert not window.clipboard_button.isEnabled()
+    window.close()
+
+
+def test_folder_eligibility_failure_clears_both_confirmations_without_leak(
+    qapp, monkeypatch
+):
+    rejected = r"C:\Users\Alice\Downloads"
+    window = create_window()
+    window.supported_data_checkbox.setChecked(True)
+    window.scope_consent_checkbox.setEnabled(True)
+    window.scope_consent_checkbox.setChecked(True)
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: rejected,
+    )
+
+    window.folder_button.click()
+
+    assert window._roots == ()
+    assert not window.supported_data_checkbox.isChecked()
+    assert not window.scope_consent_checkbox.isChecked()
+    assert not window.scan_button.isEnabled()
+    assert rejected.casefold() not in window.status_label.text().casefold()
+    assert rejected.casefold() not in window.root_display_label.text().casefold()
     window.close()
 
 
@@ -4691,6 +4758,7 @@ def test_scope_change_and_rejected_selection_revoke_consent_and_results(
 
     assert window._roots == (second,)
     assert window.root_display_label.text() == "second-root"
+    assert not window.supported_data_checkbox.isChecked()
     assert not window.scope_consent_checkbox.isChecked()
     assert window._scope_consent is None
     assert not window.scan_button.isEnabled()
@@ -4706,12 +4774,151 @@ def test_scope_change_and_rejected_selection_revoke_consent_and_results(
 
     assert window._roots == ()
     assert window.root_display_label.text() == "尚未选择"
+    assert not window.supported_data_checkbox.isChecked()
     assert not window.scope_consent_checkbox.isChecked()
     assert window._scope_consent is None
     assert not window.scan_button.isEnabled()
     assert window.report_json == ""
     assert window._comparison_state is None
     assert window.status_label.text() == "未选择有效的审计范围。"
+    window.close()
+
+
+def test_start_scan_requires_boundary_and_scope_consent_before_callbacks(
+    qapp, monkeypatch, tmp_path
+):
+    root = tmp_path / "current-root"
+    root.mkdir()
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: str(root),
+    )
+    callbacks = []
+
+    def forbidden(name):
+        def callback(*args, **kwargs):
+            callbacks.append(name)
+            raise AssertionError(name)
+
+        return callback
+
+    window = create_window()
+    window.folder_button.click()
+    window.scope_consent_checkbox.setChecked(True)
+    monkeypatch.setattr(app_module, "QThread", forbidden("thread"))
+    monkeypatch.setattr(app_module, "AuditWorker", forbidden("worker"))
+    monkeypatch.setattr(app_module, "discover_files", forbidden("discovery"))
+
+    window._start_scan()
+
+    assert callbacks == []
+    assert not window.supported_data_checkbox.isChecked()
+    assert not window.scope_consent_checkbox.isChecked()
+    assert window._scope_consent is None
+    assert not window.is_scanning
+    assert not window.scan_button.isEnabled()
+    window.close()
+
+
+def test_clipboard_callback_requires_boundary_and_action_confirmation(
+    qapp, monkeypatch
+):
+    reads = []
+    audits = []
+    questions = []
+
+    def supplier():
+        reads.append("read")
+        return "synthetic clipboard"
+
+    def audit(reader, **_kwargs):
+        audits.append("audit")
+        assert reader() == "synthetic clipboard"
+        return SimpleNamespace(findings=(), scanned=True)
+
+    def question(*args, **kwargs):
+        questions.append(args[2])
+        return question.answer
+
+    question.answer = QMessageBox.StandardButton.No
+    monkeypatch.setattr(QMessageBox, "question", question)
+    monkeypatch.setattr(app_module, "audit_clipboard_once", audit)
+    monkeypatch.setattr(
+        app_module.QApplication,
+        "clipboard",
+        staticmethod(lambda: SimpleNamespace(text=supplier)),
+    )
+    window = create_window()
+
+    window._scan_clipboard_once()
+    assert reads == []
+    assert audits == []
+    assert questions == []
+
+    window.supported_data_checkbox.setChecked(True)
+    window._scan_clipboard_once()
+    assert reads == []
+    assert audits == []
+
+    question.answer = QMessageBox.StandardButton.Yes
+    window._scan_clipboard_once()
+
+    assert reads == ["read"]
+    assert audits == ["audit"]
+    assert len(questions) == 2
+    assert "剪贴板" in questions[-1]
+    assert "医疗" in questions[-1]
+    assert "不受监管" in questions[-1]
+    window.close()
+
+
+def test_browser_callback_requires_boundary_and_metadata_confirmation(
+    qapp, monkeypatch, tmp_path
+):
+    audits = []
+    dialogs = []
+    questions = []
+
+    def question(*args, **kwargs):
+        questions.append(args[2])
+        return question.answer
+
+    def choose(*_args, **_kwargs):
+        dialogs.append("dialog")
+        return str(tmp_path / "History"), ""
+
+    def audit(path, browser):
+        audits.append((path, browser))
+        return SimpleNamespace(
+            counts=(("history_entries", 1), ("visit_entries", 2))
+        )
+
+    question.answer = QMessageBox.StandardButton.No
+    monkeypatch.setattr(QMessageBox, "question", question)
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", choose)
+    monkeypatch.setattr(app_module, "audit_browser_database", audit)
+    window = create_window()
+
+    window._select_browser_database()
+    assert dialogs == []
+    assert audits == []
+    assert questions == []
+
+    window.supported_data_checkbox.setChecked(True)
+    window._select_browser_database()
+    assert dialogs == []
+    assert audits == []
+
+    question.answer = QMessageBox.StandardButton.Yes
+    window._select_browser_database()
+
+    assert dialogs == ["dialog"]
+    assert len(audits) == 1
+    assert len(questions) == 2
+    assert "元数据" in questions[-1]
+    assert "医疗" in questions[-1]
+    assert "不受监管" in questions[-1]
     window.close()
 
 

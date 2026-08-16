@@ -30,6 +30,7 @@ from .domain import (
 from .scoring import score as calculate_score
 from .workflow import (
     COVERAGE_LIMIT_LABELS,
+    SUPPORTED_USE_BOUNDARY,
     CoverageState,
     classify_coverage,
 )
@@ -294,13 +295,24 @@ def _report_summary(payload: object) -> ReportSummary:
     }
     if type(payload) is not dict:
         raise _InvalidReport
-    if set(payload) == common_keys | {"report_schema", "evaluated_at"}:
+    if set(payload) == common_keys | {
+        "report_schema",
+        "supported_use_boundary",
+        "evaluated_at",
+    }:
+        current = True
+        legacy = False
+        evaluated_at = _domain_call(parse_utc, payload["evaluated_at"])
+    elif set(payload) == common_keys | {"report_schema", "evaluated_at"}:
+        current = False
         legacy = False
         evaluated_at = _domain_call(parse_utc, payload["evaluated_at"])
     elif set(payload) == common_keys | {"report_schema"}:
+        current = False
         legacy = False
         evaluated_at = None
     elif set(payload) == common_keys:
+        current = False
         legacy = True
         evaluated_at = None
     else:
@@ -314,6 +326,13 @@ def _report_summary(payload: object) -> ReportSummary:
             and (
                 type(report["report_schema"]) is not int
                 or report["report_schema"] != 1
+            )
+        )
+        or (
+            current
+            and (
+                type(report["supported_use_boundary"]) is not str
+                or report["supported_use_boundary"] != SUPPORTED_USE_BOUNDARY
             )
         )
     ):

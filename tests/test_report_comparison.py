@@ -128,6 +128,23 @@ def _assert_comparison_invalid(json_text: object) -> None:
     )
 
 
+def test_current_report_validates_fixed_boundary_and_accepts_old_schema_1() -> None:
+    payload = json.loads(_report_json())
+
+    assert payload["report_schema"] == 1
+    assert payload["supported_use_boundary"] == "personal_non_regulated_configuration"
+    current = parse_report_summary(json.dumps(payload))
+
+    for invalid in ("enterprise", "PERSONAL_NON_REGULATED_CONFIGURATION"):
+        forged = dict(payload)
+        forged["supported_use_boundary"] = invalid
+        _assert_comparison_invalid(json.dumps(forged))
+
+    old_schema_1 = dict(payload)
+    del old_schema_1["supported_use_boundary"]
+    assert parse_report_summary(json.dumps(old_schema_1)) == current
+
+
 def _assert_summary_comparison_invalid(baseline: object, current: object) -> None:
     with pytest.raises(ValueError) as caught:
         compare_report_summaries(baseline, current)  # type: ignore[arg-type]
@@ -428,8 +445,10 @@ def test_legacy_report_derives_coverage_state_and_matches_schema_1() -> None:
     schema_1["reviewed_score"] = schema_1["score"]
     schema_1_text = json.dumps(schema_1)
     old_schema_1 = json.loads(schema_1_text)
+    del old_schema_1["supported_use_boundary"]
     del old_schema_1["evaluated_at"]
     legacy = json.loads(schema_1_text)
+    del legacy["supported_use_boundary"]
     del legacy["report_schema"]
     del legacy["evaluated_at"]
     del legacy["score"]["coverage_state"]

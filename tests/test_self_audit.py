@@ -1701,6 +1701,7 @@ def test_docs_track_batch_4_workflow_and_report_boundaries() -> None:
         "product": "AgentGuardian",
         "version": __version__,
         "report_schema": 1,
+        "supported_use_boundary": "personal_non_regulated_configuration",
         "evaluated_at": "2026-08-03T12:00:00Z",
         "rule_version": "rules-1",
         "score": expected_score,

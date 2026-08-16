@@ -1056,6 +1056,18 @@ class AgentGuardianWindow(QMainWindow):
             label.setWordWrap(True)
             layout.addWidget(label)
 
+        self.supported_data_checkbox = QCheckBox(
+            "我确认仅处理个人非受监管配置；不含医疗、金融、身份/生物识别、"
+            "法律特权、客户数据集、国家秘密或同等高敏感真实数据"
+        )
+        self.supported_data_checkbox.setAccessibleDescription(
+            "确认数据符合个人非受监管配置产品边界"
+        )
+        self.supported_data_checkbox.toggled.connect(
+            self._supported_data_consent_changed
+        )
+        layout.addWidget(self.supported_data_checkbox)
+
         self.scope_consent_checkbox = QCheckBox(
             "我已核对并同意仅扫描当前显示范围"
         )
@@ -1111,6 +1123,7 @@ class AgentGuardianWindow(QMainWindow):
         self.browser_button.setToolTip(
             "仅在点击后读取用户选定的数据库副本；不读取 URL、Cookie 或密码。"
         )
+        self.browser_button.setEnabled(False)
         self.browser_button.clicked.connect(self._select_browser_database)
         self.clipboard_button = QPushButton("一次性审计剪贴板")
         self.clipboard_button.setIcon(
@@ -1119,6 +1132,7 @@ class AgentGuardianWindow(QMainWindow):
         self.clipboard_button.setToolTip(
             "仅在点击后读取一次剪贴板并在内存中检测，不写回、不保存原文。"
         )
+        self.clipboard_button.setEnabled(False)
         self.clipboard_button.clicked.connect(self._scan_clipboard_once)
         self.share_button = QPushButton("验证联网分享")
         self.share_button.setIcon(
@@ -1372,7 +1386,23 @@ class AgentGuardianWindow(QMainWindow):
             return
 
     def _select_browser_database(self) -> None:
-        if self.is_scanning:
+        if self.is_scanning or not self.supported_data_checkbox.isChecked():
+            self.status_label.setText("请先确认个人非受监管配置产品边界。")
+            return
+        answer = QMessageBox.question(
+            self,
+            "浏览器元数据审计",
+            "仅统计固定浏览器元数据，不读取 URL、Cookie、密码或正文。"
+            "我确认所选数据库不含医疗、金融、身份/生物识别、法律特权、"
+            "客户数据集、国家秘密或同等高敏感真实数据，并符合个人不受监管配置边界。"
+            "继续吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self.status_label.setText("浏览器数据库审计已取消。")
+            return
+        if self.is_scanning or not self.supported_data_checkbox.isChecked():
             return
         selected, _selected_filter = QFileDialog.getOpenFileName(
             self,
@@ -1381,6 +1411,8 @@ class AgentGuardianWindow(QMainWindow):
             "Chrome History;Edge History;Firefox places.sqlite",
         )
         if not selected:
+            return
+        if self.is_scanning or not self.supported_data_checkbox.isChecked():
             return
         try:
             browser = BrowserKind(self.browser_kind_combo.currentData())
@@ -1405,17 +1437,22 @@ class AgentGuardianWindow(QMainWindow):
         )
 
     def _scan_clipboard_once(self) -> None:
-        if self.is_scanning:
+        if self.is_scanning or not self.supported_data_checkbox.isChecked():
+            self.status_label.setText("请先确认个人非受监管配置产品边界。")
             return
         answer = QMessageBox.question(
             self,
-            "Clipboard one-time audit",
-            "Read the clipboard once in memory without saving the original text. Continue?",
+            "剪贴板一次性审计",
+            "仅在内存中读取剪贴板一次且不保存原文。"
+            "我确认剪贴板不含医疗、金融、身份/生物识别、法律特权、客户数据集、"
+            "国家秘密或同等高敏感真实数据，并符合个人不受监管配置边界。继续吗？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
             self.status_label.setText("Clipboard audit cancelled.")
+            return
+        if self.is_scanning or not self.supported_data_checkbox.isChecked():
             return
         try:
             result = audit_clipboard_once(
@@ -1541,16 +1578,21 @@ class AgentGuardianWindow(QMainWindow):
                 ),
             )
         except Exception:  # noqa: BLE001 - fixed allowlist boundary
+            self._revoke_confirmations()
             self.status_label.setText("无法建立已知本地 AI 配置范围。")
 
     def _set_scope_roots(self, roots: Iterable[Path], *, status: str) -> None:
         normalized_roots = _dedupe_scope_roots(roots)
         if not normalized_roots:
             raise ValueError("scope roots must not be empty")
-        preview = _scope_preview_for(normalized_roots)
+        try:
+            preview = _scope_preview_for(normalized_roots)
+        except Exception:
+            self._revoke_confirmations()
+            raise
         self._invalidate_report()
         self._clear_comparison_if_present()
-        self._revoke_scope_consent()
+        self._revoke_confirmations()
         self._roots = normalized_roots
         self._scope_preview = preview
         self.root_display_label.setText(
@@ -1597,6 +1639,12 @@ class AgentGuardianWindow(QMainWindow):
                 self.status_label.setText("请重新核对并同意当前审计范围。")
         self._update_scan_enabled()
 
+    def _supported_data_consent_changed(self, checked: bool) -> None:
+        if not checked:
+            self._revoke_scope_consent()
+        self._update_optional_audit_enabled()
+        self._update_scan_enabled()
+
     def _revoke_scope_consent(self) -> None:
         self._scope_consent = None
         self.scope_consent_checkbox.blockSignals(True)
@@ -1604,12 +1652,25 @@ class AgentGuardianWindow(QMainWindow):
         self.scope_consent_checkbox.blockSignals(False)
         self._update_scan_enabled()
 
+    def _revoke_confirmations(self) -> None:
+        self.supported_data_checkbox.blockSignals(True)
+        self.supported_data_checkbox.setChecked(False)
+        self.supported_data_checkbox.blockSignals(False)
+        self._revoke_scope_consent()
+        self._update_optional_audit_enabled()
+
+    def _update_optional_audit_enabled(self) -> None:
+        enabled = not self.is_scanning and self.supported_data_checkbox.isChecked()
+        self.browser_button.setEnabled(enabled)
+        self.clipboard_button.setEnabled(enabled)
+
     def _update_scan_enabled(self) -> None:
         enabled = False
         try:
             expected_preview = _scope_preview_for(self._roots)
             enabled = (
                 not self.is_scanning
+                and self.supported_data_checkbox.isChecked()
                 and self.scope_consent_checkbox.isChecked()
                 and type(self._scope_preview) is ScopePreview
                 and self._scope_preview == expected_preview
@@ -1627,7 +1688,7 @@ class AgentGuardianWindow(QMainWindow):
         self._clear_comparison_if_present()
         self._roots = ()
         self._scope_preview = None
-        self._revoke_scope_consent()
+        self._revoke_confirmations()
         self.scope_consent_checkbox.setEnabled(False)
         self.root_display_label.setText("尚未选择")
         self.scope_roots_label.setText("范围：尚未选择")
@@ -1753,6 +1814,7 @@ class AgentGuardianWindow(QMainWindow):
             expected_preview = _scope_preview_for(self._roots)
             if (
                 self.is_scanning
+                or not self.supported_data_checkbox.isChecked()
                 or not self.scope_consent_checkbox.isChecked()
                 or type(self._scope_preview) is not ScopePreview
                 or self._scope_preview != expected_preview
@@ -1763,14 +1825,15 @@ class AgentGuardianWindow(QMainWindow):
             ):
                 raise ValueError
         except Exception:  # noqa: BLE001 - fixed scan-consent boundary
-            self._revoke_scope_consent()
+            self._revoke_confirmations()
             self.status_label.setText("请重新核对并同意当前审计范围。")
             return
 
         self._scope_preview = expected_preview
-        self._revoke_scope_consent()
+        self._revoke_confirmations()
         self._clear_comparison_if_present()
         self.is_scanning = True
+        self._update_optional_audit_enabled()
         self.scan_button.setEnabled(False)
         self.folder_button.setEnabled(False)
         self.scan_button.setText("审计中...")
@@ -1863,6 +1926,7 @@ class AgentGuardianWindow(QMainWindow):
         self.folder_button.setEnabled(True)
         self._thread = None
         self._worker = None
+        self._update_optional_audit_enabled()
         self._update_scan_enabled()
         self._sync_comparison_commands()
 
