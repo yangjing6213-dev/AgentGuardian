@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -276,6 +277,64 @@ def test_profile_blob_loader_missing_object_has_fixed_error() -> None:
 
     assert str(caught.value) == "RELEASE_PERSONAL_PROFILE_COMMIT_INVALID"
     assert str(ROOT) not in str(caught.value)
+
+
+def test_profile_blob_loader_rejects_oversize_before_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(tuple(command))
+        return SimpleNamespace(returncode=0, stdout=b"65537\n")
+
+    fake_subprocess = SimpleNamespace(
+        DEVNULL=subprocess.DEVNULL,
+        PIPE=subprocess.PIPE,
+        TimeoutExpired=subprocess.TimeoutExpired,
+        run=fake_run,
+    )
+    monkeypatch.setattr(release_evidence, "subprocess", fake_subprocess)
+
+    with pytest.raises(
+        ReleaseEvidenceError, match="^RELEASE_PERSONAL_PROFILE_COMMIT_INVALID$"
+    ) as caught:
+        REAL_PROFILE_BYTES_FROM_COMMIT(COMMIT)
+
+    assert len(calls) == 1
+    assert calls[0][1:3] == ("cat-file", "-s")
+    assert str(caught.value) == "RELEASE_PERSONAL_PROFILE_COMMIT_INVALID"
+    assert str(ROOT) not in str(caught.value)
+
+
+def test_profile_blob_loader_timeout_has_fixed_redacted_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def stalled(command, **kwargs):
+        calls.append(tuple(command))
+        if len(calls) == 1:
+            return SimpleNamespace(returncode=0, stdout=b"1\n")
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    fake_subprocess = SimpleNamespace(
+        DEVNULL=subprocess.DEVNULL,
+        PIPE=subprocess.PIPE,
+        TimeoutExpired=subprocess.TimeoutExpired,
+        run=stalled,
+    )
+    monkeypatch.setattr(release_evidence, "subprocess", fake_subprocess)
+
+    with pytest.raises(
+        ReleaseEvidenceError, match="^RELEASE_PERSONAL_PROFILE_COMMIT_INVALID$"
+    ) as caught:
+        REAL_PROFILE_BYTES_FROM_COMMIT(COMMIT)
+
+    assert str(caught.value) == "RELEASE_PERSONAL_PROFILE_COMMIT_INVALID"
+    assert str(ROOT) not in str(caught.value)
+    assert len(calls) == 2
+    assert calls[1][1] == "show"
 
 
 @pytest.mark.parametrize("mode", ("missing", "mismatch"))

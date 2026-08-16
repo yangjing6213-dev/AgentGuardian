@@ -149,37 +149,50 @@ def _validate_personal_profile_evidence(
 
 
 def _profile_bytes_from_commit(source_commit: str) -> bytes:
-    process: subprocess.Popen[bytes] | None = None
+    object_name = f"{source_commit}:release_profiles/personal_store_release.json"
     try:
-        process = subprocess.Popen(
+        size_result = subprocess.run(
             (
                 "git",
-                "show",
-                f"{source_commit}:release_profiles/personal_store_release.json",
+                "cat-file",
+                "-s",
+                object_name,
             ),
             cwd=ROOT,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
         )
-        if process.stdout is None:
+        size_text = size_result.stdout.strip()
+        if (
+            size_result.returncode != 0
+            or not size_text
+            or len(size_text) > 20
+            or not size_text.isdigit()
+            or (len(size_text) > 1 and size_text.startswith(b"0"))
+        ):
             raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_COMMIT_INVALID")
-        value = process.stdout.read(MAX_PROFILE_BYTES + 1)
-        if len(value) > MAX_PROFILE_BYTES:
+        size = int(size_text)
+        if size == 0 or size > MAX_PROFILE_BYTES:
             raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_COMMIT_INVALID")
-        if process.wait(timeout=10) != 0 or not value:
+
+        blob_result = subprocess.run(
+            ("git", "show", object_name),
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        )
+        value = blob_result.stdout
+        if blob_result.returncode != 0 or len(value) != size:
             raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_COMMIT_INVALID")
         return value
     except ReleaseEvidenceError:
         raise
     except (MemoryError, OSError, OverflowError, subprocess.TimeoutExpired):
         raise ReleaseEvidenceError("RELEASE_PERSONAL_PROFILE_COMMIT_INVALID") from None
-    finally:
-        if process is not None and process.poll() is None:
-            process.kill()
-            try:
-                process.wait(timeout=1)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
 
 
 def _is_package_full_name(value: object) -> bool:

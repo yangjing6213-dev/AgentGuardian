@@ -41,7 +41,7 @@ flowchart LR
 
 ## 当前扩展控制内核
 
-`enterprise_policy.py` 提供离线策略准入：规范 JSON、租户/设备绑定、单调版本、有效期、角色能力白名单、操作员配置的 SHA-256 指纹和高敏感确认。该指纹不是数字签名，也不提供设备注册、策略撤销、租户隔离或管理员控制台。Personal v1 的策略不能授予 MCP 动态执行能力。
+Personal v1 不包含 enterprise policy、control plane、signing、service 或高敏感模式运行时。其 MCP 范围只保留静态配置检测，不下载、加载、启动或执行动态 MCP 扩展。
 
 `detectors.py` 只把用户选择的 MCP 配置当作静态 JSON 数据解析。单个 server 同时声明 shell、filesystem-write 和 network 能力时产生 `MCP_DANGEROUS_COMBINATION`；报告只保留固定脱敏摘要和 HMAC 指纹。解析路径不下载、不加载、不启动、不代理、不隔离、不签名、不打包、不执行 MCP 扩展或用户选择的可执行文件。
 

@@ -28,7 +28,7 @@ _MAX_TRAVERSAL_DEPTH = 64
 _MAX_ARRAY_ITEMS = 128
 _MAX_VALUE_LENGTH = 256
 _MAX_RUNTIME_AST_NODES = 16_384
-_PROJECT_NOISE = frozenset(
+_ROOT_PROJECT_EXCLUSIONS = frozenset(
     {
         ".analysis",
         ".git",
@@ -430,7 +430,9 @@ def _walk_project(start: Path, root: Path | None = None) -> Iterator[tuple[str, 
         project_root,
         invalid_code="PROFILE_PROJECT_INVALID",
         limit_code="PROFILE_PROJECT_TRAVERSAL_LIMIT",
-        excluded_directories=_PROJECT_NOISE,
+        excluded_root_directories=(
+            _ROOT_PROJECT_EXCLUSIONS if start == project_root else frozenset()
+        ),
     )
 
 
@@ -440,7 +442,7 @@ def _walk(
     *,
     invalid_code: str,
     limit_code: str,
-    excluded_directories: frozenset[str] = frozenset(),
+    excluded_root_directories: frozenset[str] = frozenset(),
 ) -> Iterator[tuple[str, Path]]:
     if _is_reparse_point(start):
         raise ProfileViolation("PROFILE_REPARSE_POINT")
@@ -453,6 +455,8 @@ def _walk(
             raise ProfileViolation("PROFILE_REPARSE_POINT")
         relative = path.relative_to(root).as_posix()
         if relative != ".":
+            if any(":" in part for part in relative.split("/")):
+                raise ProfileViolation(invalid_code)
             folded = relative.casefold()
             if folded in seen:
                 raise ProfileViolation(invalid_code)
@@ -469,7 +473,8 @@ def _walk(
                 if _is_reparse_point(child):
                     raise ProfileViolation("PROFILE_REPARSE_POINT")
                 if (
-                    child.name.casefold() in excluded_directories
+                    path == root
+                    and child.name.casefold() in excluded_root_directories
                     and child.is_dir()
                 ):
                     continue
@@ -515,7 +520,7 @@ def _safe_relative_pattern(value: str) -> bool:
     parts = value.split("/")
     return (
         all(part not in {"", ".", ".."} for part in parts)
-        and ":" not in parts[0]
+        and all(":" not in part for part in parts)
         and not any(left == right == "**" for left, right in zip(parts, parts[1:]))
     )
 
@@ -570,6 +575,8 @@ def _resolved_project_root(project_root: str | Path) -> Path:
 def _resolved_profile_path(root: Path, profile_path: str | Path) -> Path:
     lexical = Path(profile_path)
     if lexical.is_absolute():
+        if any(":" in part for part in lexical.parts[1:]):
+            raise ProfileViolation("PROFILE_PATH_INVALID")
         candidate = lexical
     else:
         value = str(profile_path)

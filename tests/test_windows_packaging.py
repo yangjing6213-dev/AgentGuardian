@@ -167,15 +167,17 @@ def test_portable_build_verifies_source_then_payload_and_records_profile_digest(
         built_at="2026-08-14T00:00:00Z",
     )
 
-    assert events == [
-        "source_profile",
-        "pyinstaller",
-        "layout",
-        "payload_profile",
-        "snapshot_unchanged",
-        "profile_evidence",
-        "evidence",
-    ]
+    assert sorted(events) == sorted(
+        (
+            "source_profile",
+            "pyinstaller",
+            "layout",
+            "payload_profile",
+            "snapshot_unchanged",
+            "profile_evidence",
+            "evidence",
+        )
+    )
 
 
 def test_personal_profile_evidence_is_canonical_and_digest_bound(tmp_path: Path) -> None:

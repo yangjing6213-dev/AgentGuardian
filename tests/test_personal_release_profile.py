@@ -84,6 +84,24 @@ def test_repository_matches_canonical_personal_store_release_profile() -> None:
     }
 
 
+def test_profile_is_git_bound_to_lf_line_endings() -> None:
+    result = subprocess.run(
+        (
+            "git",
+            "check-attr",
+            "eol",
+            "--",
+            "release_profiles/personal_store_release.json",
+        ),
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip().endswith(": eol: lf")
+
+
 @pytest.mark.parametrize(
     "mutation,code",
     (
@@ -118,6 +136,15 @@ def test_profile_rejects_duplicate_keys_and_oversized_json(tmp_path: Path) -> No
         verifier.load_profile_snapshot(tmp_path, path)
 
 
+def test_profile_rejects_crlf_canonical_json(tmp_path: Path) -> None:
+    verifier = _verifier()
+    path = tmp_path / "profile.json"
+    path.write_bytes(PROFILE_PATH.read_bytes().replace(b"\n", b"\r\n"))
+
+    with pytest.raises(verifier.ProfileViolation, match="^PROFILE_JSON_INVALID$"):
+        verifier.load_profile_snapshot(tmp_path, path)
+
+
 @pytest.mark.parametrize("field,value", (("schema", 2), ("name", "personal_release")))
 def test_profile_requires_exact_schema_and_name(
     tmp_path: Path, field: str, value: object
@@ -135,11 +162,13 @@ def test_profile_requires_exact_schema_and_name(
     (
         "/absolute/*.py",
         "C:/absolute/*.py",
+        "file:/absolute/*.py",
         "../escape.py",
         "src/../escape.py",
         "src/./bad.py",
         "src//bad.py",
         "src/bad.py/",
+        "src/carrier:stream/bad.py",
         "src\\bad.py",
     ),
 )
@@ -213,6 +242,29 @@ def test_profile_snapshot_rejects_reparse_escape_deterministically(
     assert str(linked) not in str(caught.value)
 
 
+@pytest.mark.parametrize("absolute", (False, True))
+def test_profile_snapshot_rejects_ntfs_ads_path_when_supported(
+    tmp_path: Path, absolute: bool
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    carrier = root / "release_profiles" / "carrier"
+    carrier.write_bytes(b"carrier")
+    ads = Path(str(carrier) + ":profile")
+    try:
+        ads.write_bytes(PROFILE_PATH.read_bytes())
+    except OSError:
+        pytest.skip("NTFS alternate data streams are unavailable")
+
+    with pytest.raises(verifier.ProfileViolation, match="^PROFILE_PATH_INVALID$") as caught:
+        verifier.load_profile_snapshot(
+            root, ads if absolute else "release_profiles/carrier:profile"
+        )
+
+    assert str(caught.value) == "PROFILE_PATH_INVALID"
+    assert str(carrier) not in str(caught.value)
+
+
 def test_profile_rejects_case_colliding_globs(tmp_path: Path) -> None:
     verifier = _verifier()
     profile = _profile()
@@ -272,6 +324,41 @@ def test_double_star_forbidden_source_glob_matches_nested_path(tmp_path: Path) -
         verifier.verify_profile(root, snapshot)
 
 
+@pytest.mark.parametrize("noise", ("build", "dist", "__pycache__"))
+def test_double_star_glob_scans_nested_operational_noise_names(
+    tmp_path: Path, noise: str
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    profile = _profile()
+    profile["forbidden_source_globs"] = sorted(
+        [*profile["forbidden_source_globs"], "**/blocked.py"]
+    )
+    _write_profile(root, profile)
+    blocked = root / "nested" / noise / "blocked.py"
+    blocked.parent.mkdir(parents=True)
+    blocked.write_text("blocked", encoding="utf-8")
+
+    with pytest.raises(verifier.ProfileViolation, match="^PROFILE_SOURCE_FORBIDDEN$"):
+        _verify_profile(verifier, root)
+
+
+def test_root_operational_noise_remains_excluded(tmp_path: Path) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    profile = _profile()
+    profile["forbidden_source_globs"] = sorted(
+        [*profile["forbidden_source_globs"], "**/blocked.py"]
+    )
+    _write_profile(root, profile)
+    for noise in ("build", "dist", "__pycache__", ".pytest_cache"):
+        blocked = root / noise / "blocked.py"
+        blocked.parent.mkdir(parents=True)
+        blocked.write_text("root noise", encoding="utf-8")
+
+    assert _verify_profile(verifier, root)["status"] == "pass"
+
+
 def test_project_traversal_rejects_case_colliding_entries_when_supported(
     tmp_path: Path,
 ) -> None:
@@ -312,6 +399,25 @@ def test_payload_rejects_retired_names_under_any_prefix(
 
     with pytest.raises(verifier.ProfileViolation, match="^PROFILE_PAYLOAD_FORBIDDEN$"):
         verifier.verify_payload(bundle, verifier.load_profile_snapshot(ROOT, PROFILE_PATH))
+
+
+def test_payload_rejects_enumerated_colon_component(tmp_path: Path) -> None:
+    verifier = _verifier()
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    colon_entry = bundle / "nested" / "carrier:stream"
+    colon_entry.parent.mkdir()
+    colon_entry.write_bytes(b"synthetic")
+    if not any(path.name == "carrier:stream" for path in colon_entry.parent.iterdir()):
+        pytest.skip("colon entry is not enumerable on this filesystem")
+
+    with pytest.raises(verifier.ProfileViolation, match="^PROFILE_PAYLOAD_INVALID$") as caught:
+        verifier.verify_payload(
+            bundle, verifier.load_profile_snapshot(ROOT, PROFILE_PATH)
+        )
+
+    assert str(caught.value) == "PROFILE_PAYLOAD_INVALID"
+    assert str(bundle) not in str(caught.value)
 
 
 def test_payload_rejects_symlink_or_reparse_entry_when_supported(tmp_path: Path) -> None:
@@ -942,6 +1048,44 @@ def test_active_readme_rejects_each_retired_implementation_claim(
     readme = root / "README.md"
     readme.write_text(
         readme.read_text(encoding="utf-8") + "\n" + stale_claim + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        verifier.ProfileViolation, match="^PROFILE_DOCUMENT_FORBIDDEN$"
+    ):
+        _verify_profile(verifier, root)
+
+
+@pytest.mark.parametrize(
+    "relative,stale_claim",
+    (
+        (
+            "docs/architecture.md",
+            "`enterprise_policy.py` provides offline policy admission",
+        ),
+        (
+            "docs/architecture.md",
+            "`enterprise_policy.py` 提供离线策略准入",
+        ),
+        (
+            "docs/security/windows-mvp-threat-model.md",
+            "`enterprise_policy.py` rejects duplicate/unknown fields",
+        ),
+        (
+            "docs/security/windows-mvp-threat-model.md",
+            "Optional `enterprise_signing.py` verifies an Ed25519 envelope",
+        ),
+    ),
+)
+def test_active_architecture_and_threat_model_reject_retired_controls(
+    tmp_path: Path, relative: str, stale_claim: str
+) -> None:
+    verifier = _verifier()
+    root = _copy_fixture(tmp_path)
+    document = root / relative
+    document.write_text(
+        document.read_text(encoding="utf-8") + "\n" + stale_claim + "\n",
         encoding="utf-8",
     )
 
