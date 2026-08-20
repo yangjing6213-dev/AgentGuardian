@@ -412,6 +412,11 @@ def test_release_status_is_canonical_eight_gate_ledger() -> None:
     _assert_release_status_contract(status)
 
 
+def test_release_status_is_forced_to_lf_in_git_attributes() -> None:
+    attributes = (ROOT / ".gitattributes").read_text(encoding="ascii").splitlines()
+    assert "docs/security/personal-v1-release-status.json text eol=lf" in attributes
+
+
 def test_release_status_contract_accepts_evidence_bound_transitions() -> None:
     status = json.loads(RELEASE_STATUS_PATH.read_text(encoding="ascii"))
     evidence = {
