@@ -39,12 +39,16 @@ from scripts.verify_windows_installer_candidate import (
 
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 MAX_METADATA_BYTES = 256 * 1024
+MAX_COMPILER_BYTES = 16 * 1024 * 1024
 MAX_PAYLOAD_FILES = 20_000
 MAX_PAYLOAD_BYTES = 2 * 1024 * 1024 * 1024
 _PROFILE_NAME = "personal_exe_private_beta"
 _DISPLAY_VERSION = "0.2.0-beta.1"
 _FILE_VERSION = "0.2.0.1"
 _COMPILER_VERSION = "7.0.2"
+_COMPILER_SHA256 = (
+    "0ff6140d641f84b64204a2c4d52207c6fc437c9f4db8779c83083d84f7e3d70d"
+)
 _INSTALLER_SCRIPT_SHA256 = (
     "a5897f4158da4d9cb4246fb62ca1138a2b1c6324cadaf0a4261bfb5158237167"
 )
@@ -95,29 +99,21 @@ def build_iscc_command(
     )
 
 
-def compiler_file_version(iscc: Path) -> str:
+def compiler_sha256(iscc: Path) -> str:
+    digest = hashlib.sha256()
+    size = 0
     try:
-        import pefile
-    except ImportError:
-        raise ValueError("Inno Setup compiler version is unavailable") from None
-
-    try:
-        executable = pefile.PE(os.fspath(iscc), fast_load=False)
-        try:
-            fixed = executable.VS_FIXEDFILEINFO[0]
-            parts = (
-                fixed.FileVersionMS >> 16,
-                fixed.FileVersionMS & 0xFFFF,
-                fixed.FileVersionLS >> 16,
-                fixed.FileVersionLS & 0xFFFF,
-            )
-        finally:
-            executable.close()
-    except (AttributeError, IndexError, OSError, pefile.PEFormatError):
-        raise ValueError("Inno Setup compiler version is unavailable") from None
-    if parts[-1] == 0:
-        parts = parts[:-1]
-    return ".".join(str(part) for part in parts)
+        with iscc.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_COMPILER_BYTES:
+                    raise ValueError("Inno Setup compiler digest is unavailable")
+                digest.update(chunk)
+    except ValueError:
+        raise
+    except OSError:
+        raise ValueError("Inno Setup compiler digest is unavailable") from None
+    return digest.hexdigest()
 
 
 def verify_installer_script(contents: bytes) -> None:
@@ -243,8 +239,8 @@ def build_installer(
         raise ValueError("installer output root already exists")
     project = _existing_absolute_directory(project_root, "project root is invalid")
     compiler = _existing_absolute_file(iscc, "compiler path is invalid")
-    if compiler_file_version(compiler) != _COMPILER_VERSION:
-        raise ValueError("Inno Setup compiler version is invalid")
+    if compiler_sha256(compiler) != _COMPILER_SHA256:
+        raise ValueError("Inno Setup compiler digest is invalid")
     bundle = _existing_absolute_directory(bundle_root, "portable bundle is invalid")
     output = _new_absolute_directory_path(
         output_root, "installer output root is invalid"
@@ -266,6 +262,7 @@ def build_installer(
         or profile["product_version"] != _DISPLAY_VERSION
         or profile["windows_file_version"] != _FILE_VERSION
         or profile["inno_setup_version"] != _COMPILER_VERSION
+        or profile["inno_setup_iscc_sha256"] != _COMPILER_SHA256
     ):
         raise ValueError("private beta profile identity is invalid")
 

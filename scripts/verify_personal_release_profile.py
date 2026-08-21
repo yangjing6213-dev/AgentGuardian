@@ -69,6 +69,9 @@ _PRIVATE_BETA_IDENTITY = MappingProxyType(
         "architecture": "x64",
         "channel": "personal_exe_private_beta",
         "inno_setup_asset": "innosetup-7.0.2-x64.exe",
+        "inno_setup_iscc_sha256": (
+            "0ff6140d641f84b64204a2c4d52207c6fc437c9f4db8779c83083d84f7e3d70d"
+        ),
         "inno_setup_release_tag": "is-7_0_2",
         "inno_setup_sha256": (
             "5ad54ca3def786f8f4212552e54cc6d8d61329e2d24a1cfee0571d42c2684ff1"
@@ -90,6 +93,7 @@ _PRIVATE_BETA_PROFILE_KEYS = _BASE_PROFILE_KEYS | frozenset(
         "channel",
         "forbidden_installer_capabilities",
         "inno_setup_asset",
+        "inno_setup_iscc_sha256",
         "inno_setup_release_tag",
         "inno_setup_sha256",
         "inno_setup_version",

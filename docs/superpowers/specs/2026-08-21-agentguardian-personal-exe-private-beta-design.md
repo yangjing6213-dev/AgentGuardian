@@ -88,6 +88,7 @@ GitHub release asset:
 
 - Asset: `innosetup-7.0.2-x64.exe`
 - SHA-256: `5ad54ca3def786f8f4212552e54cc6d8d61329e2d24a1cfee0571d42c2684ff1`
+- Installed `ISCC.exe` SHA-256: `0ff6140d641f84b64204a2c4d52207c6fc437c9f4db8779c83083d84f7e3d70d`
 - Release tag: `is-7_0_2`
 
 The build must verify the pinned SHA-256, upstream GitHub release attestation,

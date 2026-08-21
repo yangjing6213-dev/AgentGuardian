@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import builtins
+import hashlib
 import importlib
 import json
 import re
@@ -188,20 +188,16 @@ def test_installer_builder_locks_the_complete_inno_script() -> None:
         builder.verify_installer_script(lf_script.replace(b"\n", b"\r", 1))
 
 
-def test_compiler_version_fails_closed_when_pefile_is_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_compiler_digest_is_exact_and_fails_closed(tmp_path: Path) -> None:
     builder = _builder()
-    real_import = builtins.__import__
+    compiler = tmp_path / "ISCC.exe"
+    compiler.write_bytes(b"MZ-synthetic-iscc")
 
-    def missing_pefile(name, *args, **kwargs):
-        if name == "pefile":
-            raise ModuleNotFoundError("synthetic missing pefile")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", missing_pefile)
-    with pytest.raises(ValueError, match="compiler version is unavailable"):
-        builder.compiler_file_version(Path("C:/synthetic/ISCC.exe"))
+    assert builder.compiler_sha256(compiler) == hashlib.sha256(
+        b"MZ-synthetic-iscc"
+    ).hexdigest()
+    with pytest.raises(ValueError, match="compiler digest is unavailable"):
+        builder.compiler_sha256(tmp_path / "missing.exe")
 
 
 def test_iscc_command_uses_only_fixed_defines(tmp_path: Path) -> None:
@@ -342,7 +338,11 @@ def test_build_installer_invokes_iscc_without_shell_and_rechecks_inputs(
 
     monkeypatch.setattr(builder.sys, "platform", "win32")
     monkeypatch.setattr(builder, "_git", fake_git)
-    monkeypatch.setattr(builder, "compiler_file_version", lambda _path: "7.0.2")
+    monkeypatch.setattr(
+        builder,
+        "compiler_sha256",
+        lambda _path: builder._COMPILER_SHA256,
+    )
     monkeypatch.setattr(builder, "validate_frozen_layout", lambda *args: None)
     monkeypatch.setattr(builder.subprocess, "run", fake_run)
 
@@ -369,7 +369,7 @@ def test_build_installer_invokes_iscc_without_shell_and_rechecks_inputs(
     ]
 
 
-def test_build_installer_rejects_wrong_compiler_version_before_output(
+def test_build_installer_rejects_wrong_compiler_digest_before_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     builder = _builder()
@@ -380,9 +380,9 @@ def test_build_installer_rejects_wrong_compiler_version_before_output(
 
     monkeypatch.setattr(builder.sys, "platform", "win32")
     monkeypatch.setattr(builder, "_git", lambda *_args: COMMIT)
-    monkeypatch.setattr(builder, "compiler_file_version", lambda _path: "7.0.1")
+    monkeypatch.setattr(builder, "compiler_sha256", lambda _path: "0" * 64)
 
-    with pytest.raises(ValueError, match="Inno Setup compiler version is invalid"):
+    with pytest.raises(ValueError, match="Inno Setup compiler digest is invalid"):
         builder.build_installer(
             ROOT,
             bundle,
@@ -455,6 +455,8 @@ def test_exe_workflow_pins_inno_and_runs_native_lifecycle() -> None:
         "is-7_0_2",
         "innosetup-7.0.2-x64.exe",
         "5ad54ca3def786f8f4212552e54cc6d8d61329e2d24a1cfee0571d42c2684ff1",
+        "0ff6140d641f84b64204a2c4d52207c6fc437c9f4db8779c83083d84f7e3d70d",
+        "Get-FileHash -Algorithm SHA256 -LiteralPath $env:ISCC",
         "gh release verify-asset",
         "2.93.0",
         "Get-AuthenticodeSignature",
@@ -482,6 +484,13 @@ def test_exe_workflow_pins_inno_and_runs_native_lifecycle() -> None:
     assert workflow.index("scripts/build_windows_installer.py") < workflow.index(
         "& $env:ISCC /Qp"
     )
+    installer_step = workflow.split(
+        "Build lower baseline and exact candidate installers", 1
+    )[1].split("Assemble and verify exact candidate evidence", 1)[0]
+    candidate_build = installer_step.split(
+        "New-Item -ItemType Directory -Path $env:BASE_OUTPUT", 1
+    )[0]
+    assert "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }" in candidate_build
 
     job_environment = workflow.split("    env:", 1)[1].split("    steps:", 1)[0]
     download_step = workflow.split("Download and verify pinned Inno Setup", 1)[1].split(

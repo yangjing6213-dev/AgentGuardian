@@ -19,6 +19,7 @@
 - Runtime install, launch, upgrade, and uninstall perform no download or automatic update.
 - User-selected reports are never deleted by upgrade or uninstall.
 - Inno Setup input is release `is-7_0_2`, asset `innosetup-7.0.2-x64.exe`, SHA-256 `5ad54ca3def786f8f4212552e54cc6d8d61329e2d24a1cfee0571d42c2684ff1`.
+- The installed `ISCC.exe` SHA-256 is `0ff6140d641f84b64204a2c4d52207c6fc437c9f4db8779c83083d84f7e3d70d`; the official binary's fixed file version is `0.0.0.0` and is not release evidence.
 - The artifact remains unsigned and within a known-tester maturity scope. In a
   public repository, an Actions artifact is not an access-controlled
   distribution channel; public release and production safety remain `NO-GO`.

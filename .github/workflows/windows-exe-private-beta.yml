@@ -26,6 +26,7 @@ jobs:
       INNO_RELEASE_TAG: is-7_0_2
       INNO_ASSET_NAME: innosetup-7.0.2-x64.exe
       INNO_ASSET_SHA256: 5ad54ca3def786f8f4212552e54cc6d8d61329e2d24a1cfee0571d42c2684ff1
+      INNO_ISCC_SHA256: 0ff6140d641f84b64204a2c4d52207c6fc437c9f4db8779c83083d84f7e3d70d
       BASE_DISPLAY_VERSION: 0.1.9
       BASE_FILE_VERSION: 0.1.9.0
       CANDIDATE_DISPLAY_VERSION: 0.2.0-beta.1
@@ -152,6 +153,10 @@ jobs:
           if (-not (Test-Path -LiteralPath $env:ISCC -PathType Leaf)) {
             throw 'verified Inno Setup compiler is missing'
           }
+          $isccDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $env:ISCC).Hash.ToLowerInvariant()
+          if ($isccDigest -cne $env:INNO_ISCC_SHA256) {
+            throw 'installed Inno Setup compiler SHA-256 mismatch'
+          }
 
       - name: Build deterministic unsigned portable payload
         shell: pwsh
@@ -172,6 +177,7 @@ jobs:
             --iscc $env:ISCC `
             --source-commit $env:EXPECTED_SOURCE_COMMIT `
             --built-at $env:COMMIT_UTC
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Path $env:BASE_OUTPUT | Out-Null
           & $env:ISCC /Qp `
             "/DBundleRoot=$env:PORTABLE_BUNDLE" `
