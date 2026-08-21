@@ -39,6 +39,28 @@ def default_state_path() -> Path:
     return root / _APP_DIRECTORY / STATE_FILENAME
 
 
+def purge_protected_state() -> bool:
+    try:
+        target = default_state_path()
+        parent = target.parent
+        if _has_reparse_ancestor(parent) or _is_reparse(target):
+            raise StateStoreError("PROTECTED_STATE_PURGE_FAILED")
+        if not parent.exists():
+            return False
+        if (
+            not parent.is_dir()
+            or target.resolve(strict=False).parent != parent.resolve(strict=True)
+        ):
+            raise StateStoreError("PROTECTED_STATE_PURGE_FAILED")
+        existed = target.exists()
+        target.unlink(missing_ok=True)
+        return existed
+    except StateStoreError:
+        raise StateStoreError("PROTECTED_STATE_PURGE_FAILED") from None
+    except OSError:
+        raise StateStoreError("PROTECTED_STATE_PURGE_FAILED") from None
+
+
 def save_protected_state(
     snapshot: EvidenceSnapshot,
     *,

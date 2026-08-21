@@ -96,7 +96,12 @@ from .remediation import (
     rollback_fixed_replacement,
 )
 from .scoring import score
-from .state_store import StateStoreError, load_protected_state, save_protected_state
+from .state_store import (
+    StateStoreError,
+    load_protected_state,
+    purge_protected_state,
+    save_protected_state,
+)
 from .workflow import (
     COVERAGE_LIMIT_LABELS,
     COVERAGE_STATE_LABELS,
@@ -2750,7 +2755,25 @@ def create_window() -> AgentGuardianWindow:
     return AgentGuardianWindow()
 
 
+def run_maintenance_command(arguments: list[str]) -> int | None:
+    if arguments != ["--purge-protected-state"]:
+        return None
+    try:
+        removed = purge_protected_state()
+    except StateStoreError:
+        sys.stdout.write(
+            '{"error":"PROTECTED_STATE_PURGE_FAILED","status":"fail"}\n'
+        )
+        return 1
+    result = "removed" if removed else "absent"
+    sys.stdout.write(f'{{"result":"{result}","status":"pass"}}\n')
+    return 0
+
+
 def main() -> int:
+    maintenance_status = run_maintenance_command(sys.argv[1:])
+    if maintenance_status is not None:
+        return maintenance_status
     application = QApplication.instance() or QApplication(sys.argv)
     window = create_window()
     window.show()

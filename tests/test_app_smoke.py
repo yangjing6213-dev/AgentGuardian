@@ -5960,3 +5960,72 @@ def test_production_modules_have_no_dangerous_capabilities_and_one_write_site():
     app_source = production_paths[0].read_text(encoding="utf-8")
     assert "secrets.token_bytes(32)" in app_source
     assert writes == [("export_new_report", "x")]
+
+
+def test_maintenance_command_reports_removed_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    local_app_data = tmp_path / "local-app-data"
+    state_directory = local_app_data / "AgentGuardian"
+    state_directory.mkdir(parents=True)
+    (state_directory / "evidence-state-v1.bin").write_bytes(b"protected")
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+
+    assert app_module.run_maintenance_command(["--purge-protected-state"]) == 0
+    assert capsys.readouterr().out == '{"result":"removed","status":"pass"}\n'
+    assert not (state_directory / "evidence-state-v1.bin").exists()
+
+
+def test_maintenance_command_reports_absent_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
+
+    assert app_module.run_maintenance_command(["--purge-protected-state"]) == 0
+    assert capsys.readouterr().out == '{"result":"absent","status":"pass"}\n'
+
+
+def test_maintenance_command_reports_fixed_failure_without_path(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", "private-relative-path")
+
+    assert app_module.run_maintenance_command(["--purge-protected-state"]) == 1
+    output = capsys.readouterr().out
+    assert output == '{"error":"PROTECTED_STATE_PURGE_FAILED","status":"fail"}\n'
+    assert "private-relative-path" not in output
+
+
+def test_maintenance_command_ignores_every_other_argument_list(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert app_module.run_maintenance_command([]) is None
+    assert app_module.run_maintenance_command(
+        ["--purge-protected-state", "unexpected"]
+    ) is None
+    assert capsys.readouterr().out == ""
+
+
+def test_main_runs_maintenance_before_qapplication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class ForbiddenApplication:
+        @staticmethod
+        def instance():
+            pytest.fail("QApplication must not be inspected for maintenance")
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
+    monkeypatch.setattr(app_module, "QApplication", ForbiddenApplication)
+    monkeypatch.setattr(
+        app_module.sys, "argv", ["agentguardian", "--purge-protected-state"]
+    )
+
+    assert app_module.main() == 0
+    assert capsys.readouterr().out == '{"result":"absent","status":"pass"}\n'

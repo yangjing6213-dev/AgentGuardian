@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -255,6 +256,104 @@ def test_default_state_path_uses_local_app_data_only_on_request(
     monkeypatch.delenv("LOCALAPPDATA")
     with pytest.raises(StateStoreError, match="^PROTECTED_STATE_UNAVAILABLE$"):
         default_state_path()
+
+
+def test_purge_protected_state_removes_only_known_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import agentguardian.state_store as state_store
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    directory = tmp_path / "AgentGuardian"
+    directory.mkdir()
+    state = directory / STATE_FILENAME
+    state.write_bytes(b"protected")
+    unrelated = directory / "keep.txt"
+    unrelated.write_text("keep", encoding="ascii")
+
+    assert state_store.purge_protected_state() is True
+    assert not state.exists()
+    assert unrelated.read_text(encoding="ascii") == "keep"
+    assert directory.is_dir()
+
+
+def test_purge_protected_state_is_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import agentguardian.state_store as state_store
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+    assert state_store.purge_protected_state() is False
+    assert state_store.purge_protected_state() is False
+    assert not (tmp_path / "AgentGuardian").exists()
+
+
+@pytest.mark.parametrize(
+    "local_app_data",
+    (None, "relative-local-app-data", r"\\server\share"),
+    ids=("missing", "relative", "unc"),
+)
+def test_purge_protected_state_maps_unsafe_default_path_to_fixed_failure(
+    local_app_data: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import agentguardian.state_store as state_store
+
+    if local_app_data is None:
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    else:
+        monkeypatch.setenv("LOCALAPPDATA", local_app_data)
+
+    with pytest.raises(StateStoreError, match="^PROTECTED_STATE_PURGE_FAILED$"):
+        state_store.purge_protected_state()
+
+
+def _junction_or_skip(link: Path, target: Path) -> None:
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        output = (result.stdout + b"\n" + result.stderr).decode(
+            "utf-8", errors="replace"
+        ).casefold()
+        if any(
+            marker in output
+            for marker in ("access is denied", "not supported", "privilege")
+        ):
+            pytest.skip(f"junction creation is unavailable: {output.strip()}")
+        pytest.fail(f"junction creation failed unexpectedly: {output.strip()}")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows junction test")
+@pytest.mark.parametrize("junction_at_app_directory", (False, True))
+def test_purge_protected_state_rejects_junction_without_touching_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    junction_at_app_directory: bool,
+) -> None:
+    import agentguardian.state_store as state_store
+
+    outside = tmp_path / "outside"
+    outside_app = outside / "AgentGuardian"
+    outside_app.mkdir(parents=True)
+    protected = outside_app / STATE_FILENAME
+    protected.write_bytes(b"protected")
+
+    if junction_at_app_directory:
+        local_app_data = tmp_path / "local-app-data"
+        local_app_data.mkdir()
+        _junction_or_skip(local_app_data / "AgentGuardian", outside_app)
+    else:
+        local_app_data = tmp_path / "linked-local-app-data"
+        _junction_or_skip(local_app_data, outside)
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+
+    with pytest.raises(StateStoreError, match="^PROTECTED_STATE_PURGE_FAILED$"):
+        state_store.purge_protected_state()
+
+    assert protected.read_bytes() == b"protected"
 
 
 def test_store_rejects_relative_directory_without_writing(
