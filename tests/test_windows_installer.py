@@ -152,6 +152,18 @@ def test_inno_script_rejects_downgrades_and_has_bounded_state_cleanup() -> None:
     assert "function PrepareToInstall(var NeedsRestart: Boolean): String;" in script
     assert "ComparePackedVersion" in script
     assert "StrToVersion" in script
+    assert "procedure CurStepChanged(CurStep: TSetupStep);" in script
+    post_install_body = script.split(
+        "procedure CurStepChanged(CurStep: TSetupStep);", 1
+    )[1].split(
+        "function HasPurgeStateParameter(): Boolean;", 1
+    )[0]
+    assert "CurStep = ssPostInstall" in post_install_body
+    assert (
+        "RegWriteStringValue(HKCU, UninstallKey, FileVersionValue, '{#FileVersion}')"
+        in post_install_body
+    )
+    assert "RaiseException" in post_install_body
     assert "procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);" in script
     assert "usUninstall" in script
     assert "UninstallSilent" in script

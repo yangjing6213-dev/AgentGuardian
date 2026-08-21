@@ -234,7 +234,9 @@ function Invoke-LaunchSmoke() {
             break
         }
         $process.Refresh()
-        if (($process.MainWindowHandle -ne [IntPtr]::Zero) -and $process.Responding) {
+        if (($process.MainWindowHandle -ne [IntPtr]::Zero) -and
+            ($process.MainWindowTitle -ceq 'AgentGuardian') -and
+            $process.Responding) {
             $responsiveWindow = $true
             break
         }
@@ -361,7 +363,7 @@ try {
     Invoke-LaunchSmoke
 
     if (-not (Test-Path -LiteralPath $StateDirectory)) {
-        New-Item -ItemType Directory -LiteralPath $StateDirectory | Out-Null
+        [System.IO.Directory]::CreateDirectory($StateDirectory) | Out-Null
     }
     Assert-FixedWriteParentsSafe
     [System.IO.File]::WriteAllBytes($StatePath, $StateMarker)

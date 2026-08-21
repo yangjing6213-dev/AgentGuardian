@@ -43,8 +43,7 @@ _PRIVATE_BETA_PROFILE = "personal_exe_private_beta"
 _RELEASE_PROFILES = {
     _PRIVATE_BETA_PROFILE: ("personal_exe_private_beta.json", "0.2.0-beta.1"),
 }
-_FORBIDDEN_NETWORK_COMPONENTS = {
-    "_socket.pyd",
+_FORBIDDEN_QT_NETWORK_COMPONENTS = {
     "qnetworklistmanager.dll",
     "qopensslbackend.dll",
     "qschannelbackend.dll",
@@ -91,10 +90,6 @@ def build_pyinstaller_command(
         "--noupx",
         "--exclude-module",
         "PySide6.QtNetwork",
-        "--exclude-module",
-        "socket",
-        "--exclude-module",
-        "ssl",
         "--name",
         "AgentGuardian",
         "--paths",
@@ -309,7 +304,7 @@ def validate_frozen_layout(bundle_root: Path, project_root: Path) -> None:
     forbidden = sorted(
         path.relative_to(bundle_root).as_posix()
         for path in bundle_root.rglob("*")
-        if path.is_file() and path.name.casefold() in _FORBIDDEN_NETWORK_COMPONENTS
+        if path.is_file() and path.name.casefold() in _FORBIDDEN_QT_NETWORK_COMPONENTS
     )
     if forbidden:
         raise ValueError(f"frozen layout contains network-capable component: {forbidden[0]}")

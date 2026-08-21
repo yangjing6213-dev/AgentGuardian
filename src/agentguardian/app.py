@@ -2761,12 +2761,14 @@ def run_maintenance_command(arguments: list[str]) -> int | None:
     try:
         removed = purge_protected_state()
     except StateStoreError:
-        sys.stdout.write(
-            '{"error":"PROTECTED_STATE_PURGE_FAILED","status":"fail"}\n'
-        )
+        if sys.stdout is not None:
+            sys.stdout.write(
+                '{"error":"PROTECTED_STATE_PURGE_FAILED","status":"fail"}\n'
+            )
         return 1
     result = "removed" if removed else "absent"
-    sys.stdout.write(f'{{"result":"{result}","status":"pass"}}\n')
+    if sys.stdout is not None:
+        sys.stdout.write(f'{{"result":"{result}","status":"pass"}}\n')
     return 0
 
 

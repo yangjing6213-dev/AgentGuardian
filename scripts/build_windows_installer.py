@@ -50,7 +50,7 @@ _COMPILER_SHA256 = (
     "0ff6140d641f84b64204a2c4d52207c6fc437c9f4db8779c83083d84f7e3d70d"
 )
 _INSTALLER_SCRIPT_SHA256 = (
-    "a5897f4158da4d9cb4246fb62ca1138a2b1c6324cadaf0a4261bfb5158237167"
+    "53115f22d138f788ad570100b617f6c9643681e50dde1b10b470a0ad37d9e6c0"
 )
 _SCRIPT_RELATIVE = Path("packaging/windows/AgentGuardian.iss")
 _PROFILE_RELATIVE = Path("release_profiles/personal_exe_private_beta.json")

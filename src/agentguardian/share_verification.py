@@ -1,9 +1,18 @@
 from dataclasses import dataclass
+import http.client
 import ipaddress
+import socket
 from collections.abc import Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import (
+    HTTPHandler,
+    HTTPRedirectHandler,
+    HTTPSHandler,
+    ProxyHandler,
+    Request,
+    build_opener,
+)
 
 
 MAX_SHARE_RESPONSE_BYTES = 64 * 1024
@@ -30,6 +39,14 @@ class ShareVerificationResult:
 
 class _RedirectLimitError(Exception):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedEndpoint:
+    family: int
+    socket_type: int
+    protocol: int
+    address: tuple
 
 
 def verify_public_share(
@@ -66,7 +83,13 @@ def verify_public_share(
         },
     )
     try:
-        with build_opener(redirect_handler).open(request, timeout=timeout) as response:
+        opener = build_opener(
+            ProxyHandler({}),
+            redirect_handler,
+            _PinnedHTTPHandler(allow_private_hosts),
+            _PinnedHTTPSHandler(allow_private_hosts),
+        )
+        with opener.open(request, timeout=timeout) as response:
             status_code = response.getcode()
             content_type = response.headers.get_content_type()
             if content_type not in _ALLOWED_CONTENT_TYPES:
@@ -147,6 +170,100 @@ class _BoundedRedirectHandler(HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, target)
 
 
+class _PinnedHTTPHandler(HTTPHandler):
+    def __init__(self, allow_private_hosts: bool) -> None:
+        super().__init__()
+        self.allow_private_hosts = allow_private_hosts
+
+    def http_open(self, request):
+        endpoint = _resolve_endpoint(request.full_url, self.allow_private_hosts)
+        return self.do_open(
+            _pinned_connection_factory(http.client.HTTPConnection, endpoint),
+            request,
+        )
+
+
+class _PinnedHTTPSHandler(HTTPSHandler):
+    def __init__(self, allow_private_hosts: bool) -> None:
+        super().__init__()
+        self.allow_private_hosts = allow_private_hosts
+
+    def https_open(self, request):
+        endpoint = _resolve_endpoint(request.full_url, self.allow_private_hosts)
+        return self.do_open(
+            _pinned_connection_factory(http.client.HTTPSConnection, endpoint),
+            request,
+            context=self._context,
+        )
+
+
+def _resolve_endpoint(url: str, allow_private_hosts: bool) -> _ResolvedEndpoint:
+    parsed = urlsplit(url)
+    host = parsed.hostname
+    if host is None:
+        raise ValueError("SHARE_URL_INVALID")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    records = socket.getaddrinfo(
+        host,
+        port,
+        family=socket.AF_UNSPEC,
+        type=socket.SOCK_STREAM,
+        proto=socket.IPPROTO_TCP,
+    )
+    endpoints = []
+    for family, socket_type, protocol, _canonical_name, address in records:
+        if family not in {socket.AF_INET, socket.AF_INET6} or not address:
+            continue
+        try:
+            resolved = ipaddress.ip_address(str(address[0]).split("%", 1)[0])
+        except ValueError:
+            raise OSError("SHARE_DNS_INVALID") from None
+        if not allow_private_hosts and not _is_public_address(resolved):
+            raise ValueError("SHARE_PRIVATE_HOST_REJECTED")
+        endpoints.append(
+            _ResolvedEndpoint(family, socket_type, protocol, address)
+        )
+    if not endpoints:
+        raise OSError("SHARE_DNS_EMPTY")
+    return endpoints[0]
+
+
+def _is_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return address.is_global and not address.is_multicast
+
+
+def _pinned_connection_factory(connection_class, endpoint: _ResolvedEndpoint):
+    def create(host, **kwargs):
+        connection = connection_class(host, **kwargs)
+        connection._create_connection = lambda _address, timeout, source_address: (
+            _open_pinned_socket(endpoint, timeout, source_address)
+        )
+        return connection
+
+    return create
+
+
+def _open_pinned_socket(
+    endpoint: _ResolvedEndpoint,
+    timeout: float,
+    source_address,
+):
+    connection = socket.socket(
+        endpoint.family,
+        endpoint.socket_type,
+        endpoint.protocol,
+    )
+    try:
+        connection.settimeout(timeout)
+        if source_address:
+            connection.bind(source_address)
+        connection.connect(endpoint.address)
+    except BaseException:
+        connection.close()
+        raise
+    return connection
+
+
 def _validated_url(url: str, allow_private_hosts: bool) -> tuple[str, str]:
     try:
         parsed = urlsplit(url)
@@ -183,13 +300,7 @@ def _is_private_host(host: str) -> bool:
         address = ipaddress.ip_address(host)
     except ValueError:
         return False
-    return bool(
-        address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_reserved
-        or address.is_unspecified
-    )
+    return not _is_public_address(address)
 
 
 def _content_length(headers: Mapping[str, str]) -> int | None:

@@ -343,7 +343,7 @@ def test_pyinstaller_command_is_inspectable_non_elevated_onedir(
         for index, value in enumerate(command[:-1])
         if value == "--exclude-module"
     }
-    assert excluded_modules == {"PySide6.QtNetwork", "socket", "ssl"}
+    assert excluded_modules == {"PySide6.QtNetwork"}
 
     data_specs = {
         command[index + 1]
@@ -698,7 +698,7 @@ def test_portable_evidence_rejects_retired_release_artifact_status(
         )
 
 
-def test_frozen_layout_requires_reviewed_sources_and_no_network_modules(
+def test_frozen_layout_requires_reviewed_sources_and_no_qt_network_modules(
     tmp_path: Path,
 ) -> None:
     bundle = tmp_path / "AgentGuardian"
@@ -716,6 +716,9 @@ def test_frozen_layout_requires_reviewed_sources_and_no_network_modules(
 
     validate_frozen_layout(bundle, PROJECT_ROOT)
 
+    (bundle / "_internal" / "_socket.pyd").write_bytes(b"synthetic stdlib socket")
+    validate_frozen_layout(bundle, PROJECT_ROOT)
+
     (package / "app.py").unlink()
     with pytest.raises(ValueError, match="reviewed source layout"):
         validate_frozen_layout(bundle, PROJECT_ROOT)
@@ -724,7 +727,6 @@ def test_frozen_layout_requires_reviewed_sources_and_no_network_modules(
 @pytest.mark.parametrize(
     "relative",
     (
-        "_internal/_socket.pyd",
         "_internal/PySide6/QtNetwork.pyd",
         "_internal/PySide6/Qt6Network.dll",
         "_internal/PySide6/plugins/tls/qopensslbackend.dll",

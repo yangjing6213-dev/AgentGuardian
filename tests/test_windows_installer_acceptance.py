@@ -78,6 +78,7 @@ def test_acceptance_script_bounds_setup_and_requires_a_responsive_window() -> No
     assert '"${Code}_TIMEOUT"' in script
     assert "DOWNGRADE_TIMEOUT" in script
     assert "MainWindowHandle" in script
+    assert "$process.MainWindowTitle -ceq 'AgentGuardian'" in script
     assert ".Responding" in script
     assert "LAUNCH_WINDOW_TIMEOUT" in script
     assert "Start-Process -FilePath $Installer -ArgumentList $Arguments -Wait" not in script
@@ -162,6 +163,13 @@ def test_acceptance_script_locks_fixed_paths_and_evidence_output_before_actions(
     assert "Get-InstallerFileVersion $base" in pre_install
     assert "Get-InstallerFileVersion $candidate" in pre_install
     assert "[Version]'0.2.0.1'" in pre_install
+
+
+def test_acceptance_script_creates_state_directory_without_wildcard_expansion() -> None:
+    script = _script()
+
+    assert "[System.IO.Directory]::CreateDirectory($StateDirectory)" in script
+    assert "New-Item -ItemType Directory -LiteralPath $StateDirectory" not in script
 
 
 def test_acceptance_installer_file_version_uses_numeric_parts() -> None:

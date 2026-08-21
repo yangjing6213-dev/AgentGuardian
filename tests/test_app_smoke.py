@@ -5989,6 +5989,28 @@ def test_maintenance_command_reports_absent_state(
     assert capsys.readouterr().out == '{"result":"absent","status":"pass"}\n'
 
 
+def test_maintenance_command_succeeds_without_windowed_stdout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
+    monkeypatch.setattr(app_module.sys, "stdout", None)
+
+    assert app_module.run_maintenance_command(["--purge-protected-state"]) == 0
+
+
+def test_maintenance_command_fails_without_windowed_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_purge() -> bool:
+        raise app_module.StateStoreError("PROTECTED_STATE_PURGE_FAILED")
+
+    monkeypatch.setattr(app_module, "purge_protected_state", fail_purge)
+    monkeypatch.setattr(app_module.sys, "stdout", None)
+
+    assert app_module.run_maintenance_command(["--purge-protected-state"]) == 1
+
+
 def test_maintenance_command_reports_fixed_failure_without_path(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

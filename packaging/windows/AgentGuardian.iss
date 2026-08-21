@@ -102,6 +102,13 @@ begin
   end;
 end;
 
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    if not RegWriteStringValue(HKCU, UninstallKey, FileVersionValue, '{#FileVersion}') then
+      RaiseException('AgentGuardian installer version could not be recorded.');
+end;
+
 function HasPurgeStateParameter(): Boolean;
 var
   Index: Integer;
