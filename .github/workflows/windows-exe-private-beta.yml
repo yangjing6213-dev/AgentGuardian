@@ -27,16 +27,6 @@ jobs:
       BASE_FILE_VERSION: 0.1.9.0
       CANDIDATE_DISPLAY_VERSION: 0.2.0-beta.1
       CANDIDATE_FILE_VERSION: 0.2.0.1
-      INNO_ASSET: ${{ runner.temp }}\agentguardian-inno-download\innosetup-7.0.2-x64.exe
-      ISCC: ${{ runner.temp }}\agentguardian-inno-7.0.2\ISCC.exe
-      PORTABLE_OUTPUT: ${{ runner.temp }}\agentguardian-portable
-      PORTABLE_BUNDLE: ${{ runner.temp }}\agentguardian-portable\dist\AgentGuardian
-      BASE_OUTPUT: ${{ runner.temp }}\agentguardian-base-installer
-      BASE_INSTALLER: ${{ runner.temp }}\agentguardian-base-installer\AgentGuardian-Setup-0.1.9-x64.exe
-      CANDIDATE_OUTPUT: ${{ runner.temp }}\agentguardian-candidate-installer
-      CANDIDATE_INSTALLER: ${{ runner.temp }}\agentguardian-candidate-installer\AgentGuardian-Setup-0.2.0-beta.1-x64.exe
-      EVIDENCE_ROOT: ${{ runner.temp }}\agentguardian-private-beta-evidence
-      LIFECYCLE_EVIDENCE: ${{ runner.temp }}\agentguardian-installer-lifecycle.json
     steps:
       - name: Validate exact lowercase candidate SHA
         shell: pwsh
@@ -66,6 +56,16 @@ jobs:
           $commitEpoch = [int64](git show -s --format=%ct HEAD)
           $commitUtc = [DateTimeOffset]::FromUnixTimeSeconds($commitEpoch).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
           "COMMIT_UTC=$commitUtc" >> $env:GITHUB_ENV
+          "INNO_ASSET=$env:RUNNER_TEMP\agentguardian-inno-download\innosetup-7.0.2-x64.exe" >> $env:GITHUB_ENV
+          "ISCC=$env:RUNNER_TEMP\agentguardian-inno-7.0.2\ISCC.exe" >> $env:GITHUB_ENV
+          "PORTABLE_OUTPUT=$env:RUNNER_TEMP\agentguardian-portable" >> $env:GITHUB_ENV
+          "PORTABLE_BUNDLE=$env:RUNNER_TEMP\agentguardian-portable\dist\AgentGuardian" >> $env:GITHUB_ENV
+          "BASE_OUTPUT=$env:RUNNER_TEMP\agentguardian-base-installer" >> $env:GITHUB_ENV
+          "BASE_INSTALLER=$env:RUNNER_TEMP\agentguardian-base-installer\AgentGuardian-Setup-0.1.9-x64.exe" >> $env:GITHUB_ENV
+          "CANDIDATE_OUTPUT=$env:RUNNER_TEMP\agentguardian-candidate-installer" >> $env:GITHUB_ENV
+          "CANDIDATE_INSTALLER=$env:RUNNER_TEMP\agentguardian-candidate-installer\AgentGuardian-Setup-0.2.0-beta.1-x64.exe" >> $env:GITHUB_ENV
+          "EVIDENCE_ROOT=$env:RUNNER_TEMP\agentguardian-private-beta-evidence" >> $env:GITHUB_ENV
+          "LIFECYCLE_EVIDENCE=$env:RUNNER_TEMP\agentguardian-installer-lifecycle.json" >> $env:GITHUB_ENV
 
       - name: Require local fixed drives
         shell: pwsh
@@ -260,11 +260,11 @@ jobs:
           retention-days: 14
           if-no-files-found: error
           path: |
-            ${{ env.EVIDENCE_ROOT }}/AgentGuardian-Setup-0.2.0-beta.1-x64.exe
-            ${{ env.EVIDENCE_ROOT }}/AgentGuardian.cdx.json
-            ${{ env.EVIDENCE_ROOT }}/BUILD-METADATA.json
-            ${{ env.EVIDENCE_ROOT }}/PAYLOAD-MANIFEST.json
-            ${{ env.EVIDENCE_ROOT }}/PRIVATE-BETA-MANIFEST.json
-            ${{ env.EVIDENCE_ROOT }}/PRIVATE-BETA-README.txt
-            ${{ env.EVIDENCE_ROOT }}/SHA256SUMS
-            ${{ env.EVIDENCE_ROOT }}/THIRD_PARTY_NOTICES.md
+            ${{ runner.temp }}/agentguardian-private-beta-evidence/AgentGuardian-Setup-0.2.0-beta.1-x64.exe
+            ${{ runner.temp }}/agentguardian-private-beta-evidence/AgentGuardian.cdx.json
+            ${{ runner.temp }}/agentguardian-private-beta-evidence/BUILD-METADATA.json
+            ${{ runner.temp }}/agentguardian-private-beta-evidence/PAYLOAD-MANIFEST.json
+            ${{ runner.temp }}/agentguardian-private-beta-evidence/PRIVATE-BETA-MANIFEST.json
+            ${{ runner.temp }}/agentguardian-private-beta-evidence/PRIVATE-BETA-README.txt
+            ${{ runner.temp }}/agentguardian-private-beta-evidence/SHA256SUMS
+            ${{ runner.temp }}/agentguardian-private-beta-evidence/THIRD_PARTY_NOTICES.md

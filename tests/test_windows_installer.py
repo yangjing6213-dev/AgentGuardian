@@ -449,6 +449,7 @@ def test_exe_workflow_pins_inno_and_runs_native_lifecycle() -> None:
         "^[0-9a-f]{40}$",
         "WORKFLOW_SOURCE_COMMIT: ${{ github.workflow_sha }}",
         "persist-credentials: false",
+        "EVIDENCE_ROOT=$env:RUNNER_TEMP\\agentguardian-private-beta-evidence",
         "is-7_0_2",
         "innosetup-7.0.2-x64.exe",
         "5ad54ca3def786f8f4212552e54cc6d8d61329e2d24a1cfee0571d42c2684ff1",
@@ -485,6 +486,7 @@ def test_exe_workflow_pins_inno_and_runs_native_lifecycle() -> None:
         "Install verified Inno compiler privately", 1
     )[0]
     assert "GH_TOKEN" not in job_environment
+    assert "${{ runner.temp }}" not in job_environment
     assert "GH_TOKEN: ${{ github.token }}" in download_step
 
 
@@ -509,12 +511,12 @@ def test_exe_workflow_uploads_only_the_candidate_eight_file_allowlist() -> None:
             uploaded.append(value)
 
     assert uploaded == [
-        "${{ env.EVIDENCE_ROOT }}/AgentGuardian-Setup-0.2.0-beta.1-x64.exe",
-        "${{ env.EVIDENCE_ROOT }}/AgentGuardian.cdx.json",
-        "${{ env.EVIDENCE_ROOT }}/BUILD-METADATA.json",
-        "${{ env.EVIDENCE_ROOT }}/PAYLOAD-MANIFEST.json",
-        "${{ env.EVIDENCE_ROOT }}/PRIVATE-BETA-MANIFEST.json",
-        "${{ env.EVIDENCE_ROOT }}/PRIVATE-BETA-README.txt",
-        "${{ env.EVIDENCE_ROOT }}/SHA256SUMS",
-        "${{ env.EVIDENCE_ROOT }}/THIRD_PARTY_NOTICES.md",
+        "${{ runner.temp }}/agentguardian-private-beta-evidence/AgentGuardian-Setup-0.2.0-beta.1-x64.exe",
+        "${{ runner.temp }}/agentguardian-private-beta-evidence/AgentGuardian.cdx.json",
+        "${{ runner.temp }}/agentguardian-private-beta-evidence/BUILD-METADATA.json",
+        "${{ runner.temp }}/agentguardian-private-beta-evidence/PAYLOAD-MANIFEST.json",
+        "${{ runner.temp }}/agentguardian-private-beta-evidence/PRIVATE-BETA-MANIFEST.json",
+        "${{ runner.temp }}/agentguardian-private-beta-evidence/PRIVATE-BETA-README.txt",
+        "${{ runner.temp }}/agentguardian-private-beta-evidence/SHA256SUMS",
+        "${{ runner.temp }}/agentguardian-private-beta-evidence/THIRD_PARTY_NOTICES.md",
     ]
