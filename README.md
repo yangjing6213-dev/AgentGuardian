@@ -2,7 +2,7 @@
 
 # AgentGuardian Personal v1
 
-AgentGuardian Personal v1 is a local-first static security auditor for Windows 11 x64. Its supported use boundary is **personal non-regulated configuration**. The only active delivery and governance route is the unsigned `personal_exe_private_beta` track for known testers. Frozen candidate `8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6` has current GitHub CI, native unsigned-installer lifecycle, and independent-review evidence. Version `0.2.0-beta.1` remains `PRIVATE-BETA-NOT-READY` because local secret-scan evidence, external license and Qt approval, two-machine acceptance, and the operations/security gate are pending; formal public release remains `NO-GO`.
+AgentGuardian Personal v1 is a local-first static security auditor for Windows 11 x64. Its supported use boundary is **personal non-regulated configuration**. The only active delivery and governance route is the unsigned `personal_exe_private_beta` track for known testers. Frozen candidate `8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6` has current local-gate, GitHub CI, native unsigned-installer lifecycle, and independent-review evidence. Version `0.2.0-beta.1` remains `PRIVATE-BETA-NOT-READY` because external license and Qt approval, two-machine acceptance, and the operations/security gate are pending; formal public release remains `NO-GO`.
 
 ## Current implementation
 
@@ -34,7 +34,7 @@ The intended delivery route is a traditional unsigned offline EXE installer sent
 
 An artifact uploaded by this public repository's GitHub Actions workflow is not an access-controlled private distribution channel. `Private beta` is a maturity label for the known-tester scope, not a claim that an artifact is confidential or access-restricted.
 
-The pinned installer tool, exact installer build, native lifecycle, and independent review now have evidence for the frozen candidate. Local secret-scan evidence, external license and Qt review, two independent clean-machine checks, and the operations/security gate remain pending. GitHub Issues is live for ordinary support. GitHub Private Vulnerability Reporting is disabled, so no current private vulnerability intake is claimed. These limits prohibit production-safety, license, or clean-machine claims.
+The local gate, pinned installer tool, exact installer build, native lifecycle, and independent review now have evidence for the frozen candidate. External license and Qt review, two independent clean-machine checks, and the operations/security gate remain pending. GitHub Issues is live for ordinary support. GitHub Private Vulnerability Reporting is disabled, so no current private vulnerability intake is claimed. These limits prohibit production-safety, license, or clean-machine claims.
 
 The canonical partial status ledger is [personal-exe-private-beta-status.json](docs/security/personal-exe-private-beta-status.json). Private beta remains `PRIVATE-BETA-NOT-READY` and formal release remains `NO-GO`; exact-SHA evidence must be generated outside the candidate commit.
 

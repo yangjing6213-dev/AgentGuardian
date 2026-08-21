@@ -1,6 +1,6 @@
 # Personal v1 Privacy
 
-The only active delivery and governance route is the unsigned `personal_exe_private_beta` track for known testers. Frozen candidate `8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6` has current GitHub CI, native unsigned-installer lifecycle, and independent-review evidence. It remains `PRIVATE-BETA-NOT-READY` because local secret-scan evidence, external license and Qt approval, two-machine acceptance, and operations/security readiness are pending; formal public release remains `NO-GO`.
+The only active delivery and governance route is the unsigned `personal_exe_private_beta` track for known testers. Frozen candidate `8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6` has current local-gate, GitHub CI, native unsigned-installer lifecycle, and independent-review evidence. It remains `PRIVATE-BETA-NOT-READY` because external license and Qt approval, two-machine acceptance, and operations/security readiness are pending; formal public release remains `NO-GO`.
 
 ## Data handling
 

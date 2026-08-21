@@ -55,6 +55,21 @@ PRIVATE_BETA_EVIDENCE_PATH = (
     / "evidence"
     / "8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6-gates.json"
 )
+PRIVATE_BETA_GITLEAKS_CONFIG_PATH = (
+    SECURITY_DOCS
+    / "evidence"
+    / "8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6-gitleaks.toml"
+)
+PRIVATE_BETA_LOCAL_EVIDENCE_PATH = (
+    SECURITY_DOCS
+    / "evidence"
+    / "8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6-local.json"
+)
+PRIVATE_BETA_PRIVACY_EVIDENCE_PATH = (
+    SECURITY_DOCS
+    / "evidence"
+    / "8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6-privacy.json"
+)
 FROZEN_PRIVATE_BETA_COMMIT = "8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6"
 _MACHINE_SPECIFIC_ABSOLUTE_PATH = re.compile(
     r"(?i)(?:\b[A-Z]:[\\/]|\\\\[^\\/\s]+[\\/][^\\/\s]+)"
@@ -343,9 +358,24 @@ def test_private_beta_status_binds_partial_evidence_to_frozen_candidate() -> Non
     evidence_raw = PRIVATE_BETA_EVIDENCE_PATH.read_bytes()
     evidence = json.loads(evidence_raw.decode("ascii"))
     evidence_sha256 = hashlib.sha256(evidence_raw).hexdigest()
+    local_raw = PRIVATE_BETA_LOCAL_EVIDENCE_PATH.read_bytes()
+    local_evidence = json.loads(local_raw.decode("ascii"))
+    local_sha256 = hashlib.sha256(local_raw).hexdigest()
+    privacy_raw = PRIVATE_BETA_PRIVACY_EVIDENCE_PATH.read_bytes()
+    privacy_evidence = json.loads(privacy_raw.decode("ascii"))
+    gitleaks_config_raw = PRIVATE_BETA_GITLEAKS_CONFIG_PATH.read_bytes()
 
     assert PRIVATE_BETA_STATUS_PATH.read_bytes() == _canonical(status)
     assert evidence_raw == _canonical(evidence)
+    assert local_raw == _canonical(local_evidence)
+    assert privacy_raw == _canonical(privacy_evidence)
+    assert privacy_evidence["passed"] is True
+    assert hashlib.sha256(privacy_raw).hexdigest() == (
+        local_evidence["results"]["privacy_acceptance"]["evidence_sha256"]
+    )
+    assert hashlib.sha256(gitleaks_config_raw).hexdigest() == (
+        local_evidence["results"]["secret_scan"]["config_sha256"]
+    )
     assert evidence == {
         "candidate_commit": FROZEN_PRIVATE_BETA_COMMIT,
         "gates_supported": [
@@ -408,21 +438,77 @@ def test_private_beta_status_binds_partial_evidence_to_frozen_candidate() -> Non
             "source_policy": "pass",
         },
     }
+    assert local_evidence == {
+        "candidate_commit": FROZEN_PRIVATE_BETA_COMMIT,
+        "environment": {
+            "architecture": "amd64",
+            "os_build": "10.0.26200",
+            "python": "3.12.2",
+        },
+        "gates_supported": ["local"],
+        "limitations": [
+            "developer-machine evidence is not independent-machine acceptance",
+            (
+                "Gitleaks used the reviewed external evidence configuration rather "
+                "than a candidate package input"
+            ),
+        ],
+        "recorded_at": "2026-08-21T12:10:10Z",
+        "repository_state": {
+            "observed_head_commit": FROZEN_PRIVATE_BETA_COMMIT,
+            "status_porcelain_v2_after": [],
+            "status_porcelain_v2_before": [],
+            "worktree_mode": "detached",
+        },
+        "results": {
+            "brand": "pass",
+            "compileall": "pass",
+            "diff_check": "pass",
+            "full_tests": {"passed": 1834, "skipped": 17, "warnings": 0},
+            "installer_tests": "pass within full suite",
+            "privacy_acceptance": {
+                "evidence_sha256": (
+                    "946013ed1e01168e52ac839972811f0fcbc697d2c0c2eb7439bdb0dd3065522d"
+                ),
+                "status": "pass",
+            },
+            "profile": "pass",
+            "secret_scan": {
+                "commits_scanned": 296,
+                "config_sha256": (
+                    "2f90f52394b66537984edc94370a907bf700fdf74aa0a892edd165abc3357113"
+                ),
+                "findings": 0,
+                "gitleaks_version": "8.30.1",
+                "log_opts": "--all -m",
+                "scope": "repository history, all refs, merge-aware",
+            },
+            "worktree": "clean",
+        },
+        "schema": 1,
+    }
     assert status["candidate_commit"] == FROZEN_PRIVATE_BETA_COMMIT
     assert status["formal_release_decision"] == "NO-GO"
     assert status["private_beta_decision"] == "PRIVATE-BETA-NOT-READY"
     assert [gate["name"] for gate in status["gates"]] == list(
         _PRIVATE_BETA_GATE_NAMES
     )
-    passed = {"scope", "remote", "installer", "independent_review"}
+    passed = {
+        "scope": (evidence_sha256, "2026-08-21T11:01:11Z"),
+        "local": (local_sha256, "2026-08-21T12:10:10Z"),
+        "remote": (evidence_sha256, "2026-08-21T11:01:11Z"),
+        "installer": (evidence_sha256, "2026-08-21T11:01:11Z"),
+        "independent_review": (evidence_sha256, "2026-08-21T11:01:11Z"),
+    }
     for gate in status["gates"]:
         if gate["name"] in passed:
+            digest, verified_at = passed[gate["name"]]
             assert gate == {
-                "evidence_sha256": evidence_sha256,
+                "evidence_sha256": digest,
                 "name": gate["name"],
                 "source_commit": FROZEN_PRIVATE_BETA_COMMIT,
                 "status": "pass",
-                "verified_at": "2026-08-21T11:01:11Z",
+                "verified_at": verified_at,
             }
         else:
             assert gate == {
@@ -778,21 +864,49 @@ def test_release_status_is_forced_to_lf_in_git_attributes() -> None:
 
 
 def test_release_evidence_is_forced_to_lf_in_git_attributes() -> None:
-    result = subprocess.run(
-        (
-            "git",
-            "check-attr",
-            "eol",
-            "--",
-            PRIVATE_BETA_EVIDENCE_PATH.relative_to(ROOT).as_posix(),
-        ),
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
+    for path in (
+        PRIVATE_BETA_EVIDENCE_PATH,
+        PRIVATE_BETA_LOCAL_EVIDENCE_PATH,
+        PRIVATE_BETA_PRIVACY_EVIDENCE_PATH,
+        PRIVATE_BETA_GITLEAKS_CONFIG_PATH,
+    ):
+        result = subprocess.run(
+            (
+                "git",
+                "check-attr",
+                "eol",
+                "--",
+                path.relative_to(ROOT).as_posix(),
+            ),
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.stdout.strip().endswith(": eol: lf")
+
+
+def test_frozen_candidate_secret_scan_allowlist_is_narrow() -> None:
+    config = tomllib.loads(
+        PRIVATE_BETA_GITLEAKS_CONFIG_PATH.read_text(encoding="ascii")
     )
 
-    assert result.stdout.strip().endswith(": eol: lf")
+    assert config == {
+        "extend": {"useDefault": True},
+        "allowlists": [
+            {
+                "condition": "AND",
+                "description": "Reviewed source-policy SHA-256 entries",
+                "paths": [r"^src/agentguardian/source_policy\.json$"],
+                "regexTarget": "line",
+                "regexes": [
+                    r'^\s*"[a-z0-9_]+\.py":\s*"[0-9a-f]{64}",?\s*$'
+                ],
+                "targetRules": ["generic-api-key"],
+            }
+        ],
+    }
 
 
 def test_release_status_contract_accepts_evidence_bound_transitions() -> None:

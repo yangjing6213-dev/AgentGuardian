@@ -2,7 +2,7 @@
 
 ## Scope
 
-This model covers AgentGuardian Personal v1 `0.2.0-beta.1` on Windows 11 x64 in a personal non-regulated configuration. The only active delivery and governance route is the unsigned `personal_exe_private_beta` track for known testers. Frozen candidate `8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6` has current GitHub CI, native unsigned-installer lifecycle, and independent-review evidence. It remains `PRIVATE-BETA-NOT-READY` because local secret-scan evidence, external license and Qt approval, two-machine acceptance, and operations/security readiness are pending; formal public release is `NO-GO`. It does not establish production safety.
+This model covers AgentGuardian Personal v1 `0.2.0-beta.1` on Windows 11 x64 in a personal non-regulated configuration. The only active delivery and governance route is the unsigned `personal_exe_private_beta` track for known testers. Frozen candidate `8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6` has current local-gate, GitHub CI, native unsigned-installer lifecycle, and independent-review evidence. It remains `PRIVATE-BETA-NOT-READY` because external license and Qt approval, two-machine acceptance, and operations/security readiness are pending; formal public release is `NO-GO`. It does not establish production safety.
 
 Personal v1 permanently excludes MCP runtime integration. Enterprise features, a high-sensitivity mode, and dynamic MCP execution are permanent exclusions. The runtime has no telemetry, cloud console, automatic arbitrary remediation, or plugin execution. OpenAI Provider behavior is limited to local adaptation, detection, and manual guidance. The runtime must not call OpenAI or another provider API by default.
 

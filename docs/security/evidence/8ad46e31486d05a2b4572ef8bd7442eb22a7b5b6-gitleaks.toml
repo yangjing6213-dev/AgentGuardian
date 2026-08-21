@@ -1,0 +1,10 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Reviewed source-policy SHA-256 entries"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+paths = ['''^src/agentguardian/source_policy\.json$''']
+regexes = ['''^\s*"[a-z0-9_]+\.py":\s*"[0-9a-f]{64}",?\s*$''']
