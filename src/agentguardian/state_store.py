@@ -52,6 +52,8 @@ def purge_protected_state() -> bool:
             or target.resolve(strict=False).parent != parent.resolve(strict=True)
         ):
             raise StateStoreError("PROTECTED_STATE_PURGE_FAILED")
+        if os.name == "nt":
+            return _purge_windows_target(target, parent)
         existed = target.exists()
         target.unlink(missing_ok=True)
         return existed
@@ -59,6 +61,164 @@ def purge_protected_state() -> bool:
         raise StateStoreError("PROTECTED_STATE_PURGE_FAILED") from None
     except OSError:
         raise StateStoreError("PROTECTED_STATE_PURGE_FAILED") from None
+
+
+def _purge_windows_target(target: Path, parent: Path) -> bool:
+    # Handles pin both objects and deny concurrent rename/delete before disposition.
+    import ctypes
+    from ctypes import wintypes
+
+    class ByHandleFileInformation(ctypes.Structure):
+        _fields_ = (
+            ("dwFileAttributes", wintypes.DWORD),
+            ("ftCreationTime", wintypes.FILETIME),
+            ("ftLastAccessTime", wintypes.FILETIME),
+            ("ftLastWriteTime", wintypes.FILETIME),
+            ("dwVolumeSerialNumber", wintypes.DWORD),
+            ("nFileSizeHigh", wintypes.DWORD),
+            ("nFileSizeLow", wintypes.DWORD),
+            ("nNumberOfLinks", wintypes.DWORD),
+            ("nFileIndexHigh", wintypes.DWORD),
+            ("nFileIndexLow", wintypes.DWORD),
+        )
+
+    class FileDispositionInformation(ctypes.Structure):
+        _fields_ = (("DeleteFile", ctypes.c_ubyte),)
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    get_information = kernel32.GetFileInformationByHandle
+    get_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(ByHandleFileInformation),
+    )
+    get_information.restype = wintypes.BOOL
+    get_final_path = kernel32.GetFinalPathNameByHandleW
+    get_final_path.argtypes = (
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    )
+    get_final_path.restype = wintypes.DWORD
+    set_information = kernel32.SetFileInformationByHandle
+    set_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    )
+    set_information.restype = wintypes.BOOL
+
+    invalid_handle = ctypes.c_void_p(-1).value
+    file_read_attributes = 0x0080
+    delete = 0x00010000
+    share_read_write = 0x00000003
+    open_existing = 3
+    open_reparse_point = 0x00200000
+    backup_semantics = 0x02000000
+    directory_attribute = 0x00000010
+    reparse_attribute = 0x00000400
+    file_disposition_info = 4
+    not_found_errors = {2, 3}
+    open_flags = open_reparse_point | backup_semantics
+
+    def open_handle(path: Path, access: int) -> int:
+        return create_file(
+            os.fspath(path),
+            access,
+            share_read_write,
+            None,
+            open_existing,
+            open_flags,
+            None,
+        )
+
+    def close_checked(handle: int) -> None:
+        if not close_handle(handle):
+            raise OSError(ctypes.get_last_error(), "close failed")
+
+    def attributes(handle: int) -> int:
+        information = ByHandleFileInformation()
+        if not get_information(handle, ctypes.byref(information)):
+            raise OSError(ctypes.get_last_error(), "attribute query failed")
+        return information.dwFileAttributes
+
+    def final_path(handle: int) -> str:
+        buffer = ctypes.create_unicode_buffer(32_768)
+        length = get_final_path(handle, buffer, len(buffer), 0)
+        if not length or length >= len(buffer):
+            raise OSError(ctypes.get_last_error(), "path query failed")
+        value = buffer.value
+        if value.startswith("\\\\?\\UNC\\"):
+            value = "\\\\" + value[8:]
+        elif value.startswith("\\\\?\\"):
+            value = value[4:]
+        return os.path.normcase(os.path.normpath(value))
+
+    parent_handle = open_handle(parent, file_read_attributes)
+    if parent_handle == invalid_handle:
+        error = ctypes.get_last_error()
+        if error in not_found_errors:
+            return False
+        raise OSError(error, "parent open failed")
+    try:
+        parent_attributes = attributes(parent_handle)
+        if (
+            not parent_attributes & directory_attribute
+            or parent_attributes & reparse_attribute
+        ):
+            raise StateStoreError("PROTECTED_STATE_PURGE_FAILED")
+        actual_parent = final_path(parent_handle)
+        expected_parent = os.path.normcase(
+            os.path.normpath(os.path.abspath(os.fspath(parent)))
+        )
+        if actual_parent != expected_parent:
+            raise StateStoreError("PROTECTED_STATE_PURGE_FAILED")
+
+        target_handle = open_handle(target, delete | file_read_attributes)
+        if target_handle == invalid_handle:
+            error = ctypes.get_last_error()
+            if error in not_found_errors:
+                return False
+            raise OSError(error, "target open failed")
+        try:
+            target_attributes = attributes(target_handle)
+            if target_attributes & (directory_attribute | reparse_attribute):
+                raise StateStoreError("PROTECTED_STATE_PURGE_FAILED")
+            actual_target = final_path(target_handle)
+            if (
+                os.path.dirname(actual_target) != actual_parent
+                or os.path.basename(actual_target).casefold()
+                != STATE_FILENAME.casefold()
+            ):
+                raise StateStoreError("PROTECTED_STATE_PURGE_FAILED")
+            disposition = FileDispositionInformation(1)
+            if not set_information(
+                target_handle,
+                file_disposition_info,
+                ctypes.byref(disposition),
+                ctypes.sizeof(disposition),
+            ):
+                raise OSError(ctypes.get_last_error(), "delete failed")
+        finally:
+            close_checked(target_handle)
+        return True
+    finally:
+        close_checked(parent_handle)
 
 
 def save_protected_state(

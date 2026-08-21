@@ -356,6 +356,44 @@ def test_purge_protected_state_rejects_junction_without_touching_target(
     assert protected.read_bytes() == b"protected"
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows junction test")
+def test_purge_protected_state_rejects_parent_swap_before_delete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import agentguardian.state_store as state_store
+
+    local_app_data = tmp_path / "local-app-data"
+    app_directory = local_app_data / "AgentGuardian"
+    app_directory.mkdir(parents=True)
+    (app_directory / STATE_FILENAME).write_bytes(b"expected-state")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_state = outside / STATE_FILENAME
+    outside_state.write_bytes(b"outside-state")
+    held_directory = local_app_data / "AgentGuardian-held"
+    original_is_reparse = state_store._is_reparse
+    swapped = False
+
+    def swap_parent_before_target_check(path: str | Path) -> bool:
+        nonlocal swapped
+        if Path(path) == app_directory / STATE_FILENAME and not swapped:
+            app_directory.rename(held_directory)
+            _junction_or_skip(app_directory, outside)
+            swapped = True
+        return original_is_reparse(path)
+
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.setattr(
+        state_store, "_is_reparse", swap_parent_before_target_check
+    )
+
+    with pytest.raises(StateStoreError, match="^PROTECTED_STATE_PURGE_FAILED$"):
+        state_store.purge_protected_state()
+
+    assert (held_directory / STATE_FILENAME).read_bytes() == b"expected-state"
+    assert outside_state.read_bytes() == b"outside-state"
+
+
 def test_store_rejects_relative_directory_without_writing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
