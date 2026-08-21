@@ -46,7 +46,7 @@ _DISPLAY_VERSION = "0.2.0-beta.1"
 _FILE_VERSION = "0.2.0.1"
 _COMPILER_VERSION = "7.0.2"
 _INSTALLER_SCRIPT_SHA256 = (
-    "79b43cfdb534f4b89b53267b5178400ccdef144abea119c62f80fa38c87a5ba7"
+    "a5897f4158da4d9cb4246fb62ca1138a2b1c6324cadaf0a4261bfb5158237167"
 )
 _SCRIPT_RELATIVE = Path("packaging/windows/AgentGuardian.iss")
 _PROFILE_RELATIVE = Path("release_profiles/personal_exe_private_beta.json")

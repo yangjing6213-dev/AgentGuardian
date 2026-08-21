@@ -3,6 +3,7 @@ from __future__ import annotations
 import builtins
 import importlib
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -92,6 +93,8 @@ def test_inno_script_is_current_user_offline_and_static() -> None:
         "AppVersion={#DisplayVersion}",
         "VersionInfoVersion={#FileVersion}",
         r"DefaultDirName={localappdata}\Programs\AgentGuardian",
+        "DisableDirPage=yes",
+        "UsePreviousAppDir=no",
         "PrivilegesRequired=lowest",
         "SetupArchitecture=x64",
         "ArchitecturesAllowed=x64compatible",
@@ -114,7 +117,6 @@ def test_inno_script_is_current_user_offline_and_static() -> None:
         "signing",
         "[run]",
         "[uninstallrun]",
-        "[registry]",
         "hklm",
         "{commonappdata}",
         "{commonpf}",
@@ -124,8 +126,52 @@ def test_inno_script_is_current_user_offline_and_static() -> None:
         "service",
         "driver",
         "startup",
+        "filesandordirs",
+        "[uninstalldelete]",
     ):
         assert forbidden not in folded
+
+
+def test_inno_script_rejects_downgrades_and_has_bounded_state_cleanup() -> None:
+    script = SCRIPT_PATH.read_text(encoding="utf-8")
+    folded = script.casefold()
+
+    assert "[Registry]" in script
+    assert (
+        'Root: HKCU; Subkey: "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\'
+        '{{7A76221A-CFA0-4860-B250-7083B736F3FB}_is1"; '
+        'ValueType: string; ValueName: "AgentGuardianFileVersion"; '
+        'ValueData: "{#FileVersion}"; Flags: uninsdeletevalue' in script
+    )
+    assert '_is1' in script
+    assert (
+        "UninstallKey = 'Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\"
+        "{7A76221A-CFA0-4860-B250-7083B736F3FB}_is1';" in script
+    )
+    assert "function InitializeSetup(): Boolean;" not in script
+    assert "function PrepareToInstall(var NeedsRestart: Boolean): String;" in script
+    assert "ComparePackedVersion" in script
+    assert "StrToVersion" in script
+    assert "procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);" in script
+    assert "usUninstall" in script
+    assert "UninstallSilent" in script
+    assert "/PURGEAGENTGUARDIANSTATE" in script
+    assert "--purge-protected-state" in script
+    assert "SuppressibleMsgBox" in script
+    assert "Abort;" in script
+    assert "{app}\\AgentGuardian.exe" in script
+    assert "{localappdata}\\agentguardian\\evidence-state-v1.bin" not in folded
+    assert "del /" not in folded
+    assert "rmdir" not in folded
+
+    setup_body = script.split(
+        "function PrepareToInstall(var NeedsRestart: Boolean): String;", 1
+    )[1].split(
+        "function HasPurgeStateParameter(): Boolean;", 1
+    )[0]
+    assert "WizardDirValue <> ExpandConstant('{localappdata}\\Programs\\AgentGuardian')" in setup_body
+    assert "Result :=" in setup_body
+    assert not re.search(r"(?<!Suppressible)MsgBox\(", setup_body)
 
 
 def test_installer_builder_locks_the_complete_inno_script() -> None:
