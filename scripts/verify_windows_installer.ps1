@@ -67,7 +67,7 @@ function Assert-NoReparseAncestor([string]$Value, [string]$Code) {
             }
         }
         $parent = Split-Path -Parent $current
-        if ($parent -eq $current) {
+        if ([string]::IsNullOrEmpty($parent) -or $parent -eq $current) {
             return
         }
         $current = $parent

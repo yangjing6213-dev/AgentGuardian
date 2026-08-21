@@ -250,6 +250,34 @@ def test_local_path_syntax_rejects_dot_segment_normalization() -> None:
     assert result.stdout == "PATH_INVALID"
 
 
+def test_reparse_ancestor_check_stops_after_windows_drive_root() -> None:
+    script = _script()
+    fail_source = script.split("function Fail", 1)[1].split(
+        "function Assert-LocalPathSyntax", 1
+    )[0]
+    helper = script.split("function Assert-NoReparseAncestor", 1)[1].split(
+        "function Get-ExistingAbsoluteFile", 1
+    )[0]
+    command = (
+        "function Fail"
+        + fail_source
+        + "function Assert-NoReparseAncestor"
+        + helper
+        + "\ntry { Assert-NoReparseAncestor 'C:\\' 'REPARSE_INVALID'; "
+        + "[Console]::Write('accepted') } catch { [Console]::Write($_.Exception.Message) }"
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", command],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "accepted"
+
+
 def test_acceptance_script_polls_for_post_uninstall_absence() -> None:
     script = _script()
 
