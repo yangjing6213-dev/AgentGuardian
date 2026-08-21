@@ -2,9 +2,9 @@
 
 ## Scope
 
-This model covers AgentGuardian Personal v1 `0.2.0-beta.1` on Windows 11 x64 in a personal non-regulated configuration. Private beta is `PRIVATE-BETA-NOT-READY`; formal release is `NO-GO`. It does not establish production safety.
+This model covers AgentGuardian Personal v1 `0.2.0-beta.1` on Windows 11 x64 in a personal non-regulated configuration. The only active delivery and governance route is the unsigned `personal_exe_private_beta` track for known testers. It is `PRIVATE-BETA-NOT-READY` because no real installer EXE, successful native workflow execution evidence, or two-machine acceptance evidence exists; formal public release is `NO-GO`. It does not establish production safety.
 
-Personal v1 permanently excludes MCP runtime integration. Enterprise features, a high-sensitivity mode, and dynamic MCP execution are permanent exclusions. The runtime has no telemetry, cloud console, automatic arbitrary remediation, or plugin execution. The runtime must not call OpenAI or another provider API by default.
+Personal v1 permanently excludes MCP runtime integration. Enterprise features, a high-sensitivity mode, and dynamic MCP execution are permanent exclusions. The runtime has no telemetry, cloud console, automatic arbitrary remediation, or plugin execution. OpenAI Provider behavior is limited to local adaptation, detection, and manual guidance. The runtime must not call OpenAI or another provider API by default.
 
 ## Protected assets
 
@@ -40,6 +40,7 @@ Personal v1 permanently excludes MCP runtime integration. Enterprise features, a
 - Python cannot guarantee erasure of every immutable string or byte copy.
 - Static rules can miss unknown formats or behavior and do not prove endpoint intent.
 - Public URL reachability does not prove safe content, correct permissions, or search-index status.
+- An Actions artifact from the public repository is not an access-controlled private distribution channel; `private beta` describes maturity and known-tester scope, not confidentiality.
 - A clean local test does not prove installer integrity, external license approval, independent-machine behavior, or operations readiness. The private-beta installer is intentionally unsigned and may trigger Unknown Publisher or SmartScreen warnings.
 
 ## Unsupported data

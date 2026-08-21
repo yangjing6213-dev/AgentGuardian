@@ -1,4 +1,4 @@
-"""Verify the bounded Personal Store source and payload release profile."""
+"""Verify the bounded Personal EXE private-beta source and payload profile."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ _ROOT_PROJECT_EXCLUSIONS = frozenset(
         "venv",
     }
 )
-_STORE_PROFILE_KEYS = frozenset(
+_BASE_PROFILE_KEYS = frozenset(
     {
         "active_document_paths",
         "declared_network_modules",
@@ -84,7 +84,7 @@ _PRIVATE_BETA_IDENTITY = MappingProxyType(
         "windows_file_version": "0.2.0.1",
     }
 )
-_PRIVATE_BETA_PROFILE_KEYS = _STORE_PROFILE_KEYS | frozenset(
+_PRIVATE_BETA_PROFILE_KEYS = _BASE_PROFILE_KEYS | frozenset(
     {
         "architecture",
         "channel",
@@ -102,8 +102,8 @@ _PRIVATE_BETA_PROFILE_KEYS = _STORE_PROFILE_KEYS | frozenset(
         "windows_file_version",
     }
 )
-_STORE_ARRAY_KEYS = _STORE_PROFILE_KEYS - {"name", "schema"}
-_PRIVATE_BETA_ARRAY_KEYS = _STORE_ARRAY_KEYS | frozenset(
+_BASE_ARRAY_KEYS = _BASE_PROFILE_KEYS - {"name", "schema"}
+_PRIVATE_BETA_ARRAY_KEYS = _BASE_ARRAY_KEYS | frozenset(
     {"forbidden_installer_capabilities", "package_input_paths"}
 )
 _COMMON_PATH_ARRAY_KEYS = frozenset(
@@ -352,22 +352,14 @@ def require_profile_snapshot_unchanged(
 
 
 def _validate_profile_value(value: dict[str, Any]) -> None:
-    if value.get("name") == "personal_store_release" and value.get("schema") == 1:
-        profile_keys = _STORE_PROFILE_KEYS
-        array_keys = _STORE_ARRAY_KEYS
-        path_array_keys = _COMMON_PATH_ARRAY_KEYS
-    elif (
-        value.get("name") == "personal_exe_private_beta"
-        and value.get("schema") == 2
+    if (
+        value.get("name") != "personal_exe_private_beta"
+        or value.get("schema") != 2
     ):
-        profile_keys = _PRIVATE_BETA_PROFILE_KEYS
-        array_keys = _PRIVATE_BETA_ARRAY_KEYS
-        path_array_keys = _COMMON_PATH_ARRAY_KEYS | {"package_input_paths"}
-    else:
         raise ProfileViolation("PROFILE_SCHEMA_INVALID")
-    if set(value) != profile_keys:
+    if set(value) != _PRIVATE_BETA_PROFILE_KEYS:
         raise ProfileViolation("PROFILE_SCHEMA_INVALID")
-    for key in array_keys:
+    for key in _PRIVATE_BETA_ARRAY_KEYS:
         items = value[key]
         if (
             not isinstance(items, list)
@@ -383,10 +375,10 @@ def _validate_profile_value(value: dict[str, Any]) -> None:
             or len({item.casefold() for item in items}) != len(items)
         ):
             raise ProfileViolation("PROFILE_ARRAY_INVALID")
-    for key in path_array_keys:
+    for key in _COMMON_PATH_ARRAY_KEYS | {"package_input_paths"}:
         if any(not _safe_relative_pattern(item) for item in value[key]):
             raise ProfileViolation("PROFILE_PATH_INVALID")
-    if value["name"] == "personal_exe_private_beta" and any(
+    if any(
         value[key] != expected for key, expected in _PRIVATE_BETA_IDENTITY.items()
     ):
         raise ProfileViolation("PROFILE_IDENTITY_INVALID")
@@ -406,10 +398,9 @@ def verify_profile(
     for relative in profile["required_source_paths"]:
         if not _required_file(root, relative):
             raise ProfileViolation("PROFILE_REQUIRED_SOURCE_MISSING")
-    if profile["name"] == "personal_exe_private_beta":
-        for relative in profile["package_input_paths"]:
-            if not _required_path(root, relative):
-                raise ProfileViolation("PROFILE_PACKAGE_INPUT_MISSING")
+    for relative in profile["package_input_paths"]:
+        if not _required_path(root, relative):
+            raise ProfileViolation("PROFILE_PACKAGE_INPUT_MISSING")
 
     _verify_runtime(root, profile)
     _verify_workflows(root, profile["forbidden_workflow_tokens"])

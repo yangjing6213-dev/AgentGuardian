@@ -1,6 +1,6 @@
 # AgentGuardian Personal v1 Architecture
 
-This document defines the active architecture for version `0.2.0-beta.1`. Private beta is `PRIVATE-BETA-NOT-READY`; formal release is `NO-GO`. Historical specs, plans, and reports do not extend this contract.
+This document defines the active architecture for version `0.2.0-beta.1`. The only active delivery and governance route is the unsigned `personal_exe_private_beta` track for known testers. It is `PRIVATE-BETA-NOT-READY` because no real installer EXE, successful native workflow execution evidence, or two-machine acceptance evidence exists; formal public release is `NO-GO`. Historical specs, plans, and reports do not extend this contract.
 
 ## Product boundary
 
@@ -9,6 +9,8 @@ Personal v1 supports Windows 11 x64 and the **personal non-regulated configurati
 Personal v1 permanently excludes MCP runtime integration. Enterprise features, a high-sensitivity mode, and dynamic MCP execution are permanently excluded. There is no telemetry, cloud console, automatic arbitrary remediation, or plugin execution.
 
 OpenAI Provider support is limited to local adaptation, static detection, and manual guidance. The runtime must not call OpenAI or another provider API by default.
+
+An Actions artifact from the public repository is not an access-controlled private distribution channel. `Private beta` describes maturity and the known-tester scope, not confidentiality.
 
 ## Current data flow
 
@@ -92,4 +94,4 @@ The JSON below mirrors the current `domain.py` dataclass field order.
 
 Medical, financial, identity or biometric, legally privileged, customer data, state-secret, other regulated, and other high-sensitivity real data are unsupported. This is a use boundary, not content-classification assurance.
 
-Static source checks, local tests, and candidate tooling do not establish production safety. The pinned installer-tool download, external license and Qt review, exact unsigned installer build, two-machine install/run/uninstall acceptance, independent final review, and operations/security readiness remain pending. The status template cannot evidence its own commit; formal evidence must bind the frozen target candidate SHA externally. Even `PRIVATE-BETA-READY` would authorize only bounded private testing, while formal release remains `NO-GO`.
+Static source checks, local tests, candidate tooling, and retirement of the historical Store route do not establish production safety. The pinned installer-tool download, external license and Qt review, exact unsigned installer build, two-machine install/run/uninstall acceptance, independent final review, and operations/security readiness remain pending. The status template cannot evidence its own commit; formal evidence must bind the frozen target candidate SHA externally. Even `PRIVATE-BETA-READY` would authorize only bounded testing by known testers, while formal public release remains `NO-GO`.

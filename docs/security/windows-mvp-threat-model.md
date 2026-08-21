@@ -1,14 +1,18 @@
 # Windows MVP Threat Model
 
-> Historical Windows MVP snapshot. This is not an active Personal v1 product promise or current release evidence. See `personal-v1-threat-model.md` for the active threat model.
+> **HISTORICAL AND NON-GOVERNING WINDOWS MVP SNAPSHOT**
+>
+> The Store/MSIX/WACK/Partner Center route in this document is historical and does not govern Personal v1. The only active route is the unsigned `personal_exe_private_beta` maturity track for known testers. It remains `PRIVATE-BETA-NOT-READY` because no real installer EXE, successful native workflow execution evidence, or two-machine acceptance evidence exists; formal public release is `NO-GO`.
+>
+> Retiring or deleting historical Store files is governance cleanup, not readiness evidence. An Actions artifact from the public repository is not an access-controlled private distribution channel. See `personal-v1-threat-model.md` for the active threat model.
 
-Status: Batch 6 local security gate in progress. This document does not establish a release candidate and does not establish production safety.
+Historical status at the snapshot: Batch 6 local security gate in progress. This document does not establish a release candidate. It does not establish production safety.
 
 ## Scope
 
 The target is AgentGuardian 0.1.0 Founder Alpha running as a standard Windows user. The runtime may discover explicitly approved local configuration roots, read supported local files, produce redacted in-memory findings, save a new report only at a user-selected destination outside scanned roots, and store minimized evidence state protected by Windows DPAPI.
 
-The runtime must not call OpenAI or another provider API, verify a remote endpoint as part of the default scan, execute arbitrary commands, load dynamic plugins, elevate privileges, or update itself. Browser, clipboard, and share checks are separate explicit user actions; the only write action is the allowlisted fixed remediation flow, which requires preview and confirmation. Tests use synthetic data only.
+OpenAI Provider behavior is limited to local adaptation, detection, and manual guidance. The runtime must not call OpenAI or another provider API by default, verify a remote endpoint as part of the default scan, execute arbitrary commands, load dynamic plugins, elevate privileges, or update itself. Browser, clipboard, and share checks are separate explicit user actions; the only write action is the allowlisted fixed remediation flow, which requires preview and confirmation. Tests use synthetic data only.
 
 ## Trust Boundaries
 

@@ -4,9 +4,11 @@ This runbook is a release gate, not a production-safety claim.
 
 ## Current state
 
-Version `0.2.0-beta.1` is `PRIVATE-BETA-NOT-READY`; formal release remains `NO-GO`. The intended path is a traditional unsigned offline EXE sent directly to known private testers. Candidate infrastructure does not prove that the installer was built, its licenses were approved, or a clean machine accepted it.
+The only active delivery and governance route is `personal_exe_private_beta`: a traditional unsigned offline EXE for known testers. Version `0.2.0-beta.1` is `PRIVATE-BETA-NOT-READY` because no real installer EXE, successful native workflow execution evidence, or two-machine acceptance evidence exists; formal public release remains `NO-GO`. Candidate infrastructure does not prove that the installer was built, its licenses were approved, or a clean machine accepted it.
 
 An unsigned installer may trigger Unknown Publisher or SmartScreen warnings. Any private handoff must include an independently retained SHA-256 bound to the exact candidate source commit.
+
+An artifact uploaded by this public repository's GitHub Actions workflow is not an access-controlled private distribution channel. `Private beta` is a maturity label for the known-tester scope, not a confidentiality claim. A restricted handoff requires a separate controlled channel. OpenAI Provider behavior remains local adaptation, detection, and manual guidance only; the runtime must not call OpenAI or another provider API by default.
 
 ## Freeze the target candidate
 
@@ -34,4 +36,4 @@ The canonical scopes are `scope`, `local`, `remote`, `supply_chain`, `installer`
 
 Required external work includes verifying the pinned Inno Setup download, external license and Qt review, building and hashing the exact unsigned installer, install/run/uninstall checks on two independent clean machines, independent final review, ordinary support verification, a private security channel, and operations readiness.
 
-Private beta remains `PRIVATE-BETA-NOT-READY` while any gate is not `pass`. `PRIVATE-BETA-READY` authorizes only direct delivery to known testers within the documented unsupported-data boundary. Formal release remains `NO-GO`; no private-beta decision authorizes public binary release, deployment, high-sensitivity real data, or production-safety wording.
+Private beta remains `PRIVATE-BETA-NOT-READY` while any gate is not `pass`. `PRIVATE-BETA-READY` authorizes only bounded testing by known testers within the documented unsupported-data boundary. Formal public release remains `NO-GO`; no private-beta decision authorizes public binary release, deployment, high-sensitivity real data, or production-safety wording. Retiring the historical Store/MSIX/WACK/Partner Center route is governance cleanup, not readiness evidence.

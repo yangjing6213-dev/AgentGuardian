@@ -40,10 +40,8 @@ _UNUSED_QT_GUI_PLUGINS = {
 }
 _SBOM_NAMESPACE = UUID("f2b2b988-15ce-5e1c-a6cb-08c2db8e6e7a")
 _PRIVATE_BETA_PROFILE = "personal_exe_private_beta"
-_STORE_PROFILE = "personal_store_release"
 _RELEASE_PROFILES = {
     _PRIVATE_BETA_PROFILE: ("personal_exe_private_beta.json", "0.2.0-beta.1"),
-    _STORE_PROFILE: ("personal_store_release.json", "0.1.0"),
 }
 _FORBIDDEN_NETWORK_COMPONENTS = {
     "_socket.pyd",
@@ -236,11 +234,7 @@ def write_portable_evidence(
         raise ValueError("source commit must be a full lowercase SHA-1")
     if not built_at.endswith("Z"):
         raise ValueError("build time must be canonical UTC")
-    if artifact_status not in {
-        "store_submission_candidate",
-        "unsigned_development_only",
-        "trusted_release",
-    }:
+    if artifact_status != "unsigned_development_only":
         raise ValueError("artifact status is invalid")
     shutil.copyfile(project_root / "LICENSE", bundle_root / "LICENSE")
     shutil.copyfile(
@@ -353,19 +347,10 @@ def build_portable(
 ) -> Path:
     if sys.platform != "win32" or sys.version_info[:2] != (3, 12):
         raise RuntimeError("portable builds require Windows Python 3.12")
-    if artifact_status not in {
-        "store_submission_candidate",
-        "unsigned_development_only",
-        "trusted_release",
-    }:
+    if artifact_status != "unsigned_development_only":
         raise ValueError("artifact status is invalid")
     if release_profile not in _RELEASE_PROFILES:
         raise ValueError("release profile is invalid")
-    if (
-        artifact_status in {"store_submission_candidate", "trusted_release"}
-        and release_profile != _STORE_PROFILE
-    ):
-        raise ValueError("release-labelled artifact requires the legacy store profile")
     profile_filename, product_version = _RELEASE_PROFILES[release_profile]
     project_root = project_root.resolve()
     output_root = output_root.resolve()
@@ -489,9 +474,7 @@ def main() -> int:
     parser.add_argument(
         "--artifact-status",
         choices=(
-            "store_submission_candidate",
             "unsigned_development_only",
-            "trusted_release",
         ),
         default="unsigned_development_only",
     )

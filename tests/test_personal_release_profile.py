@@ -16,10 +16,10 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILE_PATH = ROOT / "release_profiles" / "personal_store_release.json"
 PRIVATE_BETA_PROFILE_PATH = (
     ROOT / "release_profiles" / "personal_exe_private_beta.json"
 )
+PROFILE_PATH = PRIVATE_BETA_PROFILE_PATH
 SECURITY_DOCS = ROOT / "docs" / "security"
 ACTIVE_PERSONAL_DOCS = (
     ROOT / "README.md",
@@ -40,13 +40,12 @@ GOVERNING_PERSONAL_DOCS = (
     / "docs"
     / "superpowers"
     / "plans"
-    / "2026-08-16-agentguardian-personal-v1-implementation.md",
+    / "2026-08-21-agentguardian-personal-exe-private-beta.md",
 )
 HISTORICAL_SECURITY_DOCS = (
     SECURITY_DOCS / "windows-mvp-threat-model.md",
     SECURITY_DOCS / "windows-release-evidence.md",
 )
-RELEASE_STATUS_PATH = SECURITY_DOCS / "personal-v1-release-status.json"
 PRIVATE_BETA_STATUS_PATH = (
     SECURITY_DOCS / "personal-exe-private-beta-status.json"
 )
@@ -75,16 +74,6 @@ _PREMATURE_RELEASE_CLAIMS = (
     "八项门禁已全部通过",
     "正式个人版发布",
 )
-_RELEASE_GATE_NAMES = (
-    "scope",
-    "local",
-    "remote",
-    "supply_chain",
-    "store",
-    "independent_machine",
-    "independent_review",
-    "operations",
-)
 _PRIVATE_BETA_GATE_NAMES = (
     "scope",
     "local",
@@ -95,9 +84,6 @@ _PRIVATE_BETA_GATE_NAMES = (
     "independent_review",
     "operations",
 )
-_SHA_40 = re.compile(r"[0-9a-f]{40}\Z")
-_SHA_256 = re.compile(r"[0-9a-f]{64}\Z")
-_UTC_SECONDS = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
 
 
 def _assert_no_machine_specific_paths(text: str) -> None:
@@ -178,6 +164,13 @@ def test_private_beta_versions_match_package_metadata() -> None:
 
     assert package["project"]["version"] == profile["python_package_version"]
     assert __version__ == profile["python_package_version"]
+    for relative in (
+        "docs/superpowers/specs/2026-08-16-agentguardian-personal-v1-design.md",
+        "docs/superpowers/specs/2026-08-21-agentguardian-personal-exe-private-beta-design.md",
+    ):
+        specification = (ROOT / relative).read_text(encoding="utf-8")
+        assert profile["product_version"] in specification
+        assert "`0.1.0` candidate" not in specification
 
 
 def test_private_beta_workflow_is_exact_sha_read_only_and_nonpublishing() -> None:
@@ -188,8 +181,12 @@ def test_private_beta_workflow_is_exact_sha_read_only_and_nonpublishing() -> Non
     folded = workflow.casefold()
 
     assert "permissions:\n  contents: read" in workflow
-    assert "ref: ${{ inputs.candidate_sha }}" in workflow
-    assert "EXPECTED_SOURCE_COMMIT: ${{ inputs.candidate_sha }}" in workflow
+    assert "push:\n    branches:\n      - agent/founder-alpha" in workflow
+    assert "ref: ${{ env.EXPECTED_SOURCE_COMMIT }}" in workflow
+    assert (
+        "EXPECTED_SOURCE_COMMIT: ${{ github.event_name == 'workflow_dispatch' "
+        "&& inputs.candidate_sha || github.sha }}"
+    ) in workflow
     assert "WORKFLOW_SOURCE_COMMIT: ${{ github.workflow_sha }}" in workflow
     assert "$env:WORKFLOW_SOURCE_COMMIT -cne $env:EXPECTED_SOURCE_COMMIT" in workflow
     assert "git rev-parse HEAD" in workflow
@@ -203,6 +200,7 @@ def test_private_beta_workflow_is_exact_sha_read_only_and_nonpublishing() -> Non
     assert "DriveType -ne 3" in workflow
     assert workflow.count("permissions:") == 1
     assert "contents: write" not in folded
+    assert "public repository artifact" in folded
     for forbidden in (
         "gh release create",
         "git tag",
@@ -212,6 +210,70 @@ def test_private_beta_workflow_is_exact_sha_read_only_and_nonpublishing() -> Non
         "store submission",
     ):
         assert forbidden not in folded
+
+
+def test_active_tree_has_only_exe_private_beta_delivery() -> None:
+    for relative in (
+        ".github/workflows/windows-mvp.yml",
+        ".github/workflows/windows-store-candidate.yml",
+        "release_profiles/personal_store_release.json",
+        "scripts/build_windows_msix.py",
+        "scripts/verify_windows_msix.ps1",
+        "scripts/verify_wack_report.py",
+        "scripts/verify_windows_release_candidate.py",
+        "scripts/verify_windows_store_candidate.py",
+        "tests/fixtures/wack/README.md",
+    ):
+        assert not (ROOT / relative).exists()
+
+    assert (ROOT / ".github/workflows/windows-exe-private-beta.yml").is_file()
+    assert (ROOT / "release_profiles/personal_exe_private_beta.json").is_file()
+
+    profile = json.loads(PRIVATE_BETA_PROFILE_PATH.read_text(encoding="ascii"))
+    assert ".github/workflows/windows-exe-private-beta.yml" in profile[
+        "required_source_paths"
+    ]
+    assert ".github/workflows/windows-mvp.yml" not in profile[
+        "required_source_paths"
+    ]
+
+    verifier_source = (ROOT / "scripts/verify_personal_release_profile.py").read_text(
+        encoding="utf-8"
+    )
+    portable_source = (ROOT / "scripts/build_windows_portable.py").read_text(
+        encoding="utf-8"
+    )
+    assert "personal_store_release" not in verifier_source
+    assert "personal_store_release" not in portable_source
+
+    active_spec = (
+        ROOT
+        / "docs/superpowers/specs/2026-08-16-agentguardian-personal-v1-design.md"
+    ).read_text(encoding="utf-8")
+    for retired_route in (
+        "personal_store_release",
+        "Microsoft Store MSIX",
+        "Store metadata",
+        "Store-candidate workflow",
+        "Windows App Certification Kit",
+        "private-audience Store package",
+        "manual Windows EXE workflow",
+    ):
+        assert retired_route not in " ".join(active_spec.split())
+
+    active_plan = (
+        ROOT
+        / "docs/superpowers/plans/2026-08-21-agentguardian-personal-exe-private-beta.md"
+    ).read_text(encoding="utf-8")
+    active_design = (
+        ROOT
+        / "docs/superpowers/specs/2026-08-21-agentguardian-personal-exe-private-beta-design.md"
+    ).read_text(encoding="utf-8")
+    for document in (active_plan, active_design):
+        assert "not an access-controlled distribution channel" in " ".join(
+            document.split()
+        )
+    assert "artifact remains unsigned and private" not in active_plan.casefold()
 
 
 @pytest.mark.parametrize(
@@ -348,21 +410,24 @@ def _copy_fixture(tmp_path: Path) -> Path:
         "src/agentguardian",
         ".github/workflows",
         "docs/security",
-        "tests/fixtures/wack",
+        "packaging/windows",
+        "rules",
     ):
         shutil.copytree(ROOT / relative, root / relative)
     for relative in (
         "README.md",
         "docs/architecture.md",
+        "LICENSE",
+        "THIRD_PARTY_NOTICES.md",
+        "pyproject.toml",
         "requirements-build.lock",
         "requirements-dev.lock",
-        "scripts/build_windows_msix.py",
+        "scripts/build_windows_installer.py",
         "scripts/build_windows_portable.py",
         "scripts/run_personal_privacy_acceptance.py",
-        "scripts/verify_wack_report.py",
-        "scripts/verify_windows_release_candidate.py",
-        "scripts/verify_windows_store_candidate.py",
-        "release_profiles/personal_store_release.json",
+        "scripts/verify_personal_release_profile.py",
+        "scripts/verify_windows_installer_candidate.py",
+        "release_profiles/personal_exe_private_beta.json",
     ):
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -371,7 +436,7 @@ def _copy_fixture(tmp_path: Path) -> Path:
 
 
 def _write_profile(root: Path, profile: dict[str, object]) -> Path:
-    path = root / "release_profiles" / "personal_store_release.json"
+    path = root / "release_profiles" / "personal_exe_private_beta.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(_canonical(profile))
     return path
@@ -379,12 +444,12 @@ def _write_profile(root: Path, profile: dict[str, object]) -> Path:
 
 def _verify_profile(verifier, root: Path) -> dict[str, str]:
     snapshot = verifier.load_profile_snapshot(
-        root, "release_profiles/personal_store_release.json"
+        root, "release_profiles/personal_exe_private_beta.json"
     )
     return verifier.verify_profile(root, snapshot)
 
 
-def test_repository_matches_canonical_personal_store_release_profile() -> None:
+def test_repository_matches_canonical_personal_exe_private_beta_profile() -> None:
     verifier = _verifier()
     profile = _profile()
 
@@ -394,7 +459,7 @@ def test_repository_matches_canonical_personal_store_release_profile() -> None:
     assert "forbidden_runtime_references" not in profile
     assert PROFILE_PATH.read_bytes() == _canonical(profile)
     assert _verify_profile(verifier, ROOT) == {
-        "profile": "personal_store_release",
+        "profile": "personal_exe_private_beta",
         "status": "pass",
     }
 
@@ -404,7 +469,7 @@ def test_active_personal_docs_replace_stale_release_history() -> None:
     expected_paths = sorted(
         [
             path.relative_to(ROOT).as_posix()
-            for path in (*ACTIVE_PERSONAL_DOCS, RELEASE_STATUS_PATH)
+            for path in (*ACTIVE_PERSONAL_DOCS, PRIVATE_BETA_STATUS_PATH)
         ]
     )
     assert profile["active_document_paths"] == expected_paths
@@ -480,11 +545,9 @@ def test_governing_and_historical_document_classes_are_explicit() -> None:
     assert excluded_security_docs == set(HISTORICAL_SECURITY_DOCS)
     for path in HISTORICAL_SECURITY_DOCS:
         text = path.read_text(encoding="utf-8")
-        assert "Historical Windows MVP snapshot." in text
-        assert (
-            "not an active Personal v1 product promise or current release evidence"
-            in text
-        )
+        assert "HISTORICAL AND NON-GOVERNING" in text
+        assert "personal_exe_private_beta" in text
+        assert "not readiness evidence" in text
 
     for stale_branch_inventory in (
         "default branch had CI and Windows MVP workflows only",
@@ -587,139 +650,58 @@ def test_personal_privacy_support_and_acceptance_contracts_are_explicit() -> Non
         assert f"never record {forbidden}" in machines
 
 
-def _assert_release_status_contract(status: dict[str, object]) -> None:
-    assert set(status) == {"decision", "gates", "note", "schema"}
-    assert type(status["schema"]) is int and status["schema"] == 1
-    assert isinstance(status["note"], str)
-    assert "external" in status["note"].casefold()
-    assert "self" in status["note"].casefold()
-
-    gates = status["gates"]
-    assert isinstance(gates, list)
-    assert [gate["name"] for gate in gates] == list(_RELEASE_GATE_NAMES)
-    passed_commits: set[str] = set()
-    for gate in gates:
-        assert set(gate) == {
-            "evidence_sha256",
-            "name",
-            "source_commit",
-            "status",
-            "verified_at",
-        }
-        assert gate["status"] in {"blocked", "pass", "pending"}
-        source_commit = gate["source_commit"]
-        evidence_sha256 = gate["evidence_sha256"]
-        verified_at = gate["verified_at"]
-        assert source_commit is None or (
-            isinstance(source_commit, str) and _SHA_40.fullmatch(source_commit)
-        )
-        assert evidence_sha256 is None or (
-            isinstance(evidence_sha256, str)
-            and _SHA_256.fullmatch(evidence_sha256)
-        )
-        assert verified_at is None or (
-            isinstance(verified_at, str) and _UTC_SECONDS.fullmatch(verified_at)
-        )
-        if gate["status"] == "pass":
-            assert source_commit is not None
-            assert evidence_sha256 is not None
-            assert verified_at is not None
-            passed_commits.add(source_commit)
-
-    assert len(passed_commits) <= 1
-    expected_decision = (
-        "GO" if all(gate["status"] == "pass" for gate in gates) else "NO-GO"
-    )
-    assert status["decision"] == expected_decision
-
-
 def test_release_status_is_canonical_eight_gate_ledger() -> None:
-    status = json.loads(RELEASE_STATUS_PATH.read_text(encoding="ascii"))
-    assert RELEASE_STATUS_PATH.read_bytes() == _canonical(status)
-    _assert_release_status_contract(status)
+    status = json.loads(PRIVATE_BETA_STATUS_PATH.read_text(encoding="ascii"))
+    assert PRIVATE_BETA_STATUS_PATH.read_bytes() == _canonical(status)
+    snapshot = _verifier().load_private_beta_status_snapshot(
+        ROOT, PRIVATE_BETA_STATUS_PATH
+    )
+    assert _verifier().verify_private_beta_status(snapshot)["private_beta"] == (
+        "PRIVATE-BETA-NOT-READY"
+    )
 
 
 def test_release_status_is_forced_to_lf_in_git_attributes() -> None:
     attributes = (ROOT / ".gitattributes").read_text(encoding="ascii").splitlines()
-    assert "docs/security/personal-v1-release-status.json text eol=lf" in attributes
+    assert "docs/security/personal-exe-private-beta-status.json text eol=lf" in attributes
 
 
 def test_release_status_contract_accepts_evidence_bound_transitions() -> None:
-    status = json.loads(RELEASE_STATUS_PATH.read_text(encoding="ascii"))
-    evidence = {
-        "evidence_sha256": "b" * 64,
-        "source_commit": "a" * 40,
-        "status": "pass",
-        "verified_at": "2026-08-17T12:00:00Z",
-    }
-
-    status["gates"][0].update(evidence)
-    _assert_release_status_contract(status)
-
-    for gate in status["gates"]:
-        gate.update(evidence)
-    status["decision"] = "GO"
-    _assert_release_status_contract(status)
-
-    status["gates"][-1]["source_commit"] = "c" * 40
-    with pytest.raises(AssertionError):
-        _assert_release_status_contract(status)
-
-    status["gates"][-1].update(evidence)
-    status["gates"][-1]["status"] = "pending"
-    with pytest.raises(AssertionError):
-        _assert_release_status_contract(status)
+    verifier = _verifier()
+    ready = _passing_private_beta_status()
+    snapshot = verifier.private_beta_status_snapshot_from_bytes(_canonical(ready))
+    assert verifier.verify_private_beta_status(snapshot)["private_beta"] == (
+        "PRIVATE-BETA-READY"
+    )
 
 
-def test_task_8_freezes_candidate_before_gates_and_avoids_self_reference() -> None:
+def test_task_8_freezes_exe_candidate_before_gates_and_avoids_self_reference() -> None:
     plan = (
         ROOT
         / "docs"
         / "superpowers"
         / "plans"
-        / "2026-08-16-agentguardian-personal-v1-implementation.md"
+        / "2026-08-21-agentguardian-personal-exe-private-beta.md"
     ).read_text(encoding="utf-8")
-    task_7, task_8 = plan.split("### Task 8:", 1)
+    task_8 = plan.split("### Task 8:", 1)[1]
     design = (
         ROOT
         / "docs"
         / "superpowers"
         / "specs"
-        / "2026-08-16-agentguardian-personal-v1-design.md"
+        / "2026-08-21-agentguardian-personal-exe-private-beta-design.md"
     ).read_text(encoding="utf-8")
     normalized_design = " ".join(design.split())
+    normalized_task_8 = " ".join(task_8.split())
 
-    assert "- Modify: `tests/test_self_audit.py`" in task_7
-    assert (
-        "- Modify: `docs/superpowers/specs/"
-        "2026-08-16-agentguardian-personal-v1-design.md`"
-    ) in task_7
-    for candidate_file in (
-        ".github/workflows/windows-store-candidate.yml",
-        "pyproject.toml",
-        "release_profiles/personal_store_release.json",
-        "scripts/build_windows_msix.py",
-        "scripts/build_windows_portable.py",
-        "src/agentguardian/__init__.py",
-    ):
-        assert f"`{candidate_file}`" in task_8
-    assert "NO-GO `1.0.0` candidate" in task_8
-    assert "private candidate package may carry version `1.0.0`" in task_8
-    assert "previously committed target candidate SHA" in task_8
-    assert "formal package must come from that target SHA" in task_8
-    assert "Freeze the version, Store identity, and package inputs before" in task_8
-    assert "invalidates all eight gates" in task_8
-    assert "only external status evidence and formal-release wording may change" in task_8
-    assert "NO-GO `1.0.0` private candidate before any gate" in normalized_design
-    assert "already carries version `1.0.0`" in normalized_design
-    assert (
-        "only external status evidence and formal-release wording may change"
-        in normalized_design
-    )
-    assert (
-        "Only when all eight gates pass may a separately authorized commit change "
-        "the product version"
-    ) not in task_8
+    assert "Candidate SHA: exact clean commit `S`" in task_8
+    assert "A later ledger-only commit may bind evidence to `S`" in normalized_design
+    assert "Any change to source, dependencies, compiler, version" in design
+    assert "PRIVATE-BETA-READY" in task_8
+    assert "Formal public release remains `NO-GO`" in normalized_task_8
+    assert "0.2.0-beta.1" in design
+    for retired_term in ("Store identity", "personal_store_release", "1.0.0"):
+        assert retired_term not in task_8
 
 
 def test_profile_is_git_bound_to_lf_line_endings() -> None:
@@ -729,7 +711,7 @@ def test_profile_is_git_bound_to_lf_line_endings() -> None:
             "check-attr",
             "eol",
             "--",
-            "release_profiles/personal_store_release.json",
+            "release_profiles/personal_exe_private_beta.json",
         ),
         cwd=ROOT,
         check=True,
@@ -783,7 +765,7 @@ def test_profile_rejects_crlf_canonical_json(tmp_path: Path) -> None:
         verifier.load_profile_snapshot(tmp_path, path)
 
 
-@pytest.mark.parametrize("field,value", (("schema", 2), ("name", "personal_release")))
+@pytest.mark.parametrize("field,value", (("schema", 1), ("name", "personal_release")))
 def test_profile_requires_exact_schema_and_name(
     tmp_path: Path, field: str, value: object
 ) -> None:
@@ -845,10 +827,10 @@ def test_profile_snapshot_accepts_native_relative_path_object(tmp_path: Path) ->
     root = _copy_fixture(tmp_path)
 
     snapshot = verifier.load_profile_snapshot(
-        root, Path("release_profiles") / "personal_store_release.json"
+        root, Path("release_profiles") / "personal_exe_private_beta.json"
     )
 
-    assert snapshot.profile["name"] == "personal_store_release"
+    assert snapshot.profile["name"] == "personal_exe_private_beta"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows native Path regression")
@@ -1017,7 +999,7 @@ def test_double_star_forbidden_source_glob_matches_nested_path(tmp_path: Path) -
 
     with pytest.raises(verifier.ProfileViolation, match="^PROFILE_SOURCE_FORBIDDEN$"):
         snapshot = verifier.load_profile_snapshot(
-            root, "release_profiles/personal_store_release.json"
+            root, "release_profiles/personal_exe_private_beta.json"
         )
         verifier.verify_profile(root, snapshot)
 
@@ -1230,7 +1212,7 @@ def test_runtime_ast_allows_explicit_allowed_imports(tmp_path: Path) -> None:
     )
 
     assert _verify_profile(verifier, root) == {
-        "profile": "personal_store_release",
+        "profile": "personal_exe_private_beta",
         "status": "pass",
     }
 
@@ -1816,7 +1798,7 @@ def test_cli_emits_bounded_canonical_json_without_private_paths(tmp_path: Path) 
         check=False,
     )
     assert passed.returncode == 0, passed.stderr
-    assert passed.stdout == '{"profile":"personal_store_release","status":"pass"}\n'
+    assert passed.stdout == '{"profile":"personal_exe_private_beta","status":"pass"}\n'
     assert passed.stderr == ""
 
     relative = subprocess.run(
@@ -1826,14 +1808,14 @@ def test_cli_emits_bounded_canonical_json_without_private_paths(tmp_path: Path) 
             "--project-root",
             str(ROOT),
             "--profile",
-            "release_profiles/personal_store_release.json",
+            "release_profiles/personal_exe_private_beta.json",
         ],
         capture_output=True,
         text=True,
         check=False,
     )
     assert relative.returncode == 0, relative.stderr
-    assert relative.stdout == '{"profile":"personal_store_release","status":"pass"}\n'
+    assert relative.stdout == '{"profile":"personal_exe_private_beta","status":"pass"}\n'
     assert relative.stderr == ""
 
     root = _copy_fixture(tmp_path)
@@ -1846,7 +1828,7 @@ def test_cli_emits_bounded_canonical_json_without_private_paths(tmp_path: Path) 
             "--project-root",
             str(root),
             "--profile",
-            str(root / "release_profiles/personal_store_release.json"),
+            str(root / "release_profiles/personal_exe_private_beta.json"),
         ],
         capture_output=True,
         text=True,

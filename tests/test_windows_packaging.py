@@ -156,7 +156,7 @@ def test_personal_portable_builder_has_no_dynamic_mcp_inputs() -> None:
     )
 
 
-def test_store_artifact_requires_explicit_store_profile(
+def test_portable_builder_rejects_retired_store_artifact_status(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     import scripts.build_windows_portable as build_module
@@ -164,7 +164,7 @@ def test_store_artifact_requires_explicit_store_profile(
     monkeypatch.setattr(build_module.sys, "platform", "win32")
     monkeypatch.setattr(build_module.sys, "version_info", (3, 12))
 
-    with pytest.raises(ValueError, match="store profile"):
+    with pytest.raises(ValueError, match="artifact status is invalid"):
         build_module.build_portable(
             tmp_path,
             tmp_path / "output",
@@ -172,24 +172,6 @@ def test_store_artifact_requires_explicit_store_profile(
             built_at="2026-08-21T00:00:00Z",
             artifact_status="store_submission_candidate",
         )
-
-
-def test_store_workflow_selects_legacy_store_profile_explicitly() -> None:
-    workflow = (
-        PROJECT_ROOT / ".github/workflows/windows-store-candidate.yml"
-    ).read_text(encoding="utf-8")
-
-    assert workflow.count("--release-profile personal_store_release") == 2
-
-
-def test_legacy_msix_workflow_selects_legacy_store_profile_explicitly() -> None:
-    workflow = (PROJECT_ROOT / ".github/workflows/windows-mvp.yml").read_text(
-        encoding="utf-8"
-    )
-
-    assert workflow.count("--release-profile personal_store_release") == 1
-
-
 def test_portable_build_verifies_source_then_payload_and_records_profile_digest(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -687,7 +669,7 @@ def test_portable_evidence_is_canonical_and_excludes_its_own_checksums(
     assert "SHA256SUMS" not in checksum_paths
 
 
-def test_portable_evidence_can_mark_a_release_build_only_explicitly(
+def test_portable_evidence_rejects_retired_release_artifact_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -698,24 +680,22 @@ def test_portable_evidence_can_mark_a_release_build_only_explicitly(
         "scripts.build_windows_portable.cyclonedx_bom_bytes",
         lambda *args, **kwargs: b'{"bomFormat":"CycloneDX","specVersion":"1.6"}\n',
     )
-    write_portable_evidence(
-        bundle,
-        project_root=PROJECT_ROOT,
-        component_specs=portable_component_specs(
-            python_version="3.12.2",
-            openssl_version="3.0.13",
-            vc_runtime_version="14.38.33126.1",
-            ucrt_version="10.0.19041.1",
-        ),
-        source_commit="a" * 40,
-        built_at="2026-08-14T00:00:00Z",
-        build_dependencies={"lock_sha256": "c" * 64, "versions": BUILD_PACKAGES},
-        forbidden_texts=(str(PROJECT_ROOT),),
-        artifact_status="trusted_release",
-    )
-
-    metadata = json.loads((bundle / "BUILD-METADATA.json").read_bytes())
-    assert metadata["artifact_status"] == "trusted_release"
+    with pytest.raises(ValueError, match="artifact status is invalid"):
+        write_portable_evidence(
+            bundle,
+            project_root=PROJECT_ROOT,
+            component_specs=portable_component_specs(
+                python_version="3.12.2",
+                openssl_version="3.0.13",
+                vc_runtime_version="14.38.33126.1",
+                ucrt_version="10.0.19041.1",
+            ),
+            source_commit="a" * 40,
+            built_at="2026-08-14T00:00:00Z",
+            build_dependencies={"lock_sha256": "c" * 64, "versions": BUILD_PACKAGES},
+            forbidden_texts=(str(PROJECT_ROOT),),
+            artifact_status="trusted_release",
+        )
 
 
 def test_frozen_layout_requires_reviewed_sources_and_no_network_modules(

@@ -2,7 +2,7 @@
 
 # AgentGuardian Personal v1
 
-AgentGuardian Personal v1 is a local-first static security auditor for Windows 11 x64. Its supported use boundary is **personal non-regulated configuration**. Version `0.2.0-beta.1` is `PRIVATE-BETA-NOT-READY`; formal release remains `NO-GO`.
+AgentGuardian Personal v1 is a local-first static security auditor for Windows 11 x64. Its supported use boundary is **personal non-regulated configuration**. The only active delivery and governance route is the unsigned `personal_exe_private_beta` track for known testers. Version `0.2.0-beta.1` is `PRIVATE-BETA-NOT-READY` because no real installer EXE, successful native workflow execution evidence, or two-machine acceptance evidence exists; formal public release remains `NO-GO`.
 
 ## Current implementation
 
@@ -31,6 +31,8 @@ Do not use Personal v1 with medical, financial, identity or biometric, legally p
 ## Not yet passed
 
 The intended delivery route is a traditional unsigned offline EXE installer sent directly to known private testers. No installer candidate has passed the required gates. Because it is unsigned, Windows may show Unknown Publisher or SmartScreen warnings; testers must verify the supplied SHA-256 before running it.
+
+An artifact uploaded by this public repository's GitHub Actions workflow is not an access-controlled private distribution channel. `Private beta` is a maturity label for the known-tester scope, not a claim that an artifact is confidential or access-restricted.
 
 The pinned installer-tool download, external license and Qt review, exact installer build, two independent clean-machine install/run/uninstall checks, independent final review, and the operations/security gate remain pending. GitHub Issues is live for ordinary support. GitHub Private Vulnerability Reporting is disabled, so no current private vulnerability intake is claimed. These limits prohibit production-safety, installer acceptance, license, or clean-machine claims.
 
@@ -67,9 +69,9 @@ The self-audit reports the Python 版本 but does not expose the interpreter pat
 ## Development governance
 
 - [Approved Personal v1 specification](docs/superpowers/specs/2026-08-16-agentguardian-personal-v1-design.md)
-- [Active Personal v1 implementation plan](docs/superpowers/plans/2026-08-16-agentguardian-personal-v1-implementation.md)
+- [Active Personal EXE private-beta implementation plan](docs/superpowers/plans/2026-08-21-agentguardian-personal-exe-private-beta.md)
 
-The approved specification and active implementation plan govern development; they are not product capability claims or release evidence. Other documents under `docs/superpowers` are historical planning snapshots; older Windows MVP reports are historical planning or evidence snapshots. `docs/security/windows-mvp-threat-model.md` and `docs/security/windows-release-evidence.md` are also historical snapshots. They are not active Personal v1 product promises or current release evidence.
+The approved specification and active implementation plan govern development; they are not product capability claims or release evidence. The Store/MSIX/WACK/Partner Center route and its artifacts are historical and non-governing. Retiring or deleting that route does not pass any private-beta gate. Other documents under `docs/superpowers` are historical planning snapshots; older Windows MVP reports are historical planning or evidence snapshots. `docs/security/windows-mvp-threat-model.md` and `docs/security/windows-release-evidence.md` are also historical snapshots. They are not active Personal v1 product promises or current release evidence.
 
 ## License
 

@@ -1,5 +1,7 @@
 # Personal v1 Independent-Machine Acceptance
 
+The only active delivery and governance route is the unsigned `personal_exe_private_beta` track for known testers. It is `PRIVATE-BETA-NOT-READY` because no real installer EXE, successful native workflow execution evidence, or two-machine acceptance evidence exists; formal public release remains `NO-GO`. An Actions artifact from the public repository is not an access-controlled private distribution channel; `private beta` is a maturity label, not a confidentiality claim.
+
 ## Machine requirements
 
 Use two newly provisioned Windows 11 x64 machines with no development tools. Machine A must run 25H2. Machine B must run a supported 24H2 or 25H2 build. Both machines must use the same unsigned offline EXE whose installer SHA-256 is retained externally and bound to the frozen target candidate SHA.
@@ -24,4 +26,4 @@ Before testing, record only a machine ID hash plus Windows edition, version, and
 
 For each step, record pass, fail, or blocked; UTC time; installer identity/version/hash summary; Windows warning result; target candidate SHA; and external evidence SHA-256. Do not record screenshots or logs containing usernames, full paths, clipboard text, browser data, report content, or credentials.
 
-Both machines must pass the full sequence. Simulation, an installer with an unverified hash, one machine used twice, or a machine with build tools does not pass the `independent_machine` gate.
+Both machines must pass the full sequence. Simulation, an installer with an unverified hash, one machine used twice, or a machine with build tools does not pass the `independent_machine` gate. Passing this gate would support known-tester private-beta maturity only; it would not authorize formal public release, high-sensitivity real data, or production-safety wording. OpenAI Provider remains limited to local adaptation, detection, and manual guidance, with no provider API call by default.

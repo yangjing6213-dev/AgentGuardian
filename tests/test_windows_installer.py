@@ -443,6 +443,8 @@ def test_exe_workflow_pins_inno_and_runs_native_lifecycle() -> None:
 
     for required in (
         "workflow_dispatch:",
+        "push:",
+        "- agent/founder-alpha",
         "candidate_sha:",
         "runs-on: windows-2025",
         "timeout-minutes: 45",
@@ -465,15 +467,15 @@ def test_exe_workflow_pins_inno_and_runs_native_lifecycle() -> None:
         "scripts/verify_windows_installer_candidate.py",
         "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
         "retention-days: 14",
-        "agentguardian-personal-exe-private-beta-${{ inputs.candidate_sha }}",
+        "agentguardian-personal-exe-candidate-${{ env.EXPECTED_SOURCE_COMMIT }}",
     ):
         assert required in workflow
 
     assert "gh release create" not in workflow.casefold()
     assert "signtool" not in workflow.casefold()
     assert "partner center" not in workflow.casefold()
-    assert "\n  push:" not in workflow
     assert "\n  pull_request:" not in workflow
+    assert "public repository artifact" in workflow.casefold()
     assert workflow.index("Require local fixed drives") < workflow.index(
         "actions/setup-python@"
     )

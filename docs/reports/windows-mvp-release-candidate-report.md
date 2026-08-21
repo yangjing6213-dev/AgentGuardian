@@ -2,7 +2,7 @@
 
 ## Historical Snapshot Status
 
-> **Historical exact-SHA snapshot only**
+> **HISTORICAL AND NON-GOVERNING STORE/MSIX EXACT-SHA SNAPSHOT ONLY**
 >
 > Covered runtime SHA: `6ccb5232f6eb3955890f89f7a1000df338db8e8a`
 > Evidence/test revision: `1da903465f463d1421e7af2b20971da3d8c149bd`
@@ -10,7 +10,9 @@
 >
 > This report preserves evidence for those exact historical revisions. It is not current product or release evidence. The dynamic adapter, PFX, and enterprise material described below is retired and has no active product, packaging, workflow, or release contract.
 >
-> Current Personal v1 supports static MCP configuration detection only and does not execute MCP extensions or user-selected executables.
+> The Store/MSIX/WACK/Partner Center route is historical and non-governing. Retiring or deleting its files is not readiness evidence. The only active route is the unsigned `personal_exe_private_beta` maturity track for known testers. It is `PRIVATE-BETA-NOT-READY` because no real installer EXE, successful native workflow execution evidence, or two-machine acceptance evidence exists; formal public release is `NO-GO`.
+>
+> An Actions artifact from the public repository is not an access-controlled private distribution channel. `Private beta` is a maturity label, not a confidentiality claim. Current Personal v1 supports static MCP configuration detection only and does not execute MCP extensions or user-selected executables. OpenAI Provider remains local adaptation, detection, and manual guidance only, with no provider API call by default.
 
 Status date: 2026-08-16
 
@@ -21,12 +23,12 @@ Windows MVP remains incomplete. Production safety is not established.
 ## Candidate Boundary
 
 - Local gate implementation and unified local evidence baseline: historical `90e6edad53bee48adca58d508d193fc855c1db7d`.
-- The current clean code-bearing hardening HEAD is `6ccb5232f6eb3955890f89f7a1000df338db8e8a`. It repairs the cross-environment MCP path-replacement gap exposed by GitHub Windows run `31907590797`. Runtime now binds the fixed adapter to the OS-resolved `yangjing6213dev.AgentGuardian` Store/line-of-business package under the Program Files `WindowsApps` repository, requires `Install == Effective`, rejects Mutable and all External package paths, and fails closed when the complete path is mutable by the current token. The existing streaming 64 MiB limit, WinTrust handle binding, trusted staging, packaged acceptance, and final evidence controls remain in place. This report is a documentation-only follow-up to that SHA.
+- The then-current clean code-bearing hardening HEAD was `6ccb5232f6eb3955890f89f7a1000df338db8e8a`. It repaired the cross-environment MCP path-replacement gap exposed by GitHub Windows run `31907590797`. Runtime bound the fixed adapter to the OS-resolved `yangjing6213dev.AgentGuardian` Store/line-of-business package under the Program Files `WindowsApps` repository, required `Install == Effective`, rejected Mutable and all External package paths, and failed closed when the complete path was mutable by the current token. The existing streaming 64 MiB limit, WinTrust handle binding, trusted staging, packaged acceptance, and final evidence controls remained in place. This report was a documentation-only follow-up to that SHA.
 - The first independent review of the previous evidence-sync HEAD found 7 Important and 2 Minor findings. A second independent review of `305eeb4e1a143a245323a9b54d8fe27314a4e16c` found 2 further Important findings; both were remediated in `90e6eda`. A focused third independent re-review found no Critical or Important findings and one Minor; it did not execute tests independently.
 - OpenAI Provider remains local detection and manual guidance only; the default product path makes no provider API call and performs no endpoint verification.
 - Pre-repair remote HEAD `1af14022acc47a053d6393bea05a171a913ca84a` failed Windows run `31907590797`: `FileRenameInfoEx` POSIX replacement succeeded while the old file handle remained open. Documentation HEAD `ac796dd379b785d3c52aa6a7e2dde52d078d7e78` then exposed a second platform variance: the rename API could report success without the test observing replacement bytes. The test-only correction at implementation/test revision `1da903465f463d1421e7af2b20971da3d8c149bd` preserves the user-writable-path rejection assertion and received four successful normal GitHub checks.
 
-## Current Follow-up Evidence
+## Historical Follow-up Evidence
 
 Fresh local verification on implementation/test revision
 `1da903465f463d1421e7af2b20971da3d8c149bd`, with runtime code unchanged from
@@ -99,9 +101,9 @@ SQLite access, fixed error responses, and no default startup. Its four exact-SHA
 check-runs completed successfully. PR #1 remains open and Draft; this does not
 change the release decision.
 
-## Current Local Evidence
+## Historical Local Evidence
 
-| Gate | Current revalidation | Scope |
+| Gate | Historical revalidation | Scope |
 | --- | --- | --- |
 | Windows MVP security gate | `47 passed, 1 skipped` | Fresh run of `scripts/run_windows_mvp_security_gate.py` at `1da903465f463d1421e7af2b20971da3d8c149bd`; runtime code is unchanged from `6ccb5232f6eb3955890f89f7a1000df338db8e8a`. The allowed skip is not reported as a pass. |
 | Python 3.14 full suite | `1563 passed, 11 skipped` | Fresh full-suite run at the exact SHA above. |
@@ -131,7 +133,7 @@ The scan workload audits 1,000 synthetic harmless files three times with limits 
 
 This evidence does not cover the 10,000-file functional maximum, whole-process resident memory, slow disks, antivirus variance, native installer startup, a fresh runner, or a clean Windows machine.
 
-## Pending Gates
+## Historical Pending Gates
 
 - Independent read-only review: `COMPLETED WITH 7 IMPORTANT AND 2 MINOR FINDINGS` on the prior evidence-sync HEAD; those findings were remediated locally.
 - Second independent re-review: `COMPLETED WITH 2 IMPORTANT AND 3 MINOR FINDINGS` on `305eeb4`; both Important findings were remediated in `90e6eda`.
@@ -157,7 +159,7 @@ or passed with a real organization adapter/certificate. No certificate material
 was requested or handled, and no release or deployment was performed for this
 documentation evidence.
 
-## Decision
+## Historical Decision
 
 The packaged MCP release controls are implemented and fresh local tests pass,
 but real external material and trusted runtime execution remain pending. Current

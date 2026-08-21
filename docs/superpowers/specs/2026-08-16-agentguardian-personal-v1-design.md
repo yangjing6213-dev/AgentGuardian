@@ -6,11 +6,11 @@ acceptance remains incomplete. This is governance status, not release evidence.
 
 ## Goal
 
-Deliver AgentGuardian 1.0 as a formal Windows product for individual users.
-The product performs local AI configuration security auditing with redacted
-evidence and bounded, user-initiated actions. It does not support highly
-sensitive real-world content, enterprise administration, or dynamic MCP
-execution.
+Deliver AgentGuardian 1.0 through a bounded Windows private beta for individual
+testers before any formal public release. The product performs local AI
+configuration security auditing with redacted evidence and bounded,
+user-initiated actions. It does not support highly sensitive real-world
+content, enterprise administration, or dynamic MCP execution.
 
 The release claim is limited to the documented personal-use scope on a
 supported, uncompromised Windows host. It is not a general production-safety,
@@ -32,8 +32,9 @@ The following decisions are permanent for the Personal 1.x product line:
    sandboxes an MCP adapter or other user-selected executable.
 4. OpenAI Provider behavior remains local adaptation, detection, and manual
    guidance first. The default product makes no OpenAI or third-party API call.
-5. Microsoft Store MSIX is the primary binary distribution and update channel.
-   Source publication remains separate from formal binary release evidence.
+5. An unsigned, current-user Inno Setup EXE is the bounded private-beta
+   delivery route. It is distributed manually to known testers, has no
+   automatic updater, and remains separate from formal binary release evidence.
 
 ## Supported Personal Scope
 
@@ -74,7 +75,7 @@ or highly sensitive file. It enforces the boundary through all of the following:
    and recognized regulated-data selectors fail closed before scanning.
 3. The report records the supported-use boundary and scope coverage without
    recording full paths or user content.
-4. Product copy, Store metadata, documentation, and support responses never
+4. Product copy, installer text, documentation, and support responses never
    market the product for regulated or highly sensitive real-world data.
 
 This boundary reduces misuse but is not a content-classification guarantee.
@@ -133,10 +134,10 @@ evidence.
 
 ## Personal Release Profile
 
-A machine-readable `personal_store_release` profile binds the build and final
-gate to this design. The profile rejects enterprise modules, high-sensitivity
-mode, dynamic execution modules, adapter artifacts, default API access,
-telemetry, and undeclared network capability.
+A machine-readable `personal_exe_private_beta` profile binds the build and
+private-beta gate to this design. The profile rejects enterprise modules,
+high-sensitivity mode, dynamic execution modules, adapter artifacts, default
+API access, telemetry, and undeclared network capability.
 
 The package-source self-audit and packaging tests verify both absence and
 behavior:
@@ -150,26 +151,29 @@ behavior:
 
 ## Distribution Architecture
 
-The existing PFX-and-adapter trusted workflow is replaced for Personal 1.0 by a
-Store-candidate workflow that:
+The active Personal 1.0 delivery route is an unsigned, current-user Inno Setup
+EXE private beta workflow that:
 
 1. Checks out an exact commit and installs hash-locked dependencies.
 2. Runs the full suite, personal privacy acceptance, brand validation,
    compilation, source self-audit, and forbidden-capability checks.
-3. Builds the reproducible x64 portable payload and Store-identity MSIX upload
-   candidate without enterprise or adapter inputs.
+3. Builds the reproducible x64 portable payload and exact-version installer
+   without enterprise or adapter inputs.
 4. Generates CycloneDX SBOM, third-party notices, build provenance, checksums,
    and a bounded release manifest.
-5. Runs Windows App Certification Kit and records its report as candidate
-   evidence.
-6. Uploads candidate artifacts for Partner Center submission without publishing
-   a GitHub binary release.
+5. Runs native install, launch, upgrade, downgrade-rejection, retained-state
+   uninstall, deleted-state uninstall, and residue verification.
+6. Uploads exact-SHA candidate evidence without publishing a GitHub binary
+   release or operating an updater.
 
-The formal package is the Microsoft Store-certified package. A private Store
-audience is used before public availability. Final acceptance verifies Store
-origin, exact package identity and version, signature trust, install, launch,
-upgrade, bounded workflow use, termination, uninstall, and application-data
-residue on independently provisioned Windows machines.
+The private-beta package is an unsigned installer distributed manually to known
+testers. The installer must disclose its unsigned status and cannot establish
+publisher trust. Final private-beta acceptance verifies exact package digest,
+identity and version, install, launch, upgrade, downgrade rejection, bounded
+workflow use, termination, uninstall, and application-data residue on
+independently provisioned Windows machines. Because this repository is public,
+an Actions artifact is not an access-controlled distribution channel; the
+private-beta label describes maturity and audience, not confidentiality.
 
 ## Supported Platform
 
@@ -206,8 +210,9 @@ These are product operations, not substitutes for technical tests.
   visible and cannot be reported as success.
 - Any removed-capability file or payload entry fails packaging and the final
   release gate.
-- Missing or stale license, privacy, WACK, Store, clean-machine, or review
-  evidence keeps the release decision at `NO-GO`.
+- Missing or stale license, privacy, exact-SHA installer, clean-machine, or
+  review evidence keeps the private-beta decision at
+  `PRIVATE-BETA-NOT-READY` and the formal release decision at `NO-GO`.
 - Network errors affect only the explicit share-verification action and never
   change local audit results.
 - No failure path enables API access, telemetry, enterprise behavior, dynamic
@@ -215,24 +220,24 @@ These are product operations, not substitutes for technical tests.
 
 ## Acceptance Gates
 
-Personal 1.0 is complete only when all gates pass for one exact candidate:
+The Personal 1.0 private beta is ready only when all gates pass for one exact
+candidate:
 
-Before any gate runs, the intended formal version, Store identity, and every
-package input are committed and frozen in a NO-GO `1.0.0` private candidate
-before any gate. That private candidate package may carry version `1.0.0` for
-WACK, Store, and independent-machine evidence, but it is not a formal or public
-release while any gate remains incomplete.
+Before any gate runs, the intended version, immutable installer identity, and
+every package input are committed and frozen in a `PRIVATE-BETA-NOT-READY`
+`0.2.0-beta.1` candidate. It is not a formal or public release while any gate
+remains incomplete.
 
 1. **Scope gate:** removed capabilities are absent from source, payload, UI,
    workflows, documentation, and runtime imports.
 2. **Local gate:** full tests, focused privacy/security tests, brand validation,
    compilation, self-audit, and `git diff --check` pass on a clean tree.
-3. **Remote gate:** normal push and Draft PR CI plus Windows candidate workflows
-   pass for the exact SHA.
+3. **Remote gate:** normal push and Draft PR CI plus the Windows EXE candidate
+   workflow pass for the exact SHA.
 4. **Supply-chain gate:** reproducible payload, SBOM, checksums, provenance,
    third-party notices, and approved exact-SHA license review pass.
-5. **Store gate:** WACK passes and the private-audience Store package has trusted
-   Store origin, identity, version, and signature evidence.
+5. **Installer gate:** the exact unsigned EXE and evidence bundle pass the
+   bounded native lifecycle checks; no signature-trust claim is made.
 6. **Independent-machine gate:** at least two fresh Windows 11 x64 environments
    pass install, launch, supported workflows, upgrade, crash/restart, uninstall,
    and residue acceptance without development tools.
@@ -241,12 +246,13 @@ release while any gate remains incomplete.
 8. **Operations gate:** privacy, support, vulnerability disclosure, release
    notes, update, rollback, and security-update processes are live.
 
-The package validated by all eight gates already carries version `1.0.0`.
-After all eight gates pass, only external status evidence and formal-release
-wording may change. Any source, version, Store identity, dependency, or package
-input change creates a new candidate and requires all affected gates to rerun.
-Passing gates do not establish production safety or expand the unsupported data
-or host-compromise boundary.
+The package validated by all eight gates carries version `0.2.0-beta.1`. After
+all eight gates pass, a ledger-only commit may mark that exact candidate
+`PRIVATE-BETA-READY`; formal public release remains `NO-GO`. Any source,
+version, installer identity, dependency, or package-input change creates a new
+candidate and requires all affected gates to rerun. Passing gates do not
+establish production safety or expand the unsupported data or host-compromise
+boundary.
 
 ## Migration Sequence
 
@@ -255,9 +261,10 @@ or host-compromise boundary.
 3. Remove dynamic MCP execution and simplify build/release evidence.
 4. Add the personal release profile and forbidden-capability tests.
 5. Add unsupported-data consent and personal privacy acceptance.
-6. Replace the signed-adapter workflow with Store-candidate packaging and WACK.
-7. Complete licenses, privacy, support, private Store flight, independent
-   machines, and final review.
+6. Replace the signed-adapter workflow with the unsigned EXE private-beta
+   package and native lifecycle verification.
+7. Complete licenses, privacy, support, exact-SHA workflow evidence,
+   independent machines, and final review.
 
 Each sequence item is independently committed and revalidated. Deletion count,
 test count, or a green CI run alone is not release evidence.
@@ -271,6 +278,6 @@ test count, or a green CI run alone is not release evidence.
 - No cloud synchronization, automatic credential revocation, arbitrary repair,
   continuous clipboard monitoring, browser content extraction, or search-index
   claim.
-- No direct-download production binary until a separately designed trusted
-  direct-signing and update channel is approved.
+- No direct-download production binary or automatic updater. The unsigned EXE
+  is limited to manual distribution to known private-beta testers.
 - No production-safety, compliance-certification, or compromised-host claim.

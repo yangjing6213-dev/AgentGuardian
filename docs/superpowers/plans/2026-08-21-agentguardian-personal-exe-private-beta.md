@@ -19,7 +19,9 @@
 - Runtime install, launch, upgrade, and uninstall perform no download or automatic update.
 - User-selected reports are never deleted by upgrade or uninstall.
 - Inno Setup input is release `is-7_0_2`, asset `innosetup-7.0.2-x64.exe`, SHA-256 `5ad54ca3def786f8f4212552e54cc6d8d61329e2d24a1cfee0571d42c2684ff1`.
-- The artifact remains unsigned and private; public release and production safety remain `NO-GO`.
+- The artifact remains unsigned and within a known-tester maturity scope. In a
+  public repository, an Actions artifact is not an access-controlled
+  distribution channel; public release and production safety remain `NO-GO`.
 - Use the locked Python 3.12 environment. Put pytest basetemp outside the project tree.
 - Stage explicit paths only. Do not merge, create a GitHub Release, publish a website artifact, deploy, or force-push.
 
@@ -583,8 +585,12 @@ rtk git ls-remote origin refs/heads/agent/founder-alpha
 rtk gh pr checks 1 --repo yangjing6213-dev/AgentGuardian --watch --interval 10
 ```
 
-Dispatch the manual EXE workflow only for exact SHA `S`. Historical green runs
-and another SHA do not pass the remote or installer gate.
+The candidate-branch `push` trigger runs the EXE workflow for exact SHA `S`
+without requiring a merge. The manual trigger may be used only after the
+workflow exists on the default branch, and only for exact SHA `S`. Historical
+green runs and another SHA do not pass the remote or installer gate. The
+short-retention artifact in this public repository is CI evidence, not an
+access-controlled distribution channel.
 
 - [ ] **Step 4: Complete two-machine private acceptance**
 

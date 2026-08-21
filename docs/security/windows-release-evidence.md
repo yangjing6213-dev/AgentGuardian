@@ -1,12 +1,14 @@
 # Windows Release Evidence Runbook
 
-> Historical Windows MVP snapshot. This is not an active Personal v1 product promise or current release evidence. See `personal-v1-release-runbook.md` for the active release gate.
+> **HISTORICAL AND NON-GOVERNING STORE/MSIX SNAPSHOT**
+>
+> The Store/MSIX/WACK/Partner Center route and file references below are retained only for historical traceability. They are not active instructions, product promises, or current release evidence. The only active route is the unsigned `personal_exe_private_beta` maturity track for known testers. It remains `PRIVATE-BETA-NOT-READY` because no real installer EXE, successful native workflow execution evidence, or two-machine acceptance evidence exists; formal public release is `NO-GO`.
+>
+> Retiring or deleting historical Store files is not readiness evidence. An Actions artifact from the public repository is not an access-controlled private distribution channel. See `personal-v1-release-runbook.md` for the active release gate.
 
-This runbook is a release gate, not a production-safety claim. It is only
-valid for a clean exact source commit and a package signed by the target
-organization.
+At the time of this snapshot, the historical runbook applied only to a clean exact source commit and a package signed by the target organization. It did not establish production safety. OpenAI Provider remains limited to local adaptation, detection, and manual guidance, with no provider API call by default.
 
-## Required order
+## Historical Required Order
 
 1. Complete the dependency, SBOM, and redistribution-license review. Every
    CycloneDX component must have a reviewed license expression; `NOASSERTION`
@@ -29,7 +31,9 @@ organization.
    unsigned build metadata status. Every input path must be absolute, local,
    non-symlink, and free of UNC/reparse components.
 
-## Final gate example
+## Historical Final Gate Example
+
+Do not use this command as an active release instruction. The Store-only script names are preserved as historical references and may be absent after route retirement.
 
 ```powershell
 python scripts/verify_windows_release_candidate.py `

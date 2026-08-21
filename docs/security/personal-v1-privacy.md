@@ -1,5 +1,7 @@
 # Personal v1 Privacy
 
+The only active delivery and governance route is the unsigned `personal_exe_private_beta` track for known testers. It is `PRIVATE-BETA-NOT-READY` because no real installer EXE, successful native workflow execution evidence, or two-machine acceptance evidence exists; formal public release remains `NO-GO`.
+
 ## Data handling
 
 - **Directory local reads:** AgentGuardian performs bounded, read-only static inspection only after the user selects a directory and confirms the personal non-regulated configuration boundary.
@@ -20,4 +22,6 @@ Do not process medical, financial, identity or biometric, legally privileged, cu
 
 ## Network and provider defaults
 
-There is no telemetry, cloud console, or automatic report upload. OpenAI Provider behavior is local detection and manual guidance only, with no provider API call by default. The share-reachability action is the only declared product network module and requires an explicit public URL.
+There is no telemetry, cloud console, or automatic report upload. OpenAI Provider behavior is local adaptation, detection, and manual guidance only, with no provider API call by default. The share-reachability action is the only declared product network module and requires an explicit public URL.
+
+An Actions artifact from the public repository is not an access-controlled private distribution channel. `Private beta` is a maturity label, not a confidentiality claim.

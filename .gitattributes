@@ -1,4 +1,2 @@
-release_profiles/personal_store_release.json text eol=lf
 release_profiles/personal_exe_private_beta.json text eol=lf
-docs/security/personal-v1-release-status.json text eol=lf
 docs/security/personal-exe-private-beta-status.json text eol=lf

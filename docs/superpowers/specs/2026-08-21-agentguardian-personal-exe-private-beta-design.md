@@ -12,11 +12,11 @@ in force.
 
 ## Context
 
-AgentGuardian currently builds a deterministic Windows x64 portable payload and
-development MSIX packages. The Microsoft Store route requires Partner Center
-identity values and external Store acceptance. Directly distributed MSIX would
-instead require a publicly trusted signing certificate that might not be
-available to the current publisher.
+AgentGuardian builds a deterministic Windows x64 portable payload. The retired
+Microsoft Store route required Partner Center identity values and external
+Store acceptance. Directly distributed MSIX would instead require a publicly
+trusted signing certificate that might not be available to the current
+publisher.
 
 The selected replacement is a traditional, unsigned, offline EXE installer for
 delivery to known private testers. Users may see Windows SmartScreen or unknown
@@ -267,8 +267,10 @@ rollback procedure, and checksum distribution procedure are operational.
 
 The Windows workflow builds and verifies the unsigned installer on a clean
 GitHub-hosted Windows runner. It uploads only the bounded evidence directory as
-a short-retention Actions artifact. It does not create a GitHub Release, attach
-an asset to a tag, publish to a website, deploy, call Partner Center, or expose
+a short-retention Actions artifact. In this public repository, that artifact
+is not an access-controlled distribution channel and must not be represented as
+private delivery. The workflow does not create a GitHub Release, attach an
+asset to a tag, publish to a website, deploy, call Partner Center, or expose
 credentials.
 
 Private delivery is a deliberate human action after the ledger records

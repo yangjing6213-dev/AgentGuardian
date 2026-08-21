@@ -1,6 +1,9 @@
 name: Windows EXE private beta candidate
 
 on:
+  push:
+    branches:
+      - agent/founder-alpha
   workflow_dispatch:
     inputs:
       candidate_sha:
@@ -16,7 +19,7 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 45
     env:
-      EXPECTED_SOURCE_COMMIT: ${{ inputs.candidate_sha }}
+      EXPECTED_SOURCE_COMMIT: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_sha || github.sha }}
       WORKFLOW_SOURCE_COMMIT: ${{ github.workflow_sha }}
       PRIVATE_BETA_PROFILE: release_profiles/personal_exe_private_beta.json
       INNO_RELEASE_REPOSITORY: jrsoftware/issrc
@@ -40,7 +43,7 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ inputs.candidate_sha }}
+          ref: ${{ env.EXPECTED_SOURCE_COMMIT }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -253,10 +256,10 @@ jobs:
             throw 'candidate evidence upload allowlist mismatch'
           }
 
-      - name: Upload bounded unsigned private-beta candidate evidence
+      - name: Upload bounded unsigned candidate evidence as a public repository artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: agentguardian-personal-exe-private-beta-${{ inputs.candidate_sha }}
+          name: agentguardian-personal-exe-candidate-${{ env.EXPECTED_SOURCE_COMMIT }}
           retention-days: 14
           if-no-files-found: error
           path: |
