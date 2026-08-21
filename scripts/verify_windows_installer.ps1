@@ -179,10 +179,13 @@ function Assert-DisplayVersion([string]$ExpectedVersion, [string]$Code) {
 }
 
 function Get-InstallerFileVersion([string]$Path, [string]$Code) {
-    $fileVersion = (Get-Item -LiteralPath $Path -Force).VersionInfo.FileVersion
-    if ($fileVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') {
-        Fail $Code
-    }
+    $versionInfo = (Get-Item -LiteralPath $Path -Force).VersionInfo
+    $fileVersion = @(
+        $versionInfo.FileMajorPart,
+        $versionInfo.FileMinorPart,
+        $versionInfo.FileBuildPart,
+        $versionInfo.FilePrivatePart
+    ) -join '.'
     try {
         return [Version]$fileVersion
     }

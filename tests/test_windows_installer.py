@@ -491,6 +491,11 @@ def test_exe_workflow_pins_inno_and_runs_native_lifecycle() -> None:
         "New-Item -ItemType Directory -Path $env:BASE_OUTPUT", 1
     )[0]
     assert "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }" in candidate_build
+    assert "$baseVersionInfo.FileMajorPart" in installer_step
+    assert "$baseVersionInfo.FileMinorPart" in installer_step
+    assert "$baseVersionInfo.FileBuildPart" in installer_step
+    assert "$baseVersionInfo.FilePrivatePart" in installer_step
+    assert ".VersionInfo.FileVersion -cne" not in installer_step
 
     job_environment = workflow.split("    env:", 1)[1].split("    steps:", 1)[0]
     download_step = workflow.split("Download and verify pinned Inno Setup", 1)[1].split(

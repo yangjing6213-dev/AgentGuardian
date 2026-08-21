@@ -196,7 +196,14 @@ jobs:
           if (($candidateFiles.Count -ne 1) -or ($candidateFiles[0].FullName -cne $env:CANDIDATE_INSTALLER)) {
             throw 'candidate installer output is invalid'
           }
-          if ((Get-Item -LiteralPath $env:BASE_INSTALLER).VersionInfo.FileVersion -cne $env:BASE_FILE_VERSION) {
+          $baseVersionInfo = (Get-Item -LiteralPath $env:BASE_INSTALLER).VersionInfo
+          $actualBaseFileVersion = @(
+            $baseVersionInfo.FileMajorPart,
+            $baseVersionInfo.FileMinorPart,
+            $baseVersionInfo.FileBuildPart,
+            $baseVersionInfo.FilePrivatePart
+          ) -join '.'
+          if ($actualBaseFileVersion -cne $env:BASE_FILE_VERSION) {
             throw 'synthetic baseline installer version is invalid'
           }
 

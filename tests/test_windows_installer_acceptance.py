@@ -164,6 +164,39 @@ def test_acceptance_script_locks_fixed_paths_and_evidence_output_before_actions(
     assert "[Version]'0.2.0.1'" in pre_install
 
 
+def test_acceptance_installer_file_version_uses_numeric_parts() -> None:
+    script = _script()
+    fail_source = script.split("function Fail", 1)[1].split(
+        "function Assert-LocalPathSyntax", 1
+    )[0]
+    helper = script.split("function Get-InstallerFileVersion", 1)[1].split(
+        "function Assert-InstalledFileVersion", 1
+    )[0]
+    assert ".FileVersion" not in helper
+
+    command = (
+        "function Fail"
+        + fail_source
+        + "function Get-Item { [pscustomobject]@{VersionInfo=[pscustomobject]@{"
+        + "FileVersion='0.1.9.0             '; FileMajorPart=0; FileMinorPart=1; "
+        + "FileBuildPart=9; FilePrivatePart=0}} }\n"
+        + "function Get-InstallerFileVersion"
+        + helper
+        + "\ntry { [Console]::Write((Get-InstallerFileVersion 'C:\\synthetic.exe' 'VERSION_INVALID').ToString()) } "
+        + "catch { [Console]::Write($_.Exception.Message) }"
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", command],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "0.1.9.0"
+
+
 def test_acceptance_script_assigns_writable_evidence_only_after_overlap_check() -> None:
     script = _script()
     pre_install = script.split("try {", 1)[1].split("Invoke-Setup $base", 1)[0]
