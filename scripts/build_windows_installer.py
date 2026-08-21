@@ -30,6 +30,11 @@ from scripts.verify_personal_release_profile import (
     verify_payload,
     verify_profile,
 )
+from scripts.verify_windows_installer_candidate import (
+    CandidateEvidenceError,
+    _portable_metadata,
+    _write_candidate_evidence,
+)
 
 
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
@@ -315,6 +320,38 @@ def build_installer(
     if output_files != (installer,) or installer.stat().st_size <= 0:
         raise ValueError("installer output is invalid")
     return installer
+
+
+def assemble_installer_evidence(
+    installer: Path,
+    bundle_root: Path,
+    evidence_root: Path,
+    *,
+    source_commit: str,
+    built_at: str,
+    profile_snapshot: ProfileSnapshot,
+) -> Path:
+    """Assemble delivery evidence only from a freshly verified portable bundle."""
+    try:
+        verify_portable_bundle(
+            bundle_root,
+            profile_snapshot,
+            source_commit=source_commit,
+            built_at=built_at,
+        )
+    except ValueError:
+        raise CandidateEvidenceError("CANDIDATE_PAYLOAD_INVALID") from None
+    portable_raw, portable_metadata = _portable_metadata(Path(bundle_root))
+    return _write_candidate_evidence(
+        evidence_root,
+        installer,
+        bundle_root,
+        source_commit=source_commit,
+        built_at=built_at,
+        profile_snapshot=profile_snapshot,
+        portable_raw=portable_raw,
+        portable_metadata=portable_metadata,
+    )
 
 
 def _validated_manifest_entries(value: object) -> tuple[dict[str, Any], ...]:
