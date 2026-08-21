@@ -116,7 +116,10 @@ def compiler_file_version(iscc: Path) -> str:
 
 
 def verify_installer_script(contents: bytes) -> None:
-    if hashlib.sha256(contents).hexdigest() != _INSTALLER_SCRIPT_SHA256:
+    canonical = contents.replace(b"\r\n", b"\n")
+    if b"\r" in canonical or hashlib.sha256(canonical).hexdigest() != (
+        _INSTALLER_SCRIPT_SHA256
+    ):
         raise ValueError("installer script is not approved")
 
 

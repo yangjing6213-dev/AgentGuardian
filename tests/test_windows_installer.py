@@ -131,10 +131,15 @@ def test_inno_script_is_current_user_offline_and_static() -> None:
 def test_installer_builder_locks_the_complete_inno_script() -> None:
     builder = _builder()
     script = SCRIPT_PATH.read_bytes()
+    lf_script = script.replace(b"\r\n", b"\n")
 
-    builder.verify_installer_script(script)
+    assert b"\r" not in lf_script
+    builder.verify_installer_script(lf_script)
+    builder.verify_installer_script(lf_script.replace(b"\n", b"\r\n"))
     with pytest.raises(ValueError, match="installer script is not approved"):
-        builder.verify_installer_script(script + b"\n[Code]\n")
+        builder.verify_installer_script(lf_script + b"\n[Code]\n")
+    with pytest.raises(ValueError, match="installer script is not approved"):
+        builder.verify_installer_script(lf_script.replace(b"\n", b"\r", 1))
 
 
 def test_compiler_version_fails_closed_when_pefile_is_missing(
