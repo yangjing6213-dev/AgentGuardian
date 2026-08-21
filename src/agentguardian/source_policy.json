@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "modules": {
-    "__init__.py": "6bcb0e775f831e3d6acf1e8611abf9a7d54875ef1eb94032be1c0bd68ae0f92a",
+    "__init__.py": "19f558530a3ffd442c5a2b802b6a275acb52d5d580ea2cf0b051e2eafd6dd474",
     "__main__.py": "832caf5ea96c681db924078e0f5551c574e566cd34feb1298c9e34f82f48f673",
     "app.py": "5058bd27835f9198821248d82b84864d7d22ed97f0b6545ac948d9a0fdf2a9d3",
     "browser_audit.py": "1e2631fcf355667f7a630d9dd74aef9d6dee98207d2afd6aad57b90a704d7017",

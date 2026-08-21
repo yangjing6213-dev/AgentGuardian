@@ -1256,8 +1256,18 @@ def test_license_review_is_an_unapproved_complete_component_template() -> None:
     assert review["sbom_sha256"] is None
     assert review["reviewed_at"] is None
     assert review["reviewer"] is None
-    assert len(review["components"]) == 10
+    assert len(review["components"]) == 11
     assert all(component["redistribution"] == "pending" for component in review["components"])
+    inno_setup = next(
+        component for component in review["components"] if component["name"] == "Inno Setup"
+    )
+    assert inno_setup == {
+        "name": "Inno Setup",
+        "version": "7.0.2",
+        "license_expression": None,
+        "redistribution": "pending",
+        "evidence_url": None,
+    }
 
 
 def test_personal_source_gate_requires_store_candidate_infrastructure() -> None:

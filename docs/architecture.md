@@ -1,6 +1,6 @@
 # AgentGuardian Personal v1 Architecture
 
-This document defines the active architecture for version `0.1.0`. The release decision is `NO-GO`. Historical specs, plans, and reports do not extend this contract.
+This document defines the active architecture for version `0.2.0-beta.1`. Private beta is `PRIVATE-BETA-NOT-READY`; formal release is `NO-GO`. Historical specs, plans, and reports do not extend this contract.
 
 ## Product boundary
 
@@ -92,4 +92,4 @@ The JSON below mirrors the current `domain.py` dataclass field order.
 
 Medical, financial, identity or biometric, legally privileged, customer data, state-secret, other regulated, and other high-sensitivity real data are unsupported. This is a use boundary, not content-classification assurance.
 
-Static source checks, local tests, and candidate tooling do not establish production safety. Real WACK, external license and Qt approval, private Store flight, trusted Store signature, two-machine acceptance, independent final review, and operations/security readiness remain pending. The status template cannot evidence its own commit; formal evidence must bind the frozen target candidate SHA externally.
+Static source checks, local tests, and candidate tooling do not establish production safety. The pinned installer-tool download, external license and Qt review, exact unsigned installer build, two-machine install/run/uninstall acceptance, independent final review, and operations/security readiness remain pending. The status template cannot evidence its own commit; formal evidence must bind the frozen target candidate SHA externally. Even `PRIVATE-BETA-READY` would authorize only bounded private testing, while formal release remains `NO-GO`.

@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tomllib
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE_PATH = ROOT / "release_profiles" / "personal_store_release.json"
+PRIVATE_BETA_PROFILE_PATH = (
+    ROOT / "release_profiles" / "personal_exe_private_beta.json"
+)
 SECURITY_DOCS = ROOT / "docs" / "security"
 ACTIVE_PERSONAL_DOCS = (
     ROOT / "README.md",
@@ -43,6 +47,9 @@ HISTORICAL_SECURITY_DOCS = (
     SECURITY_DOCS / "windows-release-evidence.md",
 )
 RELEASE_STATUS_PATH = SECURITY_DOCS / "personal-v1-release-status.json"
+PRIVATE_BETA_STATUS_PATH = (
+    SECURITY_DOCS / "personal-exe-private-beta-status.json"
+)
 _MACHINE_SPECIFIC_ABSOLUTE_PATH = re.compile(
     r"(?i)(?:\b[A-Z]:[\\/]|\\\\[^\\/\s]+[\\/][^\\/\s]+)"
 )
@@ -74,6 +81,16 @@ _RELEASE_GATE_NAMES = (
     "remote",
     "supply_chain",
     "store",
+    "independent_machine",
+    "independent_review",
+    "operations",
+)
+_PRIVATE_BETA_GATE_NAMES = (
+    "scope",
+    "local",
+    "remote",
+    "supply_chain",
+    "installer",
     "independent_machine",
     "independent_review",
     "operations",
@@ -116,6 +133,179 @@ def _canonical(value: object) -> bytes:
         json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
         + "\n"
     ).encode("ascii")
+
+
+def test_private_beta_identity_is_frozen() -> None:
+    verifier = _verifier()
+    profile = json.loads(PRIVATE_BETA_PROFILE_PATH.read_text(encoding="ascii"))
+
+    assert PRIVATE_BETA_PROFILE_PATH.read_bytes() == _canonical(profile)
+    assert profile["schema"] == 2
+    assert profile["name"] == "personal_exe_private_beta"
+    assert profile["channel"] == "personal_exe_private_beta"
+    assert profile["product_version"] == "0.2.0-beta.1"
+    assert profile["python_package_version"] == "0.2.0b1"
+    assert profile["windows_file_version"] == "0.2.0.1"
+    assert profile["architecture"] == "x64"
+    assert profile["installer_app_id"] == "{7A76221A-CFA0-4860-B250-7083B736F3FB}"
+    assert profile["installer_filename"] == (
+        "AgentGuardian-Setup-0.2.0-beta.1-x64.exe"
+    )
+    assert profile["install_directory"] == (
+        r"{localappdata}\Programs\AgentGuardian"
+    )
+    assert profile["inno_setup_version"] == "7.0.2"
+    assert profile["inno_setup_release_tag"] == "is-7_0_2"
+    assert profile["inno_setup_asset"] == "innosetup-7.0.2-x64.exe"
+    assert profile["inno_setup_sha256"] == (
+        "5ad54ca3def786f8f4212552e54cc6d8d61329e2d24a1cfee0571d42c2684ff1"
+    )
+    assert profile["package_input_paths"] == sorted(
+        profile["package_input_paths"]
+    )
+    snapshot = verifier.load_profile_snapshot(ROOT, PRIVATE_BETA_PROFILE_PATH)
+    assert verifier.verify_profile(ROOT, snapshot) == {
+        "profile": "personal_exe_private_beta",
+        "status": "pass",
+    }
+
+
+def test_private_beta_versions_match_package_metadata() -> None:
+    from agentguardian import __version__
+
+    profile = json.loads(PRIVATE_BETA_PROFILE_PATH.read_text(encoding="ascii"))
+    package = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert package["project"]["version"] == profile["python_package_version"]
+    assert __version__ == profile["python_package_version"]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "code"),
+    (
+        (lambda value: value.update({"unexpected": "value"}), "PROFILE_SCHEMA_INVALID"),
+        (
+            lambda value: value.update({"installer_app_id": "{changed}"}),
+            "PROFILE_IDENTITY_INVALID",
+        ),
+        (
+            lambda value: value.update({"product_version": "0.2.0"}),
+            "PROFILE_IDENTITY_INVALID",
+        ),
+        (
+            lambda value: value.update({"package_input_paths": ["../outside"]}),
+            "PROFILE_PATH_INVALID",
+        ),
+        (
+            lambda value: value.update(
+                {"package_input_paths": ["src/agentguardian", "LICENSE"]}
+            ),
+            "PROFILE_ARRAY_INVALID",
+        ),
+    ),
+)
+def test_private_beta_profile_rejects_schema_and_identity_mutations(
+    mutation, code: str
+) -> None:
+    verifier = _verifier()
+    profile = json.loads(PRIVATE_BETA_PROFILE_PATH.read_text(encoding="ascii"))
+    mutation(profile)
+
+    with pytest.raises(verifier.ProfileViolation, match=f"^{code}$"):
+        verifier.profile_snapshot_from_bytes(_canonical(profile))
+
+
+def _passing_private_beta_status() -> dict[str, object]:
+    status = json.loads(PRIVATE_BETA_STATUS_PATH.read_text(encoding="ascii"))
+    status["candidate_commit"] = "a" * 40
+    status["private_beta_decision"] = "PRIVATE-BETA-READY"
+    for gate in status["gates"]:
+        gate.update(
+            {
+                "evidence_sha256": "b" * 64,
+                "source_commit": "a" * 40,
+                "status": "pass",
+                "verified_at": "2026-08-21T00:00:00Z",
+            }
+        )
+    return status
+
+
+def test_private_beta_status_is_canonical_pending_eight_gate_ledger() -> None:
+    verifier = _verifier()
+    status = json.loads(PRIVATE_BETA_STATUS_PATH.read_text(encoding="ascii"))
+
+    assert PRIVATE_BETA_STATUS_PATH.read_bytes() == _canonical(status)
+    assert status["candidate_commit"] is None
+    assert status["formal_release_decision"] == "NO-GO"
+    assert status["private_beta_decision"] == "PRIVATE-BETA-NOT-READY"
+    assert [gate["name"] for gate in status["gates"]] == list(
+        _PRIVATE_BETA_GATE_NAMES
+    )
+    assert all(
+        gate["status"] == "pending"
+        and gate["source_commit"] is None
+        and gate["evidence_sha256"] is None
+        and gate["verified_at"] is None
+        for gate in status["gates"]
+    )
+    snapshot = verifier.load_private_beta_status_snapshot(
+        ROOT, PRIVATE_BETA_STATUS_PATH
+    )
+    assert verifier.verify_private_beta_status(snapshot) == {
+        "formal_release": "NO-GO",
+        "private_beta": "PRIVATE-BETA-NOT-READY",
+        "status": "pass",
+    }
+
+
+def test_private_beta_status_rejects_cross_candidate_evidence() -> None:
+    verifier = _verifier()
+    ready = _passing_private_beta_status()
+    ready["gates"][0]["source_commit"] = "c" * 40
+
+    with pytest.raises(verifier.ProfileViolation, match="^STATUS_GATE_INVALID$"):
+        verifier.private_beta_status_snapshot_from_bytes(_canonical(ready))
+
+
+def test_private_beta_status_cannot_change_formal_release_decision() -> None:
+    verifier = _verifier()
+    status = json.loads(PRIVATE_BETA_STATUS_PATH.read_text(encoding="ascii"))
+    status["formal_release_decision"] = "GO"
+
+    with pytest.raises(verifier.ProfileViolation, match="^STATUS_DECISION_INVALID$"):
+        verifier.private_beta_status_snapshot_from_bytes(_canonical(status))
+
+
+@pytest.mark.parametrize("pending_gate", _PRIVATE_BETA_GATE_NAMES)
+def test_private_beta_ready_requires_every_gate_for_one_candidate(
+    pending_gate: str,
+) -> None:
+    verifier = _verifier()
+    ready = _passing_private_beta_status()
+    snapshot = verifier.private_beta_status_snapshot_from_bytes(_canonical(ready))
+    assert verifier.verify_private_beta_status(snapshot)["private_beta"] == (
+        "PRIVATE-BETA-READY"
+    )
+
+    gate = next(item for item in ready["gates"] if item["name"] == pending_gate)
+    gate.update(
+        {
+            "evidence_sha256": None,
+            "source_commit": None,
+            "status": "pending",
+            "verified_at": None,
+        }
+    )
+    ready["private_beta_decision"] = "PRIVATE-BETA-NOT-READY"
+    snapshot = verifier.private_beta_status_snapshot_from_bytes(_canonical(ready))
+    assert verifier.verify_private_beta_status(snapshot)["private_beta"] == (
+        "PRIVATE-BETA-NOT-READY"
+    )
+
+    ready["private_beta_decision"] = "PRIVATE-BETA-READY"
+    with pytest.raises(verifier.ProfileViolation, match="^STATUS_DECISION_INVALID$"):
+        verifier.private_beta_status_snapshot_from_bytes(_canonical(ready))
 
 
 def _copy_fixture(tmp_path: Path) -> Path:
@@ -196,7 +386,7 @@ def test_active_personal_docs_replace_stale_release_history() -> None:
         "Windows 11 x64",
         "Personal v1 permanently excludes MCP runtime integration.",
         "The runtime must not call OpenAI or another provider API by default.",
-        "0.1.0",
+        "0.2.0-beta.1",
         "NO-GO",
     ):
         assert required in combined
@@ -341,8 +531,9 @@ def test_personal_privacy_support_and_acceptance_contracts_are_explicit() -> Non
         "25H2",
         "24H2 or 25H2",
         "no development tools",
-        "private Store origin",
-        "identity, version, and signature",
+        "installer SHA-256",
+        "Unknown Publisher or SmartScreen",
+        "installer identity and version",
         "install and launch",
         "eligible scan",
         "browser metadata",
@@ -356,6 +547,8 @@ def test_personal_privacy_support_and_acceptance_contracts_are_explicit() -> Non
         "machine ID hash",
     ):
         assert marker in machines
+    assert "private Store" not in machines
+    assert "signature" not in machines
     for forbidden in ("username", "full path", "user content"):
         assert f"never record {forbidden}" in machines
 

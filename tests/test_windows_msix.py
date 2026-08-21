@@ -16,7 +16,7 @@ from scripts.build_windows_msix import (
 
 
 PROJECT_ROOT = Path(__file__).parents[1]
-UNSIGNED_WORKFLOW_SHA256 = "87a97672db830d117a360a2f681492ec7b05943d0aaa8ece4838bf55628858aa"
+UNSIGNED_WORKFLOW_SHA256 = "38681bd29edf6d8adf0c5df79427fc5e46ca889b7f98102ef5b5733a78a9711c"
 
 
 def _git_text_sha256(path: Path) -> str:

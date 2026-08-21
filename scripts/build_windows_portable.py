@@ -39,6 +39,12 @@ _UNUSED_QT_GUI_PLUGINS = {
     "qtvirtualkeyboardplugin.dll",
 }
 _SBOM_NAMESPACE = UUID("f2b2b988-15ce-5e1c-a6cb-08c2db8e6e7a")
+_PRIVATE_BETA_PROFILE = "personal_exe_private_beta"
+_STORE_PROFILE = "personal_store_release"
+_RELEASE_PROFILES = {
+    _PRIVATE_BETA_PROFILE: ("personal_exe_private_beta.json", "0.2.0-beta.1"),
+    _STORE_PROFILE: ("personal_store_release.json", "0.1.0"),
+}
 _FORBIDDEN_NETWORK_COMPONENTS = {
     "_socket.pyd",
     "qnetworklistmanager.dll",
@@ -126,11 +132,14 @@ def portable_component_specs(
     openssl_version: str,
     vc_runtime_version: str,
     ucrt_version: str,
+    product_version: str = "0.2.0-beta.1",
 ) -> tuple[dict[str, str], ...]:
     versions = _locked_versions(Path(__file__).parents[1] / "requirements-build.lock")
     qt_license = "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
     return (
-        _component("AgentGuardian", "0.1.0", "Apache-2.0", "runtime", "application"),
+        _component(
+            "AgentGuardian", product_version, "Apache-2.0", "runtime", "application"
+        ),
         _component("CPython", python_version, "Python-2.0", "runtime"),
         _component("OpenSSL", openssl_version, "Apache-2.0", "runtime"),
         _component("Microsoft Universal C Runtime", ucrt_version, "NOASSERTION", "runtime"),
@@ -340,6 +349,7 @@ def build_portable(
     source_commit: str,
     built_at: str,
     artifact_status: str = "unsigned_development_only",
+    release_profile: str = _PRIVATE_BETA_PROFILE,
 ) -> Path:
     if sys.platform != "win32" or sys.version_info[:2] != (3, 12):
         raise RuntimeError("portable builds require Windows Python 3.12")
@@ -349,12 +359,20 @@ def build_portable(
         "trusted_release",
     }:
         raise ValueError("artifact status is invalid")
+    if release_profile not in _RELEASE_PROFILES:
+        raise ValueError("release profile is invalid")
+    if (
+        artifact_status in {"store_submission_candidate", "trusted_release"}
+        and release_profile != _STORE_PROFILE
+    ):
+        raise ValueError("release-labelled artifact requires the legacy store profile")
+    profile_filename, product_version = _RELEASE_PROFILES[release_profile]
     project_root = project_root.resolve()
     output_root = output_root.resolve()
     head = _git(project_root, "rev-parse", "HEAD")
     status = _git(project_root, "status", "--porcelain=v1", "--untracked-files=all")
     validate_git_build_context(head, status, source_commit)
-    profile_path = project_root / "release_profiles" / "personal_store_release.json"
+    profile_path = project_root / "release_profiles" / profile_filename
     profile_snapshot = load_profile_snapshot(project_root, profile_path)
     verify_profile(project_root, profile_snapshot)
     build_time = validate_build_time(built_at)
@@ -386,6 +404,7 @@ def build_portable(
         openssl_version=openssl_version,
         vc_runtime_version=_pe_version(internal / "VCRUNTIME140.dll"),
         ucrt_version=_pe_version(internal / "ucrtbase.dll"),
+        product_version=product_version,
     )
     final_head = _git(project_root, "rev-parse", "HEAD")
     final_status = _git(
@@ -409,7 +428,8 @@ def build_portable(
     )
     deterministic_zip(
         bundle_root,
-        output_root / f"AgentGuardian-0.1.0-windows-x64-{source_commit[:12]}.zip",
+        output_root
+        / f"AgentGuardian-{product_version}-windows-x64-{source_commit[:12]}.zip",
     )
     return bundle_root
 
@@ -418,9 +438,9 @@ def _write_personal_profile_evidence(
     bundle_root: Path, profile_snapshot: ProfileSnapshot
 ) -> None:
     evidence = {
-        "profile": "personal_store_release",
+        "profile": profile_snapshot.profile["name"],
         "profile_sha256": profile_snapshot.sha256,
-        "schema": 1,
+        "schema": profile_snapshot.profile["schema"],
         "status": "pass",
     }
     (bundle_root / "PERSONAL-RELEASE-PROFILE.json").write_bytes(
@@ -475,6 +495,11 @@ def main() -> int:
         ),
         default="unsigned_development_only",
     )
+    parser.add_argument(
+        "--release-profile",
+        choices=tuple(sorted(_RELEASE_PROFILES)),
+        default=_PRIVATE_BETA_PROFILE,
+    )
     arguments = parser.parse_args()
     build_portable(
         Path(__file__).parents[1],
@@ -482,6 +507,7 @@ def main() -> int:
         source_commit=arguments.source_commit,
         built_at=arguments.built_at,
         artifact_status=arguments.artifact_status,
+        release_profile=arguments.release_profile,
     )
     return 0
 

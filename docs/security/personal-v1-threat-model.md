@@ -2,7 +2,7 @@
 
 ## Scope
 
-This model covers AgentGuardian Personal v1 `0.1.0` on Windows 11 x64 in a personal non-regulated configuration. The release decision is `NO-GO`. It does not establish production safety.
+This model covers AgentGuardian Personal v1 `0.2.0-beta.1` on Windows 11 x64 in a personal non-regulated configuration. Private beta is `PRIVATE-BETA-NOT-READY`; formal release is `NO-GO`. It does not establish production safety.
 
 Personal v1 permanently excludes MCP runtime integration. Enterprise features, a high-sensitivity mode, and dynamic MCP execution are permanent exclusions. The runtime has no telemetry, cloud console, automatic arbitrary remediation, or plugin execution. The runtime must not call OpenAI or another provider API by default.
 
@@ -40,7 +40,7 @@ Personal v1 permanently excludes MCP runtime integration. Enterprise features, a
 - Python cannot guarantee erasure of every immutable string or byte copy.
 - Static rules can miss unknown formats or behavior and do not prove endpoint intent.
 - Public URL reachability does not prove safe content, correct permissions, or search-index status.
-- A clean local test does not prove Store signature, WACK, external license approval, independent-machine behavior, or operations readiness.
+- A clean local test does not prove installer integrity, external license approval, independent-machine behavior, or operations readiness. The private-beta installer is intentionally unsigned and may trigger Unknown Publisher or SmartScreen warnings.
 
 ## Unsupported data
 

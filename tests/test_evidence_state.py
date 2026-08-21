@@ -104,7 +104,7 @@ def test_snapshot_contains_only_minimized_safe_fields() -> None:
     assert payload == {
         "schema_version": 2,
         "captured_at": "2026-08-02T01:02:03Z",
-        "product_version": "0.1.0",
+        "product_version": "0.2.0b1",
         "rule_version": "1.1.0",
         "scan": {
             "coverage": 0.75,

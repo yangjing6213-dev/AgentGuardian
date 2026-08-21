@@ -28,6 +28,13 @@
       "evidence_url": null
     },
     {
+      "name": "Inno Setup",
+      "version": "7.0.2",
+      "license_expression": null,
+      "redistribution": "pending",
+      "evidence_url": null
+    },
+    {
       "name": "OpenSSL",
       "version": null,
       "license_expression": "Apache-2.0",
@@ -80,6 +87,7 @@
   "required_actions": [
     "Verify every CycloneDX component against its authoritative license source.",
     "Confirm Microsoft Visual C++ and Universal CRT redistribution rights for the actual build environment.",
+    "Verify Inno Setup 7.0.2 redistribution terms against its authoritative license source.",
     "Confirm Qt/PySide redistribution terms and required license text for the actual package.",
     "Replace this worksheet with an approved record bound to the exact source commit and SBOM SHA-256."
   ]

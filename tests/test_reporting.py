@@ -1000,7 +1000,7 @@ def test_render_json_contains_safe_complete_deterministic_report() -> None:
     assert first == second
     assert first == json.dumps(report, ensure_ascii=False, indent=2)
     assert report["product"] == "AgentGuardian"
-    assert report["version"] == "0.1.0"
+    assert report["version"] == "0.2.0b1"
     assert report["report_schema"] == 2
     assert (
         report["supported_use_boundary"]
@@ -1405,7 +1405,7 @@ def test_render_html_contains_requested_score_and_finding_fields() -> None:
 
     for value in (
         "AgentGuardian",
-        "0.1.0",
+        "0.2.0b1",
         "规则-1",
         "92",
         "0.75",

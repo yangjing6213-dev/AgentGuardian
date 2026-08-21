@@ -148,7 +148,7 @@ def _state_snapshot(
     return EvidenceSnapshot(
         schema_version=schema_version,
         captured_at="2026-08-02T08:00:00Z",
-        product_version="0.1.0",
+        product_version="0.2.0b1",
         rule_version="1.1.0",
         scan=ScanMetadata(1.0, 1.0, False, ()),
         findings=findings,

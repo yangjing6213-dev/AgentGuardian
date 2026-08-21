@@ -56,7 +56,8 @@ jobs:
           python scripts/build_windows_portable.py `
             --output-root "$pwd\.analysis\ci-portable" `
             --source-commit $sha `
-            --built-at $builtAt
+            --built-at $builtAt `
+            --release-profile personal_store_release
 
       - name: Stage MSIX package
         shell: pwsh

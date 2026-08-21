@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ast
 from dataclasses import dataclass
+from datetime import datetime
 from functools import lru_cache
 from fnmatch import fnmatchcase
 import hashlib
@@ -43,7 +44,7 @@ _ROOT_PROJECT_EXCLUSIONS = frozenset(
         "venv",
     }
 )
-_PROFILE_KEYS = frozenset(
+_STORE_PROFILE_KEYS = frozenset(
     {
         "active_document_paths",
         "declared_network_modules",
@@ -63,8 +64,49 @@ _PROFILE_KEYS = frozenset(
         "schema",
     }
 )
-_ARRAY_KEYS = _PROFILE_KEYS - {"name", "schema"}
-_PATH_ARRAY_KEYS = frozenset(
+_PRIVATE_BETA_IDENTITY = MappingProxyType(
+    {
+        "architecture": "x64",
+        "channel": "personal_exe_private_beta",
+        "inno_setup_asset": "innosetup-7.0.2-x64.exe",
+        "inno_setup_release_tag": "is-7_0_2",
+        "inno_setup_sha256": (
+            "5ad54ca3def786f8f4212552e54cc6d8d61329e2d24a1cfee0571d42c2684ff1"
+        ),
+        "inno_setup_version": "7.0.2",
+        "install_directory": r"{localappdata}\Programs\AgentGuardian",
+        "installer_app_id": "{7A76221A-CFA0-4860-B250-7083B736F3FB}",
+        "installer_filename": "AgentGuardian-Setup-0.2.0-beta.1-x64.exe",
+        "name": "personal_exe_private_beta",
+        "product_version": "0.2.0-beta.1",
+        "python_package_version": "0.2.0b1",
+        "schema": 2,
+        "windows_file_version": "0.2.0.1",
+    }
+)
+_PRIVATE_BETA_PROFILE_KEYS = _STORE_PROFILE_KEYS | frozenset(
+    {
+        "architecture",
+        "channel",
+        "forbidden_installer_capabilities",
+        "inno_setup_asset",
+        "inno_setup_release_tag",
+        "inno_setup_sha256",
+        "inno_setup_version",
+        "install_directory",
+        "installer_app_id",
+        "installer_filename",
+        "package_input_paths",
+        "product_version",
+        "python_package_version",
+        "windows_file_version",
+    }
+)
+_STORE_ARRAY_KEYS = _STORE_PROFILE_KEYS - {"name", "schema"}
+_PRIVATE_BETA_ARRAY_KEYS = _STORE_ARRAY_KEYS | frozenset(
+    {"forbidden_installer_capabilities", "package_input_paths"}
+)
+_COMMON_PATH_ARRAY_KEYS = frozenset(
     {
         "active_document_paths",
         "declared_network_modules",
@@ -72,6 +114,29 @@ _PATH_ARRAY_KEYS = frozenset(
         "forbidden_source_globs",
         "required_source_paths",
     }
+)
+_PRIVATE_BETA_GATE_NAMES = (
+    "scope",
+    "local",
+    "remote",
+    "supply_chain",
+    "installer",
+    "independent_machine",
+    "independent_review",
+    "operations",
+)
+_PRIVATE_BETA_STATUS_KEYS = frozenset(
+    {
+        "candidate_commit",
+        "formal_release_decision",
+        "gates",
+        "note",
+        "private_beta_decision",
+        "schema",
+    }
+)
+_PRIVATE_BETA_GATE_KEYS = frozenset(
+    {"evidence_sha256", "name", "source_commit", "status", "verified_at"}
 )
 
 
@@ -89,6 +154,15 @@ class ProfileSnapshot:
 
     canonical_bytes: bytes
     profile: Mapping[str, Any]
+    sha256: str
+
+
+@dataclass(frozen=True)
+class PrivateBetaStatusSnapshot:
+    """Immutable canonical private-beta gate ledger."""
+
+    canonical_bytes: bytes
+    status: Mapping[str, Any]
     sha256: str
 
 
@@ -119,7 +193,7 @@ def profile_snapshot_from_bytes(raw: bytes) -> ProfileSnapshot:
         raise
     except (MemoryError, UnicodeError, json.JSONDecodeError):
         raise ProfileViolation("PROFILE_JSON_INVALID") from None
-    if not isinstance(value, dict) or set(value) != _PROFILE_KEYS:
+    if not isinstance(value, dict):
         raise ProfileViolation("PROFILE_SCHEMA_INVALID")
     if raw != canonical_json_bytes(value):
         raise ProfileViolation("PROFILE_JSON_INVALID")
@@ -131,6 +205,133 @@ def profile_snapshot_from_bytes(raw: bytes) -> ProfileSnapshot:
         }
     )
     return ProfileSnapshot(raw, frozen, hashlib.sha256(raw).hexdigest())
+
+
+def load_private_beta_status_snapshot(
+    project_root: str | Path, status_path: str | Path
+) -> PrivateBetaStatusSnapshot:
+    root = _resolved_project_root(project_root)
+    path = _resolved_profile_path(root, status_path)
+    raw = _read_bounded(path, MAX_PROFILE_BYTES, "STATUS_JSON_TOO_LARGE")
+    return private_beta_status_snapshot_from_bytes(raw)
+
+
+def private_beta_status_snapshot_from_bytes(
+    raw: bytes,
+) -> PrivateBetaStatusSnapshot:
+    if not isinstance(raw, bytes):
+        raise ProfileViolation("STATUS_JSON_INVALID")
+    if len(raw) > MAX_PROFILE_BYTES:
+        raise ProfileViolation("STATUS_JSON_TOO_LARGE")
+    try:
+        value = json.loads(raw.decode("ascii"), object_pairs_hook=_unique_status_object)
+    except ProfileViolation:
+        raise
+    except (MemoryError, UnicodeError, json.JSONDecodeError):
+        raise ProfileViolation("STATUS_JSON_INVALID") from None
+    if not isinstance(value, dict) or set(value) != _PRIVATE_BETA_STATUS_KEYS:
+        raise ProfileViolation("STATUS_SCHEMA_INVALID")
+    if raw != canonical_json_bytes(value):
+        raise ProfileViolation("STATUS_JSON_INVALID")
+    _validate_private_beta_status(value)
+    frozen = MappingProxyType(
+        {
+            **value,
+            "gates": tuple(MappingProxyType(dict(gate)) for gate in value["gates"]),
+        }
+    )
+    return PrivateBetaStatusSnapshot(raw, frozen, hashlib.sha256(raw).hexdigest())
+
+
+def verify_private_beta_status(
+    snapshot: PrivateBetaStatusSnapshot,
+) -> dict[str, str]:
+    if not isinstance(snapshot, PrivateBetaStatusSnapshot):
+        raise ProfileViolation("STATUS_SCHEMA_INVALID")
+    return {
+        "formal_release": snapshot.status["formal_release_decision"],
+        "private_beta": snapshot.status["private_beta_decision"],
+        "status": "pass",
+    }
+
+
+def _validate_private_beta_status(value: dict[str, Any]) -> None:
+    if type(value["schema"]) is not int or value["schema"] != 1:
+        raise ProfileViolation("STATUS_SCHEMA_INVALID")
+    if value["formal_release_decision"] != "NO-GO":
+        raise ProfileViolation("STATUS_DECISION_INVALID")
+    if value["private_beta_decision"] not in {
+        "PRIVATE-BETA-NOT-READY",
+        "PRIVATE-BETA-READY",
+    }:
+        raise ProfileViolation("STATUS_DECISION_INVALID")
+    if (
+        type(value["note"]) is not str
+        or not value["note"]
+        or len(value["note"]) > _MAX_VALUE_LENGTH
+        or "\x00" in value["note"]
+    ):
+        raise ProfileViolation("STATUS_SCHEMA_INVALID")
+    candidate = value["candidate_commit"]
+    if candidate is not None and not _lower_hex(candidate, 40):
+        raise ProfileViolation("STATUS_CANDIDATE_INVALID")
+    gates = value["gates"]
+    if (
+        not isinstance(gates, list)
+        or len(gates) != len(_PRIVATE_BETA_GATE_NAMES)
+        or any(not isinstance(gate, dict) for gate in gates)
+        or tuple(gate.get("name") for gate in gates) != _PRIVATE_BETA_GATE_NAMES
+    ):
+        raise ProfileViolation("STATUS_GATE_INVALID")
+    for gate in gates:
+        _validate_private_beta_gate(gate, candidate)
+    expected = (
+        "PRIVATE-BETA-READY"
+        if all(gate["status"] == "pass" for gate in gates)
+        else "PRIVATE-BETA-NOT-READY"
+    )
+    if value["private_beta_decision"] != expected:
+        raise ProfileViolation("STATUS_DECISION_INVALID")
+
+
+def _validate_private_beta_gate(gate: dict[str, Any], candidate: object) -> None:
+    if set(gate) != _PRIVATE_BETA_GATE_KEYS:
+        raise ProfileViolation("STATUS_GATE_INVALID")
+    status = gate["status"]
+    if status not in {"blocked", "fail", "pass", "pending"}:
+        raise ProfileViolation("STATUS_GATE_INVALID")
+    evidence = gate["evidence_sha256"]
+    source = gate["source_commit"]
+    verified_at = gate["verified_at"]
+    if status == "pending":
+        if any(item is not None for item in (evidence, source, verified_at)):
+            raise ProfileViolation("STATUS_GATE_INVALID")
+        return
+    if (
+        candidate is None
+        or source != candidate
+        or not _lower_hex(evidence, 64)
+        or not _canonical_utc_seconds(verified_at)
+    ):
+        raise ProfileViolation("STATUS_GATE_INVALID")
+
+
+def _lower_hex(value: object, length: int) -> bool:
+    return (
+        type(value) is str
+        and len(value) == length
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _canonical_utc_seconds(value: object) -> bool:
+    if type(value) is not str or len(value) != 20 or not value.endswith("Z"):
+        return False
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return False
+    return True
 
 
 def require_profile_snapshot_unchanged(
@@ -151,13 +352,22 @@ def require_profile_snapshot_unchanged(
 
 
 def _validate_profile_value(value: dict[str, Any]) -> None:
-    if set(value) != _PROFILE_KEYS:
+    if value.get("name") == "personal_store_release" and value.get("schema") == 1:
+        profile_keys = _STORE_PROFILE_KEYS
+        array_keys = _STORE_ARRAY_KEYS
+        path_array_keys = _COMMON_PATH_ARRAY_KEYS
+    elif (
+        value.get("name") == "personal_exe_private_beta"
+        and value.get("schema") == 2
+    ):
+        profile_keys = _PRIVATE_BETA_PROFILE_KEYS
+        array_keys = _PRIVATE_BETA_ARRAY_KEYS
+        path_array_keys = _COMMON_PATH_ARRAY_KEYS | {"package_input_paths"}
+    else:
         raise ProfileViolation("PROFILE_SCHEMA_INVALID")
-    if type(value["schema"]) is not int or value["schema"] != 1:
+    if set(value) != profile_keys:
         raise ProfileViolation("PROFILE_SCHEMA_INVALID")
-    if value["name"] != "personal_store_release":
-        raise ProfileViolation("PROFILE_SCHEMA_INVALID")
-    for key in _ARRAY_KEYS:
+    for key in array_keys:
         items = value[key]
         if (
             not isinstance(items, list)
@@ -173,9 +383,13 @@ def _validate_profile_value(value: dict[str, Any]) -> None:
             or len({item.casefold() for item in items}) != len(items)
         ):
             raise ProfileViolation("PROFILE_ARRAY_INVALID")
-    for key in _PATH_ARRAY_KEYS:
+    for key in path_array_keys:
         if any(not _safe_relative_pattern(item) for item in value[key]):
             raise ProfileViolation("PROFILE_PATH_INVALID")
+    if value["name"] == "personal_exe_private_beta" and any(
+        value[key] != expected for key, expected in _PRIVATE_BETA_IDENTITY.items()
+    ):
+        raise ProfileViolation("PROFILE_IDENTITY_INVALID")
 
 
 def verify_profile(
@@ -192,11 +406,15 @@ def verify_profile(
     for relative in profile["required_source_paths"]:
         if not _required_file(root, relative):
             raise ProfileViolation("PROFILE_REQUIRED_SOURCE_MISSING")
+    if profile["name"] == "personal_exe_private_beta":
+        for relative in profile["package_input_paths"]:
+            if not _required_path(root, relative):
+                raise ProfileViolation("PROFILE_PACKAGE_INPUT_MISSING")
 
     _verify_runtime(root, profile)
     _verify_workflows(root, profile["forbidden_workflow_tokens"])
     _verify_documents(root, profile)
-    return {"profile": "personal_store_release", "status": "pass"}
+    return {"profile": profile["name"], "status": "pass"}
 
 
 def verify_payload(bundle_root: str | Path, snapshot: ProfileSnapshot) -> None:
@@ -498,6 +716,11 @@ def _walk(
 
 
 def _required_file(root: Path, relative: str) -> bool:
+    path = root.joinpath(*relative.split("/"))
+    return _required_path(root, relative) and path.is_file()
+
+
+def _required_path(root: Path, relative: str) -> bool:
     parts = relative.split("/")
     path = root.joinpath(*parts)
     current = root
@@ -505,7 +728,7 @@ def _required_file(root: Path, relative: str) -> bool:
         current = current / part
         if _is_reparse_point(current):
             raise ProfileViolation("PROFILE_REPARSE_POINT")
-    return path.is_file()
+    return path.exists()
 
 
 def _safe_relative_pattern(value: str) -> bool:
@@ -555,6 +778,15 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     for key, item in pairs:
         if key in value:
             raise ProfileViolation("PROFILE_JSON_INVALID")
+        value[key] = item
+    return value
+
+
+def _unique_status_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ProfileViolation("STATUS_JSON_INVALID")
         value[key] = item
     return value
 

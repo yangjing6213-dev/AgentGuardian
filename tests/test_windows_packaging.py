@@ -69,7 +69,9 @@ def _prepare_portable_build(
     import scripts.build_windows_portable as build_module
 
     snapshot = profile_snapshot_from_bytes(
-        (PROJECT_ROOT / "release_profiles/personal_store_release.json").read_bytes()
+        (
+            PROJECT_ROOT / "release_profiles/personal_exe_private_beta.json"
+        ).read_bytes()
     )
 
     def record_snapshot(name: str):
@@ -150,7 +152,42 @@ def test_personal_portable_builder_has_no_dynamic_mcp_inputs() -> None:
         "source_commit",
         "built_at",
         "artifact_status",
+        "release_profile",
     )
+
+
+def test_store_artifact_requires_explicit_store_profile(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import scripts.build_windows_portable as build_module
+
+    monkeypatch.setattr(build_module.sys, "platform", "win32")
+    monkeypatch.setattr(build_module.sys, "version_info", (3, 12))
+
+    with pytest.raises(ValueError, match="store profile"):
+        build_module.build_portable(
+            tmp_path,
+            tmp_path / "output",
+            source_commit="a" * 40,
+            built_at="2026-08-21T00:00:00Z",
+            artifact_status="store_submission_candidate",
+        )
+
+
+def test_store_workflow_selects_legacy_store_profile_explicitly() -> None:
+    workflow = (
+        PROJECT_ROOT / ".github/workflows/windows-store-candidate.yml"
+    ).read_text(encoding="utf-8")
+
+    assert workflow.count("--release-profile personal_store_release") == 2
+
+
+def test_legacy_msix_workflow_selects_legacy_store_profile_explicitly() -> None:
+    workflow = (PROJECT_ROOT / ".github/workflows/windows-mvp.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert workflow.count("--release-profile personal_store_release") == 1
 
 
 def test_portable_build_verifies_source_then_payload_and_records_profile_digest(
@@ -193,16 +230,18 @@ def test_personal_profile_evidence_is_canonical_and_digest_bound(tmp_path: Path)
 
     bundle = tmp_path / "bundle"
     bundle.mkdir()
-    profile_path = PROJECT_ROOT / "release_profiles/personal_store_release.json"
+    profile_path = (
+        PROJECT_ROOT / "release_profiles/personal_exe_private_beta.json"
+    )
     snapshot = profile_snapshot_from_bytes(profile_path.read_bytes())
     build_module._write_personal_profile_evidence(bundle, snapshot)
 
     evidence_path = bundle / "PERSONAL-RELEASE-PROFILE.json"
     evidence = json.loads(evidence_path.read_bytes())
     assert evidence == {
-        "profile": "personal_store_release",
+        "profile": "personal_exe_private_beta",
         "profile_sha256": snapshot.sha256,
-        "schema": 1,
+        "schema": 2,
         "status": "pass",
     }
     assert evidence_path.read_bytes() == canonical_json_bytes(evidence)
@@ -215,10 +254,12 @@ def test_portable_build_rejects_profile_mutation_before_evidence_and_zip(
     from scripts.verify_personal_release_profile import require_profile_snapshot_unchanged
 
     project = tmp_path / "project"
-    profile_path = project / "release_profiles/personal_store_release.json"
+    profile_path = project / "release_profiles/personal_exe_private_beta.json"
     profile_path.parent.mkdir(parents=True)
     profile_path.write_bytes(
-        (PROJECT_ROOT / "release_profiles/personal_store_release.json").read_bytes()
+        (
+            PROJECT_ROOT / "release_profiles/personal_exe_private_beta.json"
+        ).read_bytes()
     )
     events: list[str] = []
     _prepare_portable_build(monkeypatch, commit="a" * 40, events=events)
@@ -524,6 +565,7 @@ def test_portable_component_specs_separate_runtime_and_build_tools() -> None:
         "Microsoft Universal C Runtime",
     }
     assert by_name["AgentGuardian"]["role"] == "runtime"
+    assert by_name["AgentGuardian"]["version"] == "0.2.0-beta.1"
     assert by_name["AgentGuardian"]["license"] == "Apache-2.0"
     assert by_name["CPython"]["version"] == "3.12.2"
     assert by_name["OpenSSL"]["version"] == "3.0.13"
@@ -764,7 +806,9 @@ def test_portable_build_rechecks_git_context_after_pyinstaller(
     monkeypatch.setattr(build_module, "_git", fake_git)
     monkeypatch.setattr(build_module, "validate_build_dependency_snapshot", lambda: {})
     snapshot = profile_snapshot_from_bytes(
-        (PROJECT_ROOT / "release_profiles/personal_store_release.json").read_bytes()
+        (
+            PROJECT_ROOT / "release_profiles/personal_exe_private_beta.json"
+        ).read_bytes()
     )
     monkeypatch.setattr(build_module, "load_profile_snapshot", lambda *args: snapshot)
     monkeypatch.setattr(build_module, "verify_profile", lambda *args: None)

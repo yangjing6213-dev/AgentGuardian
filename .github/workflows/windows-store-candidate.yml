@@ -105,7 +105,8 @@ jobs:
             --output-root "$pwd\.analysis\portable-a" `
             --source-commit $env:EXPECTED_SOURCE_COMMIT `
             --built-at $env:COMMIT_UTC `
-            --artifact-status store_submission_candidate
+            --artifact-status store_submission_candidate `
+            --release-profile personal_store_release
 
       - name: Build x64 portable candidate B
         shell: pwsh
@@ -114,7 +115,8 @@ jobs:
             --output-root "$pwd\.analysis\portable-b" `
             --source-commit $env:EXPECTED_SOURCE_COMMIT `
             --built-at $env:COMMIT_UTC `
-            --artifact-status store_submission_candidate
+            --artifact-status store_submission_candidate `
+            --release-profile personal_store_release
 
       - name: Compare portable ZIP bytes and SHA-256
         shell: pwsh

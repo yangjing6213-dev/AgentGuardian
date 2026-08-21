@@ -1468,5 +1468,5 @@ def test_readme_describes_current_release_verifier_without_checksum_claim() -> N
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "SBOM/notices/checksums" not in readme
-    assert "Task 6 established candidate infrastructure only" in readme
-    assert "no Store dispatch is claimed" in readme
+    assert "traditional unsigned offline EXE installer" in readme
+    assert "No installer candidate has passed the required gates" in readme

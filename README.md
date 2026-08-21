@@ -2,7 +2,7 @@
 
 # AgentGuardian Personal v1
 
-AgentGuardian Personal v1 is a local-first static security auditor for Windows 11 x64. Its supported use boundary is **personal non-regulated configuration**. Version `0.1.0` remains `NO-GO` for release.
+AgentGuardian Personal v1 is a local-first static security auditor for Windows 11 x64. Its supported use boundary is **personal non-regulated configuration**. Version `0.2.0-beta.1` is `PRIVATE-BETA-NOT-READY`; formal release remains `NO-GO`.
 
 ## Current implementation
 
@@ -30,11 +30,11 @@ Do not use Personal v1 with medical, financial, identity or biometric, legally p
 
 ## Not yet passed
 
-Distribution is Store-first, but Task 6 established candidate infrastructure only. A workflow file or local contract test is not evidence that a Store candidate was dispatched; that claim requires external evidence bound to the exact candidate SHA, so no Store dispatch is claimed.
+The intended delivery route is a traditional unsigned offline EXE installer sent directly to known private testers. No installer candidate has passed the required gates. Because it is unsigned, Windows may show Unknown Publisher or SmartScreen warnings; testers must verify the supplied SHA-256 before running it.
 
-Real WACK, external license and Qt approval, a private Store flight, trusted Store signature, two independent clean-machine runs, independent final review, and the operations/security gate remain pending. GitHub Issues is live for ordinary support. GitHub Private Vulnerability Reporting is disabled, so no current private vulnerability intake is claimed. These limits prohibit production-safety, Store acceptance, WACK, license, or clean-machine claims.
+The pinned installer-tool download, external license and Qt review, exact installer build, two independent clean-machine install/run/uninstall checks, independent final review, and the operations/security gate remain pending. GitHub Issues is live for ordinary support. GitHub Private Vulnerability Reporting is disabled, so no current private vulnerability intake is claimed. These limits prohibit production-safety, installer acceptance, license, or clean-machine claims.
 
-The canonical gate template is [personal-v1-release-status.json](docs/security/personal-v1-release-status.json). It remains `NO-GO`; exact-SHA evidence must be generated outside the candidate commit.
+The canonical gate template is [personal-exe-private-beta-status.json](docs/security/personal-exe-private-beta-status.json). Private beta remains `PRIVATE-BETA-NOT-READY` and formal release remains `NO-GO`; exact-SHA evidence must be generated outside the candidate commit.
 
 ## Try from source
 

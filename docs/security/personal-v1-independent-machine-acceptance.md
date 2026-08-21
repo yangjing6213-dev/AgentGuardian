@@ -2,13 +2,13 @@
 
 ## Machine requirements
 
-Use two newly provisioned Windows 11 x64 machines with no development tools. Machine A must run 25H2. Machine B must run a supported 24H2 or 25H2 build. Both packages must originate from the private Store origin and bind to the frozen target candidate SHA.
+Use two newly provisioned Windows 11 x64 machines with no development tools. Machine A must run 25H2. Machine B must run a supported 24H2 or 25H2 build. Both machines must use the same unsigned offline EXE whose installer SHA-256 is retained externally and bound to the frozen target candidate SHA.
 
 Before testing, record only a machine ID hash plus Windows edition, version, and OS build. Evidence must never record username, never record full path, and never record user content. Use synthetic eligible data only.
 
 ## Acceptance sequence on both machines
 
-1. Verify private Store origin, package identity, version, and signature.
+1. Verify the installer SHA-256, installer identity and version, and the expected Unknown Publisher or SmartScreen result.
 2. Complete install and launch as a standard user with no developer runtime.
 3. Run an eligible scan over synthetic personal non-regulated configuration data; verify redacted JSON and HTML.
 4. Trigger browser metadata audit; verify bounded counts and temporary-copy cleanup.
@@ -22,6 +22,6 @@ Before testing, record only a machine ID hash plus Windows edition, version, and
 
 ## Evidence and decision
 
-For each step, record pass, fail, or blocked; UTC time; package identity/version/signature summary; target candidate SHA; and external evidence SHA-256. Do not record screenshots or logs containing usernames, full paths, clipboard text, browser data, report content, or credentials.
+For each step, record pass, fail, or blocked; UTC time; installer identity/version/hash summary; Windows warning result; target candidate SHA; and external evidence SHA-256. Do not record screenshots or logs containing usernames, full paths, clipboard text, browser data, report content, or credentials.
 
-Both machines must pass the full sequence. Simulation, a development package, one machine used twice, or a machine with build tools does not pass the `independent_machine` gate.
+Both machines must pass the full sequence. Simulation, an installer with an unverified hash, one machine used twice, or a machine with build tools does not pass the `independent_machine` gate.
