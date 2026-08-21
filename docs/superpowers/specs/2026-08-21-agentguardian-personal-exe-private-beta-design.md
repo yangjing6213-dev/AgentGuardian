@@ -164,6 +164,10 @@ installer compiler version and digest, payload digest, installer digest,
 architecture, channel, and artifact status. It contains no username, machine
 path, credential, signing material, or user content.
 
+Native lifecycle evidence is separately bounded to 4 KiB and must match one
+exact canonical success or failure schema. Invalid evidence maps to a fixed
+machine-neutral diagnostic rather than exposing parser output or local paths.
+
 The README states the unsupported-data boundary, unsigned publisher warning,
 manual installation and upgrade procedure, checksum procedure, uninstall
 behavior, support contact, and issue-reporting process.

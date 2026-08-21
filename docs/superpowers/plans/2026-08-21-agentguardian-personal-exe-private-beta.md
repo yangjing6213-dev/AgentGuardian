@@ -412,6 +412,9 @@ rtk git commit -m "Verify private installer lifecycle"
 
 **Files:**
 - Create: `.github/workflows/windows-exe-private-beta.yml`
+- Create: `scripts/verify_windows_installer_lifecycle_evidence.py`
+- Create: `tests/test_windows_installer_lifecycle_evidence.py`
+- Modify: `release_profiles/personal_exe_private_beta.json`
 - Modify: `tests/test_windows_installer.py`
 - Modify: `tests/test_personal_release_profile.py`
 
@@ -447,13 +450,14 @@ hash-locked Python dependencies, runs all internal gates, downloads the exact
 Inno asset, verifies SHA-256 plus upstream release attestation and Authenticode,
 builds the deterministic portable payload, builds a synthetic lower base
 installer and the exact candidate, runs lifecycle acceptance, verifies the
-bounded evidence allowlist, and uploads only the eight approved files for 14
-days.
+bounded lifecycle result and delivery-evidence allowlist, and uploads only the
+eight approved files for 14 days. Missing, malformed, oversized, noncanonical,
+or schema-invalid lifecycle evidence maps to a fixed machine-neutral error.
 
 - [ ] **Step 4: Run focused and full local tests**
 
 ```powershell
-rtk python -m pytest tests/test_windows_installer.py tests/test_windows_installer_acceptance.py tests/test_windows_installer_evidence.py tests/test_personal_release_profile.py -q -p no:cacheprovider --basetemp=../.pytest-tmp/exe-beta-task6-focused
+rtk python -m pytest tests/test_windows_installer.py tests/test_windows_installer_acceptance.py tests/test_windows_installer_evidence.py tests/test_windows_installer_lifecycle_evidence.py tests/test_personal_release_profile.py -q -p no:cacheprovider --basetemp=../.pytest-tmp/exe-beta-task6-focused
 rtk python -m pytest -q -p no:cacheprovider --basetemp=../.pytest-tmp/exe-beta-task6-full
 rtk git diff --check
 ```
@@ -461,7 +465,7 @@ rtk git diff --check
 - [ ] **Step 5: Commit Task 6**
 
 ```powershell
-rtk git add -- .github/workflows/windows-exe-private-beta.yml tests/test_windows_installer.py tests/test_personal_release_profile.py
+rtk git add -- .github/workflows/windows-exe-private-beta.yml release_profiles/personal_exe_private_beta.json scripts/verify_windows_installer_lifecycle_evidence.py tests/test_windows_installer.py tests/test_windows_installer_lifecycle_evidence.py tests/test_personal_release_profile.py
 rtk git commit -m "Add exact-SHA EXE private beta workflow"
 ```
 

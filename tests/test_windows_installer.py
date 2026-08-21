@@ -497,6 +497,15 @@ def test_exe_workflow_pins_inno_and_runs_native_lifecycle() -> None:
     assert "$baseVersionInfo.FilePrivatePart" in installer_step
     assert ".VersionInfo.FileVersion -cne" not in installer_step
 
+    lifecycle_step = workflow.split(
+        "Run native install upgrade downgrade and uninstall lifecycle", 1
+    )[1].split("Validate exact eight-file upload allowlist", 1)[0]
+    assert "$lifecycleExitCode = $LASTEXITCODE" in lifecycle_step
+    assert "scripts/verify_windows_installer_lifecycle_evidence.py" in lifecycle_step
+    assert "--lifecycle-exit-code $lifecycleExitCode" in lifecycle_step
+    assert "native installer lifecycle failed: $($decision.error)" in lifecycle_step
+    assert "Get-Content -LiteralPath $env:LIFECYCLE_EVIDENCE" not in lifecycle_step
+
     job_environment = workflow.split("    env:", 1)[1].split("    steps:", 1)[0]
     download_step = workflow.split("Download and verify pinned Inno Setup", 1)[1].split(
         "Install verified Inno compiler privately", 1

@@ -242,9 +242,34 @@ jobs:
             -BaseVersion $env:BASE_DISPLAY_VERSION `
             -CandidateVersion $env:CANDIDATE_DISPLAY_VERSION `
             -EvidenceOutput $env:LIFECYCLE_EVIDENCE
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $result = Get-Content -LiteralPath $env:LIFECYCLE_EVIDENCE -Raw | ConvertFrom-Json
-          if ($result.status -cne 'pass') { throw 'native installer lifecycle failed' }
+          $lifecycleExitCode = $LASTEXITCODE
+          $decisionJson = python scripts/verify_windows_installer_lifecycle_evidence.py `
+            --evidence-path $env:LIFECYCLE_EVIDENCE `
+            --lifecycle-exit-code $lifecycleExitCode `
+            --base-version $env:BASE_DISPLAY_VERSION `
+            --candidate-version $env:CANDIDATE_DISPLAY_VERSION
+          if ($LASTEXITCODE -ne 0) {
+            throw 'lifecycle evidence verifier failed'
+          }
+          try {
+            $decision = $decisionJson | ConvertFrom-Json
+          }
+          catch {
+            throw 'lifecycle evidence verifier output is invalid'
+          }
+          $decisionKeys = @($decision.PSObject.Properties.Name | Sort-Object)
+          if (($decisionKeys -join "`n") -cne "error`nstatus") {
+            throw 'lifecycle evidence verifier output is invalid'
+          }
+          if ($decision.status -cne 'pass') {
+            if (([string]$decision.error -cnotmatch '^[A-Z0-9_]{1,64}$')) {
+              throw 'lifecycle evidence verifier output is invalid'
+            }
+            throw "native installer lifecycle failed: $($decision.error)"
+          }
+          if ([string]$decision.error -cne '') {
+            throw 'lifecycle evidence verifier output is invalid'
+          }
 
       - name: Validate exact eight-file upload allowlist
         shell: pwsh

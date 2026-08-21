@@ -430,6 +430,7 @@ def _copy_fixture(tmp_path: Path) -> Path:
         "scripts/run_personal_privacy_acceptance.py",
         "scripts/verify_personal_release_profile.py",
         "scripts/verify_windows_installer_candidate.py",
+        "scripts/verify_windows_installer_lifecycle_evidence.py",
         "release_profiles/personal_exe_private_beta.json",
     ):
         destination = root / relative
