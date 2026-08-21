@@ -1,0 +1,270 @@
+name: Windows EXE private beta candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact lowercase 40-character candidate commit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      EXPECTED_SOURCE_COMMIT: ${{ inputs.candidate_sha }}
+      WORKFLOW_SOURCE_COMMIT: ${{ github.workflow_sha }}
+      PRIVATE_BETA_PROFILE: release_profiles/personal_exe_private_beta.json
+      INNO_RELEASE_REPOSITORY: jrsoftware/issrc
+      INNO_RELEASE_TAG: is-7_0_2
+      INNO_ASSET_NAME: innosetup-7.0.2-x64.exe
+      INNO_ASSET_SHA256: 5ad54ca3def786f8f4212552e54cc6d8d61329e2d24a1cfee0571d42c2684ff1
+      BASE_DISPLAY_VERSION: 0.1.9
+      BASE_FILE_VERSION: 0.1.9.0
+      CANDIDATE_DISPLAY_VERSION: 0.2.0-beta.1
+      CANDIDATE_FILE_VERSION: 0.2.0.1
+      INNO_ASSET: ${{ runner.temp }}\agentguardian-inno-download\innosetup-7.0.2-x64.exe
+      ISCC: ${{ runner.temp }}\agentguardian-inno-7.0.2\ISCC.exe
+      PORTABLE_OUTPUT: ${{ runner.temp }}\agentguardian-portable
+      PORTABLE_BUNDLE: ${{ runner.temp }}\agentguardian-portable\dist\AgentGuardian
+      BASE_OUTPUT: ${{ runner.temp }}\agentguardian-base-installer
+      BASE_INSTALLER: ${{ runner.temp }}\agentguardian-base-installer\AgentGuardian-Setup-0.1.9-x64.exe
+      CANDIDATE_OUTPUT: ${{ runner.temp }}\agentguardian-candidate-installer
+      CANDIDATE_INSTALLER: ${{ runner.temp }}\agentguardian-candidate-installer\AgentGuardian-Setup-0.2.0-beta.1-x64.exe
+      EVIDENCE_ROOT: ${{ runner.temp }}\agentguardian-private-beta-evidence
+      LIFECYCLE_EVIDENCE: ${{ runner.temp }}\agentguardian-installer-lifecycle.json
+    steps:
+      - name: Validate exact lowercase candidate SHA
+        shell: pwsh
+        run: |
+          if ($env:EXPECTED_SOURCE_COMMIT -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'candidate_sha must be a lowercase 40-character SHA'
+          }
+          if ($env:WORKFLOW_SOURCE_COMMIT -cne $env:EXPECTED_SOURCE_COMMIT) {
+            throw 'workflow source must match candidate_sha'
+          }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact clean checkout and build time
+        shell: pwsh
+        run: |
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -cne $env:EXPECTED_SOURCE_COMMIT) {
+            throw 'checked out HEAD does not match candidate_sha'
+          }
+          $status = git status --porcelain=v1 --untracked-files=all
+          if ($status) { throw 'private-beta checkout must be clean' }
+          $commitEpoch = [int64](git show -s --format=%ct HEAD)
+          $commitUtc = [DateTimeOffset]::FromUnixTimeSeconds($commitEpoch).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
+          "COMMIT_UTC=$commitUtc" >> $env:GITHUB_ENV
+
+      - name: Require local fixed drives
+        shell: pwsh
+        run: |
+          foreach ($root in @($pwd.Path, $env:RUNNER_TEMP, $env:LOCALAPPDATA, $env:APPDATA)) {
+            $drive = [System.IO.Path]::GetPathRoot($root).TrimEnd('\')
+            $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$drive'"
+            if (($null -eq $disk) -or ($disk.DriveType -ne 3)) {
+              throw 'all build and lifecycle paths must use local fixed drives'
+            }
+          }
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install hash-locked development dependencies
+        shell: pwsh
+        run: python -m pip install --require-hashes -r requirements-dev.lock
+
+      - name: Run internal test and profile gates
+        shell: pwsh
+        run: |
+          python -c "import platform; assert platform.machine().casefold() in {'amd64','x86_64'}, 'x64 runner is required'"
+          python -m pytest -q -p no:cacheprovider --basetemp "$env:RUNNER_TEMP\agentguardian-pytest"
+          python scripts/run_personal_privacy_acceptance.py --evidence-path "$env:RUNNER_TEMP\personal-privacy-acceptance.json"
+          python scripts/check_brand_assets.py
+          python -m compileall -q src scripts tests
+          $env:PYTHONPATH = "$pwd\src"
+          python -c "from agentguardian.self_audit import static_capability_findings; assert static_capability_findings() == ('DATABASE_CAPABILITY','NETWORK_MODULE_IMPORT','USER_DATA_WRITE')"
+          python scripts/verify_personal_release_profile.py --project-root "$pwd" --profile "$pwd\$env:PRIVATE_BETA_PROFILE"
+
+      - name: Install hash-locked build dependencies
+        shell: pwsh
+        run: python -m pip install --require-hashes -r requirements-build.lock
+
+      - name: Download and verify pinned Inno Setup
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $versionLine = gh --version | Select-Object -First 1
+          if ($versionLine -notmatch '^gh version (\d+\.\d+\.\d+)') {
+            throw 'GitHub CLI version is unavailable'
+          }
+          if ([Version]$Matches[1] -lt [Version]'2.93.0') {
+            throw 'GitHub CLI 2.93.0 or newer is required'
+          }
+          $toolRoot = Join-Path $env:RUNNER_TEMP 'agentguardian-inno-download'
+          New-Item -ItemType Directory -Path $toolRoot | Out-Null
+          gh release download $env:INNO_RELEASE_TAG --repo $env:INNO_RELEASE_REPOSITORY --pattern $env:INNO_ASSET_NAME --dir $toolRoot
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $env:INNO_ASSET).Hash.ToLowerInvariant()
+          if ($digest -cne $env:INNO_ASSET_SHA256) {
+            throw 'Inno Setup asset SHA-256 mismatch'
+          }
+          gh release verify-asset $env:INNO_RELEASE_TAG $env:INNO_ASSET --repo $env:INNO_RELEASE_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $signature = Get-AuthenticodeSignature -LiteralPath $env:INNO_ASSET
+          $expectedSubject = 'CN=Pyrsys B.V., O=Pyrsys B.V., S=Noord-Holland, C=NL'
+          if (($signature.Status -ne 'Valid') -or
+              ($null -eq $signature.SignerCertificate) -or
+              ($signature.SignerCertificate.Subject -cne $expectedSubject)) {
+            throw 'Inno Setup Authenticode signature is invalid'
+          }
+
+      - name: Install verified Inno compiler privately
+        shell: pwsh
+        run: |
+          $innoRoot = Join-Path $env:RUNNER_TEMP 'agentguardian-inno-7.0.2'
+          $install = Start-Process -FilePath $env:INNO_ASSET -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
+            '/CURRENTUSER', '/NOICONS', "/DIR=$innoRoot"
+          ) -PassThru
+          if (-not $install.WaitForExit(120000)) {
+            $install.Kill($true)
+            throw 'Inno Setup compiler installation timed out'
+          }
+          if ($install.ExitCode -ne 0) { exit $install.ExitCode }
+          if (-not (Test-Path -LiteralPath $env:ISCC -PathType Leaf)) {
+            throw 'verified Inno Setup compiler is missing'
+          }
+
+      - name: Build deterministic unsigned portable payload
+        shell: pwsh
+        run: |
+          python scripts/build_windows_portable.py `
+            --output-root $env:PORTABLE_OUTPUT `
+            --source-commit $env:EXPECTED_SOURCE_COMMIT `
+            --built-at $env:COMMIT_UTC `
+            --artifact-status unsigned_development_only `
+            --release-profile personal_exe_private_beta
+
+      - name: Build lower baseline and exact candidate installers
+        shell: pwsh
+        run: |
+          python scripts/build_windows_installer.py `
+            --bundle-root $env:PORTABLE_BUNDLE `
+            --output-root $env:CANDIDATE_OUTPUT `
+            --iscc $env:ISCC `
+            --source-commit $env:EXPECTED_SOURCE_COMMIT `
+            --built-at $env:COMMIT_UTC
+          New-Item -ItemType Directory -Path $env:BASE_OUTPUT | Out-Null
+          & $env:ISCC /Qp `
+            "/DBundleRoot=$env:PORTABLE_BUNDLE" `
+            "/DOutputRoot=$env:BASE_OUTPUT" `
+            "/DDisplayVersion=$env:BASE_DISPLAY_VERSION" `
+            "/DFileVersion=$env:BASE_FILE_VERSION" `
+            "/DSourceCommit=$env:EXPECTED_SOURCE_COMMIT" `
+            "/DBuiltAt=$env:COMMIT_UTC" `
+            "$pwd\packaging\windows\AgentGuardian.iss"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $baseFiles = @(Get-ChildItem -LiteralPath $env:BASE_OUTPUT -File)
+          $candidateFiles = @(Get-ChildItem -LiteralPath $env:CANDIDATE_OUTPUT -File)
+          if (($baseFiles.Count -ne 1) -or ($baseFiles[0].FullName -cne $env:BASE_INSTALLER)) {
+            throw 'synthetic baseline installer output is invalid'
+          }
+          if (($candidateFiles.Count -ne 1) -or ($candidateFiles[0].FullName -cne $env:CANDIDATE_INSTALLER)) {
+            throw 'candidate installer output is invalid'
+          }
+          if ((Get-Item -LiteralPath $env:BASE_INSTALLER).VersionInfo.FileVersion -cne $env:BASE_FILE_VERSION) {
+            throw 'synthetic baseline installer version is invalid'
+          }
+
+      - name: Assemble and verify exact candidate evidence
+        shell: pwsh
+        run: |
+          @'
+          import os
+          from pathlib import Path
+          from scripts.build_windows_installer import assemble_installer_evidence
+          from scripts.verify_personal_release_profile import load_profile_snapshot
+
+          root = Path.cwd()
+          snapshot = load_profile_snapshot(root, root / os.environ["PRIVATE_BETA_PROFILE"])
+          assemble_installer_evidence(
+              Path(os.environ["CANDIDATE_INSTALLER"]),
+              Path(os.environ["PORTABLE_BUNDLE"]),
+              Path(os.environ["EVIDENCE_ROOT"]),
+              source_commit=os.environ["EXPECTED_SOURCE_COMMIT"],
+              built_at=os.environ["COMMIT_UTC"],
+              profile_snapshot=snapshot,
+          )
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/verify_windows_installer_candidate.py `
+            --evidence-root $env:EVIDENCE_ROOT `
+            --expected-commit $env:EXPECTED_SOURCE_COMMIT `
+            --profile "$pwd\$env:PRIVATE_BETA_PROFILE"
+
+      - name: Run native install upgrade downgrade and uninstall lifecycle
+        shell: pwsh
+        run: |
+          & "$pwd/scripts/verify_windows_installer.ps1" `
+            -BaseInstaller $env:BASE_INSTALLER `
+            -CandidateInstaller $env:CANDIDATE_INSTALLER `
+            -BaseVersion $env:BASE_DISPLAY_VERSION `
+            -CandidateVersion $env:CANDIDATE_DISPLAY_VERSION `
+            -EvidenceOutput $env:LIFECYCLE_EVIDENCE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $result = Get-Content -LiteralPath $env:LIFECYCLE_EVIDENCE -Raw | ConvertFrom-Json
+          if ($result.status -cne 'pass') { throw 'native installer lifecycle failed' }
+
+      - name: Validate exact eight-file upload allowlist
+        shell: pwsh
+        run: |
+          python scripts/verify_windows_installer_candidate.py `
+            --evidence-root $env:EVIDENCE_ROOT `
+            --expected-commit $env:EXPECTED_SOURCE_COMMIT `
+            --profile "$pwd\$env:PRIVATE_BETA_PROFILE"
+          $expected = @(
+            'AgentGuardian-Setup-0.2.0-beta.1-x64.exe',
+            'AgentGuardian.cdx.json',
+            'BUILD-METADATA.json',
+            'PAYLOAD-MANIFEST.json',
+            'PRIVATE-BETA-MANIFEST.json',
+            'PRIVATE-BETA-README.txt',
+            'SHA256SUMS',
+            'THIRD_PARTY_NOTICES.md'
+          )
+          $actual = @(Get-ChildItem -LiteralPath $env:EVIDENCE_ROOT -File | Sort-Object Name | ForEach-Object Name)
+          $directories = @(Get-ChildItem -LiteralPath $env:EVIDENCE_ROOT -Directory)
+          if (($directories.Count -ne 0) -or (($actual -join "`n") -cne (($expected | Sort-Object) -join "`n"))) {
+            throw 'candidate evidence upload allowlist mismatch'
+          }
+
+      - name: Upload bounded unsigned private-beta candidate evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: agentguardian-personal-exe-private-beta-${{ inputs.candidate_sha }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            ${{ env.EVIDENCE_ROOT }}/AgentGuardian-Setup-0.2.0-beta.1-x64.exe
+            ${{ env.EVIDENCE_ROOT }}/AgentGuardian.cdx.json
+            ${{ env.EVIDENCE_ROOT }}/BUILD-METADATA.json
+            ${{ env.EVIDENCE_ROOT }}/PAYLOAD-MANIFEST.json
+            ${{ env.EVIDENCE_ROOT }}/PRIVATE-BETA-MANIFEST.json
+            ${{ env.EVIDENCE_ROOT }}/PRIVATE-BETA-README.txt
+            ${{ env.EVIDENCE_ROOT }}/SHA256SUMS
+            ${{ env.EVIDENCE_ROOT }}/THIRD_PARTY_NOTICES.md

@@ -180,6 +180,40 @@ def test_private_beta_versions_match_package_metadata() -> None:
     assert __version__ == profile["python_package_version"]
 
 
+def test_private_beta_workflow_is_exact_sha_read_only_and_nonpublishing() -> None:
+    path = ROOT / ".github" / "workflows" / "windows-exe-private-beta.yml"
+    if not path.is_file():
+        pytest.fail("Windows EXE private-beta workflow is missing")
+    workflow = path.read_text(encoding="utf-8")
+    folded = workflow.casefold()
+
+    assert "permissions:\n  contents: read" in workflow
+    assert "ref: ${{ inputs.candidate_sha }}" in workflow
+    assert "EXPECTED_SOURCE_COMMIT: ${{ inputs.candidate_sha }}" in workflow
+    assert "WORKFLOW_SOURCE_COMMIT: ${{ github.workflow_sha }}" in workflow
+    assert "$env:WORKFLOW_SOURCE_COMMIT -cne $env:EXPECTED_SOURCE_COMMIT" in workflow
+    assert "git rev-parse HEAD" in workflow
+    assert "git status --porcelain=v1 --untracked-files=all" in workflow
+    assert "--require-hashes -r requirements-dev.lock" in workflow
+    assert "--require-hashes -r requirements-build.lock" in workflow
+    assert "python -m pytest -q -p no:cacheprovider" in workflow
+    assert "personal_exe_private_beta.json" in workflow
+    assert "--release-profile personal_exe_private_beta" in workflow
+    assert "--artifact-status unsigned_development_only" in workflow
+    assert "DriveType -ne 3" in workflow
+    assert workflow.count("permissions:") == 1
+    assert "contents: write" not in folded
+    for forbidden in (
+        "gh release create",
+        "git tag",
+        "git push",
+        "pages",
+        "deployment",
+        "store submission",
+    ):
+        assert forbidden not in folded
+
+
 @pytest.mark.parametrize(
     ("mutation", "code"),
     (

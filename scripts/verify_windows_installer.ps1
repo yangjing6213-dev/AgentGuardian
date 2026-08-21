@@ -30,6 +30,8 @@ $InstalledExecutable = Join-Path $ProgramDirectory 'AgentGuardian.exe'
 $Uninstaller = Join-Path $ProgramDirectory 'unins000.exe'
 $StateMarker = [byte[]](65, 71, 45, 83, 84, 65, 84, 69, 45, 86, 49)
 $ReportMarker = 'AgentGuardian-private-beta-acceptance-report-v1'
+$SetupTimeoutMilliseconds = 120000
+$LaunchTimeoutMilliseconds = 15000
 
 function Fail([string]$Code) {
     throw [System.InvalidOperationException]::new($Code)
@@ -131,8 +133,17 @@ function Get-NewAbsoluteOutputFile([string]$Value) {
     return $fullPath
 }
 
+function Wait-ProcessExit([System.Diagnostics.Process]$Process, [int]$TimeoutMilliseconds, [string]$Code) {
+    if (-not $Process.WaitForExit($TimeoutMilliseconds)) {
+        Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+        $Process.WaitForExit(10000) | Out-Null
+        Fail $Code
+    }
+}
+
 function Invoke-Setup([string]$Installer, [string[]]$Arguments, [string]$Code) {
-    $process = Start-Process -FilePath $Installer -ArgumentList $Arguments -Wait -PassThru
+    $process = Start-Process -FilePath $Installer -ArgumentList $Arguments -PassThru
+    Wait-ProcessExit $process $SetupTimeoutMilliseconds "${Code}_TIMEOUT"
     if ($process.ExitCode -ne 0) {
         Fail $Code
     }
@@ -213,9 +224,23 @@ function Assert-ExactText([string]$Path, [string]$Expected, [string]$Code) {
 function Invoke-LaunchSmoke() {
     $executable = Join-Path $ProgramDirectory 'AgentGuardian.exe'
     $process = Start-Process -FilePath $executable -PassThru
-    Start-Sleep -Seconds 2
-    if ($process.HasExited) {
-        Fail 'LAUNCH_SMOKE_FAILED'
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($LaunchTimeoutMilliseconds)
+    $responsiveWindow = $false
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if ($process.HasExited) {
+            break
+        }
+        $process.Refresh()
+        if (($process.MainWindowHandle -ne [IntPtr]::Zero) -and $process.Responding) {
+            $responsiveWindow = $true
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not $responsiveWindow) {
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        Wait-Process -Id $process.Id -Timeout 10 -ErrorAction SilentlyContinue
+        Fail 'LAUNCH_WINDOW_TIMEOUT'
     }
     Stop-Process -Id $process.Id -Force
     Wait-Process -Id $process.Id -Timeout 10 -ErrorAction SilentlyContinue
@@ -345,7 +370,8 @@ try {
     Assert-NoSystemIntegration
 
     Assert-InstalledFileVersion $CandidateFileVersion
-    $downgrade = Start-Process -FilePath $base -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-') -Wait -PassThru
+    $downgrade = Start-Process -FilePath $base -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-') -PassThru
+    Wait-ProcessExit $downgrade $SetupTimeoutMilliseconds 'DOWNGRADE_TIMEOUT'
     if ($downgrade.ExitCode -ne 7) {
         Fail 'DOWNGRADE_NOT_REJECTED'
     }

@@ -433,3 +433,88 @@ def test_build_installer_rejects_reparse_compiler_path(
             source_commit=COMMIT,
             built_at=BUILT_AT,
         )
+
+
+def test_exe_workflow_pins_inno_and_runs_native_lifecycle() -> None:
+    path = ROOT / ".github" / "workflows" / "windows-exe-private-beta.yml"
+    if not path.is_file():
+        pytest.fail("Windows EXE private-beta workflow is missing")
+    workflow = path.read_text(encoding="utf-8")
+
+    for required in (
+        "workflow_dispatch:",
+        "candidate_sha:",
+        "runs-on: windows-2025",
+        "timeout-minutes: 45",
+        "^[0-9a-f]{40}$",
+        "WORKFLOW_SOURCE_COMMIT: ${{ github.workflow_sha }}",
+        "persist-credentials: false",
+        "is-7_0_2",
+        "innosetup-7.0.2-x64.exe",
+        "5ad54ca3def786f8f4212552e54cc6d8d61329e2d24a1cfee0571d42c2684ff1",
+        "gh release verify-asset",
+        "2.93.0",
+        "Get-AuthenticodeSignature",
+        "CN=Pyrsys B.V., O=Pyrsys B.V., S=Noord-Holland, C=NL",
+        "requirements-dev.lock",
+        "requirements-build.lock",
+        "scripts/build_windows_portable.py",
+        "scripts/build_windows_installer.py",
+        "scripts/verify_windows_installer.ps1",
+        "scripts/verify_windows_installer_candidate.py",
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+        "retention-days: 14",
+        "agentguardian-personal-exe-private-beta-${{ inputs.candidate_sha }}",
+    ):
+        assert required in workflow
+
+    assert "gh release create" not in workflow.casefold()
+    assert "signtool" not in workflow.casefold()
+    assert "partner center" not in workflow.casefold()
+    assert "\n  push:" not in workflow
+    assert "\n  pull_request:" not in workflow
+    assert workflow.index("Require local fixed drives") < workflow.index(
+        "actions/setup-python@"
+    )
+    assert workflow.index("scripts/build_windows_installer.py") < workflow.index(
+        "& $env:ISCC /Qp"
+    )
+
+    job_environment = workflow.split("    env:", 1)[1].split("    steps:", 1)[0]
+    download_step = workflow.split("Download and verify pinned Inno Setup", 1)[1].split(
+        "Install verified Inno compiler privately", 1
+    )[0]
+    assert "GH_TOKEN" not in job_environment
+    assert "GH_TOKEN: ${{ github.token }}" in download_step
+
+
+def test_exe_workflow_uploads_only_the_candidate_eight_file_allowlist() -> None:
+    workflow = (
+        ROOT / ".github" / "workflows" / "windows-exe-private-beta.yml"
+    ).read_text(encoding="utf-8")
+    assert workflow.count("permissions:") == 1
+    assert "contents: write" not in workflow
+    assert workflow.count(
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+    ) == 1
+    assert workflow.count("actions/upload-artifact@") == 1
+    assert workflow.count("path: |") == 1
+    upload = workflow.split("path: |", 1)[1]
+    uploaded = []
+    for line in upload.splitlines()[1:]:
+        if not line.startswith("            "):
+            break
+        value = line.strip()
+        if value:
+            uploaded.append(value)
+
+    assert uploaded == [
+        "${{ env.EVIDENCE_ROOT }}/AgentGuardian-Setup-0.2.0-beta.1-x64.exe",
+        "${{ env.EVIDENCE_ROOT }}/AgentGuardian.cdx.json",
+        "${{ env.EVIDENCE_ROOT }}/BUILD-METADATA.json",
+        "${{ env.EVIDENCE_ROOT }}/PAYLOAD-MANIFEST.json",
+        "${{ env.EVIDENCE_ROOT }}/PRIVATE-BETA-MANIFEST.json",
+        "${{ env.EVIDENCE_ROOT }}/PRIVATE-BETA-README.txt",
+        "${{ env.EVIDENCE_ROOT }}/SHA256SUMS",
+        "${{ env.EVIDENCE_ROOT }}/THIRD_PARTY_NOTICES.md",
+    ]

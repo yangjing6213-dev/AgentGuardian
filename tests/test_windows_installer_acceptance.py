@@ -69,6 +69,20 @@ def test_acceptance_script_uses_exact_process_and_startup_residue_checks() -> No
     assert "STARTUP_SHORTCUT_RESIDUE" in script
 
 
+def test_acceptance_script_bounds_setup_and_requires_a_responsive_window() -> None:
+    script = _script()
+
+    assert "function Wait-ProcessExit" in script
+    assert ".WaitForExit(" in script
+    assert "$SetupTimeoutMilliseconds" in script
+    assert '"${Code}_TIMEOUT"' in script
+    assert "DOWNGRADE_TIMEOUT" in script
+    assert "MainWindowHandle" in script
+    assert ".Responding" in script
+    assert "LAUNCH_WINDOW_TIMEOUT" in script
+    assert "Start-Process -FilePath $Installer -ArgumentList $Arguments -Wait" not in script
+
+
 def test_acceptance_script_checks_system_integration_throughout_lifecycle() -> None:
     script = _script()
 
