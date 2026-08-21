@@ -1,6 +1,6 @@
 # AgentGuardian Personal v1 Architecture
 
-This document defines the active architecture for version `0.2.0-beta.1`. The only active delivery and governance route is the unsigned `personal_exe_private_beta` track for known testers. It is `PRIVATE-BETA-NOT-READY` because no real installer EXE, successful native workflow execution evidence, or two-machine acceptance evidence exists; formal public release is `NO-GO`. Historical specs, plans, and reports do not extend this contract.
+This document defines the active architecture for version `0.2.0-beta.1`. The only active delivery and governance route is the unsigned `personal_exe_private_beta` track for known testers. Frozen candidate `8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6` has current GitHub CI, native unsigned-installer lifecycle, and independent-review evidence. It remains `PRIVATE-BETA-NOT-READY` because local secret-scan evidence, external license and Qt approval, two-machine acceptance, and operations/security readiness are pending; formal public release is `NO-GO`. Historical specs, plans, and reports do not extend this contract.
 
 ## Product boundary
 
@@ -94,4 +94,4 @@ The JSON below mirrors the current `domain.py` dataclass field order.
 
 Medical, financial, identity or biometric, legally privileged, customer data, state-secret, other regulated, and other high-sensitivity real data are unsupported. This is a use boundary, not content-classification assurance.
 
-Static source checks, local tests, candidate tooling, and retirement of the historical Store route do not establish production safety. The pinned installer-tool download, external license and Qt review, exact unsigned installer build, two-machine install/run/uninstall acceptance, independent final review, and operations/security readiness remain pending. The status template cannot evidence its own commit; formal evidence must bind the frozen target candidate SHA externally. Even `PRIVATE-BETA-READY` would authorize only bounded testing by known testers, while formal public release remains `NO-GO`.
+Static source checks, local tests, candidate tooling, and retirement of the historical Store route do not establish production safety. The frozen candidate now has external evidence for scope, remote checks, its exact unsigned installer lifecycle, and independent review. Local secret-scan evidence, external license and Qt review, two-machine install/run/uninstall acceptance, and operations/security readiness remain pending. The status ledger cannot evidence its own commit; evidence must bind the frozen target candidate SHA externally. Even `PRIVATE-BETA-READY` would authorize only bounded testing by known testers, while formal public release remains `NO-GO`.

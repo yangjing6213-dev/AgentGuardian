@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import os
@@ -49,6 +50,12 @@ HISTORICAL_SECURITY_DOCS = (
 PRIVATE_BETA_STATUS_PATH = (
     SECURITY_DOCS / "personal-exe-private-beta-status.json"
 )
+PRIVATE_BETA_EVIDENCE_PATH = (
+    SECURITY_DOCS
+    / "evidence"
+    / "8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6-gates.json"
+)
+FROZEN_PRIVATE_BETA_COMMIT = "8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6"
 _MACHINE_SPECIFIC_ABSOLUTE_PATH = re.compile(
     r"(?i)(?:\b[A-Z]:[\\/]|\\\\[^\\/\s]+[\\/][^\\/\s]+)"
 )
@@ -330,24 +337,101 @@ def _passing_private_beta_status() -> dict[str, object]:
     return status
 
 
-def test_private_beta_status_is_canonical_pending_eight_gate_ledger() -> None:
+def test_private_beta_status_binds_partial_evidence_to_frozen_candidate() -> None:
     verifier = _verifier()
     status = json.loads(PRIVATE_BETA_STATUS_PATH.read_text(encoding="ascii"))
+    evidence_raw = PRIVATE_BETA_EVIDENCE_PATH.read_bytes()
+    evidence = json.loads(evidence_raw.decode("ascii"))
+    evidence_sha256 = hashlib.sha256(evidence_raw).hexdigest()
 
     assert PRIVATE_BETA_STATUS_PATH.read_bytes() == _canonical(status)
-    assert status["candidate_commit"] is None
+    assert evidence_raw == _canonical(evidence)
+    assert evidence == {
+        "candidate_commit": FROZEN_PRIVATE_BETA_COMMIT,
+        "gates_supported": [
+            "scope",
+            "remote",
+            "installer",
+            "independent_review",
+        ],
+        "github": {
+            "artifact_digest": (
+                "sha256:72cec5e1140be4dbbac48d6cd629a648605197ce9be0e2def99dae00a831d3bf"
+            ),
+            "artifact_id": 9443863074,
+            "artifact_name": (
+                "agentguardian-personal-exe-candidate-"
+                f"{FROZEN_PRIVATE_BETA_COMMIT}"
+            ),
+            "runs": [
+                {
+                    "conclusion": "success",
+                    "event": "push",
+                    "id": 32474453589,
+                    "workflow": "windows-exe-private-beta",
+                },
+                {
+                    "conclusion": "success",
+                    "event": "push",
+                    "id": 32474453768,
+                    "workflow": "CI",
+                },
+                {
+                    "conclusion": "success",
+                    "event": "pull_request",
+                    "id": 32474456582,
+                    "workflow": "CI",
+                },
+            ],
+        },
+        "independent_review": {
+            "agent_id": "01a02362-a90e-7b00-a999-90ff7f8fc956",
+            "content_match": True,
+            "critical_count": 0,
+            "decision": "APPROVED",
+            "focused_tests": {"passed": 258, "skipped": 3},
+            "important_count": 0,
+            "lower_findings": [],
+            "privacy_boundary_tests": {"passed": 16, "skipped": 1},
+        },
+        "limitations": [
+            "local secret-scan evidence is not recorded",
+            "external license and Qt approval is not recorded",
+            "two-machine acceptance is not recorded",
+            "private security intake and operations readiness are not recorded",
+        ],
+        "recorded_at": "2026-08-21T11:01:11Z",
+        "schema": 1,
+        "verification": {
+            "candidate_evidence": "pass",
+            "profile": "pass",
+            "source_policy": "pass",
+        },
+    }
+    assert status["candidate_commit"] == FROZEN_PRIVATE_BETA_COMMIT
     assert status["formal_release_decision"] == "NO-GO"
     assert status["private_beta_decision"] == "PRIVATE-BETA-NOT-READY"
     assert [gate["name"] for gate in status["gates"]] == list(
         _PRIVATE_BETA_GATE_NAMES
     )
-    assert all(
-        gate["status"] == "pending"
-        and gate["source_commit"] is None
-        and gate["evidence_sha256"] is None
-        and gate["verified_at"] is None
-        for gate in status["gates"]
-    )
+    passed = {"scope", "remote", "installer", "independent_review"}
+    for gate in status["gates"]:
+        if gate["name"] in passed:
+            assert gate == {
+                "evidence_sha256": evidence_sha256,
+                "name": gate["name"],
+                "source_commit": FROZEN_PRIVATE_BETA_COMMIT,
+                "status": "pass",
+                "verified_at": "2026-08-21T11:01:11Z",
+            }
+        else:
+            assert gate == {
+                "evidence_sha256": None,
+                "name": gate["name"],
+                "source_commit": None,
+                "status": "pending",
+                "verified_at": None,
+            }
     snapshot = verifier.load_private_beta_status_snapshot(
         ROOT, PRIVATE_BETA_STATUS_PATH
     )
@@ -499,7 +583,9 @@ def test_active_personal_docs_replace_stale_release_history() -> None:
     assert "Batch 5" not in active_overview
     assert "Batch 6" not in active_overview
     assert " passed," not in active_overview
-    assert not re.search(r"\b[0-9a-f]{40}\b", active_overview)
+    assert set(re.findall(r"\b[0-9a-f]{40}\b", active_overview)) == {
+        FROZEN_PRIVATE_BETA_COMMIT
+    }
     _assert_no_machine_specific_paths(combined)
     _assert_no_premature_release_claims(combined)
 
@@ -654,6 +740,27 @@ def test_personal_privacy_support_and_acceptance_contracts_are_explicit() -> Non
         assert f"never record {forbidden}" in machines
 
 
+def test_active_documents_report_current_candidate_without_readiness_claim() -> None:
+    for path in ACTIVE_PERSONAL_DOCS:
+        text = " ".join(path.read_text(encoding="utf-8").split())
+        assert "no real installer EXE" not in text
+        assert "successful native workflow execution evidence" not in text
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    runbook = (SECURITY_DOCS / "personal-v1-release-runbook.md").read_text(
+        encoding="utf-8"
+    )
+    for text in (readme, runbook):
+        assert FROZEN_PRIVATE_BETA_COMMIT in text
+        assert "PRIVATE-BETA-NOT-READY" in text
+        assert "formal public release remains `NO-GO`" in text
+        assert "external license and Qt" in text
+        assert "two-machine" in text
+        assert "operations/security" in text
+    assert "canonical gate template" not in readme
+    assert "canonical partial status ledger" in readme
+
+
 def test_release_status_is_canonical_eight_gate_ledger() -> None:
     status = json.loads(PRIVATE_BETA_STATUS_PATH.read_text(encoding="ascii"))
     assert PRIVATE_BETA_STATUS_PATH.read_bytes() == _canonical(status)
@@ -668,6 +775,24 @@ def test_release_status_is_canonical_eight_gate_ledger() -> None:
 def test_release_status_is_forced_to_lf_in_git_attributes() -> None:
     attributes = (ROOT / ".gitattributes").read_text(encoding="ascii").splitlines()
     assert "docs/security/personal-exe-private-beta-status.json text eol=lf" in attributes
+
+
+def test_release_evidence_is_forced_to_lf_in_git_attributes() -> None:
+    result = subprocess.run(
+        (
+            "git",
+            "check-attr",
+            "eol",
+            "--",
+            PRIVATE_BETA_EVIDENCE_PATH.relative_to(ROOT).as_posix(),
+        ),
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip().endswith(": eol: lf")
 
 
 def test_release_status_contract_accepts_evidence_bound_transitions() -> None:

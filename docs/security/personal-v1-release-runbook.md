@@ -4,7 +4,7 @@ This runbook is a release gate, not a production-safety claim.
 
 ## Current state
 
-The only active delivery and governance route is `personal_exe_private_beta`: a traditional unsigned offline EXE for known testers. Version `0.2.0-beta.1` is `PRIVATE-BETA-NOT-READY` because no real installer EXE, successful native workflow execution evidence, or two-machine acceptance evidence exists; formal public release remains `NO-GO`. Candidate infrastructure does not prove that the installer was built, its licenses were approved, or a clean machine accepted it.
+The only active delivery and governance route is `personal_exe_private_beta`: a traditional unsigned offline EXE for known testers. Frozen candidate `8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6` has current GitHub CI, native unsigned-installer lifecycle, and independent-review evidence. Version `0.2.0-beta.1` remains `PRIVATE-BETA-NOT-READY` because local secret-scan evidence, external license and Qt approval, two-machine acceptance, and operations/security readiness are pending; formal public release remains `NO-GO`. Current evidence does not prove license approval, independent-machine acceptance, or operations readiness.
 
 An unsigned installer may trigger Unknown Publisher or SmartScreen warnings. Any private handoff must include an independently retained SHA-256 bound to the exact candidate source commit.
 
