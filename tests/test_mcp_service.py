@@ -603,6 +603,51 @@ def test_failure_codes_are_fixed_and_native_errors_are_sanitized(
     assert marker not in captured.err
 
 
+@pytest.mark.parametrize(
+    "operation",
+    ("files", "browser", "clipboard", "public_share"),
+)
+def test_non_qt_callback_cannot_claim_clipboard_unavailable(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    calls: list[str] = []
+
+    def fail(*_args: object, **_kwargs: object):
+        calls.append(operation)
+        raise ValueError("CLIPBOARD_UNAVAILABLE")
+
+    if operation == "files":
+        service = _service(file_runner=fail)
+        prepared = _prepare_files(service, tmp_path / "scope")
+    elif operation == "browser":
+        service = _service(browser_runner=fail)
+        prepared = service.prepare_audit(
+            operation="browser",
+            classification=CLASSIFICATION,
+            browser_kind="chrome",
+            database_path=str(tmp_path / "History"),
+        )
+    elif operation == "clipboard":
+        service = _service(clipboard_reader=fail)
+        prepared = service.prepare_audit(
+            operation="clipboard",
+            classification=CLASSIFICATION,
+        )
+    else:
+        service = _service(share_runner=fail)
+        prepared = service.prepare_audit(
+            operation="public_share",
+            classification=CLASSIFICATION,
+            url="https://example.com/share",
+        )
+
+    result = _run(service, prepared)
+
+    assert result == {"status": "failed", "code": "OPERATION_FAILED"}
+    assert calls == [operation]
+
+
 def test_authorization_is_consumed_before_operation_callback(tmp_path: Path) -> None:
     observed: list[bool] = []
     service: AuditMcpService

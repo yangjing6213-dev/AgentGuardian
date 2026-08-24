@@ -294,12 +294,9 @@ class AuditMcpService:
             result = self._browser_runner(request.database_path, request.browser)
             return _browser_response(request, result)
         if request.operation == "clipboard":
-            reader = self._clipboard_reader
-            if reader is _qt_clipboard_text:
-                clipboard_text = reader()
-                reader = lambda: clipboard_text
+            clipboard_text = self._clipboard_reader()
             result, outcome = run_clipboard_audit(
-                reader,
+                lambda: clipboard_text,
                 disposition_key=_disposition_key(),
             )
             return _clipboard_response(request, result, outcome)
@@ -782,8 +779,10 @@ def _allowed_prepare_code(error: Exception) -> str:
 def _allowed_run_code(error: Exception) -> str:
     if type(error) is _ClipboardUnavailable:
         return "CLIPBOARD_UNAVAILABLE"
-    if type(error) is ValueError and str(error) in _RUN_CODES:
-        return str(error)
+    if type(error) is ValueError:
+        code = str(error)
+        if code in _RUN_CODES and code != "CLIPBOARD_UNAVAILABLE":
+            return code
     return "OPERATION_FAILED"
 
 
