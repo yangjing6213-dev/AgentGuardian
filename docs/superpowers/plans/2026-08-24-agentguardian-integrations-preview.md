@@ -87,6 +87,7 @@ Authoritative references used by this plan:
 - Create: `tests/test_audit_service.py`
 - Modify: `src/agentguardian/app.py:188-205,474-538,696-883,907-916,1469-1587`
 - Modify: `tests/test_app_smoke.py:101-108,4038-4065`
+- Modify: `tests/test_self_audit.py:22-43,199-216`
 - Modify: `src/agentguardian/source_policy.json`
 
 - [ ] **Step 1: Write the failing headless-import and clipboard-parity tests**
@@ -151,7 +152,7 @@ Expected: collection fails with `ModuleNotFoundError: No module named 'agentguar
 
 - [ ] **Step 3: Move the existing file audit without changing its behavior**
 
-Move these exact existing definitions and their required non-Qt imports from `app.py` to `audit_service.py`: `_DispositionContext`, `AuditOutcome`, `_utc_now`, `_generate_key`, `_validated_disposition_context`, `_validated_evaluation_time`, `_is_unc_path`, `_read_limited_json`, `_append_finding_batch`, and `_run_audit`. Rename only `_run_audit` to `run_file_audit`; keep its body and signature otherwise unchanged.
+Move these exact existing definitions and their required non-Qt imports from `app.py` to `audit_service.py`: `_DispositionContext`, `AuditOutcome`, `_utc_now`, `_generate_key`, `_validated_disposition_context`, `_validated_evaluation_time`, `_validated_audit_preview`, `_is_unc_path`, `_read_limited_json`, `_append_finding_batch`, and `_run_audit`. Rename only `_run_audit` to `run_file_audit`; keep its body and signature otherwise unchanged.
 
 Add this complete shared clipboard function after `run_file_audit`:
 
@@ -227,6 +228,7 @@ from .audit_service import (
     _read_limited_json,
     _validated_disposition_context,
     _validated_evaluation_time,
+    _validated_audit_preview,
     run_clipboard_audit,
     run_file_audit as _run_audit,
 )
@@ -254,6 +256,8 @@ Before `verify_public_share` is called in `_verify_share`, add a default-No `QMe
 
 Update the one `_read_limited_json` monkeypatch in `tests/test_app_smoke.py` to patch `agentguardian.audit_service._read_limited_json`, because `run_file_audit` now resolves that module global.
 
+Update `EXPECTED_REVIEWED_SOURCE_MODULES` in `tests/test_self_audit.py` to include `audit_service.py` in sorted order and change both exact module-count assertions from `20` to `21`. This is the required source-policy contract update for the newly reviewed runtime module.
+
 - [ ] **Step 4: Bind the reviewed source set and verify GREEN**
 
 Compute SHA-256 for every `src/agentguardian/*.py`, update `source_policy.json` with the sorted exact module set, then run:
@@ -270,7 +274,7 @@ Expected: all selected tests pass, compileall returns zero, and `git diff --chec
 - [ ] **Step 5: Commit Task 1 locally**
 
 ```powershell
-rtk git add src/agentguardian/audit_service.py src/agentguardian/app.py src/agentguardian/source_policy.json tests/test_audit_service.py tests/test_app_smoke.py
+rtk git add src/agentguardian/audit_service.py src/agentguardian/app.py src/agentguardian/source_policy.json tests/test_audit_service.py tests/test_app_smoke.py tests/test_self_audit.py
 rtk git commit -m "Extract shared headless audit service"
 ```
 
