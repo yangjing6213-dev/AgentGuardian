@@ -4,15 +4,19 @@
 
 **Goal:** Build one local AgentGuardian audit core with a Windows GUI, a separately distributable Codex Skill, and an on-demand STDIO MCP entry point while preserving the personal, non-regulated preview boundary.
 
-**Architecture:** Extract the existing file and clipboard orchestration into a Qt-free audit service, place one bounded authorization and redaction service in front of the four existing local audit operations, and expose exactly two tools through the official MCP Python SDK. Package the same canonical Skill bytes independently and through a new current-user Inno Setup identity; manage Codex configuration and Skill ownership transactionally with DPAPI-protected rollback data. The frozen 0.2 profile, installer, reports, and evidence remain historical and unchanged.
+**Architecture:** Extract the existing file and clipboard orchestration into a Qt-free audit service, place one bounded authorization and redaction service in front of the four existing local audit operations, and expose exactly two tools through the official MCP Python SDK. Package the same canonical Skill bytes independently and through a distinct current-user Inno Setup identity. One reviewed PyInstaller onedir payload contains a windowed `AgentGuardian.exe` for GUI and maintenance plus a console `AgentGuardianMcp.exe` for STDIO; both launch the same audited source. Manage Codex configuration and Skill ownership transactionally with DPAPI-protected rollback data. The frozen 0.2 profile, installer, files, reports, and evidence remain historical and unchanged.
 
 **Tech Stack:** Python 3.12, PySide6, MCP Python SDK 2.0.0, stdlib `tomllib`, Windows DPAPI, Inno Setup 7.0.2, PyInstaller 6.16, CycloneDX, pytest, PowerShell, GitHub Actions.
 
 ---
 
-## Approved-Spec Compatibility Correction
+## Approved-Spec Implementation Compatibility Corrections
 
-The approved design names `%USERPROFILE%\.codex\skills\agentguardian`. The current official OpenAI Skill documentation retrieved on 2026-08-24 names `$HOME/.agents/skills` as the user-level location. This plan therefore uses `%USERPROFILE%\.agents\skills\agentguardian` and updates the design specification in Task 4. It does not install to both locations and does not add a compatibility copy. The standalone Skill ZIP remains unchanged as a separate product.
+A read-only execution preflight on 2026-08-24 identified three compatibility corrections before Tasks 2-8. They make the approved product shape executable with the official Skill location, Windows STDIO semantics, and frozen 0.2 coexistence. They are implementation compatibility corrections, not new features: the four operations, exactly two MCP tools, personal non-regulated boundary, `NO-GO` status, standalone Skill product, and frozen 0.2 artifacts remain unchanged.
+
+1. The official user Skill target is `%USERPROFILE%\.agents\skills\agentguardian`, as documented by the current official OpenAI Skill documentation at `$HOME/.agents/skills`. There is no second compatibility copy.
+2. Windows ships two launchers from one audited core and one reviewed PyInstaller onedir payload. `AgentGuardian.exe` is windowed (`console=False`) and remains the GUI/maintenance launcher. `AgentGuardianMcp.exe` is console-enabled (`console=True`) and supports only the planned STDIO argument path. Installed MCP configuration points to `AgentGuardianMcp.exe` with `args = ["--stdio-mcp"]`; the GUI launcher is not the installed STDIO command. Task 6 proves the helper over real redirected stdin/stdout pipes.
+3. The 0.3 current-user install directory is exactly `{localappdata}\Programs\AgentGuardian Integrations Preview`. Its new AppId and uninstaller therefore cannot overwrite or remove frozen 0.2 program files under the historical AgentGuardian directory.
 
 Authoritative references used by this plan:
 
@@ -43,7 +47,7 @@ Authoritative references used by this plan:
 - Create `src/agentguardian/codex_integration.py`: bounded install, upgrade, rollback, and uninstall transactions.
 - Modify `src/agentguardian/app.py`: import the shared service and retain the existing GUI behavior.
 - Modify `src/agentguardian/share_verification.py`: expose syntax-only URL validation for prepare without DNS or network I/O.
-- Modify `src/agentguardian/__main__.py`: dispatch STDIO and bounded installer-maintenance modes before importing Qt.
+- Modify `src/agentguardian/__main__.py`: provide the Qt-free source dispatch reused by the console helper and preserve exact GUI/maintenance and integration-mode dispatch.
 - Modify `src/agentguardian/__init__.py`: set `0.3.0a1`.
 - Modify `src/agentguardian/source_policy.json`: bind every reviewed runtime source byte.
 
@@ -51,7 +55,8 @@ Authoritative references used by this plan:
 
 - Create `skills/agentguardian/SKILL.md`, `skills/agentguardian/README.md`, and `skills/agentguardian/LICENSE`: the only canonical Skill source files.
 - Create `scripts/build_agentguardian_skill.py`: deterministic allowlisted ZIP and SHA-256 output.
-- Create `packaging/windows/AgentGuardianIntegrationsPreview.iss`: distinct 0.3 installer identity and two unchecked integration tasks.
+- Create `packaging/windows/AgentGuardianIntegrationsPreview.spec`: one reviewed Analysis/PYZ/COLLECT onedir build with the exact windowed and console launchers.
+- Create `packaging/windows/AgentGuardianIntegrationsPreview.iss`: distinct 0.3 installer identity, distinct install directory, and two unchecked integration tasks.
 - Create `scripts/build_windows_integrations_preview_installer.py`: bounded new-identity installer builder.
 - Create `scripts/verify_windows_integrations_preview.ps1`: native install, use, upgrade, uninstall, and residue evidence.
 - Modify `scripts/build_windows_portable.py`: support the 0.3 profile, include Skill bytes, and inventory MCP runtime dependencies.
@@ -60,12 +65,13 @@ Authoritative references used by this plan:
 
 ### Governance and evidence
 
-- Create `release_profiles/integrations_preview.json`: independent 0.3 identity, capability, ownership, and forbidden-feature contract.
+- Create `release_profiles/integrations_preview.json`: independent 0.3 identity, exact dual-launcher payload, install directory, capability, ownership, and forbidden-feature contract.
 - Create `scripts/verify_integrations_preview_profile.py`: bounded verifier for the new profile only.
 - Create `.github/workflows/windows-integrations-preview.yml`: exact-SHA Windows build and lifecycle workflow.
 - Create `docs/security/integrations-preview.md` and `docs/security/integrations-preview-status.json`: active 0.3 boundary and gate ledger.
 - Modify `README.md`: make 0.3 the active development track while preserving the frozen 0.2 evidence statement.
-- Modify `docs/superpowers/specs/2026-08-24-agentguardian-integrations-preview-design.md`: apply only the official Skill-path correction above.
+- Modify `.gitattributes`: pin the new profile and status ledger to LF without changing frozen 0.2 entries.
+- The approved design is corrected by this pre-execution documentation task; Tasks 2-8 must implement the three corrections above without reopening product scope.
 
 ### Tests
 
@@ -76,7 +82,9 @@ Authoritative references used by this plan:
 - Create `tests/test_codex_integration.py`.
 - Create `tests/test_windows_integrations_preview_installer.py`.
 - Create `tests/test_integrations_preview_profile.py`.
-- Modify only existing tests whose import or current-version expectation moves with the implementation.
+- Modify `tests/test_self_audit.py` in Tasks 2, 3, and 5 so the exact reviewed module counts become 22, 23, and 24.
+- Modify `tests/test_evidence_state.py` only for the current 0.3 runtime product-version assertion.
+- Modify `tests/test_personal_release_profile.py` only to preserve frozen 0.2 assertions while separating active 0.3 documentation and rejecting a 0.2 artifact build from 0.3 source.
 
 ## Phase 1: Shared Core And STDIO MCP
 
@@ -140,6 +148,8 @@ def test_clipboard_service_builds_the_same_redacted_audit_outcome() -> None:
     assert outcome.report_html.find("sk-proj-abcdefghijklmnop") == -1
 ```
 
+Add focused boundary tests proving that a non-`None` invalid `evaluated_at` is rejected with the fixed audit-context error before the reader is called, and that dispositions are consumed only through `_validated_disposition_context`'s `MAX_AUDIT_FINDINGS + 1` bounded read. Cover both an over-limit iterable and an iterable that raises an exception containing a private marker; neither the returned exception nor captured output may contain that marker.
+
 - [ ] **Step 2: Verify RED**
 
 Run:
@@ -164,10 +174,14 @@ def run_clipboard_audit(
     dispositions: Iterable[DispositionRecord] = (),
     evaluated_at: datetime | None = None,
 ) -> tuple[ClipboardAuditResult, AuditOutcome | None]:
-    frozen_dispositions = tuple(dispositions)
+    evaluation_time = (
+        _validated_evaluation_time(evaluated_at)
+        if evaluated_at is not None
+        else None
+    )
     context = _validated_disposition_context(
         disposition_key,
-        frozen_dispositions,
+        dispositions,
         max_records=MAX_AUDIT_FINDINGS,
     )
     result = audit_clipboard_once(
@@ -177,7 +191,8 @@ def run_clipboard_audit(
     )
     if not result.scanned:
         return result, None
-    evaluation_time = _validated_evaluation_time(evaluated_at or _utc_now())
+    if evaluation_time is None:
+        evaluation_time = _validated_evaluation_time(_utc_now())
     audit_score = score(
         result.findings,
         coverage=1.0,
@@ -250,7 +265,15 @@ if not result.scanned or outcome is None:
     )
     return
 self._scan_completed(outcome)
+self.status_label.setText(
+    f"剪贴板一次性审计完成：发现 {len(result.findings)} 项。"
+)
+self.coverage_status_label.setText(
+    "剪贴板仅在本次点击中读取一次；报告不包含剪贴板原文。"
+)
 ```
+
+Add GUI regression assertions for both the no-scan text above and the exact successful clipboard status/privacy text. The shared `_scan_completed` call must still retain the report before the clipboard-specific labels are restored.
 
 Before `verify_public_share` is called in `_verify_share`, add a default-No `QMessageBox.question` that states this is public network I/O, sends no local scan data or credentials, may place redacted metadata in the Codex context when invoked through MCP, and is unsupported for regulated or highly sensitive real data. Cancellation must return before DNS or network access. Add a GUI test that chooses No and asserts the share verifier was never called, plus a Yes test that asserts exactly one call. Keep the existing browser and clipboard default-No consent dialogs and the file-scope consent controls.
 
@@ -283,13 +306,16 @@ rtk git commit -m "Extract shared headless audit service"
 **Files:**
 - Create: `src/agentguardian/mcp_service.py`
 - Create: `tests/test_mcp_service.py`
-- Modify: `src/agentguardian/share_verification.py:52-67,267-294`
+- Modify: `src/agentguardian/share_verification.py:52-72,160-170,267-294`
 - Modify: `tests/test_share_verification.py`
+- Modify: `tests/test_self_audit.py:22-44,200-218`
 - Modify: `src/agentguardian/source_policy.json`
 
 - [ ] **Step 1: Expose syntax-only public-share validation with a regression test**
 
-Rename `_validated_url` to `validate_public_share_url`, update `verify_public_share` to call the public name, and add:
+Rename the public validator to the exact signature `validate_public_share_url(url: str, allow_private_hosts: bool = False) -> tuple[str, str]`, rename both existing `_validated_url` callers in `verify_public_share` and `_PolicyRedirectHandler.redirect_request`, preserve the existing validated implementation body, and remove the private name.
+
+The default is syntax-only public-host validation for MCP prepare. The existing explicit `allow_private_hosts` test seam remains available to the two reviewed callers. Add:
 
 ```python
 def test_validate_public_share_url_performs_no_dns_or_network(monkeypatch) -> None:
@@ -406,6 +432,8 @@ def test_results_are_bounded_and_exclude_raw_values(tmp_path: Path) -> None:
 ```
 
 Add separate tests for all four operations, exact classification, maximum 32 file roots, prepare response `<= 16 KiB`, run response `<= 64 KiB`, at most 100 findings and 200 evidence records, failure-code sanitization, consumption before the operation callback, browser cleanup failure, and no public-share fallback. For each operation, compare the MCP structured fields with the same synthetic input passed directly to `run_file_audit`, `audit_browser_database`, `run_clipboard_audit`, or `verify_public_share`; require equal rule/severity sets, scores, limits, aggregate counts, and reachability metadata after excluding presentation-only fields.
+
+Add two clipboard-boundary tests. Importing `mcp_service.py` and calling clipboard `prepare_audit` must leave every `PySide6` module absent from `sys.modules`. An accepted clipboard run whose lazy Qt adapter cannot import or initialize clipboard access must return fixed code `CLIPBOARD_UNAVAILABLE`; its serialized result and captured output must contain no native exception, Qt error, path, environment value, or clipboard value.
 
 - [ ] **Step 3: Verify RED**
 
@@ -544,6 +572,8 @@ class AuditMcpService:
 
 Implement `_normalize_request` as one exact-field branch per operation. It must call `build_scope_preview` for file roots, use `PureWindowsPath` shape checks for the browser path without touching the file, call `validate_public_share_url` for URL syntax only, reject extra operation fields, and reject every classification except `personal_non_regulated`.
 
+Define `_qt_clipboard_text` in `mcp_service.py` as the default clipboard adapter. It must import `QApplication` inside the function, lazily obtain or initialize the Qt application and clipboard only when an already accepted clipboard request reaches `_execute`, read text once, and translate import, initialization, or clipboard-access failure to one internal exception. `_allowed_run_code` maps only that exception to `CLIPBOARD_UNAVAILABLE`. Module import and every prepare path remain Qt-free.
+
 Implement `_execute` with exactly these existing functions: `run_file_audit`, `audit_browser_database`, `run_clipboard_audit`, and `verify_public_share`. Generate the file/clipboard disposition key with `secrets.token_bytes(32)`. Do not catch and retry a public-share operation.
 
 Implement result conversion with these allowed finding fields only:
@@ -568,7 +598,7 @@ Never serialize `Evidence.source`, `AuditOutcome.report_json`, `AuditOutcome.rep
 
 - [ ] **Step 5: Verify authorization, privacy, and source policy**
 
-Update `source_policy.json`, then run:
+Add `mcp_service.py` to `EXPECTED_REVIEWED_SOURCE_MODULES` in sorted order and change both exact count assertions in `tests/test_self_audit.py` from `21` to `22`. Update `source_policy.json`, then run:
 
 ```powershell
 rtk proxy python -m pytest -q tests/test_mcp_service.py tests/test_share_verification.py tests/test_audit_service.py tests/test_self_audit.py -p no:cacheprovider
@@ -581,7 +611,7 @@ Expected: PASS, no raw test secret in captured output, and no diff whitespace er
 - [ ] **Step 6: Commit Task 2 locally**
 
 ```powershell
-rtk git add src/agentguardian/mcp_service.py src/agentguardian/share_verification.py src/agentguardian/source_policy.json tests/test_mcp_service.py tests/test_share_verification.py
+rtk git add src/agentguardian/mcp_service.py src/agentguardian/share_verification.py src/agentguardian/source_policy.json tests/test_mcp_service.py tests/test_share_verification.py tests/test_self_audit.py
 rtk git commit -m "Add bounded MCP audit authorization"
 ```
 
@@ -600,7 +630,9 @@ rtk git commit -m "Add bounded MCP audit authorization"
 - Modify: `THIRD_PARTY_NOTICES.md`
 - Modify: `tests/test_windows_packaging.py`
 - Modify: `tests/test_reporting.py`
+- Modify: `tests/test_evidence_state.py`
 - Modify: `tests/test_personal_release_profile.py`
+- Modify: `tests/test_self_audit.py:22-45,200-218`
 - Modify: `src/agentguardian/source_policy.json`
 
 - [ ] **Step 1: Write the failing SDK and dispatch tests**
@@ -648,7 +680,7 @@ async def test_prepare_returns_structured_content_without_qt() -> None:
     assert not any(name.startswith("PySide6") for name in sys.modules)
 ```
 
-Add a dispatch test that injects a fake `agentguardian.mcp_server.run_stdio`, calls `agentguardian.__main__.main(["--stdio-mcp"])`, and asserts that `agentguardian.app` and `PySide6` are absent from `sys.modules`. Add a mixed-argument test that returns fixed exit code `64` without starting either entry point.
+Add a source-dispatch test that injects a fake `agentguardian.mcp_server.run_stdio`, calls `agentguardian.__main__.main(["--stdio-mcp"])`, and asserts that `agentguardian.app` and `PySide6` are absent from `sys.modules`. Add a mixed-argument test that returns fixed exit code `64` without starting either entry point. This source dispatch is reused by the Task 6 console helper; it is not evidence that the windowed launcher is the installed STDIO command.
 
 - [ ] **Step 2: Verify dependency RED**
 
@@ -698,7 +730,8 @@ Create an ignored exact-lock environment for all remaining plan commands:
 
 ```powershell
 py -3.12 -m venv .analysis\venv-0.3
-.analysis\venv-0.3\Scripts\python.exe -m pip install --require-hashes -r requirements-dev.lock
+.analysis\venv-0.3\Scripts\python.exe -m pip install --require-hashes -r requirements-dev.lock -r requirements-build.lock
+.analysis\venv-0.3\Scripts\python.exe -m pip check
 ```
 
 - [ ] **Step 4: Implement the two-tool official-SDK server**
@@ -790,7 +823,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-The only production startup call is `server.run()` with no transport argument; the official SDK defines that as STDIO. Do not import or call its HTTP/SSE application builders.
+The only production startup call is `server.run()` with no transport argument; the official SDK defines that as STDIO. Do not import or call its HTTP/SSE application builders. Task 6 packages this source dispatch behind console-enabled `AgentGuardianMcp.exe`; windowed `AgentGuardian.exe` remains the GUI/maintenance launcher and is not configured as STDIO.
 
 - [ ] **Step 5: Inventory SDK dependencies in notices and SBOM**
 
@@ -805,14 +838,16 @@ presence of dependency code is not evidence that AgentGuardian exposes a
 listener. License and redistribution review remains a release gate.
 ```
 
-Update current-version assertions in `tests/test_reporting.py` to `0.3.0a1`. Change `tests/test_personal_release_profile.py` so it verifies the frozen 0.2 profile's internal identity without asserting that the current branch package still has the historical 0.2 version.
+Update current-version assertions in `tests/test_reporting.py` and the current runtime `product_version` assertion in `tests/test_evidence_state.py` to `0.3.0a1`. Keep every frozen profile field, historical 0.2 version, path, artifact, and document assertion in `tests/test_personal_release_profile.py` exact; remove only any assumption that the current branch package itself must still be 0.2. The historical verifier and profile must remain independently verifiable. Task 6 adds a separate build-time identity guard that makes selection of the personal 0.2 artifact profile fail closed against a 0.3 package/source tree.
+
+Add `mcp_server.py` to `EXPECTED_REVIEWED_SOURCE_MODULES` in sorted order and change both exact count assertions in `tests/test_self_audit.py` from `22` to `23`.
 
 - [ ] **Step 6: Install the exact lock and verify GREEN**
 
 Update `source_policy.json`, then run:
 
 ```powershell
-.analysis\venv-0.3\Scripts\python.exe -m pytest -q tests/test_mcp_server.py tests/test_mcp_service.py tests/test_windows_packaging.py tests/test_reporting.py tests/test_personal_release_profile.py tests/test_self_audit.py -p no:cacheprovider
+.analysis\venv-0.3\Scripts\python.exe -m pytest -q tests/test_mcp_server.py tests/test_mcp_service.py tests/test_windows_packaging.py tests/test_reporting.py tests/test_evidence_state.py tests/test_personal_release_profile.py tests/test_self_audit.py -p no:cacheprovider
 .analysis\venv-0.3\Scripts\python.exe -m compileall -q src scripts tests
 rtk git diff --check
 ```
@@ -822,7 +857,7 @@ Expected: PASS; the tool list is exactly two; no Qt import occurs in prepare or 
 - [ ] **Step 7: Commit Task 3 locally**
 
 ```powershell
-rtk git add pyproject.toml requirements-build.in requirements-dev.lock requirements-build.lock THIRD_PARTY_NOTICES.md src/agentguardian/__init__.py src/agentguardian/__main__.py src/agentguardian/mcp_server.py src/agentguardian/source_policy.json scripts/build_windows_portable.py tests/test_mcp_server.py tests/test_windows_packaging.py tests/test_reporting.py tests/test_personal_release_profile.py
+rtk git add pyproject.toml requirements-build.in requirements-dev.lock requirements-build.lock THIRD_PARTY_NOTICES.md src/agentguardian/__init__.py src/agentguardian/__main__.py src/agentguardian/mcp_server.py src/agentguardian/source_policy.json scripts/build_windows_portable.py tests/test_mcp_server.py tests/test_windows_packaging.py tests/test_reporting.py tests/test_evidence_state.py tests/test_personal_release_profile.py tests/test_self_audit.py
 rtk git commit -m "Add official STDIO MCP entry point"
 ```
 
@@ -836,13 +871,10 @@ rtk git commit -m "Add official STDIO MCP entry point"
 - Create: `skills/agentguardian/LICENSE`
 - Create: `scripts/build_agentguardian_skill.py`
 - Create: `tests/test_agentguardian_skill.py`
-- Modify: `docs/superpowers/specs/2026-08-24-agentguardian-integrations-preview-design.md:405-425`
 
-- [ ] **Step 1: Apply the one official-path correction to the approved design**
+The pre-execution compatibility correction already fixes the canonical target at `%USERPROFILE%\.agents\skills\agentguardian`. Task 4 consumes that target and must not add a second copy or edit the approved design.
 
-Replace only `%USERPROFILE%\.codex\skills\agentguardian` with `%USERPROFILE%\.agents\skills\agentguardian`. Add a one-sentence design note that official OpenAI documentation retrieved on 2026-08-24 defines `$HOME/.agents/skills` as the user-level location. Do not change the MCP config path `%USERPROFILE%\.codex\config.toml`.
-
-- [ ] **Step 2: Write failing package tests**
+- [ ] **Step 1: Write failing package tests**
 
 Create tests that require:
 
@@ -865,7 +897,7 @@ def test_skill_zip_is_allowlisted_and_deterministic(tmp_path: Path) -> None:
 
 Add negative tests for an extra file, dotfile, link/reparse entry, executable extension, frontmatter mismatch, embedded secret pattern, non-ASCII ZIP path, oversized file, and root `LICENSE` byte mismatch.
 
-- [ ] **Step 3: Verify RED**
+- [ ] **Step 2: Verify RED**
 
 Run:
 
@@ -875,7 +907,7 @@ Run:
 
 Expected: collection fails because the build module and Skill source do not exist.
 
-- [ ] **Step 4: Create the instruction-only Skill**
+- [ ] **Step 3: Create the instruction-only Skill**
 
 Create `SKILL.md` with this exact frontmatter and workflow:
 
@@ -903,7 +935,7 @@ metadata:
 
 Create `README.md` containing the independent Skill version, Apache-2.0 status, AgentGuardian runtime range, `%USERPROFILE%\.agents\skills\agentguardian` manual target, two required MCP tool names, Codex model-context disclosure, personal non-regulated boundary, unsupported-data list, and no-production-safety statement. Copy the root `LICENSE` bytes exactly to `skills/agentguardian/LICENSE`.
 
-- [ ] **Step 5: Implement deterministic packaging**
+- [ ] **Step 4: Implement deterministic packaging**
 
 `build_agentguardian_skill.py` must export:
 
@@ -934,7 +966,7 @@ def build_skill(source_root: Path, output_root: Path) -> tuple[Path, str]:
 
 The validators must use `os.lstat`, reject links/reparse points and unexpected files, enforce 256 KiB per file and 512 KiB aggregate, parse the exact frontmatter fields, require root/Skill `LICENSE` equality, and scan bytes for the existing secret-pattern families plus executable headers (`MZ`, ELF, Mach-O), downloader commands, and NUL bytes.
 
-- [ ] **Step 6: Verify and commit Task 4**
+- [ ] **Step 5: Verify and commit Task 4**
 
 ```powershell
 .analysis\venv-0.3\Scripts\python.exe -m pytest -q tests/test_agentguardian_skill.py -p no:cacheprovider
@@ -942,7 +974,7 @@ The validators must use `os.lstat`, reject links/reparse points and unexpected f
 .analysis\venv-0.3\Scripts\python.exe scripts/build_agentguardian_skill.py --output-root .analysis\skill-build-two
 rtk proxy powershell -NoProfile -Command "if ((Get-FileHash -Algorithm SHA256 -LiteralPath '.analysis\skill-build-one\AgentGuardian-Skill-0.1.0.zip').Hash -cne (Get-FileHash -Algorithm SHA256 -LiteralPath '.analysis\skill-build-two\AgentGuardian-Skill-0.1.0.zip').Hash) { throw 'Skill ZIP mismatch' }"
 rtk git diff --check
-rtk git add skills/agentguardian/SKILL.md skills/agentguardian/README.md skills/agentguardian/LICENSE scripts/build_agentguardian_skill.py tests/test_agentguardian_skill.py docs/superpowers/specs/2026-08-24-agentguardian-integrations-preview-design.md
+rtk git add skills/agentguardian/SKILL.md skills/agentguardian/README.md skills/agentguardian/LICENSE scripts/build_agentguardian_skill.py tests/test_agentguardian_skill.py
 rtk git commit -m "Add standalone AgentGuardian Codex Skill"
 ```
 
@@ -955,6 +987,8 @@ Expected: all tests pass and both ZIP hashes match.
 - Create: `tests/test_codex_integration.py`
 - Modify: `src/agentguardian/__main__.py`
 - Modify: `src/agentguardian/source_policy.json`
+- Modify: `tests/test_self_audit.py:22-46,200-218`
+- Test unchanged: `tests/test_app_smoke.py:6101-6189`
 
 - [ ] **Step 1: Write failing config, rollback, upgrade, and uninstall tests**
 
@@ -971,12 +1005,14 @@ MANIFEST_LIMIT = 64 * 1024
 
 Test all four task selections: neither, Skill only, MCP only, both. Add exact tests for pre-existing foreign `mcp_servers.agentguardian`, duplicate markers, malformed/oversized TOML, UNC/reparse paths, DPAPI failure, temporary-write failure, post-replace manifest failure with exact rollback, missing-original rollback, unmanaged Skill conflict, managed upgrade, modified Skill preservation, unknown-file preservation, marker-conflict uninstall, exact-block removal with later user edits preserved, idempotent no-integration uninstall, and encrypted-backup retention on cleanup failure.
 
+Use an installed preview directory fixture containing sibling launchers `AgentGuardian.exe` and `AgentGuardianMcp.exe`. Pass the latter as `installed_mcp_executable`; reject a missing helper, a wrong launcher name, a non-sibling path, or a reparse/UNC path. Add a focused upgrade test that records prior config, Skill, encrypted-backup, and manifest bytes, forces `_discard_superseded_backup` to fail after the new manifest commits, and requires exact restoration of all four prior states plus fixed code `INTEGRATION_BACKUP_DISCARD_FAILED` with no native error text.
+
 The key config assertion is:
 
 ```python
 parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
 server = parsed["mcp_servers"]["agentguardian"]
-assert server["command"] == str(installed_executable)
+assert server["command"] == str(installed_mcp_executable)
 assert server["args"] == ["--stdio-mcp"]
 assert server["enabled"] is True
 assert server["enabled_tools"] == ["prepare_audit", "run_prepared_audit"]
@@ -1002,8 +1038,8 @@ BEGIN_MARKER = "# >>> AgentGuardian managed Codex integration v1 >>>"
 END_MARKER = "# <<< AgentGuardian managed Codex integration v1 <<<"
 
 
-def _managed_block(executable: Path) -> bytes:
-    command = json.dumps(os.fspath(executable), ensure_ascii=True)
+def _managed_block(mcp_executable: Path) -> bytes:
+    command = json.dumps(os.fspath(mcp_executable), ensure_ascii=True)
     return (
         f"{BEGIN_MARKER}\n"
         "[mcp_servers.agentguardian]\n"
@@ -1030,7 +1066,7 @@ def _backup_envelope(original: bytes, existed: bool) -> bytes:
     return b"AG-CODEX-BACKUP-V1\n" + _canonical_json_bytes(value)
 ```
 
-Validate original and candidate TOML with stdlib `tomllib`. Back up before replacement with `windows_dpapi.protect_bytes`, write backup and manifest through same-directory `xb` temporary files with `flush`, `os.fsync`, path/reparse revalidation, and `os.replace`. The manifest stores schema, integration version, booleans, config-before hash, managed-block hash, and Skill relative-path/hash pairs only. It stores no config or Skill content.
+Validate original and candidate TOML with stdlib `tomllib`. The executable parameter is the validated installed `AgentGuardianMcp.exe` sibling, never the windowed GUI launcher. When `mcp_executable` is `None`, resolve only `Path(sys.executable).with_name("AgentGuardianMcp.exe")`; development tests pass an explicit temporary sibling. Back up before replacement with `windows_dpapi.protect_bytes`, write backup and manifest through same-directory `xb` temporary files with `flush`, `os.fsync`, path/reparse revalidation, and `os.replace`. The manifest stores schema, integration version, booleans, config-before hash, managed-block hash, and Skill relative-path/hash pairs only. It stores no config or Skill content.
 
 - [ ] **Step 4: Implement bounded install, upgrade, and uninstall entry functions**
 
@@ -1041,7 +1077,7 @@ def install_integration(
     *,
     install_skill: bool,
     enable_mcp: bool,
-    executable: Path | None = None,
+    mcp_executable: Path | None = None,
     environ: Mapping[str, str] = os.environ,
     protect: Callable[[bytes], bytes] = protect_bytes,
 ) -> str:
@@ -1054,7 +1090,7 @@ def install_integration(
         transaction = _prepare_install_transaction(
             install_skill=install_skill,
             enable_mcp=enable_mcp,
-            executable=executable,
+            mcp_executable=mcp_executable,
             environ=environ,
         )
         if enable_mcp:
@@ -1098,9 +1134,11 @@ def uninstall_integration(
         return "INTEGRATION_CLEANUP_REQUIRED"
 ```
 
-Define `_InstallTransaction` and `_UninstallTransaction` as frozen, `repr=False` holders for validated paths and in-memory original bytes. `_prepare_install_transaction` validates ownership before writing and snapshots exact config and Skill bytes for rollback. `_install_managed_mcp`, `_install_managed_skill`, `_commit_ownership_manifest`, `_rollback_install`, `_prepare_uninstall_transaction`, `_remove_managed_mcp`, `_remove_unchanged_skill_files`, and `_remove_recovery_and_manifest` each perform the single operation named and raise only `IntegrationError(code)` with a fixed allowlisted code.
+Define `_InstallTransaction` and `_UninstallTransaction` as frozen, `repr=False` holders for validated paths and in-memory original bytes. `_prepare_install_transaction` validates ownership before writing and snapshots exact config, Skill, encrypted-backup, and manifest states for rollback. `_install_managed_mcp`, `_install_managed_skill`, `_commit_ownership_manifest`, `_discard_superseded_backup`, `_rollback_install`, `_prepare_uninstall_transaction`, `_remove_managed_mcp`, `_remove_unchanged_skill_files`, and `_remove_recovery_and_manifest` each perform the single operation named and raise only `IntegrationError(code)` with a fixed allowlisted code.
 
-Return only fixed codes such as `INTEGRATION_INSTALLED`, `INTEGRATION_REMOVED`, `INTEGRATION_NOT_PRESENT`, `CODEX_CONFIG_CONFLICT`, `SKILL_CONFLICT`, `INTEGRATION_ROLLBACK_FAILED`, and `INTEGRATION_CLEANUP_REQUIRED`. No returned or logged value may contain a path, config byte, native error, environment value, or Skill content.
+`_discard_superseded_backup` runs only after the new ownership manifest commits and removes only the superseded backup path recorded by that transaction. Any discard failure raises `INTEGRATION_BACKUP_DISCARD_FAILED`; install then performs exact rollback of the prior config, Skill, backup, and manifest. If that rollback itself fails, return `INTEGRATION_ROLLBACK_FAILED` and retain recovery material.
+
+Return only fixed codes such as `INTEGRATION_INSTALLED`, `INTEGRATION_REMOVED`, `INTEGRATION_NOT_PRESENT`, `CODEX_CONFIG_CONFLICT`, `SKILL_CONFLICT`, `INTEGRATION_BACKUP_DISCARD_FAILED`, `INTEGRATION_ROLLBACK_FAILED`, and `INTEGRATION_CLEANUP_REQUIRED`. No returned or logged value may contain a path, config byte, native error, environment value, or Skill content.
 
 The internal executable modes are exact and mutually exclusive:
 
@@ -1109,21 +1147,23 @@ The internal executable modes are exact and mutually exclusive:
 --install-codex-integration=mcp
 --install-codex-integration=skill,mcp
 --remove-codex-integration
+--purge-protected-state
 ```
 
-Dispatch them in `__main__.py` before importing Qt. Reject every other combination with exit `64`. Map success codes to `0`, ordinary conflict to `2`, and rollback/cleanup failure to `3`.
+Preserve the exact existing `--purge-protected-state` maintenance mode, fixed JSON output, and success/failure exit behavior. Dispatch the exact integration and STDIO modes before importing Qt. When a frozen packaged executable is named `AgentGuardianMcp.exe`, accept only exact arguments `['--stdio-mcp']`; when a frozen packaged executable is named `AgentGuardian.exe`, reject STDIO and retain only no-argument GUI plus exact maintenance/integration modes. Unfrozen source execution must retain `python -m agentguardian --stdio-mcp` for development and SDK tests. Reject mixed or unknown integration/STDIO mode combinations with exit `64`; no arguments on the GUI launcher must still start the GUI. Add focused dispatch tests for all of these paths. Map integration success codes to `0`, ordinary conflict to `2`, and rollback/cleanup failure to `3`.
 
 Uninstall removes only the exact marked block after manifest/hash validation and reparses remaining TOML. Remove a managed Skill file only when its current SHA-256 matches the manifest; preserve modified and unknown files. Delete the encrypted backup only after successful MCP cleanup. Never restore the whole historical config during normal uninstall.
 
 - [ ] **Step 5: Verify and commit Task 5**
 
-Update `source_policy.json`, then run:
+Add `codex_integration.py` to `EXPECTED_REVIEWED_SOURCE_MODULES` in sorted order and change both exact count assertions in `tests/test_self_audit.py` from `23` to `24`. Update `source_policy.json`, then run:
 
 ```powershell
 .analysis\venv-0.3\Scripts\python.exe -m pytest -q tests/test_codex_integration.py tests/test_mcp_server.py tests/test_self_audit.py -p no:cacheprovider
+.analysis\venv-0.3\Scripts\python.exe -m pytest -q tests/test_app_smoke.py -k "maintenance_command or main_runs_maintenance_before_qapplication" -p no:cacheprovider
 .analysis\venv-0.3\Scripts\python.exe -m compileall -q src tests
 rtk git diff --check
-rtk git add src/agentguardian/codex_integration.py src/agentguardian/__main__.py src/agentguardian/source_policy.json tests/test_codex_integration.py
+rtk git add src/agentguardian/codex_integration.py src/agentguardian/__main__.py src/agentguardian/source_policy.json tests/test_codex_integration.py tests/test_self_audit.py
 rtk git commit -m "Add transactional Codex integration"
 ```
 
@@ -1135,12 +1175,15 @@ Expected: all tests pass, including rollback and modified-file preservation.
 - Create: `release_profiles/integrations_preview.json`
 - Create: `scripts/verify_integrations_preview_profile.py`
 - Create: `tests/test_integrations_preview_profile.py`
+- Create: `packaging/windows/AgentGuardianIntegrationsPreview.spec`
 - Create: `packaging/windows/AgentGuardianIntegrationsPreview.iss`
 - Create: `scripts/build_windows_integrations_preview_installer.py`
 - Create: `scripts/verify_windows_integrations_preview.ps1`
 - Create: `tests/test_windows_integrations_preview_installer.py`
+- Modify: `.gitattributes`
 - Modify: `scripts/build_windows_portable.py`
 - Modify: `tests/test_windows_packaging.py`
+- Modify: `tests/test_personal_release_profile.py`
 
 - [ ] **Step 1: Write failing installer-contract tests**
 
@@ -1151,25 +1194,32 @@ DISPLAY_VERSION = "0.3.0-preview.1"
 FILE_VERSION = "0.3.0.1"
 APP_ID = "{A64DBF23-FE14-4E04-89AE-0924666A03DE}"
 INSTALLER_NAME = "AgentGuardian-Setup-0.3.0-preview.1-x64.exe"
+INSTALL_DIRECTORY = r"{localappdata}\Programs\AgentGuardian Integrations Preview"
+GUI_LAUNCHER = "AgentGuardian.exe"
+MCP_LAUNCHER = "AgentGuardianMcp.exe"
 ```
 
-Assert distinct AppId/script/profile from 0.2, `PrivilegesRequired=lowest`, Windows 11 x64, current-user program directory, no network/download/service/startup/scheduled-task/elevation directive, and two tasks with `Flags: unchecked`. Assert the portable build includes `skills/agentguardian/{SKILL.md,README.md,LICENSE}` from the canonical source and no Skill ZIP.
+Assert distinct AppId/script/profile/install directory from 0.2, `PrivilegesRequired=lowest`, Windows 11 x64, the exact current-user directory above, no network/download/service/startup/scheduled-task/elevation directive, and two integration tasks with `Flags: unchecked`. Assert the portable build includes `skills/agentguardian/{SKILL.md,README.md,LICENSE}` from the canonical source and no Skill ZIP.
 
-Add lifecycle-script contract tests for: Skill-only, MCP-only, both, pre-existing config preservation, foreign conflicts, upgrade, modified Skill preservation, exact block removal, no report deletion, no network check, no elevation, and bounded JSON evidence.
+Inspect `packaging/windows/AgentGuardianIntegrationsPreview.spec` and the built inventory. Require one shared `Analysis`, one shared `PYZ`, and one `COLLECT` onedir payload containing exactly `AgentGuardian.exe` with `console=False` and `AgentGuardianMcp.exe` with `console=True`. Both launchers must use the same reviewed `agentguardian.__main__` source and runtime modules. The GUI launcher retains no-argument GUI and exact maintenance modes; the console helper accepts only exact arguments `['--stdio-mcp']` and rejects missing, mixed, or unknown arguments with exit `64` before Qt import.
 
-In `tests/test_integrations_preview_profile.py`, require canonical schema `1`, name/channel `integrations_preview`, versions `0.3.0a1` / `0.3.0-preview.1` / `0.3.0.1`, AppId `{A64DBF23-FE14-4E04-89AE-0924666A03DE}`, installer filename `AgentGuardian-Setup-0.3.0-preview.1-x64.exe`, Skill `0.1.0`, Skill path `%USERPROFILE%\.agents\skills\agentguardian`, config/backup/manifest paths from the approved design, SDK `mcp==2.0.0`, transport `stdio`, and exactly the two approved tool names. Reject unknown keys, duplicate arrays, noncanonical JSON, wrong versions, a third tool, non-STDIO transport, default-selected integration tasks, `.codex\skills`, Provider SDK imports, and 0.2 evidence represented as current.
+Add lifecycle-script contract tests for: Skill-only, MCP-only, both, pre-existing config preservation, foreign conflicts, upgrade, modified Skill preservation, exact block removal, no report deletion, no network check, no elevation, bounded JSON evidence, and a real subprocess using installed `AgentGuardianMcp.exe --stdio-mcp` with redirected stdin/stdout pipes. An in-process server fixture or invocation of the windowed launcher does not satisfy this lifecycle test.
+
+In `tests/test_integrations_preview_profile.py`, require canonical schema `1`, name/channel `integrations_preview`, versions `0.3.0a1` / `0.3.0-preview.1` / `0.3.0.1`, AppId `{A64DBF23-FE14-4E04-89AE-0924666A03DE}`, installer filename `AgentGuardian-Setup-0.3.0-preview.1-x64.exe`, exact install directory `{localappdata}\Programs\AgentGuardian Integrations Preview`, exact launcher inventory `AgentGuardian.exe` and `AgentGuardianMcp.exe` with their console modes, Skill `0.1.0`, Skill path `%USERPROFILE%\.agents\skills\agentguardian`, config/backup/manifest paths from the approved design, SDK `mcp==2.0.0`, transport `stdio`, and exactly the two approved tool names. Reject unknown keys, duplicate arrays, noncanonical JSON, wrong versions, a third launcher or tool, non-STDIO transport, default-selected integration tasks, `.codex\skills`, Provider SDK imports, and 0.2 evidence represented as current.
+
+In `tests/test_personal_release_profile.py`, retain the exact frozen 0.2 verifier/profile assertions and add a build-dispatch test proving that selecting `personal_exe_private_beta` against the current `0.3.0a1` package/source identity fails closed before PyInstaller runs. Historical verification by `scripts/verify_personal_release_profile.py` must still pass unchanged.
 
 - [ ] **Step 2: Verify RED**
 
 ```powershell
-.analysis\venv-0.3\Scripts\python.exe -m pytest -q tests/test_integrations_preview_profile.py tests/test_windows_integrations_preview_installer.py tests/test_windows_packaging.py -p no:cacheprovider
+.analysis\venv-0.3\Scripts\python.exe -m pytest -q tests/test_integrations_preview_profile.py tests/test_windows_integrations_preview_installer.py tests/test_windows_packaging.py tests/test_personal_release_profile.py -p no:cacheprovider
 ```
 
 Expected: failures because the preview profile verifier and installer files do not exist.
 
-- [ ] **Step 3: Implement the separate profile verifier and add the canonical Skill to the 0.3 portable payload**
+- [ ] **Step 3: Implement the separate profile verifier, LF contract, and profile/source identity guard**
 
-Create the complete `integrations_preview.json` identity plus sorted exact arrays for active documents already present at this task, package inputs, required source paths, forbidden Provider SDK imports, forbidden HTTP/listener/background/updater/telemetry/arbitrary-execution capabilities, supported operations, ownership paths, and installer task defaults. Keep status `INTEGRATIONS-PREVIEW-NOT-READY`.
+Create the complete `integrations_preview.json` identity plus sorted exact arrays for active documents already present at this task, package inputs, both launcher names and console modes, the exact install directory, required source paths, forbidden Provider SDK imports, forbidden HTTP/listener/background/updater/telemetry/arbitrary-execution capabilities, supported operations, ownership paths, and installer task defaults. Keep status `INTEGRATIONS-PREVIEW-NOT-READY`.
 
 In `verify_integrations_preview_profile.py`, reuse only `ProfileSnapshot`, `ProfileViolation`, and `canonical_json_bytes` from the historical verifier. Implement a separate bounded parser that:
 
@@ -1179,19 +1229,30 @@ In `verify_integrations_preview_profile.py`, reuse only `ProfileSnapshot`, `Prof
 4. Parses every `src/agentguardian/*.py` AST under aggregate and node limits.
 5. Rejects Provider SDKs, HTTP server startup, sockets/listeners, subprocess/arbitrary execution, updater, telemetry, and dynamic plugin loading outside reviewed internal dispatch.
 6. Requires exactly two decorated tools, `server.run()` with no transport argument, no resource/prompt registration, and no Provider API call.
-7. Parses the Skill frontmatter and installer/config constants.
+7. Parses the Skill frontmatter, shared PyInstaller spec, launcher inventory, and installer/config constants.
 8. Verifies `pyproject.toml`, both hash locks, notices, source policy, and all three version identities.
 9. Returns only `{"profile": "integrations_preview", "status": "pass"}`.
 
-Add to `build_pyinstaller_command` only for `integrations_preview`:
+Add this exact tracked EOL rule without changing the frozen entries:
 
-```python
-f"{(project_root / 'skills' / 'agentguardian').resolve()}:agentguardian_skill"
+```gitattributes
+release_profiles/integrations_preview.json text eol=lf
 ```
 
-Extend the release-profile dispatch in `build_windows_portable.py` to load and verify the new profile with `scripts.verify_integrations_preview_profile` while retaining the current personal-profile path unchanged. Write `INTEGRATIONS-PREVIEW-PROFILE.json` for 0.3 and retain `PERSONAL-RELEASE-PROFILE.json` for 0.2.
+Extend the release-profile dispatch in `build_windows_portable.py` to load and verify the new profile with `scripts.verify_integrations_preview_profile`. Write `INTEGRATIONS-PREVIEW-PROFILE.json` for 0.3. Keep the historical verifier/profile files and `PERSONAL-RELEASE-PROFILE.json` format unchanged, but before any build require the selected profile's package/source identity to equal the current tree identity. A personal 0.2 artifact build from the current 0.3 source must fail with fixed code `RELEASE_PROFILE_SOURCE_IDENTITY_MISMATCH` before invoking PyInstaller.
 
-- [ ] **Step 4: Implement the new Inno Setup task flow**
+- [ ] **Step 4: Add the reviewed shared-Analysis dual-launcher payload**
+
+`AgentGuardianIntegrationsPreview.spec` is the only PyInstaller entry for the 0.3 profile. It must create one `Analysis` and `PYZ` from the same reviewed `agentguardian.__main__` and package graph, then create these two `EXE` launchers inside one `COLLECT` onedir payload:
+
+```text
+AgentGuardian.exe     console=False
+AgentGuardianMcp.exe  console=True
+```
+
+Include the canonical Skill directory as `agentguardian_skill`, retain all existing bounded payload validation, and inventory both launcher names exactly. Do not build a second runtime tree, duplicate the audit core, or turn the GUI executable into a console build. Update the 0.3 `build_pyinstaller_command` to invoke the reviewed spec and add tests that both launchers share the same audited source-policy and dependency payload.
+
+- [ ] **Step 5: Implement the new Inno Setup task flow**
 
 The new `.iss` must use:
 
@@ -1201,7 +1262,7 @@ AppId={{A64DBF23-FE14-4E04-89AE-0924666A03DE}
 AppName=AgentGuardian
 AppVersion={#DisplayVersion}
 VersionInfoVersion={#FileVersion}
-DefaultDirName={localappdata}\Programs\AgentGuardian
+DefaultDirName={localappdata}\Programs\AgentGuardian Integrations Preview
 PrivilegesRequired=lowest
 SetupArchitecture=x64
 ArchitecturesAllowed=x64compatible
@@ -1220,23 +1281,23 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
 In `PrepareToInstall`, display the exact selected categories and the fixed targets `{userprofile}\.agents\skills\agentguardian`, `{userprofile}\.codex\config.toml`, and `{localappdata}\AgentGuardian` before changing integration state. Build one exact helper argument from selected tasks and execute it once in `ssPostInstall`. A nonzero exit raises a fixed exception so installation aborts. Do not start, close, or restart Codex.
 
-On uninstall, call `--remove-codex-integration` before program files are removed. Exit `3` aborts uninstall and retains recovery data. Preserve the existing optional `--purge-protected-state` flow and never delete user-exported reports.
+On uninstall, call `--remove-codex-integration` through the windowed GUI/maintenance launcher before program files are removed. Exit `3` aborts uninstall and retains recovery data. Preserve the exact existing optional `--purge-protected-state` maintenance mode and test; never delete user-exported reports. The distinct AppId and install directory must prevent the 0.3 uninstaller from addressing frozen 0.2 program files.
 
-- [ ] **Step 5: Implement the bounded 0.3 builder and lifecycle evidence script**
+- [ ] **Step 6: Implement the bounded 0.3 builder and lifecycle evidence script**
 
 `build_windows_integrations_preview_installer.py` must reuse the existing compiler digest, path, manifest, checksum, and Git-clean validation helpers; it must use only the new profile, script SHA-256, version, AppId, and output name. It must reject a 0.2 bundle or profile evidence.
 
-`verify_windows_integrations_preview.ps1` must accept exact candidate SHA, installer path/hash, evidence path, and test mode. It must install silently into the current-user fixed path, execute the installed `AgentGuardian.exe --stdio-mcp` through an official Python SDK client probe, verify integration files/config according to mode, install the same candidate again as an upgrade, uninstall, and record canonical bounded evidence. The script must restore its synthetic pre-existing Codex config fixture in `finally` and fail if unknown residue or a network connection attributable to the installer/helper is observed.
+`verify_windows_integrations_preview.ps1` must accept exact candidate SHA, installer path/hash, evidence path, and test mode. It must install silently into `{localappdata}\Programs\AgentGuardian Integrations Preview`, verify both exact launcher files, execute installed `AgentGuardianMcp.exe` with `--stdio-mcp` through an official Python SDK client over real redirected stdin/stdout pipes, verify integration files/config according to mode, install the same candidate again as an upgrade, uninstall, and record canonical bounded evidence. The script must restore its synthetic pre-existing Codex config fixture in `finally` and fail if unknown residue, frozen 0.2 file mutation, or a network connection attributable to the installer/helper is observed.
 
 The evidence contains only schema, exact source SHA, artifact SHA-256, version, selected mode, fixed boolean gates, fixed exit codes, and residue names from an allowlist. It contains no user profile path, config content, Skill content, environment value, or native exception.
 
-- [ ] **Step 6: Verify and commit Task 6**
+- [ ] **Step 7: Verify and commit Task 6**
 
 ```powershell
 .analysis\venv-0.3\Scripts\python.exe -m pytest -q tests/test_integrations_preview_profile.py tests/test_windows_integrations_preview_installer.py tests/test_windows_packaging.py tests/test_windows_installer.py tests/test_personal_release_profile.py -p no:cacheprovider
 .analysis\venv-0.3\Scripts\python.exe -m compileall -q scripts tests
 rtk git diff --check
-rtk git add release_profiles/integrations_preview.json scripts/verify_integrations_preview_profile.py tests/test_integrations_preview_profile.py packaging/windows/AgentGuardianIntegrationsPreview.iss scripts/build_windows_integrations_preview_installer.py scripts/verify_windows_integrations_preview.ps1 scripts/build_windows_portable.py tests/test_windows_integrations_preview_installer.py tests/test_windows_packaging.py
+rtk git add .gitattributes release_profiles/integrations_preview.json scripts/verify_integrations_preview_profile.py tests/test_integrations_preview_profile.py packaging/windows/AgentGuardianIntegrationsPreview.spec packaging/windows/AgentGuardianIntegrationsPreview.iss scripts/build_windows_integrations_preview_installer.py scripts/verify_windows_integrations_preview.ps1 scripts/build_windows_portable.py tests/test_windows_integrations_preview_installer.py tests/test_windows_packaging.py tests/test_personal_release_profile.py
 rtk git commit -m "Add integrations preview installer route"
 ```
 
@@ -1251,19 +1312,21 @@ Expected: new and frozen installer tests both pass; no 0.2 identity file changes
 - Create: `docs/security/integrations-preview.md`
 - Create: `docs/security/integrations-preview-status.json`
 - Create: `tests/test_integrations_preview_workflow.py`
+- Modify: `.gitattributes`
 - Modify: `release_profiles/integrations_preview.json`
+- Modify: `tests/test_personal_release_profile.py`
 - Modify: `README.md`
 
 - [ ] **Step 1: Write failing workflow and documentation contract tests**
 
 Workflow tests require exact checkout SHA validation, pinned action SHAs, Python 3.12 hash installs, full tests, privacy gate, Skill build, profile verification, portable build, installer build, all three integration lifecycle modes, compileall, secret scan, clean-tree verification, and exact-SHA artifact metadata. They must reject `pull_request_target`, writable permissions, unpinned actions, secrets in command lines, marketplace upload, GitHub Release publication, deployment, or a production-ready status mutation.
 
-Documentation tests require exactly eight canonical status gates, all `pending`; require the active 0.3 boundary and frozen 0.2 evidence distinction; and reject production-safe, high-sensitivity-ready, signed, marketplace-published, deployed, or current-GitHub-pass claims.
+Documentation tests require exactly eight canonical status gates, all `pending`; require the active 0.3 boundary and frozen 0.2 evidence distinction; and reject production-safe, high-sensitivity-ready, signed, marketplace-published, deployed, or current-GitHub-pass claims. Update `test_governing_and_historical_document_classes_are_explicit` in `tests/test_personal_release_profile.py` so `docs/security/integrations-preview.md` is asserted to be a separate active 0.3 document and is never placed in the historical 0.2 set. Retain every exact historical 0.2 classification and content assertion.
 
 - [ ] **Step 2: Verify RED**
 
 ```powershell
-.analysis\venv-0.3\Scripts\python.exe -m pytest -q tests/test_integrations_preview_workflow.py -p no:cacheprovider
+.analysis\venv-0.3\Scripts\python.exe -m pytest -q tests/test_integrations_preview_workflow.py tests/test_personal_release_profile.py -p no:cacheprovider
 ```
 
 Expected: collection fails because the workflow test target and active 0.3 documents do not exist.
@@ -1295,6 +1358,12 @@ README must identify 0.3 as the active development track, identify 0.2 as frozen
 
 Add the two new documentation paths to the profile's sorted active-document array and rerun canonicalization. Do not change status or carry any historical gate to pass.
 
+Add this exact tracked EOL rule without changing the existing profile/evidence rules:
+
+```gitattributes
+docs/security/integrations-preview-status.json text eol=lf
+```
+
 - [ ] **Step 5: Verify and commit Task 7**
 
 ```powershell
@@ -1302,7 +1371,7 @@ Add the two new documentation paths to the profile's sorted active-document arra
 .analysis\venv-0.3\Scripts\python.exe scripts/verify_integrations_preview_profile.py --project-root . --profile release_profiles/integrations_preview.json
 .analysis\venv-0.3\Scripts\python.exe -m compileall -q src scripts tests
 rtk git diff --check
-rtk git add tests/test_integrations_preview_workflow.py release_profiles/integrations_preview.json .github/workflows/windows-integrations-preview.yml docs/security/integrations-preview.md docs/security/integrations-preview-status.json README.md
+rtk git add .gitattributes tests/test_integrations_preview_workflow.py tests/test_personal_release_profile.py release_profiles/integrations_preview.json .github/workflows/windows-integrations-preview.yml docs/security/integrations-preview.md docs/security/integrations-preview-status.json README.md
 rtk git commit -m "Add integrations preview release governance"
 ```
 
@@ -1342,14 +1411,14 @@ Expected: deterministic Skill and portable ZIP hashes match; installer candidate
 
 Use `superpowers:requesting-code-review` with two fresh reviewers:
 
-1. Spec-compliance reviewer: map every approved design requirement and the Skill-path correction to code/tests/evidence.
-2. Security/quality reviewer: inspect authorization consumption, prepare no-read behavior, result redaction/caps, STDIO-only startup, TOML transaction/DPAPI rollback, installer ownership, dependency/SBOM/notices, and unsupported-data claims.
+1. Spec-compliance reviewer: map every approved design requirement and all three disclosed compatibility corrections to code/tests/evidence.
+2. Security/quality reviewer: inspect authorization consumption, prepare no-read behavior, lazy clipboard Qt boundary, result redaction/caps, console-helper-only installed STDIO command, real-pipe lifecycle, TOML transaction/DPAPI rollback, superseded-backup rollback, distinct installer ownership, dependency/SBOM/notices, and unsupported-data claims.
 
-Resolve every Critical or Important finding with a focused failing test and local commit, then rerun Step 1. Record reviewer identities, reviewed SHA, findings, resolutions, and rerun evidence in `.analysis/integrations-preview-independent-review.md` without claiming reviewer independence beyond the actual separate review context.
+Resolve every Critical or Important finding with a focused failing test and local commit. Any review fix commit invalidates all earlier Task 8 verification, artifact, lifecycle, and review evidence: rerun Step 1, rerun the complete deterministic artifact and lifecycle Step 2, then rerun both independent reviewers against the resulting final HEAD. Repeat this sequence after every further fix commit. Record reviewer identities, reviewed SHA, findings, resolutions, and rerun evidence in `.analysis/integrations-preview-independent-review.md` without claiming reviewer independence beyond the actual separate review context.
 
 - [ ] **Step 4: Write canonical out-of-tree local evidence only**
 
-`.analysis/integrations-preview-local-verification.json` must bind exact HEAD, Python version, lock hashes, test counts, focused gates, artifact hashes, and local lifecycle results. It must not contain paths, secrets, environment values, user data, or remote-state claims.
+Write evidence only after Steps 1-3 all bind the same final clean HEAD. `.analysis/integrations-preview-local-verification.json` must bind that exact HEAD, Python version, lock hashes, test counts, focused gates, artifact hashes, and local lifecycle results. Every artifact manifest, lifecycle record, and review record must name that same SHA; a hash or review from an earlier commit cannot be carried forward. The evidence must not contain paths, secrets, environment values, user data, or remote-state claims.
 
 Report `local_verification` and `independent_security_review` as current-session PASS only if their out-of-tree evidence names the same exact clean HEAD. Keep every tracked gate `pending`; GitHub, clean-machine, Codex Desktop, Codex CLI, license, marketplace, signing, and publication require separate evidence and authorization.
 
@@ -1377,12 +1446,17 @@ These are required for delivery but are not authorized by plan approval alone:
 ## Self-Review Checklist
 
 - [ ] Every approved design section maps to a task and test above.
-- [ ] The only design delta is the disclosed official Skill-path correction.
+- [ ] The only approved-design deltas are the three disclosed pre-implementation compatibility corrections; none adds product scope.
+- [ ] The Skill installs only to `%USERPROFILE%\.agents\skills\agentguardian`.
+- [ ] One reviewed onedir payload contains windowed `AgentGuardian.exe` and console `AgentGuardianMcp.exe`; installed config and real-pipe lifecycle use only the latter for STDIO.
+- [ ] 0.3 uses exactly `{localappdata}\Programs\AgentGuardian Integrations Preview`, and its AppId/uninstaller cannot overwrite or remove frozen 0.2 files.
 - [ ] Exactly two MCP tools exist; no resource, prompt, shell, report export, listener, service, updater, telemetry, or Provider API path is introduced.
 - [ ] Prepare performs syntax/shape validation only; run consumes authorization before access.
 - [ ] File, browser, clipboard, and share operations use the existing authoritative audit functions.
 - [ ] MCP outputs exclude raw values, full paths, report bodies, browser URLs, clipboard text, HTTP bodies, native errors, and environment values.
 - [ ] Config and Skill changes are optional, owned, transactional, reversible, and bounded.
+- [ ] Reviewed source counts progress exactly from 21 to 22, 23, and 24 after `mcp_service.py`, `mcp_server.py`, and `codex_integration.py`.
 - [ ] The standalone Skill and installer consume the same three canonical source files.
-- [ ] 0.2 source history and evidence remain historical and are never counted as 0.3 evidence.
+- [ ] 0.2 source history and evidence remain historical and verifiable, are never counted as 0.3 evidence, and cannot be built as a personal 0.2 artifact from current 0.3 source.
+- [ ] Task 8 verification, deterministic artifacts/lifecycle, both reviews, and evidence all bind the same final clean SHA after any fix commit.
 - [ ] No unfinished markers, weakened assertions, wildcard staging, push, publish, deployment, or production-ready claim remain in the plan.

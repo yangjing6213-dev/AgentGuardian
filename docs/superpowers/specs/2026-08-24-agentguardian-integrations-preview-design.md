@@ -17,6 +17,29 @@ The `0.3` implementation receives a new release profile, build identity,
 tests, reports, and acceptance evidence. No `0.2` gate is carried forward as a
 passing `0.3` gate merely because the implementation shares source history.
 
+## Pre-Implementation Compatibility Corrections
+
+A read-only execution preflight on 2026-08-24 identified three implementation
+compatibility corrections before Tasks 2-8. They are required to make the
+approved design executable with the official Skill location, Windows STDIO
+semantics, and frozen 0.2 coexistence. They are not new features and do not
+change the four operations, exactly two MCP tools, personal non-regulated
+boundary, `NO-GO` status, standalone Skill product, or frozen 0.2 artifacts.
+
+1. The official user Skill target is
+   `%USERPROFILE%\.agents\skills\agentguardian`, matching the current official
+   `$HOME/.agents/skills` location. No compatibility copy is installed.
+2. Windows ships two launchers from one audited core and one reviewed
+   PyInstaller onedir payload. Windowed `AgentGuardian.exe` (`console=False`)
+   owns GUI and maintenance startup. Console `AgentGuardianMcp.exe`
+   (`console=True`) accepts only the planned STDIO argument path. Installed MCP
+   configuration points to the console helper with `args = ["--stdio-mcp"]`;
+   the GUI launcher is not the installed STDIO command.
+3. The 0.3 current-user installation uses exactly
+   `{localappdata}\Programs\AgentGuardian Integrations Preview`. Its distinct
+   AppId and uninstaller cannot overwrite or remove frozen 0.2 program files
+   in the historical AgentGuardian installation directory.
+
 ## Context And Commercial Model
 
 AgentGuardian currently exposes a Windows desktop GUI. Its file audit
@@ -29,6 +52,9 @@ The selected product shape is one local audit core with three entry points:
 1. Windows desktop GUI.
 2. A standalone Codex Skill package.
 3. An on-demand local STDIO MCP server that lets Codex invoke AgentGuardian.
+
+The two Windows launchers are packaging adapters for the existing GUI and MCP
+entry points, not a fourth product entry point.
 
 All three entry points are open source under Apache-2.0. Revenue is expected
 from convenient delivery, maintenance, rule work, integration, deployment,
@@ -108,12 +134,20 @@ and its transitive dependencies must be version constrained, hash locked,
 included in the SBOM, and covered by third-party notices. AgentGuardian does
 not hand-roll MCP framing or JSON-RPC.
 
-The installed executable uses one dispatch point:
+The source tree uses one guarded dispatch point, and the Windows package exposes
+it through two launchers in one shared Analysis/PYZ/COLLECT onedir payload:
 
-- no special argument: start the desktop GUI;
-- `--stdio-mcp`: start the MCP server before creating a GUI application;
-- existing bounded maintenance arguments remain explicit and mutually
-  exclusive.
+- `AgentGuardian.exe` is windowed and accepts no arguments for GUI startup plus
+  the exact existing maintenance and bounded integration modes;
+- `AgentGuardianMcp.exe` is console-enabled and accepts only
+  `--stdio-mcp`, starting the MCP server before importing Qt; and
+- missing, mixed, or unknown integration/STDIO modes fail with a fixed usage
+  code instead of falling through to GUI startup.
+
+The exact existing `--purge-protected-state` maintenance behavior remains on
+the GUI/maintenance launcher. The Task 3 source-level STDIO dispatch is reused
+by the console helper; it does not make the windowed executable the installed
+STDIO command.
 
 There is no fourth user-facing CLI in this preview.
 
@@ -276,12 +310,21 @@ action by itself.
 - Prepare states that the clipboard value present at execution time will be
   read once.
 - Run reads text once after host approval and scans it in memory.
+- The default Qt clipboard adapter is defined in the MCP service, imports and
+  initializes Qt lazily only during an accepted clipboard run, and is never
+  reached by module import or prepare.
 - Raw clipboard text is neither persisted nor returned.
 - Non-text, oversized, unreadable, or changed clipboard content fails closed or
   reports the existing bounded limitation.
+- Qt import, application initialization, or clipboard-access failure returns
+  fixed sanitized code `CLIPBOARD_UNAVAILABLE` without native error text.
 
 ### Public Share Verification
 
+- Syntax validation is exposed as
+  `validate_public_share_url(url, allow_private_hosts=False)`. Both the initial
+  verifier and redirect-policy caller use that reviewed function; prepare uses
+  the public-host default without DNS or network I/O.
 - Only user-provided public `http` and `https` URLs are eligible.
 - Userinfo, query parameters, fragments, private addresses, loopback, link-local
   addresses, unsafe redirects, unsupported content types, oversized responses,
@@ -347,6 +390,7 @@ environment variables, or unbounded parser output.
 - Partial scanning returns incomplete coverage and explicit limits.
 - Browser temporary-copy cleanup failure is a failure, not a warning.
 - Public-share failures never fall back to a less restrictive HTTP client.
+- Clipboard initialization failure returns only `CLIPBOARD_UNAVAILABLE`.
 - MCP protocol failure terminates the STDIO process without starting another
   transport.
 - The GUI remains usable if MCP configuration is absent or disabled.
@@ -356,7 +400,11 @@ environment variables, or unbounded parser output.
 
 `0.3` uses a new release profile and installer build identity while retaining
 the current-user, offline, no-elevation Inno Setup route. The installer contains
-the complete GUI and MCP runtime. It adds two unchecked tasks:
+the complete GUI and MCP runtime at exactly
+`{localappdata}\Programs\AgentGuardian Integrations Preview`. Its reviewed
+PyInstaller spec produces one shared onedir payload containing windowed
+`AgentGuardian.exe` and console `AgentGuardianMcp.exe`. It adds two unchecked
+tasks:
 
 - `Install AgentGuardian Codex Skill`
 - `Enable AgentGuardian local MCP`
@@ -366,9 +414,11 @@ locations it will modify. Neither task is selected by default. The installer
 does not start Codex, close Codex, restart Codex, download a component, or make
 a network request.
 
-The MCP configuration points to the installed `AgentGuardian.exe --stdio-mcp`
-command. A successful integration installation tells the user to restart the
-relevant Codex client manually.
+The MCP configuration `command` is the absolute installed
+`AgentGuardianMcp.exe` sibling and its `args` value is exactly
+`["--stdio-mcp"]`. The GUI executable remains windowed and is not configured as
+the STDIO command. A successful integration installation tells the user to
+restart the relevant Codex client manually.
 
 ## Codex Configuration Transaction
 
@@ -380,27 +430,32 @@ not rewrite unrelated TOML tables or normalize the user's file.
 The transaction is:
 
 1. Validate the expected absolute Codex path and reject UNC or reparse paths.
-2. Read the configuration under a fixed size limit, or record that it did not
-   exist.
+2. Snapshot the exact pre-transaction config, Skill, encrypted-backup, and
+   ownership-manifest states under fixed limits, recording absence explicitly.
 3. Parse it before modification.
 4. Reject an existing non-AgentGuardian `mcp_servers.agentguardian` table or
    duplicate managed marker.
-5. Encode whether the original existed together with its exact bytes in a
-   non-empty bounded envelope, protect that envelope with current-user Windows
-   DPAPI, and atomically store it as
+5. Encode whether the original config existed together with its exact bytes in
+   a non-empty bounded envelope, protect that envelope with current-user
+   Windows DPAPI, and atomically store it as
    `%LOCALAPPDATA%\AgentGuardian\codex-config-backup-v1.bin`.
 6. Append the fixed managed block to a temporary file.
 7. Parse the complete candidate and verify the exact AgentGuardian table and
    approval modes.
-8. Flush and atomically replace the configuration.
+8. Flush and atomically replace the selected configuration and Skill files
+   while retaining the recorded pre-transaction states for rollback.
 9. Store only the integration version and hashes in
    `%LOCALAPPDATA%\AgentGuardian\codex-integration-v1.json`.
+10. After the new manifest commits, remove only the superseded encrypted backup
+    path recorded by this transaction.
 
 No configuration content is logged or placed in the manifest. Any failure
 before replacement leaves the original unchanged. Any failure after
-replacement attempts exact rollback from the in-memory original; rollback
-failure aborts installation with a fixed diagnostic and retains the encrypted
-backup.
+replacement, including superseded-backup removal failure, attempts exact
+rollback of the prior config, Skill, backup, and manifest states. A
+superseded-backup removal failure returns fixed code
+`INTEGRATION_BACKUP_DISCARD_FAILED`; rollback failure returns a distinct fixed
+diagnostic and retains recovery material.
 
 ## Skill Installation And Independent Package
 
@@ -420,7 +475,9 @@ and dangerous executable content, and emits a SHA-256 digest. It does not
 upload to Agensi or another marketplace.
 
 Optional installer deployment targets
-`%USERPROFILE%\.codex\skills\agentguardian`. A pre-existing same-name directory
+`%USERPROFILE%\.agents\skills\agentguardian`. This is the official user Skill
+location documented as `$HOME/.agents/skills`; no second compatibility copy is
+installed. A pre-existing same-name directory
 without a matching AgentGuardian ownership manifest is not overwritten.
 Managed files are recorded by relative path and SHA-256, never by content.
 
@@ -429,6 +486,11 @@ Managed files are recorded by relative path and SHA-256, never by content.
 An integration upgrade is allowed only when the installed ownership manifest,
 managed markers, Skill file set, and current integration shape are valid. A
 conflict stops the integration update without overwriting user data.
+
+Upgrade records any superseded backup in the transaction, commits the new
+manifest, and only then discards that recorded backup. Failure at this final
+step restores the exact prior config, Skill, backup, and manifest rather than
+leaving a partially upgraded ownership state.
 
 Normal uninstall:
 
@@ -453,6 +515,8 @@ The new `integrations_preview` profile pins:
 
 - product, Python package, and Windows file versions;
 - the new installer script and identity;
+- the exact install directory plus `AgentGuardian.exe`/`AgentGuardianMcp.exe`
+  launcher names and console modes from one shared payload;
 - the Skill source and package allowlist;
 - the MCP SDK and all runtime/build dependency locks;
 - exactly two MCP tools and STDIO as the only transport;
@@ -461,6 +525,13 @@ The new `integrations_preview` profile pins:
 - forbidden Provider API, server, updater, telemetry, arbitrary-execution, and
   unsupported-data capabilities; and
 - the active `0.3` documentation set.
+
+The new profile and status ledger have explicit LF rules in `.gitattributes`.
+`docs/security/integrations-preview.md` is a separate active 0.3 document,
+never historical 0.2 evidence. The frozen personal 0.2 profile and historical
+verifier remain unchanged and independently verifiable, but artifact dispatch
+must fail closed if that profile is selected against current 0.3 package/source
+identity.
 
 The profile and reports must not mark any `0.2` test, CI run, installer
 lifecycle, or review as current `0.3` evidence. `0.3` remains
@@ -508,10 +579,15 @@ passes for one exact candidate SHA.
 
 - Both integration tasks are unchecked by default.
 - Each task works independently and together.
+- The installed payload inventory contains exact sibling launchers
+  `AgentGuardian.exe` and `AgentGuardianMcp.exe` with windowed and console modes
+  respectively.
 - Pre-existing config and Skill conflicts are preserved and reported.
 - DPAPI backup, atomic write, rollback, upgrade, uninstall, modified-Skill
   preservation, and residue behavior pass on Windows 11 x64.
 - Install and uninstall make no network request and require no elevation.
+- Native lifecycle invokes installed `AgentGuardianMcp.exe --stdio-mcp` through
+  real redirected stdin/stdout pipes; an in-process server test does not count.
 - Codex desktop and Codex CLI each complete a real STDIO invocation with the
   exact installed candidate.
 
@@ -523,6 +599,10 @@ passes for one exact candidate SHA.
   candidate SHA; earlier runs do not count.
 - A clean-machine install, use, upgrade, and uninstall acceptance run passes.
 - An independent reviewer finds no unresolved Critical or Important issue.
+- If a review produces a fix commit, the complete local gate, deterministic
+  artifact/lifecycle gate, and both independent reviews rerun against final
+  HEAD before evidence is written. All artifacts, reviews, lifecycle records,
+  and evidence bind the same final clean SHA.
 - Marketplace upload, GitHub Release, public binary publication, deployment,
   and production-safety claims remain separately authorized actions.
 
@@ -546,8 +626,10 @@ passes for one exact candidate SHA.
 
 1. Extract and regression-test the headless audit service.
 2. Implement and test the authorization state and redacted MCP result contract.
-3. Add the official SDK STDIO server and executable dispatch.
+3. Add the official SDK STDIO server and source dispatch reused by the console
+   helper.
 4. Build and validate the standalone Skill package.
-5. Add transactional Codex integration and installer lifecycle behavior.
+5. Add transactional Codex integration, the shared-payload dual launchers,
+   distinct install directory, and installer lifecycle behavior.
 6. Add the independent `0.3` release profile, CI evidence, documentation, and
    review gates.
