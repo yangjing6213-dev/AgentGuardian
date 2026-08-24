@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 import agentguardian.app as app_module
+import agentguardian.audit_service as audit_service_module
 from agentguardian.app import COLOR_TOKENS, create_window, export_new_report
 from agentguardian.detectors import FileDetectionResult
 from agentguardian.discovery import DiscoveryResult
@@ -304,7 +305,7 @@ def test_discovery_limit_marks_audit_incomplete(
     path = tmp_path / "visible.txt"
     path.write_text("safe", encoding="utf-8")
     monkeypatch.setattr(
-        app_module,
+        audit_service_module,
         "discover_files",
         lambda *args, **kwargs: SimpleNamespace(
             files=(path,),
@@ -367,7 +368,7 @@ def test_window_loads_disposition_context_once_without_writing(
 
     monkeypatch.setattr(app_module, "load_protected_state", fake_load)
     monkeypatch.setattr(app_module, "save_protected_state", save_calls.append)
-    monkeypatch.setattr(app_module.secrets, "token_bytes", fake_token_bytes)
+    monkeypatch.setattr(audit_service_module.secrets, "token_bytes", fake_token_bytes)
     before = tuple(tmp_path.rglob("*"))
 
     window = create_window()
@@ -420,7 +421,11 @@ def test_malformed_disposition_state_fails_closed_without_leaking(
         raise RuntimeError(marker)
 
     monkeypatch.setattr(app_module, "load_protected_state", fake_load)
-    monkeypatch.setattr(app_module.secrets, "token_bytes", lambda length: b"n" * length)
+    monkeypatch.setattr(
+        audit_service_module.secrets,
+        "token_bytes",
+        lambda length: b"n" * length,
+    )
 
     context = app_module._load_disposition_context()
 
@@ -453,7 +458,11 @@ def test_startup_fresh_key_failure_is_fixed_and_unchained(
             StateStoreError("PROTECTED_STATE_UNAVAILABLE")
         ),
     )
-    monkeypatch.setattr(app_module.secrets, "token_bytes", invalid_token_bytes)
+    monkeypatch.setattr(
+        audit_service_module.secrets,
+        "token_bytes",
+        invalid_token_bytes,
+    )
 
     with pytest.raises(ValueError, match="^invalid disposition context$") as error:
         app_module._load_disposition_context()
@@ -496,7 +505,11 @@ def test_startup_revalidates_forged_exact_v2_state(
         return snapshot
 
     monkeypatch.setattr(app_module, "load_protected_state", load_state)
-    monkeypatch.setattr(app_module.secrets, "token_bytes", lambda length: fresh_key)
+    monkeypatch.setattr(
+        audit_service_module.secrets,
+        "token_bytes",
+        lambda length: fresh_key,
+    )
 
     context = app_module._load_disposition_context()
 
@@ -566,7 +579,11 @@ def test_startup_rejects_forged_snapshot_invariants_without_writing(
 
     monkeypatch.setattr(app_module, "load_protected_state", load_state)
     monkeypatch.setattr(app_module, "save_protected_state", save_calls.append)
-    monkeypatch.setattr(app_module.secrets, "token_bytes", fresh_key_value)
+    monkeypatch.setattr(
+        audit_service_module.secrets,
+        "token_bytes",
+        fresh_key_value,
+    )
     before = tuple(tmp_path.rglob("*"))
 
     context = app_module._load_disposition_context()
@@ -643,7 +660,11 @@ def test_startup_rejects_forged_nested_snapshot_without_writing(
 
     monkeypatch.setattr(app_module, "load_protected_state", load_state)
     monkeypatch.setattr(app_module, "save_protected_state", save_calls.append)
-    monkeypatch.setattr(app_module.secrets, "token_bytes", fresh_key_value)
+    monkeypatch.setattr(
+        audit_service_module.secrets,
+        "token_bytes",
+        fresh_key_value,
+    )
     before = tuple(tmp_path.rglob("*"))
 
     context = app_module._load_disposition_context()
@@ -3805,9 +3826,13 @@ def test_cross_scan_dispositions_keep_identity_and_reviewed_score_context(
     scan_keys = iter(bytes([index]) * 32 for index in range(1, 6))
     file_calls = []
     mcp_calls = []
-    real_detect_file = app_module.detect_file
-    real_detect_mcp_config = app_module.detect_mcp_config
-    monkeypatch.setattr(app_module.secrets, "token_bytes", lambda length: next(scan_keys))
+    real_detect_file = audit_service_module.detect_file
+    real_detect_mcp_config = audit_service_module.detect_mcp_config
+    monkeypatch.setattr(
+        audit_service_module.secrets,
+        "token_bytes",
+        lambda length: next(scan_keys),
+    )
 
     def capture_file(path, *, scan_key, disposition_key):
         file_calls.append((path, scan_key, disposition_key))
@@ -3826,8 +3851,8 @@ def test_cross_scan_dispositions_keep_identity_and_reviewed_score_context(
             disposition_key=disposition_key,
         )
 
-    monkeypatch.setattr(app_module, "detect_file", capture_file)
-    monkeypatch.setattr(app_module, "detect_mcp_config", capture_mcp)
+    monkeypatch.setattr(audit_service_module, "detect_file", capture_file)
+    monkeypatch.setattr(audit_service_module, "detect_mcp_config", capture_mcp)
 
     first = _run_audit(
         (root,),
@@ -3971,9 +3996,9 @@ def test_production_audit_evaluates_expiry_after_detection_finishes(
         events.append("clock")
         return after_scan
 
-    monkeypatch.setattr(app_module, "discover_files", discover)
-    monkeypatch.setattr(app_module, "detect_file", detect)
-    monkeypatch.setattr(app_module, "_utc_now", current_time)
+    monkeypatch.setattr(audit_service_module, "discover_files", discover)
+    monkeypatch.setattr(audit_service_module, "detect_file", detect)
+    monkeypatch.setattr(audit_service_module, "_utc_now", current_time)
     monkeypatch.setattr(app_module, "save_protected_state", saves.append)
 
     outcome = _run_audit(
@@ -4033,10 +4058,10 @@ def test_audit_freezes_relative_paths_before_cwd_changes_during_mcp_processing(
     detected_paths = []
     json_paths = []
     mcp_sources = []
-    real_discover = app_module.discover_files
-    real_detect_file = app_module.detect_file
-    real_read_json = app_module._read_limited_json
-    real_detect_mcp = app_module.detect_mcp_config
+    real_discover = audit_service_module.discover_files
+    real_detect_file = audit_service_module.detect_file
+    real_read_json = audit_service_module._read_limited_json
+    real_detect_mcp = audit_service_module.detect_mcp_config
 
     def capture_discovery(roots, *args, **kwargs):
         discovered_roots.extend(roots)
@@ -4056,10 +4081,26 @@ def test_audit_freezes_relative_paths_before_cwd_changes_during_mcp_processing(
         mcp_sources.append(source)
         return real_detect_mcp(config, source, **kwargs)
 
-    monkeypatch.setattr(app_module, "discover_files", capture_discovery)
-    monkeypatch.setattr(app_module, "detect_file", change_cwd_after_detection)
-    monkeypatch.setattr(app_module, "_read_limited_json", capture_json_path)
-    monkeypatch.setattr(app_module, "detect_mcp_config", capture_mcp_source)
+    monkeypatch.setattr(
+        audit_service_module,
+        "discover_files",
+        capture_discovery,
+    )
+    monkeypatch.setattr(
+        audit_service_module,
+        "detect_file",
+        change_cwd_after_detection,
+    )
+    monkeypatch.setattr(
+        audit_service_module,
+        "_read_limited_json",
+        capture_json_path,
+    )
+    monkeypatch.setattr(
+        audit_service_module,
+        "detect_mcp_config",
+        capture_mcp_source,
+    )
     monkeypatch.chdir(original)
 
     outcome = _run_audit(
@@ -4096,14 +4137,18 @@ def test_scan_key_generation_fails_before_discovery_without_leaking(
             return b"x" * 31
         raise RuntimeError(marker)
 
-    monkeypatch.setattr(app_module.secrets, "token_bytes", invalid_token_bytes)
     monkeypatch.setattr(
-        app_module,
+        audit_service_module.secrets,
+        "token_bytes",
+        invalid_token_bytes,
+    )
+    monkeypatch.setattr(
+        audit_service_module,
         "discover_files",
         lambda *args, **kwargs: calls.append("discovery"),
     )
     monkeypatch.setattr(
-        app_module,
+        audit_service_module,
         "detect_file",
         lambda *args, **kwargs: calls.append("detector"),
     )
@@ -4136,7 +4181,7 @@ def test_worker_maps_scan_key_generation_failure_to_fixed_signal(
     )
     worker.failed.connect(failures.append)
     monkeypatch.setattr(
-        app_module.secrets,
+        audit_service_module.secrets,
         "token_bytes",
         lambda length: (_ for _ in ()).throw(RuntimeError(marker)),
     )
@@ -4188,9 +4233,9 @@ def test_worker_uses_accepted_preview_after_selector_and_cap_replacement(
         )
         return _discovery_result(files)
 
-    monkeypatch.setattr(app_module, "discover_files", discover)
+    monkeypatch.setattr(audit_service_module, "discover_files", discover)
     monkeypatch.setattr(
-        app_module,
+        audit_service_module,
         "detect_file",
         lambda path, *, scan_key, disposition_key: FileDetectionResult(
             (_synthetic_finding(1 if path == files[0] else 2),),
@@ -4351,20 +4396,20 @@ def test_invalid_audit_context_stops_before_randomness_and_callbacks(
         token_calls.append(length)
         return b"s" * 32
 
-    monkeypatch.setattr(app_module.secrets, "token_bytes", token_bytes)
+    monkeypatch.setattr(audit_service_module.secrets, "token_bytes", token_bytes)
     monkeypatch.setattr(
-        app_module,
+        audit_service_module,
         "discover_files",
         lambda *args, **kwargs: callbacks.append("discovery")
         or _discovery_result(()),
     )
     monkeypatch.setattr(
-        app_module,
+        audit_service_module,
         "detect_file",
         lambda *args, **kwargs: callbacks.append("file"),
     )
     monkeypatch.setattr(
-        app_module,
+        audit_service_module,
         "detect_mcp_config",
         lambda *args, **kwargs: callbacks.append("mcp"),
     )
@@ -4905,7 +4950,11 @@ def test_start_scan_requires_boundary_and_scope_consent_before_callbacks(
     window.scope_consent_checkbox.setChecked(True)
     monkeypatch.setattr(app_module, "QThread", forbidden("thread"))
     monkeypatch.setattr(app_module, "AuditWorker", forbidden("worker"))
-    monkeypatch.setattr(app_module, "discover_files", forbidden("discovery"))
+    monkeypatch.setattr(
+        audit_service_module,
+        "discover_files",
+        forbidden("discovery"),
+    )
 
     window._start_scan()
 
@@ -4932,7 +4981,7 @@ def test_clipboard_callback_requires_boundary_and_action_confirmation(
     def audit(reader, **_kwargs):
         audits.append("audit")
         assert reader() == "synthetic clipboard"
-        return SimpleNamespace(findings=(), scanned=True)
+        return SimpleNamespace(findings=(), scanned=True, limits=())
 
     def question(*args, **kwargs):
         questions.append(args[2])
@@ -4940,7 +4989,7 @@ def test_clipboard_callback_requires_boundary_and_action_confirmation(
 
     question.answer = QMessageBox.StandardButton.No
     monkeypatch.setattr(QMessageBox, "question", question)
-    monkeypatch.setattr(app_module, "audit_clipboard_once", audit)
+    monkeypatch.setattr(audit_service_module, "audit_clipboard_once", audit)
     monkeypatch.setattr(
         app_module.QApplication,
         "clipboard",
@@ -5073,7 +5122,7 @@ def test_unc_paths_are_rejected_before_filesystem_access(monkeypatch):
         lambda path: pytest.fail("UNC path reached filesystem inspection"),
     )
     monkeypatch.setattr(
-        app_module,
+        audit_service_module,
         "discover_files",
         lambda *args, **kwargs: pytest.fail("UNC path reached discovery"),
     )
@@ -5150,8 +5199,16 @@ def test_start_scan_rejects_missing_stale_or_forged_consent_before_side_effects(
 
     monkeypatch.setattr(app_module, "QThread", forbidden("thread"))
     monkeypatch.setattr(app_module, "AuditWorker", forbidden("worker"))
-    monkeypatch.setattr(app_module, "discover_files", forbidden("discovery"))
-    monkeypatch.setattr(app_module.secrets, "token_bytes", forbidden("randomness"))
+    monkeypatch.setattr(
+        audit_service_module,
+        "discover_files",
+        forbidden("discovery"),
+    )
+    monkeypatch.setattr(
+        audit_service_module.secrets,
+        "token_bytes",
+        forbidden("randomness"),
+    )
 
     window._start_scan()
 
@@ -5231,8 +5288,16 @@ def test_start_scan_rejects_consent_after_selector_contract_replacement(
     monkeypatch.setattr(app_module, "SUPPORTED_SUFFIXES", (".json",))
     monkeypatch.setattr(app_module, "QThread", forbidden("thread"))
     monkeypatch.setattr(app_module, "AuditWorker", forbidden("worker"))
-    monkeypatch.setattr(app_module, "discover_files", forbidden("discovery"))
-    monkeypatch.setattr(app_module.secrets, "token_bytes", forbidden("randomness"))
+    monkeypatch.setattr(
+        audit_service_module,
+        "discover_files",
+        forbidden("discovery"),
+    )
+    monkeypatch.setattr(
+        audit_service_module.secrets,
+        "token_bytes",
+        forbidden("randomness"),
+    )
 
     window._start_scan()
 
@@ -5268,7 +5333,7 @@ def test_discovery_uses_the_exact_selector_tuple_from_the_accepted_preview(
         )
         return _discovery_result(())
 
-    monkeypatch.setattr(app_module, "discover_files", discover)
+    monkeypatch.setattr(audit_service_module, "discover_files", discover)
     window = create_window()
     window.folder_button.click()
     _approve_current_scope(window)
@@ -5593,7 +5658,7 @@ def test_audit_finding_cap_stops_remaining_files_and_uses_complete_coverage(
     monkeypatch.setattr(app_module, "MAX_AUDIT_FINDINGS", 2)
     monkeypatch.setattr(app_module, "MAX_AUDIT_EVIDENCE", 10)
     monkeypatch.setattr(
-        app_module,
+        audit_service_module,
         "discover_files",
         lambda roots, suffixes, *, max_files, max_entries: _discovery_result(files),
     )
@@ -5602,7 +5667,7 @@ def test_audit_finding_cap_stops_remaining_files_and_uses_complete_coverage(
         calls.append(path)
         return FileDetectionResult(batches[path], True, ())
 
-    monkeypatch.setattr(app_module, "detect_file", fake_detect_file)
+    monkeypatch.setattr(audit_service_module, "detect_file", fake_detect_file)
 
     outcome = _run_audit(
         (tmp_path,), disposition_key=DISPOSITION_KEY
@@ -5635,7 +5700,7 @@ def test_audit_evidence_cap_rejects_partial_finding_batch(monkeypatch, tmp_path)
     monkeypatch.setattr(app_module, "MAX_AUDIT_FINDINGS", 10)
     monkeypatch.setattr(app_module, "MAX_AUDIT_EVIDENCE", 2)
     monkeypatch.setattr(
-        app_module,
+        audit_service_module,
         "discover_files",
         lambda roots, suffixes, *, max_files, max_entries: _discovery_result(files),
     )
@@ -5644,7 +5709,7 @@ def test_audit_evidence_cap_rejects_partial_finding_batch(monkeypatch, tmp_path)
         calls.append(path)
         return FileDetectionResult(batches[path], True, ())
 
-    monkeypatch.setattr(app_module, "detect_file", fake_detect_file)
+    monkeypatch.setattr(audit_service_module, "detect_file", fake_detect_file)
 
     outcome = _run_audit(
         (tmp_path,), disposition_key=DISPOSITION_KEY
@@ -5672,8 +5737,8 @@ def test_discovery_file_sentinel_marks_scan_incomplete(monkeypatch, tmp_path):
         calls.append(path)
         return FileDetectionResult((), True, ())
 
-    monkeypatch.setattr(app_module, "discover_files", fake_discover)
-    monkeypatch.setattr(app_module, "detect_file", fake_detect_file)
+    monkeypatch.setattr(audit_service_module, "discover_files", fake_discover)
+    monkeypatch.setattr(audit_service_module, "detect_file", fake_detect_file)
 
     outcome = _run_audit(
         (tmp_path,), disposition_key=DISPOSITION_KEY
@@ -5693,7 +5758,7 @@ def test_total_byte_limit_stops_before_over_budget_file(monkeypatch, tmp_path):
     monkeypatch.setattr(app_module, "MAX_AUDIT_FILES", 10)
     monkeypatch.setattr(app_module, "MAX_AUDIT_BYTES", 5)
     monkeypatch.setattr(
-        app_module,
+        audit_service_module,
         "discover_files",
         lambda roots, suffixes, *, max_files, max_entries: _discovery_result(files),
     )
@@ -5702,7 +5767,7 @@ def test_total_byte_limit_stops_before_over_budget_file(monkeypatch, tmp_path):
         calls.append(path)
         return FileDetectionResult((), True, ())
 
-    monkeypatch.setattr(app_module, "detect_file", fake_detect_file)
+    monkeypatch.setattr(audit_service_module, "detect_file", fake_detect_file)
 
     outcome = _run_audit(
         (tmp_path,), disposition_key=DISPOSITION_KEY
@@ -5717,10 +5782,10 @@ def test_total_byte_limit_stops_before_over_budget_file(monkeypatch, tmp_path):
 def test_json_config_reader_is_bounded(monkeypatch, tmp_path):
     path = tmp_path / "agent.json"
     path.write_bytes(b'{"mcpServers": {}}')
-    monkeypatch.setattr(app_module, "MAX_FILE_BYTES", 8)
+    monkeypatch.setattr(audit_service_module, "MAX_FILE_BYTES", 8)
 
     with pytest.raises(ValueError, match="JSON file limit"):
-        app_module._read_limited_json(path)
+        audit_service_module._read_limited_json(path)
 
 
 def test_duplicate_findings_are_aggregated_once(monkeypatch, tmp_path):
@@ -5728,12 +5793,12 @@ def test_duplicate_findings_are_aggregated_once(monkeypatch, tmp_path):
     path.write_text("x", encoding="utf-8")
     finding = _synthetic_finding(1)
     monkeypatch.setattr(
-        app_module,
+        audit_service_module,
         "discover_files",
         lambda roots, suffixes, *, max_files, max_entries: _discovery_result((path,)),
     )
     monkeypatch.setattr(
-        app_module,
+        audit_service_module,
         "detect_file",
         lambda path, *, scan_key, disposition_key: FileDetectionResult(
             (finding, finding), True, ()
@@ -5789,15 +5854,21 @@ def test_export_new_report_has_fixed_personal_signature() -> None:
     )
 
 
-def test_share_verification_starts_only_after_user_click(
+def test_share_verification_cancelled_before_public_network_access(
     qapp, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     prompts = []
+    questions = []
     requests = []
     monkeypatch.setattr(
         app_module.QInputDialog,
         "getText",
         lambda *args: (prompts.append(args), ("https://example.test", True))[1],
+    )
+    monkeypatch.setattr(
+        app_module.QMessageBox,
+        "question",
+        lambda *args: (questions.append(args), QMessageBox.StandardButton.No)[1],
     )
     monkeypatch.setattr(
         app_module,
@@ -5812,6 +5883,42 @@ def test_share_verification_starts_only_after_user_click(
     window.share_button.click()
 
     assert len(prompts) == 1
+    assert len(questions) == 1
+    assert questions[0][4] == QMessageBox.StandardButton.No
+    assert "公共网络 I/O" in questions[0][2]
+    assert "不会发送本地扫描数据或凭据" in questions[0][2]
+    assert "脱敏元数据" in questions[0][2]
+    assert "Codex 上下文" in questions[0][2]
+    assert "不支持受监管或高度敏感的真实数据" in questions[0][2]
+    assert requests == []
+    window.close()
+
+
+def test_share_verification_confirmed_once_after_user_click(
+    qapp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    questions = []
+    requests = []
+    monkeypatch.setattr(
+        app_module.QInputDialog,
+        "getText",
+        lambda *args: ("https://example.test", True),
+    )
+    monkeypatch.setattr(
+        app_module.QMessageBox,
+        "question",
+        lambda *args: (questions.append(args), QMessageBox.StandardButton.Yes)[1],
+    )
+    monkeypatch.setattr(
+        app_module,
+        "verify_public_share",
+        lambda url: (requests.append(url), SimpleNamespace(reachable=False))[1],
+    )
+    window = create_window()
+
+    window.share_button.click()
+
+    assert len(questions) == 1
     assert requests == ["https://example.test"]
     window.close()
 
@@ -5891,6 +5998,7 @@ def test_production_modules_have_no_dangerous_capabilities_and_one_write_site():
     project_root = Path(__file__).resolve().parents[1]
     production_paths = [
         project_root / "src" / "agentguardian" / "app.py",
+        project_root / "src" / "agentguardian" / "audit_service.py",
         project_root / "src" / "agentguardian" / "__main__.py",
     ]
     banned_imports = {
@@ -5957,8 +6065,8 @@ def test_production_modules_have_no_dangerous_capabilities_and_one_write_site():
                         parent = parents.get(parent)
                     writes.append((parent.name, mode.value))
 
-    app_source = production_paths[0].read_text(encoding="utf-8")
-    assert "secrets.token_bytes(32)" in app_source
+    audit_service_source = production_paths[1].read_text(encoding="utf-8")
+    assert "secrets.token_bytes(32)" in audit_service_source
     assert writes == [("export_new_report", "x")]
 
 

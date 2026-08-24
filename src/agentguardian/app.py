@@ -1,10 +1,8 @@
-import json
 import os
-import secrets
 import stat
 import sys
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from itertools import islice
 from math import ceil
@@ -48,11 +46,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .detectors import MAX_FILE_BYTES, detect_file, detect_mcp_config, load_rules
+from .audit_service import (
+    AuditOutcome,
+    _DispositionContext,
+    _generate_key,
+    _is_unc_path,
+    _read_limited_json,
+    _utc_now,
+    _validated_audit_preview,
+    _validated_disposition_context,
+    _validated_evaluation_time,
+    run_clipboard_audit,
+    run_file_audit as _run_audit,
+)
+from .detectors import load_rules
 from .browser_audit import BrowserKind, audit_browser_database
-from .clipboard_audit import audit_clipboard_once
 from .share_verification import verify_public_share
-from .discovery import discover_files, known_config_roots
+from .discovery import known_config_roots
 from .dispositions import (
     DispositionRecord,
     DispositionStatus,
@@ -185,32 +195,9 @@ class _FindingFilterCallbackError(Exception):
 
 
 @dataclass(frozen=True, slots=True)
-class _DispositionContext:
-    key: bytes = field(repr=False)
-    records: tuple[DispositionRecord, ...]
-    invalid_state: bool
-
-
-@dataclass(frozen=True, slots=True)
-class AuditOutcome:
-    findings: tuple[Finding, ...]
-    score: Score
-    reviewed_score: Score
-    evaluated_at: datetime
-    rule_version: str
-    report_json: str
-    report_html: str
-    scanned_roots: tuple[Path, ...] = field(repr=False)
-
-
-@dataclass(frozen=True, slots=True)
 class _ComparisonState:
     baseline_name: str
     comparison: ReportComparison
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _canonical_utc_seconds(value: datetime) -> str:
@@ -252,30 +239,6 @@ def _dedupe_scope_roots(roots: Iterable[Path]) -> tuple[Path, ...]:
             seen.add(key)
             unique.append(path)
     return tuple(unique)
-
-
-def _validated_audit_preview(
-    roots: tuple[Path, ...],
-    preview: object,
-) -> ScopePreview:
-    try:
-        if type(preview) is not ScopePreview:
-            raise ValueError
-        rebuilt = build_scope_preview(
-            roots,
-            preview.selectors,
-            max_files=preview.max_files,
-            max_entries=preview.max_entries,
-            max_bytes=preview.max_bytes,
-            max_findings=preview.max_findings,
-            max_evidence=preview.max_evidence,
-        )
-        if preview != rebuilt:
-            raise ValueError
-        return preview
-    except Exception:
-        pass
-    raise ValueError("SCOPE_PREVIEW_INVALID") from None
 
 
 def _coverage_status_text(audit_score: Score) -> str:
@@ -471,70 +434,6 @@ class _DispositionDialog(QDialog):
         self.button_box.button(QDialogButtonBox.StandardButton.Ok).setEnabled(valid)
 
 
-def _generate_key() -> bytes:
-    try:
-        key = secrets.token_bytes(32)
-        if type(key) is not bytes or len(key) != 32:
-            raise ValueError
-        return key
-    except Exception:
-        pass
-    raise ValueError(_CONTEXT_ERROR) from None
-
-
-def _validated_disposition_context(
-    key: object,
-    records: Iterable[DispositionRecord],
-    *,
-    max_records: int = MAX_AUDIT_FINDINGS,
-) -> _DispositionContext:
-    try:
-        if (
-            type(key) is not bytes
-            or len(key) != 32
-            or type(max_records) is not int
-            or max_records <= 0
-        ):
-            raise ValueError
-        items = tuple(islice(records, max_records + 1))
-        if len(items) > max_records:
-            raise ValueError
-        rebuilt = []
-        for record in items:
-            if type(record) is not DispositionRecord:
-                raise ValueError
-            rebuilt.append(
-                DispositionRecord(
-                    record.disposition_ref,
-                    record.rule_id,
-                    record.status,
-                    record.reason,
-                    record.reviewer,
-                    record.created_at,
-                    record.expires_at,
-                )
-            )
-        ordered = tuple(disposition_index(rebuilt).values())
-        return _DispositionContext(key, ordered, False)
-    except Exception:
-        pass
-    raise ValueError(_CONTEXT_ERROR) from None
-
-
-def _validated_evaluation_time(value: datetime | None) -> datetime:
-    try:
-        evaluated_at = datetime.now(timezone.utc) if value is None else value
-        if type(evaluated_at) is not datetime or evaluated_at.tzinfo is None:
-            raise ValueError
-        offset = evaluated_at.utcoffset()
-        if type(offset) is not timedelta or offset != timedelta(0):
-            raise ValueError
-        return evaluated_at.replace(tzinfo=timezone.utc, microsecond=0)
-    except Exception:
-        pass
-    raise ValueError(_CONTEXT_ERROR) from None
-
-
 def _deeply_revalidated_snapshot(snapshot: object) -> EvidenceSnapshot:
     try:
         if type(snapshot) is not EvidenceSnapshot:
@@ -632,11 +531,6 @@ def _load_disposition_context() -> _DispositionContext:
     return _DispositionContext(_generate_key(), (), invalid_state)
 
 
-def _is_unc_path(path: str | Path) -> bool:
-    value = os.fspath(path)
-    return value.startswith(("\\\\", "//"))
-
-
 def export_new_report(
     path: str | Path,
     content: str,
@@ -690,196 +584,6 @@ def _is_reparse(path: Path) -> bool:
         return False
     return stat.S_ISLNK(path_stat.st_mode) or bool(
         getattr(path_stat, "st_file_attributes", 0) & _REPARSE_POINT
-    )
-
-
-def _read_limited_json(path: Path) -> object:
-    with open(path, "rb") as stream:
-        data = stream.read(MAX_FILE_BYTES + 1)
-    if len(data) > MAX_FILE_BYTES:
-        raise ValueError("JSON file limit exceeded")
-    return json.loads(data)
-
-
-def _append_finding_batch(
-    aggregate: list[Finding],
-    seen: set[Finding],
-    batch: Iterable[Finding],
-    evidence_count: int,
-    *,
-    max_findings: int,
-    max_evidence: int,
-) -> tuple[int, bool]:
-    for finding in batch:
-        if finding in seen:
-            continue
-        next_evidence_count = evidence_count + len(finding.evidence)
-        if (
-            len(aggregate) >= max_findings
-            or next_evidence_count > max_evidence
-        ):
-            return evidence_count, False
-        aggregate.append(finding)
-        seen.add(finding)
-        evidence_count = next_evidence_count
-    return evidence_count, True
-
-
-def _run_audit(
-    roots: tuple[Path, ...],
-    *,
-    scope_preview: ScopePreview,
-    disposition_key: bytes,
-    dispositions: Iterable[DispositionRecord] = (),
-    evaluated_at: datetime | None = None,
-) -> AuditOutcome:
-    frozen_roots = tuple(Path(os.path.abspath(root)) for root in roots)
-    if any(_is_unc_path(root) for root in frozen_roots):
-        raise ValueError("UNC scan roots are not allowed")
-    accepted_preview = _validated_audit_preview(frozen_roots, scope_preview)
-    evaluation_time = (
-        _validated_evaluation_time(evaluated_at)
-        if evaluated_at is not None
-        else None
-    )
-    disposition_context = _validated_disposition_context(
-        disposition_key,
-        dispositions,
-        max_records=accepted_preview.max_findings,
-    )
-    local_disposition_key = disposition_context.key
-    frozen_dispositions = disposition_context.records
-    disposition_records = {
-        record.disposition_ref: record for record in frozen_dispositions
-    }
-    scan_key = _generate_key()
-    discovery = discover_files(
-        list(frozen_roots),
-        accepted_preview.selectors,
-        max_files=accepted_preview.max_files,
-        max_entries=accepted_preview.max_entries,
-    )
-    files = list(discovery.files)
-    findings: list[Finding] = []
-    seen_findings: set[Finding] = set()
-    limits = list(discovery.limits)
-    scanned = 0
-    scanned_bytes = 0
-    evidence_count = 0
-
-    for candidate in files:
-        path = Path(os.path.abspath(candidate))
-        try:
-            file_bytes = path.stat().st_size
-        except OSError:
-            limits.append("file_scan_limited")
-            continue
-        if scanned_bytes + file_bytes > accepted_preview.max_bytes:
-            limits.append("byte_limit_reached")
-            break
-        scanned_bytes += file_bytes
-        try:
-            result = detect_file(
-                path,
-                scan_key=scan_key,
-                disposition_key=local_disposition_key,
-            )
-        except Exception:  # noqa: BLE001 - never expose scan exception text
-            limits.append("file_scan_limited")
-            continue
-        evidence_count, batch_complete = _append_finding_batch(
-            findings,
-            seen_findings,
-            result.findings,
-            evidence_count,
-            max_findings=accepted_preview.max_findings,
-            max_evidence=accepted_preview.max_evidence,
-        )
-        if not batch_complete:
-            limits.append("finding_limit_reached")
-            break
-        limits.extend(result.limits)
-        if "finding_limit_reached" in result.limits:
-            break
-        if not result.scanned:
-            continue
-        if path.suffix.lower() == ".json" and result.scanned:
-            try:
-                config = _read_limited_json(path)
-                mcp_findings = detect_mcp_config(
-                    config,
-                    str(path),
-                    scan_key=scan_key,
-                    disposition_key=local_disposition_key,
-                )
-            except Exception:  # noqa: BLE001 - never expose parser exception text
-                limits.append("mcp_config_scan_limited")
-                continue
-            evidence_count, batch_complete = _append_finding_batch(
-                findings,
-                seen_findings,
-                mcp_findings,
-                evidence_count,
-                max_findings=accepted_preview.max_findings,
-                max_evidence=accepted_preview.max_evidence,
-            )
-            if not batch_complete:
-                limits.append("finding_limit_reached")
-                break
-        scanned += 1
-
-    if evaluation_time is None:
-        evaluation_time = _validated_evaluation_time(_utc_now())
-
-    coverage_denominator = len(files) + bool(discovery.limits)
-    if coverage_denominator:
-        coverage = scanned / coverage_denominator
-    else:
-        coverage = 0.0
-        limits.append("no_supported_files")
-    unique_limits = tuple(dict.fromkeys(limits))
-    frozen_findings = tuple(findings)
-    confidence = 1.0
-    audit_score = score(
-        frozen_findings,
-        coverage=coverage,
-        confidence=confidence,
-        limits=unique_limits,
-    )
-    rule_version = load_rules().version
-    reviewed_score = score(
-        reviewed_findings(
-            frozen_findings,
-            disposition_records,
-            now=evaluation_time,
-        ),
-        coverage=coverage,
-        confidence=confidence,
-        limits=unique_limits,
-    )
-    return AuditOutcome(
-        findings=frozen_findings,
-        score=audit_score,
-        reviewed_score=reviewed_score,
-        evaluated_at=evaluation_time,
-        rule_version=rule_version,
-        report_json=render_json(
-            audit_score,
-            frozen_findings,
-            rule_version=rule_version,
-            reviewed_score=reviewed_score,
-            dispositions=frozen_dispositions,
-            evaluated_at=evaluation_time,
-        ),
-        report_html=render_html(
-            audit_score,
-            frozen_findings,
-            rule_version=rule_version,
-            reviewed_score=reviewed_score,
-            dispositions=frozen_dispositions,
-            evaluated_at=evaluation_time,
-        ),
-        scanned_roots=frozen_roots,
     )
 
 
@@ -1485,71 +1189,24 @@ class AgentGuardianWindow(QMainWindow):
         if not self._personal_scope_ready():
             return
         try:
-            result = audit_clipboard_once(
+            result, outcome = run_clipboard_audit(
                 lambda: QApplication.clipboard().text(),
-                scan_key=_generate_key(),
                 disposition_key=self._disposition_key,
+                dispositions=self._dispositions,
             )
         except Exception:  # noqa: BLE001 - fixed clipboard boundary
             self._invalidate_report()
             self.status_label.setText("剪贴板检查未执行。")
             self.coverage_status_label.setText("剪贴板读取失败；未生成报告。")
             return
-        if not result.scanned:
+        if not result.scanned or outcome is None:
             self._invalidate_report()
-            self.status_label.setText("剪贴板检查未执行。")
+            self.status_label.setText("Clipboard audit did not run.")
             self.coverage_status_label.setText(
-                "剪贴板内容未进入审计；未生成报告。"
+                "Clipboard content did not enter the audit; no report was generated."
             )
             return
-        evaluated_at = _validated_evaluation_time(_utc_now())
-        audit_score = score(
-            result.findings,
-            coverage=1.0,
-            confidence=1.0,
-            limits=(),
-        )
-        reviewed_score = score(
-            reviewed_findings(
-                result.findings,
-                disposition_index(self._dispositions),
-                now=evaluated_at,
-            ),
-            coverage=1.0,
-            confidence=1.0,
-            limits=(),
-        )
-        outcome = AuditOutcome(
-            findings=result.findings,
-            score=audit_score,
-            reviewed_score=reviewed_score,
-            evaluated_at=evaluated_at,
-            rule_version=load_rules().version,
-            report_json=render_json(
-                audit_score,
-                result.findings,
-                rule_version=load_rules().version,
-                reviewed_score=reviewed_score,
-                dispositions=self._dispositions,
-                evaluated_at=evaluated_at,
-            ),
-            report_html=render_html(
-                audit_score,
-                result.findings,
-                rule_version=load_rules().version,
-                reviewed_score=reviewed_score,
-                dispositions=self._dispositions,
-                evaluated_at=evaluated_at,
-            ),
-            scanned_roots=(),
-        )
         self._scan_completed(outcome)
-        self.status_label.setText(
-            f"剪贴板一次性审计完成：发现 {len(result.findings)} 项。"
-        )
-        self.coverage_status_label.setText(
-            "剪贴板仅在本次点击中读取一次；报告不包含剪贴板原文。"
-        )
 
     def _verify_share(self) -> None:
         if self.is_scanning:
@@ -1560,6 +1217,18 @@ class AgentGuardianWindow(QMainWindow):
             "输入公开 HTTP(S) URL：",
         )
         if not accepted or not url.strip():
+            return
+        answer = QMessageBox.question(
+            self,
+            "确认公共网络访问",
+            "这是公共网络 I/O。\n"
+            "不会发送本地扫描数据或凭据。\n"
+            "通过 MCP 调用时，可能将脱敏元数据放入 Codex 上下文。\n"
+            "不支持受监管或高度敏感的真实数据。继续吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
             return
         try:
             result = verify_public_share(url.strip())
