@@ -244,9 +244,9 @@ result, outcome = run_clipboard_audit(
 )
 if not result.scanned or outcome is None:
     self._invalidate_report()
-    self.status_label.setText("Clipboard audit did not run.")
+    self.status_label.setText("剪贴板检查未执行。")
     self.coverage_status_label.setText(
-        "Clipboard content did not enter the audit; no report was generated."
+        "剪贴板内容未进入审计；未生成报告。"
     )
     return
 self._scan_completed(outcome)
