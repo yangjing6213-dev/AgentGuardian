@@ -338,10 +338,14 @@ def run_clipboard_audit(
     dispositions: Iterable[DispositionRecord] = (),
     evaluated_at: datetime | None = None,
 ) -> tuple[ClipboardAuditResult, AuditOutcome | None]:
-    frozen_dispositions = tuple(dispositions)
+    evaluation_time = (
+        _validated_evaluation_time(evaluated_at)
+        if evaluated_at is not None
+        else None
+    )
     context = _validated_disposition_context(
         disposition_key,
-        frozen_dispositions,
+        dispositions,
         max_records=MAX_AUDIT_FINDINGS,
     )
     result = audit_clipboard_once(
@@ -351,7 +355,8 @@ def run_clipboard_audit(
     )
     if not result.scanned:
         return result, None
-    evaluation_time = _validated_evaluation_time(evaluated_at or _utc_now())
+    if evaluation_time is None:
+        evaluation_time = _validated_evaluation_time(_utc_now())
     audit_score = score(
         result.findings,
         coverage=1.0,

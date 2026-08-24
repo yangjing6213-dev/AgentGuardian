@@ -1207,6 +1207,12 @@ class AgentGuardianWindow(QMainWindow):
             )
             return
         self._scan_completed(outcome)
+        self.status_label.setText(
+            f"剪贴板一次性审计完成：发现 {len(result.findings)} 项。"
+        )
+        self.coverage_status_label.setText(
+            "剪贴板仅在本次点击中读取一次；报告不包含剪贴板原文。"
+        )
 
     def _verify_share(self) -> None:
         if self.is_scanning:
