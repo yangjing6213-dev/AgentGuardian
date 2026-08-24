@@ -148,7 +148,7 @@ def test_clipboard_service_builds_the_same_redacted_audit_outcome() -> None:
     assert outcome.report_html.find("sk-proj-abcdefghijklmnop") == -1
 ```
 
-Add focused boundary tests proving that a non-`None` invalid `evaluated_at` is rejected with the fixed audit-context error before the reader is called, and that dispositions are consumed only through `_validated_disposition_context`'s `MAX_AUDIT_FINDINGS + 1` bounded read. Cover both an over-limit iterable and an iterable that raises an exception containing a private marker; neither the returned exception nor captured output may contain that marker.
+Add focused boundary tests proving that a non-`None` invalid `evaluated_at` is rejected with the fixed audit-context error before the reader is called, and that dispositions are consumed only through `_validated_disposition_context`'s `MAX_AUDIT_FINDINGS + 1` bounded read. Cover both an over-limit iterable and an iterable that raises an exception containing a private marker; neither the returned exception nor captured output may contain that marker. Monkeypatch `_utc_now` for `evaluated_at=None`: a successful scan must record `reader` before `clock`, while an unscanned result must not call the clock and must return no outcome.
 
 - [ ] **Step 2: Verify RED**
 
@@ -265,6 +265,8 @@ if not result.scanned or outcome is None:
     )
     return
 self._scan_completed(outcome)
+if self._audit_outcome is not outcome:
+    return
 self.status_label.setText(
     f"剪贴板一次性审计完成：发现 {len(result.findings)} 项。"
 )
@@ -273,7 +275,7 @@ self.coverage_status_label.setText(
 )
 ```
 
-Add GUI regression assertions for both the no-scan text above and the exact successful clipboard status/privacy text. The shared `_scan_completed` call must still retain the report before the clipboard-specific labels are restored.
+Add GUI regression assertions for both the no-scan text above and the exact successful clipboard status/privacy text. The shared `_scan_completed` call must retain the exact outcome, JSON, and HTML before the clipboard-specific labels are restored. Add a rejected-outcome test that forces `_scan_completed` to invalidate the report and verifies the clipboard branch does not overwrite its failure status.
 
 Before `verify_public_share` is called in `_verify_share`, add a default-No `QMessageBox.question` that states this is public network I/O, sends no local scan data or credentials, may place redacted metadata in the Codex context when invoked through MCP, and is unsupported for regulated or highly sensitive real data. Cancellation must return before DNS or network access. Add a GUI test that chooses No and asserts the share verifier was never called, plus a Yes test that asserts exactly one call. Keep the existing browser and clipboard default-No consent dialogs and the file-scope consent controls.
 
