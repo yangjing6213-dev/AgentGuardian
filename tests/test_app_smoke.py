@@ -5071,30 +5071,104 @@ def test_clipboard_no_scan_preserves_chinese_status(qapp, monkeypatch, tmp_path)
 
 
 def test_clipboard_success_preserves_baseline_status(qapp, monkeypatch, tmp_path):
+    result = SimpleNamespace(findings=(), scanned=True, limits=())
+    outcome = _audit_outcome(
+        (),
+        coverage=1.0,
+        confidence=1.0,
+        limits=(),
+    )
     monkeypatch.setattr(
         QMessageBox,
         "question",
         lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
     )
     monkeypatch.setattr(
-        audit_service_module,
-        "audit_clipboard_once",
-        lambda *args, **kwargs: SimpleNamespace(
-            findings=(),
-            scanned=True,
-            limits=(),
-        ),
+        app_module,
+        "run_clipboard_audit",
+        lambda *args, **kwargs: (result, outcome),
     )
+    window = create_window()
+    window._set_scope_roots((tmp_path,), status="ready")
+    _approve_current_scope(window)
+    completed_state = []
+    scan_completed = window._scan_completed
+
+    def capture_completed_state(candidate):
+        scan_completed(candidate)
+        completed_state.append(
+            (
+                candidate,
+                window._audit_outcome,
+                window.report_json,
+                window.report_html,
+                window.status_label.text(),
+                window.coverage_status_label.text(),
+            )
+        )
+
+    monkeypatch.setattr(window, "_scan_completed", capture_completed_state)
+
+    window._scan_clipboard_once()
+
+    assert len(completed_state) == 1
+    candidate, retained, report_json, report_html, status, coverage_status = (
+        completed_state[0]
+    )
+    assert candidate is outcome
+    assert retained is outcome
+    assert report_json == outcome.report_json
+    assert report_html == outcome.report_html
+    assert status != "剪贴板一次性审计完成：发现 0 项。"
+    assert coverage_status != (
+        "剪贴板仅在本次点击中读取一次；报告不包含剪贴板原文。"
+    )
+    assert window.status_label.text() == "剪贴板一次性审计完成：发现 0 项。"
+    assert window.coverage_status_label.text() == (
+        "剪贴板仅在本次点击中读取一次；报告不包含剪贴板原文。"
+    )
+    assert window._audit_outcome is outcome
+    assert window.report_json == outcome.report_json
+    assert window.report_html == outcome.report_html
+    window.close()
+
+
+def test_clipboard_rejected_outcome_keeps_scan_failure_status(
+    qapp, monkeypatch, tmp_path
+):
+    result = SimpleNamespace(findings=(), scanned=True, limits=())
+    outcome = _audit_outcome(
+        (),
+        coverage=1.0,
+        confidence=1.0,
+        limits=(),
+    )
+
+    def reject_coverage_status(_score):
+        raise ValueError("invalid coverage status")
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "run_clipboard_audit",
+        lambda *args, **kwargs: (result, outcome),
+    )
+    monkeypatch.setattr(app_module, "_coverage_status_text", reject_coverage_status)
     window = create_window()
     window._set_scope_roots((tmp_path,), status="ready")
     _approve_current_scope(window)
 
     window._scan_clipboard_once()
 
-    assert window.status_label.text() == "剪贴板一次性审计完成：发现 0 项。"
-    assert window.coverage_status_label.text() == (
-        "剪贴板仅在本次点击中读取一次；报告不包含剪贴板原文。"
-    )
+    assert window._audit_outcome is None
+    assert window.report_json == ""
+    assert window.report_html == ""
+    assert window.status_label.text() == "审计失败。"
+    assert window.coverage_status_label.text() == "覆盖状态：尚无结果。"
     window.close()
 
 

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 import sys
 
 import pytest
 
+import agentguardian.audit_service as audit_service_module
 from agentguardian.audit_service import MAX_AUDIT_FINDINGS, run_clipboard_audit
 
 
@@ -118,3 +119,55 @@ def test_clipboard_service_sanitizes_disposition_iteration_failure(
     assert marker not in captured.out
     assert marker not in captured.err
     assert reads == []
+
+
+def test_clipboard_service_reads_before_acquiring_default_evaluation_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = []
+    evaluated_at = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+
+    def reader() -> str:
+        events.append("reader")
+        return "ordinary clipboard text"
+
+    def clock() -> datetime:
+        events.append("clock")
+        return evaluated_at
+
+    monkeypatch.setattr(audit_service_module, "_utc_now", clock)
+
+    result, outcome = run_clipboard_audit(
+        reader,
+        disposition_key=DISPOSITION_KEY,
+    )
+
+    assert result.scanned is True
+    assert outcome is not None
+    assert outcome.evaluated_at == evaluated_at
+    assert events == ["reader", "clock"]
+
+
+def test_clipboard_service_does_not_acquire_time_for_unscanned_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = []
+
+    def reader() -> str:
+        events.append("reader")
+        raise RuntimeError("synthetic clipboard read failure")
+
+    def clock() -> datetime:
+        events.append("clock")
+        return datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(audit_service_module, "_utc_now", clock)
+
+    result, outcome = run_clipboard_audit(
+        reader,
+        disposition_key=DISPOSITION_KEY,
+    )
+
+    assert result.scanned is False
+    assert outcome is None
+    assert events == ["reader"]

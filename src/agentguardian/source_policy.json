@@ -3,7 +3,7 @@
   "modules": {
     "__init__.py": "19f558530a3ffd442c5a2b802b6a275acb52d5d580ea2cf0b051e2eafd6dd474",
     "__main__.py": "832caf5ea96c681db924078e0f5551c574e566cd34feb1298c9e34f82f48f673",
-    "app.py": "dc0fd34fe5dc5b6dce35e473afa730d1448793d4c0dab1a25e6252b645c7c255",
+    "app.py": "58a52c0361099d4a5dc8fee22bc2a63c68def7fb7bd852055561583cddf90fe1",
     "audit_service.py": "2f567fd32b8e5be85cbb0662f7ec242f4732758666fd64412591d062b91d85e3",
     "browser_audit.py": "1e2631fcf355667f7a630d9dd74aef9d6dee98207d2afd6aad57b90a704d7017",
     "clipboard_audit.py": "152fa64217ba1a3146846b24a6e031a8b037a1e04ef96bc5bbfca4c30b681f86",

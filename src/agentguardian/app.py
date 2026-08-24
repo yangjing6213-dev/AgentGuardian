@@ -1207,6 +1207,8 @@ class AgentGuardianWindow(QMainWindow):
             )
             return
         self._scan_completed(outcome)
+        if self._audit_outcome is not outcome:
+            return
         self.status_label.setText(
             f"剪贴板一次性审计完成：发现 {len(result.findings)} 项。"
         )
