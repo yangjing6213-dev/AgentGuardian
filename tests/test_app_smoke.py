@@ -5042,6 +5042,34 @@ def test_clipboard_callback_requires_boundary_and_action_confirmation(
     window.close()
 
 
+def test_clipboard_no_scan_preserves_chinese_status(qapp, monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr(
+        audit_service_module,
+        "audit_clipboard_once",
+        lambda *args, **kwargs: SimpleNamespace(
+            findings=(),
+            scanned=False,
+            limits=("clipboard_read_error",),
+        ),
+    )
+    window = create_window()
+    window._set_scope_roots((tmp_path,), status="ready")
+    _approve_current_scope(window)
+
+    window._scan_clipboard_once()
+
+    assert window.status_label.text() == "剪贴板检查未执行。"
+    assert window.coverage_status_label.text() == (
+        "剪贴板内容未进入审计；未生成报告。"
+    )
+    window.close()
+
+
 def test_browser_callback_requires_boundary_and_metadata_confirmation(
     qapp, monkeypatch, tmp_path
 ):
