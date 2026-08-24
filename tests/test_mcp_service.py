@@ -605,7 +605,7 @@ def test_failure_codes_are_fixed_and_native_errors_are_sanitized(
 
 @pytest.mark.parametrize(
     "operation",
-    ("files", "browser", "clipboard", "public_share"),
+    ("files", "browser", "public_share"),
 )
 def test_non_qt_callback_cannot_claim_clipboard_unavailable(
     tmp_path: Path,
@@ -628,12 +628,6 @@ def test_non_qt_callback_cannot_claim_clipboard_unavailable(
             browser_kind="chrome",
             database_path=str(tmp_path / "History"),
         )
-    elif operation == "clipboard":
-        service = _service(clipboard_reader=fail)
-        prepared = service.prepare_audit(
-            operation="clipboard",
-            classification=CLASSIFICATION,
-        )
     else:
         service = _service(share_runner=fail)
         prepared = service.prepare_audit(
@@ -646,6 +640,47 @@ def test_non_qt_callback_cannot_claim_clipboard_unavailable(
 
     assert result == {"status": "failed", "code": "OPERATION_FAILED"}
     assert calls == [operation]
+
+
+def test_injected_clipboard_reader_preserves_authoritative_read_error() -> None:
+    calls: list[str] = []
+
+    def reader() -> str:
+        calls.append("reader")
+        raise ValueError("CLIPBOARD_UNAVAILABLE")
+
+    direct_result, direct_outcome = run_clipboard_audit(
+        reader,
+        disposition_key=b"d" * 32,
+        evaluated_at=FIXED_NOW,
+    )
+
+    assert calls == ["reader"]
+    calls.clear()
+
+    service = _service(clipboard_reader=reader)
+    prepared = service.prepare_audit(
+        operation="clipboard",
+        classification=CLASSIFICATION,
+    )
+    result = _run(service, prepared)
+
+    assert direct_outcome is None
+    assert direct_result.scanned is False
+    assert direct_result.limits == ("clipboard_read_error",)
+    assert direct_result.raw_data_retained is False
+    assert result["status"] == "completed"
+    assert result["scanned"] is direct_result.scanned
+    assert result["limits"] == list(direct_result.limits)
+    assert result["raw_data_retained"] is direct_result.raw_data_retained
+    assert result["finding_count"] == len(direct_result.findings) == 0
+    assert result["evidence_count"] == 0
+    assert result["findings"] == []
+    assert "outcome" not in result
+    assert "score" not in result
+    assert "reviewed_score" not in result
+    assert "rule_version" not in result
+    assert calls == ["reader"]
 
 
 def test_authorization_is_consumed_before_operation_callback(tmp_path: Path) -> None:

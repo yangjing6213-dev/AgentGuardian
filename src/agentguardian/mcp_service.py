@@ -294,9 +294,12 @@ class AuditMcpService:
             result = self._browser_runner(request.database_path, request.browser)
             return _browser_response(request, result)
         if request.operation == "clipboard":
-            clipboard_text = self._clipboard_reader()
+            reader = self._clipboard_reader
+            if reader is _qt_clipboard_text:
+                clipboard_text = reader()
+                reader = lambda: clipboard_text
             result, outcome = run_clipboard_audit(
-                lambda: clipboard_text,
+                reader,
                 disposition_key=_disposition_key(),
             )
             return _clipboard_response(request, result, outcome)
