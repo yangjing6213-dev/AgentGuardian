@@ -69,7 +69,7 @@ def verify_public_share(
         or type(allow_private_hosts) is not bool
     ):
         raise ValueError("SHARE_INPUT_INVALID")
-    request_url, address = _validated_url(url, allow_private_hosts)
+    request_url, address = validate_public_share_url(url, allow_private_hosts)
     redirect_handler = _BoundedRedirectHandler(
         max_redirects=max_redirects,
         allow_private_hosts=allow_private_hosts,
@@ -165,7 +165,10 @@ class _BoundedRedirectHandler(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if self.count >= self.max_redirects:
             raise _RedirectLimitError
-        target, _address = _validated_url(newurl, self.allow_private_hosts)
+        target, _address = validate_public_share_url(
+            newurl,
+            self.allow_private_hosts,
+        )
         self.count += 1
         return super().redirect_request(req, fp, code, msg, headers, target)
 
@@ -264,7 +267,10 @@ def _open_pinned_socket(
     return connection
 
 
-def _validated_url(url: str, allow_private_hosts: bool) -> tuple[str, str]:
+def validate_public_share_url(
+    url: str,
+    allow_private_hosts: bool = False,
+) -> tuple[str, str]:
     try:
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:

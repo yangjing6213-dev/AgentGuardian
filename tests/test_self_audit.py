@@ -32,6 +32,7 @@ EXPECTED_REVIEWED_SOURCE_MODULES = (
     "domain.py",
     "evidence_state.py",
     "guidance.py",
+    "mcp_service.py",
     "remediation.py",
     "report_comparison.py",
     "reporting.py",
@@ -208,10 +209,10 @@ def test_source_policy_manifest_exactly_matches_current_package() -> None:
 
     assert list(policy) == ["schema", "modules"]
     assert policy["schema"] == 1
-    assert len(EXPECTED_REVIEWED_SOURCE_MODULES) == 21
+    assert len(EXPECTED_REVIEWED_SOURCE_MODULES) == 22
     assert package_names == EXPECTED_REVIEWED_SOURCE_MODULES
     assert tuple(modules) == EXPECTED_REVIEWED_SOURCE_MODULES
-    assert len(modules) == 21
+    assert len(modules) == 22
     assert modules == {
         name: _canonical_source_digest(PACKAGE_ROOT / name)
         for name in EXPECTED_REVIEWED_SOURCE_MODULES

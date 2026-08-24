@@ -6,7 +6,10 @@ import threading
 import pytest
 
 from agentguardian import share_verification
-from agentguardian.share_verification import verify_public_share
+from agentguardian.share_verification import (
+    validate_public_share_url,
+    verify_public_share,
+)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -84,6 +87,19 @@ def test_share_verification_rejects_query_and_non_http_urls(public_server):
         verify_public_share("file:///C:/synthetic-share.txt")
     with pytest.raises(ValueError, match="SHARE_PRIVATE_HOST_REJECTED"):
         verify_public_share(public_server)
+
+
+def test_validate_public_share_url_performs_no_dns_or_network(monkeypatch) -> None:
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("dns")),
+    )
+
+    request_url, address = validate_public_share_url("https://example.com/path")
+
+    assert request_url == "https://example.com/path"
+    assert address == "https://example.com"
 
 
 def test_share_verification_enforces_response_size_limit(public_server):
