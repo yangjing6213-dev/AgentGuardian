@@ -122,3 +122,49 @@ def test_integrations_preview_profile_rejects_provider_source_in_fixture(
     )
     with pytest.raises(verifier.ProfileViolation, match="PROFILE_RUNTIME_IMPORT_FORBIDDEN"):
         verifier.verify_profile(project, snapshot)
+
+
+def test_portable_builder_selects_integrations_preview_loader(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import scripts.build_windows_portable as build_module
+
+    snapshot = _verifier().load_profile_snapshot(ROOT, PROFILE_PATH)
+    calls: list[Path] = []
+
+    monkeypatch.setattr(build_module.sys, "platform", "win32")
+    monkeypatch.setattr(build_module.sys, "version_info", (3, 12))
+    monkeypatch.setattr(
+        build_module,
+        "_git",
+        lambda _root, *arguments: "a" * 40
+        if arguments == ("rev-parse", "HEAD")
+        else "",
+    )
+
+    def load_preview(project_root: Path, profile_path: Path):
+        calls.append(profile_path)
+        return snapshot
+
+    monkeypatch.setattr(
+        build_module,
+        "load_integrations_preview_profile_snapshot",
+        load_preview,
+    )
+    monkeypatch.setattr(
+        build_module,
+        "_build_integrations_preview_portable",
+        lambda *args, **kwargs: kwargs["profile_snapshot"],
+    )
+
+    result = build_module.build_portable(
+        tmp_path,
+        tmp_path / "output",
+        source_commit="a" * 40,
+        built_at="2026-08-25T00:00:00Z",
+        release_profile="integrations_preview",
+    )
+
+    assert result is snapshot
+    assert calls == [tmp_path / "release_profiles" / "integrations_preview.json"]

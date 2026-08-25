@@ -32,6 +32,9 @@ from scripts.verify_personal_release_profile import (
     verify_payload,
     verify_profile,
 )
+from scripts.verify_integrations_preview_profile import (
+    load_profile_snapshot as load_integrations_preview_profile_snapshot,
+)
 
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 _UNUSED_QT_GUI_PLUGINS = {
@@ -444,7 +447,12 @@ def build_portable(
     status = _git(project_root, "status", "--porcelain=v1", "--untracked-files=all")
     validate_git_build_context(head, status, source_commit)
     profile_path = project_root / "release_profiles" / profile_filename
-    profile_snapshot = load_profile_snapshot(project_root, profile_path)
+    profile_loader = (
+        load_integrations_preview_profile_snapshot
+        if release_profile == _INTEGRATIONS_PREVIEW_PROFILE
+        else load_profile_snapshot
+    )
+    profile_snapshot = profile_loader(project_root, profile_path)
     if release_profile == _INTEGRATIONS_PREVIEW_PROFILE:
         return _build_integrations_preview_portable(
             project_root,
