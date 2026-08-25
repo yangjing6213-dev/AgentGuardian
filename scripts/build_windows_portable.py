@@ -178,8 +178,6 @@ def build_integrations_preview_pyinstaller_command(
         str((output_root / "dist").resolve()),
         "--workpath",
         str((output_root / "work").resolve()),
-        "--specpath",
-        str((output_root / "spec").resolve()),
         str(spec.resolve()),
     )
 

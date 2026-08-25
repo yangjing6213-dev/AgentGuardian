@@ -449,6 +449,7 @@ def test_integrations_preview_command_uses_one_reviewed_spec_and_two_launchers(
     assert command[:5] == ("python.exe", "-m", "PyInstaller", "--clean", "--noconfirm")
     assert command[-1].endswith("packaging\\windows\\AgentGuardianIntegrationsPreview.spec")
     assert "--windowed" not in command
+    assert "--specpath" not in command
     assert "AgentGuardianIntegrationsPreview.spec" in command[-1]
 
 
