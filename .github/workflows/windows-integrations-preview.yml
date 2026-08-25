@@ -186,6 +186,7 @@ jobs:
               -Installer_Path $env:INSTALLER_PATH `
               -Installer_Sha256 $env:INSTALLER_SHA256 `
               -Evidence_Path $evidence `
+              -Python_Path (Get-Command python.exe).Source `
               -Mode $mode `
               -TestMode
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

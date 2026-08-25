@@ -10,6 +10,8 @@ param(
     [string]$Installer_Sha256,
     [Parameter(Mandatory = $true)]
     [string]$Evidence_Path,
+    [Parameter(Mandatory = $false)]
+    [string]$Python_Path = '',
     [ValidateSet('skill', 'mcp', 'skill,mcp')]
     [string]$Mode = 'mcp',
     [switch]$TestMode
@@ -145,9 +147,14 @@ function Wait-LocalProcess([Diagnostics.Process]$Process, [string]$TimeoutCode) 
 }
 
 function Invoke-McpSdkClient([string]$Executable) {
-    $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
-    if ($null -eq $pythonCommand) { throw 'PYTHON_RUNTIME_MISSING' }
-    $python = $pythonCommand.Source
+    if ([string]::IsNullOrWhiteSpace($Python_Path)) {
+        $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
+        if ($null -eq $pythonCommand) { throw 'PYTHON_RUNTIME_MISSING' }
+        $python = $pythonCommand.Source
+    } else {
+        Assert-LocalFile $Python_Path
+        $python = (Resolve-Path -LiteralPath $Python_Path).Path
+    }
     $fixture = Join-Path $env:TEMP ('agentguardian-mcp-fixture-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $fixture -Force | Out-Null
     [IO.File]::WriteAllText(
@@ -165,6 +172,20 @@ from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
 
+def structured_payload(result):
+    payload = getattr(result, "structured_content", None)
+    if payload is None:
+        payload = getattr(result, "structuredContent", None)
+    return payload or {}
+
+
+def tool_schema(tool):
+    schema = getattr(tool, "input_schema", None)
+    if schema is None:
+        schema = getattr(tool, "inputSchema", None)
+    return schema or {}
+
+
 async def main() -> None:
     server = StdioServerParameters(
         command=os.environ["AGENTGUARDIAN_MCP_EXE"],
@@ -177,8 +198,8 @@ async def main() -> None:
             tools = {tool.name: tool for tool in result.tools}
             if sorted(tools) != ["prepare_audit", "run_prepared_audit"]:
                 raise RuntimeError("MCP_TOOL_SET_INVALID")
-            prepare_schema = tools["prepare_audit"].input_schema
-            run_schema = tools["run_prepared_audit"].input_schema
+            prepare_schema = tool_schema(tools["prepare_audit"])
+            run_schema = tool_schema(tools["run_prepared_audit"])
             if (
                 prepare_schema.get("type") != "object"
                 or not {"operation", "classification"}.issubset(
@@ -213,7 +234,7 @@ async def main() -> None:
                     "roots": [os.environ["AGENTGUARDIAN_MCP_FIXTURE_ROOT"]],
                 },
             )
-            prepared_payload = prepared.structured_content or {}
+            prepared_payload = structured_payload(prepared)
             if prepared.is_error or prepared_payload.get("status") != "prepared":
                 raise RuntimeError("MCP_PREPARE_BEHAVIOR_INVALID")
             authorized = await session.call_tool(
@@ -224,7 +245,7 @@ async def main() -> None:
                     "consent_summary": prepared_payload["consent_summary"],
                 },
             )
-            authorized_payload = authorized.structured_content or {}
+            authorized_payload = structured_payload(authorized)
             if (
                 authorized.is_error
                 or authorized_payload.get("status") != "completed"
@@ -240,7 +261,7 @@ async def main() -> None:
                     "roots": [os.environ["AGENTGUARDIAN_MCP_FIXTURE_ROOT"]],
                 },
             )
-            if prepared_again.is_error or (prepared_again.structured_content or {}).get("status") != "prepared":
+            if prepared_again.is_error or structured_payload(prepared_again).get("status") != "prepared":
                 raise RuntimeError("MCP_PREPARE_BEHAVIOR_INVALID")
             rejected = await session.call_tool(
                 "run_prepared_audit",
@@ -250,7 +271,7 @@ async def main() -> None:
                     "consent_summary": "rejected-by-lifecycle-check",
                 },
             )
-            rejected_payload = rejected.structured_content or {}
+            rejected_payload = structured_payload(rejected)
             if (
                 rejected.is_error
                 or rejected_payload.get("status") != "failed"
