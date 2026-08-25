@@ -32,6 +32,7 @@ EXPECTED_REVIEWED_SOURCE_MODULES = (
     "domain.py",
     "evidence_state.py",
     "guidance.py",
+    "mcp_server.py",
     "mcp_service.py",
     "remediation.py",
     "report_comparison.py",
@@ -209,10 +210,10 @@ def test_source_policy_manifest_exactly_matches_current_package() -> None:
 
     assert list(policy) == ["schema", "modules"]
     assert policy["schema"] == 1
-    assert len(EXPECTED_REVIEWED_SOURCE_MODULES) == 22
+    assert len(EXPECTED_REVIEWED_SOURCE_MODULES) == 23
     assert package_names == EXPECTED_REVIEWED_SOURCE_MODULES
     assert tuple(modules) == EXPECTED_REVIEWED_SOURCE_MODULES
-    assert len(modules) == 22
+    assert len(modules) == 23
     assert modules == {
         name: _canonical_source_digest(PACKAGE_ROOT / name)
         for name in EXPECTED_REVIEWED_SOURCE_MODULES
@@ -1167,19 +1168,33 @@ def test_windows_ci_runs_required_local_checks_without_uploads() -> None:
 
 def test_python_dependencies_are_hash_locked_for_windows_ci() -> None:
     lock = (PROJECT_ROOT / "requirements-dev.lock").read_text(encoding="utf-8")
-    requirement_lines = [
-        line
-        for line in lock.splitlines()
-        if line and not line.startswith("#") and not line.startswith(" ")
-    ]
-
-    assert "Generated for Windows Python 3.12 CI" in lock
-    assert requirement_lines
-    for line in requirement_lines:
-        assert re.fullmatch(
-            r"[A-Za-z0-9_.-]+==[A-Za-z0-9_.!+-]+ --hash=sha256:[0-9a-f]{64}",
-            line,
-        )
+    assert "uv 0.11.28 pip compile pyproject.toml --extra dev" in lock
+    current: tuple[str, str, bool] | None = None
+    requirements: dict[str, tuple[str, bool]] = {}
+    for raw_line in lock.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.endswith("\\"):
+            line = line[:-1].rstrip()
+        if line.startswith("--hash="):
+            assert current is not None
+            assert re.fullmatch(r"--hash=sha256:[0-9a-f]{64}", line)
+            current = (current[0], current[1], True)
+            requirements[current[0]] = (current[1], True)
+            continue
+        match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([A-Za-z0-9_.!+-]+)", line)
+        assert match is not None, line
+        if current is not None:
+            assert current[2]
+        name, version = match.groups()
+        assert name not in requirements
+        current = (name, version, False)
+        requirements[name] = (version, False)
+    assert current is not None and current[2]
+    assert requirements
+    assert all(has_hash for _, has_hash in requirements.values())
+    assert requirements["mcp"] == ("2.0.0", True)
 
 
 def test_design_status_tracks_windows_mvp_hardening() -> None:

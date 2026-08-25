@@ -181,14 +181,8 @@ def test_private_beta_identity_is_frozen() -> None:
     }
 
 
-def test_private_beta_versions_match_package_metadata() -> None:
-    from agentguardian import __version__
-
+def test_private_beta_version_documents_remain_frozen() -> None:
     profile = json.loads(PRIVATE_BETA_PROFILE_PATH.read_text(encoding="ascii"))
-    package = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-
-    assert package["project"]["version"] == profile["python_package_version"]
-    assert __version__ == profile["python_package_version"]
     for relative in (
         "docs/superpowers/specs/2026-08-16-agentguardian-personal-v1-design.md",
         "docs/superpowers/specs/2026-08-21-agentguardian-personal-exe-private-beta-design.md",

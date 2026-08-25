@@ -27,6 +27,7 @@ from scripts.build_windows_portable import (
     portable_component_specs,
     reviewed_source_paths,
     runtime_library_versions,
+    _locked_versions,
     validate_build_dependency_snapshot,
     validate_relative_paths,
     write_portable_evidence,
@@ -41,24 +42,90 @@ PROJECT_ROOT = Path(__file__).parents[1]
 PACKAGE_ROOT = PROJECT_ROOT / "src" / "agentguardian"
 BUILD_PACKAGES = {
     "altgraph": "0.17.4",
+    "annotated-types": "0.8.0",
+    "anyio": "4.14.2",
+    "attrs": "26.1.0",
     "boolean-py": "5.0",
+    "cffi": "2.1.1",
+    "click": "8.4.2",
+    "colorama": "0.4.6",
+    "cryptography": "50.0.0",
     "cyclonedx-python-lib": "11.12.0",
     "defusedxml": "0.7.1",
+    "h11": "0.16.0",
+    "httpcore2": "2.12.0",
+    "httpx2": "2.12.0",
+    "idna": "3.19",
+    "jsonschema": "4.26.0",
+    "jsonschema-specifications": "2025.9.1",
+    "mcp": "2.0.0",
+    "mcp-types": "2.0.0",
+    "opentelemetry-api": "1.44.0",
     "license-expression": "30.4.4",
     "packaging": "26.2",
     "packageurl-python": "0.17.6",
     "pefile": "2023.2.7",
     "py-serializable": "2.1.0",
+    "pycparser": "3.0",
+    "pydantic": "2.13.4",
+    "pydantic-core": "2.46.4",
     "pyinstaller": "6.16.0",
     "pyinstaller-hooks-contrib": "2025.9",
+    "pyjwt": "2.13.0",
     "pyside6": "6.11.1",
     "pyside6-addons": "6.11.1",
     "pyside6-essentials": "6.11.1",
+    "python-multipart": "0.0.32",
+    "pywin32": "312",
     "pywin32-ctypes": "0.2.3",
+    "referencing": "0.37.0",
+    "rpds-py": "2026.6.3",
     "setuptools": "81.0.0",
     "shiboken6": "6.11.1",
     "sortedcontainers": "2.4.0",
+    "sse-starlette": "3.4.8",
+    "starlette": "1.6.0",
+    "truststore": "0.10.4",
     "typing-extensions": "4.16.0",
+    "typing-inspection": "0.4.4",
+    "uvicorn": "0.52.4",
+}
+
+RUNTIME_PACKAGES = {
+    "annotated-types",
+    "anyio",
+    "attrs",
+    "cffi",
+    "click",
+    "colorama",
+    "cryptography",
+    "h11",
+    "httpcore2",
+    "httpx2",
+    "idna",
+    "jsonschema",
+    "jsonschema-specifications",
+    "mcp",
+    "mcp-types",
+    "opentelemetry-api",
+    "pydantic",
+    "pydantic-core",
+    "pycparser",
+    "pyjwt",
+    "pyside6",
+    "pyside6-addons",
+    "pyside6-essentials",
+    "python-multipart",
+    "pywin32",
+    "referencing",
+    "rpds-py",
+    "shiboken6",
+    "sse-starlette",
+    "starlette",
+    "truststore",
+    "typing-extensions",
+    "typing-inspection",
+    "uvicorn",
 }
 def _prepare_portable_build(
     monkeypatch: pytest.MonkeyPatch,
@@ -388,26 +455,55 @@ def test_qt_gui_hook_filters_only_unused_network_dependency_chain() -> None:
 
 def test_build_dependencies_are_exactly_hash_locked() -> None:
     lock_text = (PROJECT_ROOT / "requirements-build.lock").read_text(encoding="utf-8")
-    lines = [line.strip() for line in lock_text.splitlines() if line.strip()]
+    lines = lock_text.splitlines()
 
-    assert not any(line.startswith(("-r ", "--requirement ")) for line in lines)
+    assert not any(
+        line.strip().startswith(("-r ", "--requirement ")) for line in lines
+    )
     assert not any(
         forbidden in lock_text.casefold()
         for forbidden in ("--index-url", "--extra-index-url", "git+", "-e ", "file:")
     )
-    requirements = {}
-    for line in lines:
-        match = re.fullmatch(
-            r"([a-z0-9-]+)==([^ ]+) --hash=sha256:([0-9a-f]{64})",
-            line,
-        )
+    requirements: dict[str, tuple[str, set[str]]] = {}
+    current: str | None = None
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.endswith("\\"):
+            line = line[:-1].rstrip()
+        if line.startswith("--hash="):
+            assert current is not None, line
+            assert re.fullmatch(r"--hash=sha256:[0-9a-f]{64}", line), line
+            requirements[current][1].add(line.removeprefix("--hash=sha256:"))
+            continue
+        match = re.fullmatch(r"([a-z0-9-]+)==([^ ]+)", line)
         assert match is not None, line
-        name, version, digest = match.groups()
-        requirements[name] = (version, digest)
+        name, version = match.groups()
+        assert name not in requirements
+        requirements[name] = (version, set())
+        current = name
+
+    assert requirements
+    assert all(digests for _, digests in requirements.values())
 
     assert {name: version for name, (version, _) in requirements.items()} == (
         BUILD_PACKAGES
     )
+
+
+def test_build_lock_parser_accepts_indented_hash_continuations(
+    tmp_path: Path,
+) -> None:
+    lock = tmp_path / "requirements.lock"
+    lock.write_text(
+        "demo-package==1.2.3 " + chr(92) + "\n"
+        "    --hash=sha256:" + "a" * 64 + " " + chr(92) + "\n"
+        "    --hash=sha256:" + "b" * 64 + "\n",
+        encoding="ascii",
+    )
+
+    assert _locked_versions(lock) == {"demo-package": "1.2.3"}
 
 
 def test_build_dependency_snapshot_rejects_installed_version_drift(
@@ -545,6 +641,13 @@ def test_portable_component_specs_separate_runtime_and_build_tools() -> None:
         "shiboken6",
         "Microsoft Visual C++ Runtime",
         "Microsoft Universal C Runtime",
+    } | {
+        {
+            "pyside6": "PySide6",
+            "pyside6-addons": "PySide6_Addons",
+            "pyside6-essentials": "PySide6_Essentials",
+        }.get(name, name)
+        for name in RUNTIME_PACKAGES
     }
     assert by_name["AgentGuardian"]["role"] == "runtime"
     assert by_name["AgentGuardian"]["version"] == "0.2.0-beta.1"
@@ -579,6 +682,9 @@ def test_third_party_notices_keep_qt_and_signing_limits_explicit() -> None:
         "unsigned development artifact",
     ):
         assert required in notices
+    for name in RUNTIME_PACKAGES:
+        assert f"`{name}`" in notices
+    assert "registers and starts only STDIO" in notices
 
 
 def test_cyclonedx_tracks_embedded_bootloader_as_runtime_dependency() -> None:
@@ -606,6 +712,18 @@ def test_cyclonedx_tracks_embedded_bootloader_as_runtime_dependency() -> None:
     assert by_name["PyInstaller"]["scope"] == "excluded"
     assert bootloader_ref in dependencies[root_ref]["dependsOn"]
     assert tool_ref not in dependencies[root_ref]["dependsOn"]
+    normalized_names = {
+        name.casefold().replace("_", "-") for name in by_name
+    }
+    assert RUNTIME_PACKAGES <= normalized_names
+    normalized_by_name = {
+        name.casefold().replace("_", "-"): component
+        for name, component in by_name.items()
+    }
+    assert all(
+        normalized_by_name[name]["scope"] == "required"
+        for name in RUNTIME_PACKAGES
+    )
 
 
 def test_portable_evidence_is_canonical_and_excludes_its_own_checksums(

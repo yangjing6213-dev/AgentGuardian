@@ -11,6 +11,7 @@ import os
 import platform
 from pathlib import Path
 from pathlib import PurePosixPath
+import re
 import shutil
 import stat
 import subprocess
@@ -49,6 +50,48 @@ _FORBIDDEN_QT_NETWORK_COMPONENTS = {
     "qschannelbackend.dll",
     "qt6network.dll",
     "qtnetwork.pyd",
+}
+
+_RUNTIME_PACKAGE_LICENSES = (
+    ("annotated-types", "MIT"),
+    ("anyio", "MIT"),
+    ("attrs", "MIT"),
+    ("cffi", "MIT-0"),
+    ("click", "BSD-3-Clause"),
+    ("colorama", "BSD-3-Clause"),
+    ("cryptography", "Apache-2.0 OR BSD-3-Clause"),
+    ("h11", "MIT"),
+    ("httpcore2", "BSD-3-Clause"),
+    ("httpx2", "BSD-3-Clause"),
+    ("idna", "BSD-3-Clause"),
+    ("jsonschema", "MIT"),
+    ("jsonschema-specifications", "MIT"),
+    ("mcp", "MIT"),
+    ("mcp-types", "MIT"),
+    ("opentelemetry-api", "Apache-2.0"),
+    ("pydantic", "MIT"),
+    ("pydantic-core", "MIT"),
+    ("pyjwt", "MIT"),
+    ("pycparser", "BSD-3-Clause"),
+    ("pyside6", "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"),
+    ("pyside6-addons", "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"),
+    ("pyside6-essentials", "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"),
+    ("python-multipart", "Apache-2.0"),
+    ("pywin32", "PSF-2.0"),
+    ("referencing", "MIT"),
+    ("rpds-py", "MIT"),
+    ("shiboken6", "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"),
+    ("sse-starlette", "BSD-3-Clause"),
+    ("starlette", "BSD-3-Clause"),
+    ("truststore", "MIT"),
+    ("typing-extensions", "PSF-2.0"),
+    ("typing-inspection", "MIT"),
+    ("uvicorn", "BSD-3-Clause"),
+)
+_RUNTIME_DISPLAY_NAMES = {
+    "pyside6": "PySide6",
+    "pyside6-addons": "PySide6_Addons",
+    "pyside6-essentials": "PySide6_Essentials",
 }
 def reviewed_source_paths(project_root: Path) -> tuple[Path, ...]:
     package_root = project_root / "src" / "agentguardian"
@@ -128,8 +171,7 @@ def portable_component_specs(
     product_version: str = "0.2.0-beta.1",
 ) -> tuple[dict[str, str], ...]:
     versions = _locked_versions(Path(__file__).parents[1] / "requirements-build.lock")
-    qt_license = "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
-    return (
+    components = [
         _component(
             "AgentGuardian", product_version, "Apache-2.0", "runtime", "application"
         ),
@@ -139,11 +181,19 @@ def portable_component_specs(
         _component("Microsoft Visual C++ Runtime", vc_runtime_version, "NOASSERTION", "runtime"),
         _component("PyInstaller", versions["pyinstaller"], "GPL-2.0-or-later WITH Bootloader-exception", "build-time"),
         _component("PyInstaller Bootloader", versions["pyinstaller"], "GPL-2.0-or-later WITH Bootloader-exception", "runtime"),
-        _component("PySide6", versions["pyside6"], qt_license, "runtime"),
-        _component("PySide6_Addons", versions["pyside6-addons"], qt_license, "runtime"),
-        _component("PySide6_Essentials", versions["pyside6-essentials"], qt_license, "runtime"),
-        _component("shiboken6", versions["shiboken6"], qt_license, "runtime"),
-    )
+    ]
+    for name, license_expression in _RUNTIME_PACKAGE_LICENSES:
+        if name not in versions:
+            raise ValueError(f"runtime package missing from build lock: {name}")
+        components.append(
+            _component(
+                _RUNTIME_DISPLAY_NAMES.get(name, name),
+                versions[name],
+                license_expression,
+                "runtime",
+            )
+        )
+    return tuple(components)
 
 
 def cyclonedx_bom_bytes(
@@ -512,12 +562,46 @@ def _reference_name(name: str) -> str:
 
 def _locked_versions(lock_path: Path) -> dict[str, str]:
     versions: dict[str, str] = {}
-    for line in lock_path.read_text(encoding="utf-8").splitlines():
-        requirement, separator, _ = line.partition(" --hash=sha256:")
-        name, pinned, version = requirement.partition("==")
-        if not separator or pinned != "==" or not name or not version:
+    current: tuple[str, str, bool] | None = None
+
+    def finish() -> None:
+        if current is None or not current[2]:
             raise ValueError("invalid build lock")
-        versions[name] = version
+        versions[current[0]] = current[1]
+
+    for line in lock_path.read_text(encoding="utf-8").splitlines():
+        normalized = line.strip()
+        if not normalized or normalized.startswith("#"):
+            continue
+        if normalized.endswith("\\"):
+            normalized = normalized[:-1].rstrip()
+        if normalized.startswith("--hash="):
+            if current is None or any(
+                re.fullmatch(r"--hash=sha256:[0-9a-f]{64}", token) is None
+                for token in normalized.split()
+            ):
+                raise ValueError("invalid build lock")
+            current = (current[0], current[1], True)
+            continue
+        match = re.fullmatch(
+            r"([A-Za-z0-9_.-]+)==([^ ]+)(?: +(.*))?",
+            normalized,
+        )
+        if match is None:
+            raise ValueError("invalid build lock")
+        if current is not None:
+            finish()
+        name, version, hash_text = match.groups()
+        current = (name, version, False)
+        if hash_text:
+            if any(
+                re.fullmatch(r"--hash=sha256:[0-9a-f]{64}", token) is None
+                for token in hash_text.split()
+            ):
+                raise ValueError("invalid build lock")
+            current = (name, version, True)
+    if current is not None:
+        finish()
     return versions
 
 
