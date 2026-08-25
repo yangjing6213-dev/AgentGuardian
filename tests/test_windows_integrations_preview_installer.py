@@ -131,6 +131,18 @@ def test_preview_lifecycle_script_is_bounded_and_native() -> None:
         assert forbidden not in folded
 
 
+def test_preview_lifecycle_retries_bounded_inno_self_delete_cleanup() -> None:
+    script = LIFECYCLE_PATH.read_text(encoding="ascii").casefold()
+    for required in (
+        "function remove-fixtureroot",
+        "fixture_cleanup_timeout",
+        "getfullpath([io.path]::gettemppath())",
+        "start-sleep -milliseconds 250",
+        "remove-fixtureroot $fixtureroot",
+    ):
+        assert required in script
+
+
 def test_preview_payload_integrity_rejects_tampering(tmp_path: Path) -> None:
     builder = _builder()
     portable = importlib.import_module("scripts.build_windows_portable")

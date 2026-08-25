@@ -146,6 +146,25 @@ function Wait-LocalProcess([Diagnostics.Process]$Process, [string]$TimeoutCode) 
     return $Process.ExitCode
 }
 
+function Remove-FixtureRoot([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return }
+    $candidate = [IO.Path]::GetFullPath($Path)
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    if (-not $candidate.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'FIXTURE_ROOT_UNSAFE'
+    }
+    $deadline = [DateTime]::UtcNow.AddSeconds(60)
+    while (Test-Path -LiteralPath $candidate) {
+        try {
+            Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction Stop
+        }
+        catch {
+            if ([DateTime]::UtcNow -ge $deadline) { throw 'FIXTURE_CLEANUP_TIMEOUT' }
+            Start-Sleep -Milliseconds 250
+        }
+    }
+}
+
 function Invoke-McpSdkClient([string]$Executable) {
     if ([string]::IsNullOrWhiteSpace($Python_Path)) {
         $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
@@ -530,7 +549,5 @@ finally {
             Set-Item -LiteralPath ("Env:" + $name) -Value $originalEnvironment[$name]
         }
     }
-    if ($null -ne $fixtureRoot -and (Test-Path -LiteralPath $fixtureRoot)) {
-        Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
-    }
+    Remove-FixtureRoot $fixtureRoot
 }
