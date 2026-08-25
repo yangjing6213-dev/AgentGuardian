@@ -8,6 +8,7 @@ import tomllib
 import pytest
 
 from agentguardian import __main__ as entrypoint
+from agentguardian import codex_integration
 from agentguardian.codex_integration import (
     BEGIN_MARKER,
     CONFIG_LIMIT,
@@ -18,6 +19,25 @@ from agentguardian.codex_integration import (
     install_integration,
     uninstall_integration,
 )
+
+
+def test_frozen_skill_source_accepts_reviewed_bundle_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle = tmp_path / "bundle"
+    skill = bundle / "agentguardian_skill"
+    skill.mkdir(parents=True)
+    expected = {
+        "LICENSE": b"Apache-2.0",
+        "README.md": b"readme",
+        "SKILL.md": b"skill",
+    }
+    for name, data in expected.items():
+        (skill / name).write_bytes(data)
+    monkeypatch.setattr(codex_integration, "SKILL_SOURCE_ROOT", tmp_path / "missing")
+    monkeypatch.setattr(codex_integration.sys, "_MEIPASS", str(bundle), raising=False)
+
+    assert codex_integration._skill_source() == tuple(expected.items())
 
 
 def _environment(root: Path) -> dict[str, str]:
@@ -128,6 +148,7 @@ def test_unicode_config_upgrade_and_uninstall_preserve_original_bytes(
         unprotect=_unprotect,
     ) == "INTEGRATION_REMOVED"
     assert config.read_bytes() == original
+    assert not (tmp_path / "localappdata" / "AgentGuardian").exists()
 
 
 def test_config_limit_allows_bounded_dpapi_backup_envelope(tmp_path: Path) -> None:

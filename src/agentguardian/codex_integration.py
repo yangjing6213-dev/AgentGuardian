@@ -328,6 +328,25 @@ def _remove_file(path: Path, root: Path, code: str) -> None:
         raise IntegrationError(code) from None
 
 
+def _remove_empty_directory(path: Path, root: Path, code: str) -> None:
+    _check_existing_chain(root, path.parent)
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise IntegrationError(code) from None
+    if _is_reparse(path) or not stat.S_ISDIR(info.st_mode):
+        raise IntegrationError(code)
+    try:
+        with os.scandir(path) as entries:
+            if next(entries, None) is not None:
+                return
+        path.rmdir()
+    except OSError:
+        raise IntegrationError(code) from None
+
+
 def _restore_file(
     path: Path,
     state: _FileState,
@@ -344,7 +363,9 @@ def _skill_source() -> tuple[tuple[str, bytes], ...]:
     candidates = [SKILL_SOURCE_ROOT]
     bundle_root = getattr(sys, "_MEIPASS", None)
     if isinstance(bundle_root, str):
+        candidates.append(Path(bundle_root) / "agentguardian_skill")
         candidates.append(Path(bundle_root) / "skills" / "agentguardian")
+    candidates.append(Path(sys.executable).resolve().parent / "agentguardian_skill")
     candidates.append(Path(sys.executable).resolve().parent / "skills" / "agentguardian")
     source: Path | None = next(
         (candidate for candidate in candidates if candidate.is_dir()), None
@@ -1348,6 +1369,11 @@ def _remove_recovery_and_manifest(transaction: _UninstallTransaction) -> None:
         )
     _remove_file(
         transaction.paths.pending,
+        transaction.paths.state_root,
+        "INTEGRATION_CLEANUP_REQUIRED",
+    )
+    _remove_empty_directory(
+        transaction.paths.backup.parent,
         transaction.paths.state_root,
         "INTEGRATION_CLEANUP_REQUIRED",
     )

@@ -20,6 +20,7 @@ from scripts.build_windows_portable import (
     artifact_manifest,
     build_portable,
     build_pyinstaller_command,
+    build_integrations_preview_pyinstaller_command,
     canonical_json_bytes,
     cyclonedx_bom_bytes,
     deterministic_zip,
@@ -155,6 +156,7 @@ def _prepare_portable_build(
         "_git",
         lambda _root, *arguments: commit if arguments == ("rev-parse", "HEAD") else "",
     )
+    monkeypatch.setattr(build_module, "_require_current_source_identity", lambda *args: None)
     monkeypatch.setattr(build_module, "validate_build_dependency_snapshot", lambda: {})
     monkeypatch.setattr(build_module, "build_pyinstaller_command", lambda *args: ("fake",))
     monkeypatch.setattr(
@@ -433,6 +435,21 @@ def test_pyinstaller_command_is_inspectable_non_elevated_onedir(
     assert command[command.index("--distpath") + 1] == str(output_root / "dist")
     assert command[command.index("--workpath") + 1] == str(output_root / "work")
     assert command[command.index("--specpath") + 1] == str(output_root / "spec")
+
+
+def test_integrations_preview_command_uses_one_reviewed_spec_and_two_launchers(
+    tmp_path: Path,
+) -> None:
+    command = build_integrations_preview_pyinstaller_command(
+        PROJECT_ROOT,
+        tmp_path / "output",
+        python_executable="python.exe",
+    )
+
+    assert command[:5] == ("python.exe", "-m", "PyInstaller", "--clean", "--noconfirm")
+    assert command[-1].endswith("packaging\\windows\\AgentGuardianIntegrationsPreview.spec")
+    assert "--windowed" not in command
+    assert "AgentGuardianIntegrationsPreview.spec" in command[-1]
 
 
 def test_qt_gui_hook_filters_only_unused_network_dependency_chain() -> None:
@@ -904,6 +921,7 @@ def test_portable_build_rechecks_git_context_after_pyinstaller(
     monkeypatch.setattr(build_module.sys, "platform", "win32")
     monkeypatch.setattr(build_module.sys, "version_info", (3, 12))
     monkeypatch.setattr(build_module, "_git", fake_git)
+    monkeypatch.setattr(build_module, "_require_current_source_identity", lambda *args: None)
     monkeypatch.setattr(build_module, "validate_build_dependency_snapshot", lambda: {})
     snapshot = profile_snapshot_from_bytes(
         (

@@ -136,6 +136,11 @@ def test_share_verification_is_explicit_and_does_not_show_pasted_url(qapp, monke
         lambda *args, **kwargs: (pasted_url, True),
     )
     monkeypatch.setattr(
+        app_module.QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr(
         app_module,
         "verify_public_share",
         lambda url: ShareVerificationResult(

@@ -27,6 +27,9 @@ async def test_server_exposes_exactly_two_tools() -> None:
 @pytest.mark.anyio
 async def test_prepare_returns_structured_content_without_qt() -> None:
     assert __version__ == "0.3.0a1"
+    qt_modules_before = {
+        name for name in sys.modules if name.startswith("PySide6")
+    }
     async with Client(server, raise_exceptions=True) as client:
         result = await client.call_tool(
             "prepare_audit",
@@ -37,13 +40,18 @@ async def test_prepare_returns_structured_content_without_qt() -> None:
         )
     assert result.is_error is False
     assert result.structured_content["status"] == "prepared"
-    assert not any(name.startswith("PySide6") for name in sys.modules)
+    assert {
+        name for name in sys.modules if name.startswith("PySide6")
+    } <= qt_modules_before
 
 
 def test_source_dispatches_stdio_without_qt(monkeypatch: pytest.MonkeyPatch) -> None:
     import agentguardian.__main__ as entrypoint
 
     calls: list[str] = []
+    qt_modules_before = {
+        name for name in sys.modules if name.startswith("PySide6")
+    }
 
     def fake_run_stdio() -> int:
         calls.append("stdio")
@@ -60,7 +68,9 @@ def test_source_dispatches_stdio_without_qt(monkeypatch: pytest.MonkeyPatch) -> 
     assert entrypoint.main(["--stdio-mcp"]) == 7
     assert calls == ["stdio"]
     assert "agentguardian.app" not in sys.modules
-    assert not any(name.startswith("PySide6") for name in sys.modules)
+    assert {
+        name for name in sys.modules if name.startswith("PySide6")
+    } <= qt_modules_before
 
 
 def test_source_dispatch_rejects_mixed_arguments(

@@ -1,0 +1,222 @@
+name: Windows Integrations Preview
+
+on:
+  push:
+    branches:
+      - codex/0.3-integrations-preview
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact lowercase 40-character candidate commit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      EXPECTED_SOURCE_COMMIT: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_sha || github.sha }}
+      INNO_RELEASE_REPOSITORY: jrsoftware/issrc
+      INNO_RELEASE_TAG: is-7_0_2
+      INNO_ASSET_NAME: innosetup-7.0.2-x64.exe
+      INNO_ASSET_SHA256: 5ad54ca3def786f8f4212552e54cc6d8d61329e2d24a1cfee0571d42c2684ff1
+      INNO_ISCC_SHA256: 0ff6140d641f84b64204a2c4d52207c6fc437c9f4db8779c83083d84f7e3d70d
+
+    steps:
+      - name: Validate exact candidate SHA
+        shell: pwsh
+        run: |
+          if ($env:EXPECTED_SOURCE_COMMIT -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'candidate_sha must be a lowercase 40-character SHA'
+          }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.EXPECTED_SOURCE_COMMIT }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact clean checkout and derive bounded paths
+        shell: pwsh
+        run: |
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -cne $env:EXPECTED_SOURCE_COMMIT) {
+            throw 'checked out HEAD does not match candidate_sha'
+          }
+          $status = git status --porcelain=v1 --untracked-files=all
+          if ($status) { throw 'integrations preview checkout must be clean' }
+          $commitEpoch = [int64](git show -s --format=%ct HEAD)
+          $commitUtc = [DateTimeOffset]::FromUnixTimeSeconds($commitEpoch).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
+          "COMMIT_UTC=$commitUtc" >> $env:GITHUB_ENV
+          "INNO_ASSET=$env:RUNNER_TEMP\agentguardian-inno-download\innosetup-7.0.2-x64.exe" >> $env:GITHUB_ENV
+          "ISCC=$env:RUNNER_TEMP\agentguardian-inno-7.0.2\ISCC.exe" >> $env:GITHUB_ENV
+          "SKILL_ONE=$env:RUNNER_TEMP\agentguardian-skill-one" >> $env:GITHUB_ENV
+          "SKILL_TWO=$env:RUNNER_TEMP\agentguardian-skill-two" >> $env:GITHUB_ENV
+          "PORTABLE_ONE=$env:RUNNER_TEMP\agentguardian-portable-one" >> $env:GITHUB_ENV
+          "PORTABLE_TWO=$env:RUNNER_TEMP\agentguardian-portable-two" >> $env:GITHUB_ENV
+          "INSTALLER_OUTPUT=$env:RUNNER_TEMP\agentguardian-integrations-installer" >> $env:GITHUB_ENV
+          "EVIDENCE_ROOT=$env:RUNNER_TEMP\agentguardian-integrations-preview-evidence" >> $env:GITHUB_ENV
+
+      - name: Require Windows x64 and local fixed paths
+        shell: pwsh
+        run: |
+          if ([System.Environment]::Is64BitOperatingSystem -ne $true) {
+            throw 'x64 Windows is required'
+          }
+          foreach ($root in @($pwd.Path, $env:RUNNER_TEMP, $env:LOCALAPPDATA, $env:APPDATA)) {
+            $drive = [System.IO.Path]::GetPathRoot($root).TrimEnd('\')
+            $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$drive'"
+            if (($null -eq $disk) -or ($disk.DriveType -ne 3)) {
+              throw 'build and lifecycle paths must use local fixed drives'
+            }
+          }
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install hash-locked runtime and build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --require-hashes -r requirements-dev.lock
+          python -m pip install --require-hashes -r requirements-build.lock
+
+      - name: Run full local gates and secret scan
+        shell: pwsh
+        run: |
+          python -m pytest -q -p no:cacheprovider --basetemp "$env:RUNNER_TEMP\agentguardian-pytest"
+          python scripts/run_personal_privacy_acceptance.py --evidence-path "$env:RUNNER_TEMP\integrations-preview-privacy.json"
+          python scripts/check_brand_assets.py
+          python scripts/verify_integrations_preview_profile.py --project-root "$pwd" --profile "$pwd\release_profiles\integrations_preview.json"
+          python -m compileall -q src scripts tests
+          $secretMatches = @(git grep -n -I -E '(sk-[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY)' -- ':!.analysis')
+          if ($LASTEXITCODE -eq 0 -and $secretMatches.Count -gt 0) {
+            throw 'candidate secret scan found a match'
+          }
+          git diff --check
+
+      - name: Build deterministic standalone Skills
+        shell: pwsh
+        run: |
+          python scripts/build_agentguardian_skill.py --output-root $env:SKILL_ONE
+          python scripts/build_agentguardian_skill.py --output-root $env:SKILL_TWO
+          $first = Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $env:SKILL_ONE 'AgentGuardian-Skill-0.1.0.zip')
+          $second = Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $env:SKILL_TWO 'AgentGuardian-Skill-0.1.0.zip')
+          if ($first.Hash -cne $second.Hash) { throw 'Skill ZIP is not deterministic' }
+
+      - name: Build deterministic preview portable payloads
+        shell: pwsh
+        run: |
+          python scripts/build_windows_portable.py `
+            --output-root $env:PORTABLE_ONE `
+            --source-commit $env:EXPECTED_SOURCE_COMMIT `
+            --built-at $env:COMMIT_UTC `
+            --artifact-status unsigned_development_only `
+            --release-profile integrations_preview
+          python scripts/build_windows_portable.py `
+            --output-root $env:PORTABLE_TWO `
+            --source-commit $env:EXPECTED_SOURCE_COMMIT `
+            --built-at $env:COMMIT_UTC `
+            --artifact-status unsigned_development_only `
+            --release-profile integrations_preview
+          $first = @(Get-ChildItem -LiteralPath $env:PORTABLE_ONE -Filter 'AgentGuardian-0.3.0-preview.1-windows-x64-*.zip' -File)
+          $second = @(Get-ChildItem -LiteralPath $env:PORTABLE_TWO -Filter 'AgentGuardian-0.3.0-preview.1-windows-x64-*.zip' -File)
+          if (($first.Count -ne 1) -or ($second.Count -ne 1)) { throw 'portable output is invalid' }
+          $firstHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $first[0].FullName).Hash
+          $secondHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $second[0].FullName).Hash
+          if ($firstHash -cne $secondHash) { throw 'portable ZIP is not deterministic' }
+          "PORTABLE_BUNDLE=$env:PORTABLE_ONE\dist\AgentGuardian" >> $env:GITHUB_ENV
+
+      - name: Download and verify pinned Inno Setup compiler
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $downloadRoot = Join-Path $env:RUNNER_TEMP 'agentguardian-inno-download'
+          New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
+          gh release download $env:INNO_RELEASE_TAG --repo $env:INNO_RELEASE_REPOSITORY --pattern $env:INNO_ASSET_NAME --dir $downloadRoot
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $assetHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $env:INNO_ASSET).Hash.ToLowerInvariant()
+          if ($assetHash -cne $env:INNO_ASSET_SHA256) { throw 'Inno asset SHA-256 mismatch' }
+          $signature = Get-AuthenticodeSignature -LiteralPath $env:INNO_ASSET
+          $expectedSubject = 'CN=Pyrsys B.V., O=Pyrsys B.V., S=Noord-Holland, C=NL'
+          if (($signature.Status -ne 'Valid') -or ($null -eq $signature.SignerCertificate) -or ($signature.SignerCertificate.Subject -cne $expectedSubject)) {
+            throw 'Inno Authenticode signature is invalid'
+          }
+
+      - name: Install verified Inno compiler privately
+        shell: pwsh
+        run: |
+          $innoRoot = Join-Path $env:RUNNER_TEMP 'agentguardian-inno-7.0.2'
+          $install = Start-Process -FilePath $env:INNO_ASSET -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/CURRENTUSER', '/NOICONS', "/DIR=$innoRoot") -PassThru
+          if (-not $install.WaitForExit(120000)) { $install.Kill($true); throw 'Inno installation timed out' }
+          if ($install.ExitCode -ne 0) { exit $install.ExitCode }
+          if (-not (Test-Path -LiteralPath $env:ISCC -PathType Leaf)) { throw 'ISCC.exe is missing' }
+          $isccHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $env:ISCC).Hash.ToLowerInvariant()
+          if ($isccHash -cne $env:INNO_ISCC_SHA256) { throw 'ISCC.exe SHA-256 mismatch' }
+
+      - name: Build exact preview installer
+        shell: pwsh
+        run: |
+          python scripts/build_windows_integrations_preview_installer.py `
+            --bundle-root $env:PORTABLE_BUNDLE `
+            --output-root $env:INSTALLER_OUTPUT `
+            --iscc $env:ISCC `
+            --source-commit $env:EXPECTED_SOURCE_COMMIT `
+            --built-at $env:COMMIT_UTC
+          $installer = Join-Path $env:INSTALLER_OUTPUT 'AgentGuardian-Setup-0.3.0-preview.1-x64.exe'
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw 'preview installer is missing' }
+          $installerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToLowerInvariant()
+          "INSTALLER_PATH=$installer" >> $env:GITHUB_ENV
+          "INSTALLER_SHA256=$installerHash" >> $env:GITHUB_ENV
+
+      - name: Run every bounded integration lifecycle mode
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path $env:EVIDENCE_ROOT -Force | Out-Null
+          foreach ($mode in @('skill', 'mcp', 'skill,mcp')) {
+            $evidence = Join-Path $env:EVIDENCE_ROOT ("lifecycle-$($mode.Replace(',', '-')).json")
+            & "$pwd\scripts\verify_windows_integrations_preview.ps1" `
+              -Candidate_Sha $env:EXPECTED_SOURCE_COMMIT `
+              -Installer_Path $env:INSTALLER_PATH `
+              -Installer_Sha256 $env:INSTALLER_SHA256 `
+              -Evidence_Path $evidence `
+              -Mode $mode `
+              -TestMode
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Write bounded exact-SHA workflow metadata
+        shell: pwsh
+        run: |
+          $metadata = [ordered]@{
+            artifact_sha256 = $env:INSTALLER_SHA256
+            profile = 'integrations_preview'
+            schema = 1
+            source_sha = $env:EXPECTED_SOURCE_COMMIT
+            status = 'local-evidence-only'
+            version = '0.3.0-preview.1'
+          }
+          New-Item -ItemType Directory -Path $env:EVIDENCE_ROOT -Force | Out-Null
+          $metadata | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $env:EVIDENCE_ROOT 'workflow-metadata.json') -Encoding ascii -NoNewline
+
+      - name: Verify final checkout remains clean
+        shell: pwsh
+        run: |
+          $status = git status --porcelain=v1 --untracked-files=all
+          if ($status) { throw 'workflow changed the candidate checkout' }
+
+      - name: Archive bounded exact-SHA evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: agentguardian-integrations-preview-${{ env.EXPECTED_SOURCE_COMMIT }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/agentguardian-integrations-preview-evidence/*.json

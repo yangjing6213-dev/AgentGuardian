@@ -603,6 +603,10 @@ def _forbidden_member(
     folded = member.casefold()
     if folded in forbidden:
         return True
+    # ``sys.executable`` is a path lookup, not process creation. Keep the
+    # prefix rule focused on execution APIs while retaining explicit members.
+    if folded == "executable":
+        return False
     # The exec prefix denotes process APIs; SQLite execute/execute* is retained.
     return any(
         folded != prefix

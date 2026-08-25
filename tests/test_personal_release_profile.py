@@ -47,6 +47,7 @@ HISTORICAL_SECURITY_DOCS = (
     SECURITY_DOCS / "windows-mvp-threat-model.md",
     SECURITY_DOCS / "windows-release-evidence.md",
 )
+ACTIVE_INTEGRATIONS_PREVIEW_DOC = SECURITY_DOCS / "integrations-preview.md"
 PRIVATE_BETA_STATUS_PATH = (
     SECURITY_DOCS / "personal-exe-private-beta-status.json"
 )
@@ -706,11 +707,17 @@ def test_governing_and_historical_document_classes_are_explicit() -> None:
     assert "not product capability claims or release evidence" in readme
     assert "approved active product specification" in design
     assert "implementation has not started" not in design
+    assert ACTIVE_INTEGRATIONS_PREVIEW_DOC.is_file()
+    assert "INTEGRATIONS-PREVIEW-NOT-READY" in ACTIVE_INTEGRATIONS_PREVIEW_DOC.read_text(
+        encoding="utf-8"
+    )
+    assert ACTIVE_INTEGRATIONS_PREVIEW_DOC not in HISTORICAL_SECURITY_DOCS
 
     excluded_security_docs = {
         path
         for path in SECURITY_DOCS.glob("*.md")
         if path not in ACTIVE_PERSONAL_DOCS
+        and path != ACTIVE_INTEGRATIONS_PREVIEW_DOC
     }
     assert excluded_security_docs == set(HISTORICAL_SECURITY_DOCS)
     for path in HISTORICAL_SECURITY_DOCS:
@@ -957,6 +964,38 @@ def test_profile_is_git_bound_to_lf_line_endings() -> None:
     )
 
     assert result.stdout.strip().endswith(": eol: lf")
+
+
+@pytest.mark.parametrize("explicit_profile", [True, False])
+def test_selecting_frozen_personal_profile_against_current_03_source_fails_before_pyinstaller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit_profile: bool
+) -> None:
+    import scripts.build_windows_portable as build_module
+
+    commit = "a" * 40
+    calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(build_module.sys, "platform", "win32")
+    monkeypatch.setattr(build_module.sys, "version_info", (3, 12))
+    monkeypatch.setattr(
+        build_module,
+        "_git",
+        lambda _root, *arguments: commit if arguments == ("rev-parse", "HEAD") else "",
+    )
+    monkeypatch.setattr(
+        build_module.subprocess,
+        "run",
+        lambda *arguments, **kwargs: calls.append(arguments),
+    )
+
+    arguments = {
+        "source_commit": commit,
+        "built_at": "2026-08-25T00:00:00Z",
+    }
+    if explicit_profile:
+        arguments["release_profile"] = "personal_exe_private_beta"
+    with pytest.raises(ValueError, match="RELEASE_PROFILE_SOURCE_IDENTITY_MISMATCH"):
+        build_module.build_portable(ROOT, tmp_path / "output", **arguments)
+    assert calls == []
 
 
 @pytest.mark.parametrize(

@@ -1,8 +1,10 @@
 ![AgentGuardian](assets/brand/agentguardian-cover.svg)
 
-# AgentGuardian Personal v1
+# AgentGuardian Integrations Preview
 
-AgentGuardian Personal v1 is a local-first static security auditor for Windows 11 x64. Its supported use boundary is **personal non-regulated configuration**. The only active delivery and governance route is the unsigned `personal_exe_private_beta` track for known testers. Frozen candidate `8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6` has current local-gate, GitHub CI, native unsigned-installer lifecycle, and independent-review evidence. Version `0.2.0-beta.1` remains `PRIVATE-BETA-NOT-READY` because external license and Qt approval, two-machine acceptance, and the operations/security gate are pending; formal public release remains `NO-GO`.
+AgentGuardian 0.3 Integrations Preview is the active development track for a local-first static security auditor on Windows 11 x64. Its supported use boundary is **personal non-regulated configuration**. The active entry points are the desktop GUI, the standalone Codex Skill, and the local STDIO MCP helper; all three use one local audit core. The current status is `INTEGRATIONS-PREVIEW-NOT-READY` and formal release remains `NO-GO`.
+
+The `0.2.0-beta.1` Personal v1 candidate at frozen exact SHA `8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6` is historical evidence only. It remains `PRIVATE-BETA-NOT-READY` because external license and Qt approval, two-machine acceptance, and the operations/security gate are pending; formal public release remains `NO-GO`. Historical 0.2 evidence does not establish current 0.3 CI, installer, lifecycle, or review status.
 
 ## Current implementation
 
@@ -15,12 +17,14 @@ AgentGuardian Personal v1 is a local-first static security auditor for Windows 1
 - Local state protected for the current Windows user with DPAPI.
 - Static MCP configuration detection for dangerous capability combinations.
 - OpenAI Provider local adaptation, detection, and manual guidance only. The runtime must not call OpenAI or another provider API by default.
+- A standalone Apache-2.0 Codex Skill and an opt-in local STDIO MCP entry point with `prepare_audit` and `run_prepared_audit`.
+- Four bounded operations: `files`, `browser`, `clipboard`, and `public_share`, with human approval before the operation that reads or verifies data.
 
 `Personal v1 不支持高敏感现实数据`。`联网分享验证仅在用户显式输入公开 URL 后执行`。
 
 ## Permanently excluded
 
-Personal v1 permanently excludes MCP runtime integration. Enterprise features, a high-sensitivity mode, and dynamic MCP execution are not product roadmap promises. The runtime has no telemetry, cloud console, automatic arbitrary remediation, or plugin execution.
+The frozen 0.2 Personal v1 permanently excludes MCP runtime integration. The active 0.3 preview adds only the reviewed local STDIO MCP helper described in `docs/security/integrations-preview.md`; enterprise features, a high-sensitivity mode, and dynamic MCP execution remain unsupported. The runtime has no telemetry, cloud console, automatic arbitrary remediation, or plugin execution.
 
 The static MCP detector does not download, load, launch, broker, sandbox, package, or execute MCP software. Provider findings are local configuration observations and manual guidance, not endpoint classification or API verification.
 
@@ -29,6 +33,13 @@ The static MCP detector does not download, load, launch, broker, sandbox, packag
 Do not use Personal v1 with medical, financial, identity or biometric, legally privileged, customer data, state-secret, other regulated, or other high-sensitivity real data. This boundary is a use restriction, not a guarantee that AgentGuardian can classify content correctly.
 
 ## Not yet passed
+
+The active 0.3 preview has not passed its eight-gate ledger. GitHub CI, the
+Windows integrations workflow, clean-machine lifecycle, Codex CLI/Desktop
+STDIO acceptance, license/marketplace review, local verification, and
+independent review remain separately pending. The unsigned traditional
+installer route is a development route only and is not a production-safe
+release.
 
 The intended delivery route is a traditional unsigned offline EXE installer sent directly to known private testers. No installer candidate has passed the required gates. Because it is unsigned, Windows may show Unknown Publisher or SmartScreen warnings; testers must verify the supplied SHA-256 before running it.
 
@@ -67,6 +78,10 @@ The self-audit reports the Python 版本 but does not expose the interpreter pat
 - [Independent-machine acceptance](docs/security/personal-v1-independent-machine-acceptance.md)
 
 ## Development governance
+
+- [Active 0.3 Integrations Preview boundary](docs/security/integrations-preview.md)
+- [Active 0.3 status ledger](docs/security/integrations-preview-status.json)
+- [Active Integrations Preview implementation plan](docs/superpowers/plans/2026-08-24-agentguardian-integrations-preview.md)
 
 - [Approved Personal v1 specification](docs/superpowers/specs/2026-08-16-agentguardian-personal-v1-design.md)
 - [Active Personal EXE private-beta implementation plan](docs/superpowers/plans/2026-08-21-agentguardian-personal-exe-private-beta.md)

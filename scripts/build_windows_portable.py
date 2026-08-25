@@ -41,8 +41,10 @@ _UNUSED_QT_GUI_PLUGINS = {
 }
 _SBOM_NAMESPACE = UUID("f2b2b988-15ce-5e1c-a6cb-08c2db8e6e7a")
 _PRIVATE_BETA_PROFILE = "personal_exe_private_beta"
+_INTEGRATIONS_PREVIEW_PROFILE = "integrations_preview"
 _RELEASE_PROFILES = {
     _PRIVATE_BETA_PROFILE: ("personal_exe_private_beta.json", "0.2.0-beta.1"),
+    _INTEGRATIONS_PREVIEW_PROFILE: ("integrations_preview.json", "0.3.0-preview.1"),
 }
 _FORBIDDEN_QT_NETWORK_COMPONENTS = {
     "qnetworklistmanager.dll",
@@ -150,6 +152,33 @@ def build_pyinstaller_command(
         command.extend(("--add-data", data_spec))
     command.append(str((package_root / "__main__.py").resolve()))
     return tuple(command)
+
+
+def build_integrations_preview_pyinstaller_command(
+    project_root: Path,
+    output_root: Path,
+    *,
+    python_executable: str = sys.executable,
+) -> tuple[str, ...]:
+    """Invoke the single reviewed 0.3 shared-Analysis spec."""
+    project_root = project_root.resolve()
+    spec = project_root / "packaging" / "windows" / "AgentGuardianIntegrationsPreview.spec"
+    if not spec.is_file():
+        raise ValueError("integrations preview spec is missing")
+    return (
+        python_executable,
+        "-m",
+        "PyInstaller",
+        "--clean",
+        "--noconfirm",
+        "--distpath",
+        str((output_root / "dist").resolve()),
+        "--workpath",
+        str((output_root / "work").resolve()),
+        "--specpath",
+        str((output_root / "spec").resolve()),
+        str(spec.resolve()),
+    )
 
 
 def filter_qt_gui_binaries(
@@ -360,6 +389,18 @@ def validate_frozen_layout(bundle_root: Path, project_root: Path) -> None:
         raise ValueError(f"frozen layout contains network-capable component: {forbidden[0]}")
 
 
+def validate_integrations_preview_layout(bundle_root: Path, project_root: Path) -> None:
+    """Validate both 0.3 launchers and the shared reviewed package tree."""
+    for name in ("AgentGuardian.exe", "AgentGuardianMcp.exe"):
+        if not (bundle_root / name).is_file():
+            raise ValueError("integrations preview launcher layout is invalid")
+    validate_frozen_layout(bundle_root, project_root)
+    skill = bundle_root / "agentguardian_skill"
+    expected = {"LICENSE", "README.md", "SKILL.md"}
+    if not skill.is_dir() or {path.name for path in skill.iterdir()} != expected:
+        raise ValueError("integrations preview Skill layout is invalid")
+
+
 def validate_git_build_context(head: str, status: str, source_commit: str) -> None:
     if len(source_commit) != 40 or any(
         character not in "0123456789abcdef" for character in source_commit
@@ -404,6 +445,17 @@ def build_portable(
     validate_git_build_context(head, status, source_commit)
     profile_path = project_root / "release_profiles" / profile_filename
     profile_snapshot = load_profile_snapshot(project_root, profile_path)
+    if release_profile == _INTEGRATIONS_PREVIEW_PROFILE:
+        return _build_integrations_preview_portable(
+            project_root,
+            output_root,
+            source_commit=source_commit,
+            built_at=built_at,
+            artifact_status=artifact_status,
+            profile_path=profile_path,
+            profile_snapshot=profile_snapshot,
+        )
+    _require_current_source_identity(project_root, profile_snapshot)
     verify_profile(project_root, profile_snapshot)
     build_time = validate_build_time(built_at)
     build_dependencies = validate_build_dependency_snapshot()
@@ -462,6 +514,117 @@ def build_portable(
         / f"AgentGuardian-{product_version}-windows-x64-{source_commit[:12]}.zip",
     )
     return bundle_root
+
+
+def _build_integrations_preview_portable(
+    project_root: Path,
+    output_root: Path,
+    *,
+    source_commit: str,
+    built_at: str,
+    artifact_status: str,
+    profile_path: Path,
+    profile_snapshot: ProfileSnapshot,
+) -> Path:
+    from scripts.verify_integrations_preview_profile import (
+        verify_profile_evidence,
+        verify_payload as verify_preview_payload,
+        verify_profile as verify_preview_profile,
+    )
+
+    if artifact_status != "unsigned_development_only":
+        raise ValueError("artifact status is invalid")
+    _require_current_source_identity(project_root, profile_snapshot)
+    verify_preview_profile(project_root, profile_snapshot)
+    build_time = validate_build_time(built_at)
+    build_dependencies = validate_build_dependency_snapshot()
+    if output_root.exists():
+        raise ValueError("output root already exists")
+    output_root.mkdir(parents=True)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PYTHONHASHSEED": "0",
+            "PYINSTALLER_CONFIG_DIR": str(output_root / "pyinstaller-cache"),
+            "SOURCE_DATE_EPOCH": str(int(build_time.timestamp())),
+        }
+    )
+    subprocess.run(
+        build_integrations_preview_pyinstaller_command(project_root, output_root),
+        cwd=project_root,
+        env=environment,
+        check=True,
+    )
+    bundle_root = output_root / "dist" / "AgentGuardian"
+    validate_integrations_preview_layout(bundle_root, project_root)
+    _write_integrations_preview_profile_evidence(
+        bundle_root, profile_snapshot, source_commit
+    )
+    verify_preview_payload(bundle_root, profile_snapshot)
+    verify_profile_evidence(bundle_root, profile_snapshot, source_commit)
+    internal = bundle_root / "_internal"
+    python_version, openssl_version = runtime_library_versions()
+    components = portable_component_specs(
+        python_version=python_version,
+        openssl_version=openssl_version,
+        vc_runtime_version=_pe_version(internal / "VCRUNTIME140.dll"),
+        ucrt_version=_pe_version(internal / "ucrtbase.dll"),
+        product_version="0.3.0-preview.1",
+    )
+    final_head = _git(project_root, "rev-parse", "HEAD")
+    final_status = _git(
+        project_root, "status", "--porcelain=v1", "--untracked-files=all"
+    )
+    validate_git_build_context(final_head, final_status, source_commit)
+    require_profile_snapshot_unchanged(project_root, profile_path, profile_snapshot)
+    write_portable_evidence(
+        bundle_root,
+        project_root=project_root,
+        component_specs=components,
+        source_commit=source_commit,
+        built_at=built_at,
+        build_dependencies=build_dependencies,
+        forbidden_texts=(str(project_root), str(output_root)),
+        artifact_status=artifact_status,
+    )
+    deterministic_zip(
+        bundle_root,
+        output_root
+        / f"AgentGuardian-0.3.0-preview.1-windows-x64-{source_commit[:12]}.zip",
+    )
+    return bundle_root
+
+
+def _require_current_source_identity(
+    project_root: Path, profile_snapshot: ProfileSnapshot
+) -> None:
+    try:
+        source = (project_root / "src" / "agentguardian" / "__init__.py").read_text(
+            encoding="utf-8"
+        )
+        current_version = re.search(r'__version__\s*=\s*["\']([^"\']+)', source).group(1)
+        profile_version = profile_snapshot.profile["python_package_version"]
+    except (AttributeError, KeyError, OSError, TypeError):
+        raise ValueError("RELEASE_PROFILE_SOURCE_IDENTITY_MISMATCH") from None
+    if current_version != profile_version:
+        raise ValueError("RELEASE_PROFILE_SOURCE_IDENTITY_MISMATCH")
+
+
+def _write_integrations_preview_profile_evidence(
+    bundle_root: Path, profile_snapshot: ProfileSnapshot, source_commit: str
+) -> None:
+    if profile_snapshot.profile["name"] != _INTEGRATIONS_PREVIEW_PROFILE:
+        raise ValueError("RELEASE_PROFILE_SOURCE_IDENTITY_MISMATCH")
+    evidence = {
+        "profile": _INTEGRATIONS_PREVIEW_PROFILE,
+        "profile_sha256": profile_snapshot.sha256,
+        "schema": 1,
+        "source_sha": source_commit,
+        "status": "pass",
+    }
+    (bundle_root / "INTEGRATIONS-PREVIEW-PROFILE.json").write_bytes(
+        canonical_json_bytes(evidence)
+    )
 
 
 def _write_personal_profile_evidence(
