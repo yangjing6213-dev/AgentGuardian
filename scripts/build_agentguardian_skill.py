@@ -45,12 +45,17 @@ _README_REQUIREMENTS = (
 )
 _DOWNLOADER_MARKERS = (
     "curl ",
+    "curl.exe ",
     "wget ",
+    "wget.exe ",
     "invoke-webrequest",
     "invoke-restmethod",
     "iwr ",
     "bitsadmin",
+    "start-bitstransfer",
     "certutil -urlcache",
+    "python -m urllib",
+    "powershell -encodedcommand",
 )
 _EXECUTABLE_HEADERS = (
     b"MZ",
@@ -140,6 +145,84 @@ def _validate_directory_parents(path: Path) -> None:
         raise _fixed_error("skill path is invalid") from None
 
 
+def _acquire_directory_locks(path: Path) -> list[object]:
+    absolute = Path(os.path.abspath(path))
+    candidates = [
+        candidate
+        for candidate in reversed((absolute, *absolute.parents))
+        if os.path.lexists(candidate) and candidate != candidate.parent
+    ]
+    for candidate in candidates:
+        try:
+            metadata = os.lstat(candidate)
+        except OSError:
+            raise _fixed_error("skill path is invalid") from None
+        if _is_reparse_or_link(candidate, metadata) or not stat.S_ISDIR(metadata.st_mode):
+            raise _fixed_error("skill path is invalid")
+    if os.name != "nt":
+        return []
+
+    import ctypes
+    import ctypes.wintypes as wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    invalid_handle = ctypes.c_void_p(-1).value
+    handles: list[object] = []
+    try:
+        for candidate in candidates:
+            handle = create_file(
+                os.fspath(candidate),
+                0x80000000,
+                0x00000001 | 0x00000002,
+                None,
+                3,
+                0x02000000 | 0x00200000,
+                None,
+            )
+            if handle in (None, 0, invalid_handle):
+                raise _fixed_error("skill path is busy or invalid")
+            handles.append(handle)
+    except ValueError:
+        for handle in reversed(handles):
+            close_handle(handle)
+        raise
+    except Exception:
+        for handle in reversed(handles):
+            close_handle(handle)
+        raise _fixed_error("skill path is busy or invalid") from None
+    return handles
+
+
+def _release_directory_locks(handles: list[object]) -> None:
+    if not handles or os.name != "nt":
+        return
+    import ctypes
+    import ctypes.wintypes as wintypes
+
+    close_handle = ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    for handle in reversed(handles):
+        try:
+            close_handle(handle)
+        except OSError:
+            pass
+
+
 def _validate_bytes(name: str, data: bytes) -> str:
     if len(data) > MAX_FILE_BYTES:
         raise _fixed_error("skill file is too large")
@@ -163,46 +246,57 @@ def _validate_bytes(name: str, data: bytes) -> str:
 
 def _validated_source(source_root: Path) -> dict[str, bytes]:
     _validate_directory_parents(source_root)
+    parent_locks = _acquire_directory_locks(source_root.parent)
+    root_locks: list[object] = []
     try:
-        source_metadata = os.lstat(source_root)
-        if _is_reparse_or_link(source_root, source_metadata):
-            raise _fixed_error("skill source is invalid")
-        root = source_root.resolve(strict=True)
-        root_metadata = os.lstat(root)
-    except (OSError, RuntimeError):
-        raise _fixed_error("skill source is invalid") from None
-    if not stat.S_ISDIR(root_metadata.st_mode) or _is_reparse_or_link(root, root_metadata):
-        raise _fixed_error("skill source is invalid")
-
-    try:
-        entries = list(os.scandir(root))
-    except OSError:
-        raise _fixed_error("skill source is unreadable") from None
-    names = sorted(entry.name for entry in entries)
-    if names != sorted(ALLOWED_FILES) or any(not name.isascii() for name in names):
-        raise _fixed_error("skill source contains unexpected entries")
-
-    files: dict[str, bytes] = {}
-    total = 0
-    for name in ALLOWED_FILES:
-        path = root / name
         try:
-            metadata = os.lstat(path)
-            if _is_reparse_or_link(path, metadata) or not stat.S_ISREG(metadata.st_mode):
-                raise _fixed_error("skill source entry is invalid")
-        except ValueError:
-            raise
+            source_metadata = os.lstat(source_root)
+            if _is_reparse_or_link(source_root, source_metadata):
+                raise _fixed_error("skill source is invalid")
+            root = source_root.resolve(strict=True)
+            root_metadata = os.lstat(root)
+        except (OSError, RuntimeError):
+            raise _fixed_error("skill source is invalid") from None
+        if not stat.S_ISDIR(root_metadata.st_mode) or _is_reparse_or_link(root, root_metadata):
+            raise _fixed_error("skill source is invalid")
+        root_locks = _acquire_directory_locks(root)
+        if not _same_file_snapshot(source_metadata, os.lstat(source_root)):
+            raise _fixed_error("skill source changed")
+        if not _same_file_snapshot(root_metadata, os.lstat(root)):
+            raise _fixed_error("skill source changed")
+
+        try:
+            entries = list(os.scandir(root))
         except OSError:
-            raise _fixed_error("skill source entry is unreadable") from None
-        data = _read_checked_file(path)
-        _validate_bytes(name, data)
-        files[name] = data
-        total += len(data)
-    if total > MAX_TOTAL_BYTES:
-        raise _fixed_error("skill source is too large")
-    if files["LICENSE"] != _read_checked_file(PROJECT_ROOT / "LICENSE"):
-        raise _fixed_error("skill license does not match project license")
-    return files
+            raise _fixed_error("skill source is unreadable") from None
+        names = sorted(entry.name for entry in entries)
+        if names != sorted(ALLOWED_FILES) or any(not name.isascii() for name in names):
+            raise _fixed_error("skill source contains unexpected entries")
+
+        files: dict[str, bytes] = {}
+        total = 0
+        for name in ALLOWED_FILES:
+            path = root / name
+            try:
+                metadata = os.lstat(path)
+                if _is_reparse_or_link(path, metadata) or not stat.S_ISREG(metadata.st_mode):
+                    raise _fixed_error("skill source entry is invalid")
+            except ValueError:
+                raise
+            except OSError:
+                raise _fixed_error("skill source entry is unreadable") from None
+            data = _read_checked_file(path)
+            _validate_bytes(name, data)
+            files[name] = data
+            total += len(data)
+        if total > MAX_TOTAL_BYTES:
+            raise _fixed_error("skill source is too large")
+        if files["LICENSE"] != _read_checked_file(PROJECT_ROOT / "LICENSE"):
+            raise _fixed_error("skill license does not match project license")
+        return files
+    finally:
+        _release_directory_locks(root_locks)
+        _release_directory_locks(parent_locks)
 
 
 def _new_local_output(output_root: Path) -> Path:
@@ -309,9 +403,7 @@ def _rollback_artifacts(
             pass
 
 
-def build_skill(source_root: Path, output_root: Path) -> tuple[Path, str]:
-    files = _validated_source(source_root)
-    output = _new_local_output(output_root)
+def _build_skill_artifacts(files: dict[str, bytes], output: Path) -> tuple[Path, str]:
     target = output / f"AgentGuardian-Skill-{SKILL_VERSION}.zip"
     checksum = output / f"{target.name}.sha256"
     old_target = _existing_regular_bytes(target)
@@ -365,6 +457,19 @@ def build_skill(source_root: Path, output_root: Path) -> tuple[Path, str]:
             if temporary is not None:
                 _remove_file(temporary)
     return target, digest
+
+
+def build_skill(source_root: Path, output_root: Path) -> tuple[Path, str]:
+    files = _validated_source(source_root)
+    parent_locks = _acquire_directory_locks(output_root.parent)
+    output_locks: list[object] = []
+    try:
+        output = _new_local_output(output_root)
+        output_locks = _acquire_directory_locks(output)
+        return _build_skill_artifacts(files, output)
+    finally:
+        _release_directory_locks(output_locks)
+        _release_directory_locks(parent_locks)
 
 
 def main() -> int:

@@ -119,6 +119,28 @@ def test_skill_rejects_secret_patterns_and_executable_headers(tmp_path: Path) ->
         _build(source, tmp_path)
 
 
+@pytest.mark.parametrize(
+    "marker",
+    (
+        "Start-BitsTransfer",
+        "python -m urllib.request",
+        "powershell -EncodedCommand ZQB2AGkAbA==",
+        "curl.exe https://example.invalid/a",
+        "wget.exe https://example.invalid/a",
+    ),
+)
+def test_skill_rejects_downloader_command_variants(
+    tmp_path: Path,
+    marker: str,
+) -> None:
+    source = _copy_source(tmp_path)
+    readme = source / "README.md"
+    readme.write_bytes(readme.read_bytes() + f"\n{marker}\n".encode("utf-8"))
+
+    with pytest.raises(ValueError):
+        _build(source, tmp_path)
+
+
 def test_skill_rejects_oversized_file_and_aggregate(tmp_path: Path) -> None:
     source = _copy_source(tmp_path)
     readme = source / "README.md"
@@ -195,4 +217,36 @@ def test_skill_cleans_partial_outputs_when_checksum_replace_fails(
 
     assert not (output / "AgentGuardian-Skill-0.1.0.zip").exists()
     assert not (output / "AgentGuardian-Skill-0.1.0.zip.sha256").exists()
+    assert not tuple(output.glob(".agentguardian-skill-*"))
+
+
+def test_skill_restores_existing_pair_when_upgrade_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "output"
+    build_skill(SOURCE_ROOT, output)
+    zip_path = output / "AgentGuardian-Skill-0.1.0.zip"
+    checksum_path = output / "AgentGuardian-Skill-0.1.0.zip.sha256"
+    old_zip = zip_path.read_bytes()
+    old_checksum = checksum_path.read_bytes()
+    real_replace = os.replace
+    calls = 0
+
+    def fail_new_checksum(
+        source: str | os.PathLike[str],
+        target: str | os.PathLike[str],
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 4:
+            raise OSError("synthetic upgrade failure")
+        real_replace(source, target)
+
+    monkeypatch.setattr(skill_builder.os, "replace", fail_new_checksum)
+    with pytest.raises(ValueError, match="skill build failed"):
+        build_skill(SOURCE_ROOT, output)
+
+    assert zip_path.read_bytes() == old_zip
+    assert checksum_path.read_bytes() == old_checksum
     assert not tuple(output.glob(".agentguardian-skill-*"))
