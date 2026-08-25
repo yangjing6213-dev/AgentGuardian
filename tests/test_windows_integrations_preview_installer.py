@@ -78,7 +78,11 @@ def test_preview_spec_has_one_shared_analysis_and_two_launchers() -> None:
     assert "name='AgentGuardianMcp'" in spec
     assert "console=False" in spec
     assert "console=True" in spec
-    assert "skills/agentguardian" in spec
+    builder = (ROOT / "scripts" / "build_windows_portable.py").read_text(
+        encoding="utf-8"
+    )
+    assert "_materialize_integrations_preview_skill" in builder
+    assert 'project_root / "skills" / "agentguardian"' in builder
     assert "__main__.py" in spec
 
 

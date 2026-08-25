@@ -7,15 +7,10 @@ from pathlib import Path
 project_root = Path(SPECPATH).resolve().parents[1]
 source_root = project_root / "src"
 package_root = source_root / "agentguardian"
-skill_root = project_root / "skills/agentguardian"
-
 datas = [
     *[(str(path), "agentguardian") for path in sorted(package_root.glob("*.py"))],
     (str(package_root / "source_policy.json"), "agentguardian"),
     (str(project_root / "rules" / "default.json"), "agentguardian/rules"),
-    (str(skill_root / "LICENSE"), "agentguardian_skill"),
-    (str(skill_root / "README.md"), "agentguardian_skill"),
-    (str(skill_root / "SKILL.md"), "agentguardian_skill"),
 ]
 
 a = Analysis(

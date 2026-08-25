@@ -402,6 +402,21 @@ def validate_integrations_preview_layout(bundle_root: Path, project_root: Path) 
         raise ValueError("integrations preview Skill layout is invalid")
 
 
+def _materialize_integrations_preview_skill(
+    project_root: Path, bundle_root: Path
+) -> None:
+    source = project_root / "skills" / "agentguardian"
+    target = bundle_root / "agentguardian_skill"
+    if target.exists():
+        raise ValueError("integrations preview Skill layout is invalid")
+    target.mkdir()
+    for name in ("LICENSE", "README.md", "SKILL.md"):
+        source_file = source / name
+        if not source_file.is_file():
+            raise ValueError("integrations preview Skill source is invalid")
+        shutil.copyfile(source_file, target / name)
+
+
 def validate_git_build_context(head: str, status: str, source_commit: str) -> None:
     if len(source_commit) != 40 or any(
         character not in "0123456789abcdef" for character in source_commit
@@ -562,6 +577,7 @@ def _build_integrations_preview_portable(
         check=True,
     )
     bundle_root = output_root / "dist" / "AgentGuardian"
+    _materialize_integrations_preview_skill(project_root, bundle_root)
     validate_integrations_preview_layout(bundle_root, project_root)
     _write_integrations_preview_profile_evidence(
         bundle_root, profile_snapshot, source_commit

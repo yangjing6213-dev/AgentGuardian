@@ -457,6 +457,30 @@ def test_integrations_preview_command_uses_one_reviewed_spec_and_two_launchers(
     ).read_text(encoding="utf-8")
     assert "Path(SPECPATH)" in spec
     assert "Path(__file__)" not in spec
+    assert '"agentguardian_skill"' not in spec
+
+
+def test_integrations_preview_skill_is_materialized_from_fixed_allowlist(
+    tmp_path: Path,
+) -> None:
+    import scripts.build_windows_portable as build_module
+
+    source = tmp_path / "skills" / "agentguardian"
+    source.mkdir(parents=True)
+    for name in ("LICENSE", "README.md", "SKILL.md"):
+        (source / name).write_text(name, encoding="ascii")
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+
+    build_module._materialize_integrations_preview_skill(tmp_path, bundle)
+
+    skill = bundle / "agentguardian_skill"
+    assert {path.name for path in skill.iterdir()} == {
+        "LICENSE",
+        "README.md",
+        "SKILL.md",
+    }
+    assert (skill / "SKILL.md").read_text(encoding="ascii") == "SKILL.md"
 
 
 def test_qt_gui_hook_filters_only_unused_network_dependency_chain() -> None:
