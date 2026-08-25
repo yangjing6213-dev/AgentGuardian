@@ -329,6 +329,18 @@ def test_missing_original_config_is_removed_after_uninstall(tmp_path: Path) -> N
     assert not config.exists()
 
 
+def test_clean_skill_uninstall_removes_empty_managed_directory(tmp_path: Path) -> None:
+    assert install_integration(
+        install_skill=True,
+        enable_mcp=False,
+        environ=_environment(tmp_path),
+    ) == "INTEGRATION_INSTALLED"
+    skill = tmp_path / SKILL_RELATIVE
+    assert skill.is_dir()
+    assert uninstall_integration(environ=_environment(tmp_path)) == "INTEGRATION_REMOVED"
+    assert not skill.exists()
+
+
 def test_existing_empty_config_survives_uninstall(tmp_path: Path) -> None:
     executable = _launchers(tmp_path)
     config = tmp_path / ".codex" / "config.toml"

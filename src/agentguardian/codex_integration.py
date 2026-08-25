@@ -1434,6 +1434,11 @@ def uninstall_integration(
         _remove_managed_mcp(transaction, unprotect=unprotect)
         if not _remove_unchanged_skill_files(transaction):
             return "INTEGRATION_CLEANUP_REQUIRED"
+        _remove_empty_directory(
+            transaction.paths.skill,
+            transaction.paths.root,
+            "INTEGRATION_CLEANUP_REQUIRED",
+        )
         _remove_recovery_and_manifest(transaction)
         return "INTEGRATION_REMOVED"
     except IntegrationError as error:
