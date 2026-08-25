@@ -112,7 +112,7 @@ def test_preview_lifecycle_script_is_bounded_and_native() -> None:
         "agentguardian-mcp-fixture",
         "agentguardian_inno_test_mode",
         "agentguardian_test_mode",
-        '"/dir=$installroot"',
+        '/dir="',
         "sha256]::create",
     ):
         assert required.casefold() in folded

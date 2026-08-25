@@ -302,7 +302,7 @@ function Invoke-Installer([string]$Path, [string]$Tasks) {
     if ($Tasks) { $arguments += "/TASKS=$Tasks" }
     if ($TestMode) {
         $arguments += '/AGENTGUARDIAN_TEST_MODE'
-        $arguments += "/DIR=$installRoot"
+        $arguments += ('/DIR="' + $installRoot + '"')
     }
     Assert-NoAgentGuardianNetworkConnection
     $result = Start-Process -FilePath $Path -ArgumentList $arguments -PassThru -WindowStyle Hidden
