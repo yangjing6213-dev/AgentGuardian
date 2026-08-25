@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import scripts.build_agentguardian_skill as skill_builder
 from scripts.build_agentguardian_skill import build_skill
 
 
@@ -134,3 +135,64 @@ def test_skill_rejects_license_mismatch(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         _build(source, tmp_path)
+
+
+def test_skill_reads_sources_without_path_read_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _copy_source(tmp_path)
+
+    def fail_path_read_bytes(_path: Path) -> bytes:
+        raise AssertionError("source must be read through a checked handle")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_path_read_bytes)
+    target, _digest = build_skill(source, tmp_path / "output")
+
+    assert target.is_file()
+
+
+def test_skill_replaces_zip_and_checksum_atomically(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replacements: list[tuple[str, str]] = []
+    real_replace = os.replace
+
+    def record_replace(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> None:
+        replacements.append((os.fspath(source), os.fspath(target)))
+        real_replace(source, target)
+
+    monkeypatch.setattr(skill_builder.os, "replace", record_replace)
+    target, _digest = build_skill(SOURCE_ROOT, tmp_path / "output")
+
+    assert target.is_file()
+    assert len(replacements) == 2
+    assert all(Path(source).parent == Path(destination).parent for source, destination in replacements)
+
+
+def test_skill_cleans_partial_outputs_when_checksum_replace_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "output"
+    real_replace = os.replace
+    calls = 0
+
+    def fail_checksum_replace(
+        source: str | os.PathLike[str],
+        target: str | os.PathLike[str],
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("synthetic replace failure")
+        real_replace(source, target)
+
+    monkeypatch.setattr(skill_builder.os, "replace", fail_checksum_replace)
+    with pytest.raises(ValueError, match="skill build failed"):
+        build_skill(SOURCE_ROOT, output)
+
+    assert not (output / "AgentGuardian-Skill-0.1.0.zip").exists()
+    assert not (output / "AgentGuardian-Skill-0.1.0.zip.sha256").exists()
+    assert not tuple(output.glob(".agentguardian-skill-*"))

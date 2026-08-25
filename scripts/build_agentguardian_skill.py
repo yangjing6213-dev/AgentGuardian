@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import os
 import re
 import stat
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -73,6 +75,71 @@ def _is_reparse_or_link(path: Path, metadata: os.stat_result) -> bool:
     )
 
 
+def _same_file_snapshot(first: os.stat_result, second: os.stat_result) -> bool:
+    return (
+        first.st_dev,
+        first.st_ino,
+        first.st_size,
+        first.st_mtime_ns,
+    ) == (
+        second.st_dev,
+        second.st_ino,
+        second.st_size,
+        second.st_mtime_ns,
+    )
+
+
+def _read_checked_file(path: Path) -> bytes:
+    descriptor: int | None = None
+    try:
+        before = os.lstat(path)
+        if _is_reparse_or_link(path, before) or not stat.S_ISREG(before.st_mode):
+            raise _fixed_error("skill source entry is invalid")
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(os.fspath(path), flags)
+        opened = os.fstat(descriptor)
+        if _is_reparse_or_link(path, opened) or not _same_file_snapshot(before, opened):
+            raise _fixed_error("skill source entry changed")
+        chunks: list[bytes] = []
+        remaining = MAX_FILE_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(descriptor)
+        if _is_reparse_or_link(path, after) or not _same_file_snapshot(opened, after):
+            raise _fixed_error("skill source entry changed")
+        return b"".join(chunks)
+    except ValueError:
+        raise
+    except OSError:
+        raise _fixed_error("skill source entry is unreadable") from None
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def _validate_directory_parents(path: Path) -> None:
+    absolute = Path(os.path.abspath(path))
+    try:
+        for parent in absolute.parents:
+            if not os.path.lexists(parent):
+                continue
+            metadata = os.lstat(parent)
+            if _is_reparse_or_link(parent, metadata) or not stat.S_ISDIR(metadata.st_mode):
+                raise _fixed_error("skill path is invalid")
+    except ValueError:
+        raise
+    except OSError:
+        raise _fixed_error("skill path is invalid") from None
+
+
 def _validate_bytes(name: str, data: bytes) -> str:
     if len(data) > MAX_FILE_BYTES:
         raise _fixed_error("skill file is too large")
@@ -95,6 +162,7 @@ def _validate_bytes(name: str, data: bytes) -> str:
 
 
 def _validated_source(source_root: Path) -> dict[str, bytes]:
+    _validate_directory_parents(source_root)
     try:
         source_metadata = os.lstat(source_root)
         if _is_reparse_or_link(source_root, source_metadata):
@@ -122,25 +190,33 @@ def _validated_source(source_root: Path) -> dict[str, bytes]:
             metadata = os.lstat(path)
             if _is_reparse_or_link(path, metadata) or not stat.S_ISREG(metadata.st_mode):
                 raise _fixed_error("skill source entry is invalid")
-            data = path.read_bytes()
         except ValueError:
             raise
         except OSError:
             raise _fixed_error("skill source entry is unreadable") from None
+        data = _read_checked_file(path)
         _validate_bytes(name, data)
         files[name] = data
         total += len(data)
     if total > MAX_TOTAL_BYTES:
         raise _fixed_error("skill source is too large")
-    if files["LICENSE"] != (PROJECT_ROOT / "LICENSE").read_bytes():
+    if files["LICENSE"] != _read_checked_file(PROJECT_ROOT / "LICENSE"):
         raise _fixed_error("skill license does not match project license")
     return files
 
 
 def _new_local_output(output_root: Path) -> Path:
+    _validate_directory_parents(output_root)
     try:
-        output_root.mkdir(parents=True, exist_ok=True)
+        if os.path.lexists(output_root):
+            existing = os.lstat(output_root)
+            if _is_reparse_or_link(output_root, existing):
+                raise _fixed_error("skill output is invalid")
+        else:
+            output_root.mkdir(parents=True, exist_ok=True)
         metadata = os.lstat(output_root)
+    except ValueError:
+        raise
     except OSError:
         raise _fixed_error("skill output is invalid") from None
     if _is_reparse_or_link(output_root, metadata) or not stat.S_ISDIR(metadata.st_mode):
@@ -148,17 +224,53 @@ def _new_local_output(output_root: Path) -> Path:
     return output_root
 
 
-def build_skill(source_root: Path, output_root: Path) -> tuple[Path, str]:
-    files = _validated_source(source_root)
-    output = _new_local_output(output_root)
-    target = output / f"AgentGuardian-Skill-{SKILL_VERSION}.zip"
+def _write_temporary_bytes(output: Path, data: bytes, suffix: str) -> Path:
+    descriptor: int | None = None
+    name: str | None = None
     try:
-        if target.exists() and _is_reparse_or_link(target, os.lstat(target)):
-            raise _fixed_error("skill output is invalid")
+        descriptor, name = tempfile.mkstemp(
+            prefix=".agentguardian-skill-",
+            suffix=suffix,
+            dir=os.fspath(output),
+        )
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = None
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        return Path(name)
+    except (OSError, ValueError):
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if name is not None:
+            try:
+                os.unlink(name)
+            except OSError:
+                pass
+        raise _fixed_error("skill build failed") from None
+
+
+def _remove_file(path: Path) -> None:
+    try:
+        if os.path.lexists(path):
+            os.unlink(path)
     except OSError:
-        raise _fixed_error("skill output is invalid") from None
+        pass
+
+
+def _existing_regular_bytes(path: Path) -> bytes | None:
+    if not os.path.lexists(path):
+        return None
+    return _read_checked_file(path)
+
+
+def _zip_bytes(files: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
     with zipfile.ZipFile(
-        target,
+        buffer,
         "w",
         compression=zipfile.ZIP_DEFLATED,
         compresslevel=9,
@@ -169,12 +281,89 @@ def build_skill(source_root: Path, output_root: Path) -> tuple[Path, str]:
             info.external_attr = 0o100644 << 16
             info.compress_type = zipfile.ZIP_DEFLATED
             archive.writestr(info, files[name])
-    digest = hashlib.sha256(target.read_bytes()).hexdigest()
-    (output / f"{target.name}.sha256").write_text(
-        f"{digest} *{target.name}\n",
-        encoding="ascii",
-        newline="\n",
-    )
+    return buffer.getvalue()
+
+
+def _rollback_artifacts(
+    target: Path,
+    checksum: Path,
+    target_backup: Path | None,
+    checksum_backup: Path | None,
+    target_installed: bool,
+    checksum_installed: bool,
+) -> None:
+    if target_installed:
+        _remove_file(target)
+    if checksum_installed:
+        _remove_file(checksum)
+    for backup, destination in (
+        (target_backup, target),
+        (checksum_backup, checksum),
+    ):
+        if backup is None:
+            continue
+        try:
+            if os.path.lexists(backup):
+                os.replace(os.fspath(backup), os.fspath(destination))
+        except OSError:
+            pass
+
+
+def build_skill(source_root: Path, output_root: Path) -> tuple[Path, str]:
+    files = _validated_source(source_root)
+    output = _new_local_output(output_root)
+    target = output / f"AgentGuardian-Skill-{SKILL_VERSION}.zip"
+    checksum = output / f"{target.name}.sha256"
+    old_target = _existing_regular_bytes(target)
+    old_checksum = _existing_regular_bytes(checksum)
+    zip_data = _zip_bytes(files)
+    digest = hashlib.sha256(zip_data).hexdigest()
+    checksum_data = f"{digest} *{target.name}\n".encode("ascii")
+    zip_temp: Path | None = None
+    checksum_temp: Path | None = None
+    target_backup: Path | None = None
+    checksum_backup: Path | None = None
+    target_installed = False
+    checksum_installed = False
+    try:
+        zip_temp = _write_temporary_bytes(output, zip_data, ".zip.tmp")
+        checksum_temp = _write_temporary_bytes(output, checksum_data, ".sha256.tmp")
+        if old_target is not None:
+            target_backup = _write_temporary_bytes(output, old_target, ".zip.backup")
+            os.replace(os.fspath(target), os.fspath(target_backup))
+        if old_checksum is not None:
+            checksum_backup = _write_temporary_bytes(output, old_checksum, ".sha256.backup")
+            os.replace(os.fspath(checksum), os.fspath(checksum_backup))
+        os.replace(os.fspath(zip_temp), os.fspath(target))
+        zip_temp = None
+        target_installed = True
+        os.replace(os.fspath(checksum_temp), os.fspath(checksum))
+        checksum_temp = None
+        checksum_installed = True
+    except ValueError:
+        _rollback_artifacts(
+            target,
+            checksum,
+            target_backup,
+            checksum_backup,
+            target_installed,
+            checksum_installed,
+        )
+        raise
+    except Exception:
+        _rollback_artifacts(
+            target,
+            checksum,
+            target_backup,
+            checksum_backup,
+            target_installed,
+            checksum_installed,
+        )
+        raise _fixed_error("skill build failed") from None
+    finally:
+        for temporary in (zip_temp, checksum_temp, target_backup, checksum_backup):
+            if temporary is not None:
+                _remove_file(temporary)
     return target, digest
 
 
