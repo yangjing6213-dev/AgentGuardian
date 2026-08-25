@@ -1144,6 +1144,7 @@ def test_windows_ci_runs_required_local_checks_without_uploads() -> None:
         "if: steps.testable_tree.outputs.ready == 'true'",
         "python-version: '3.12'",
         "python -m pip install --require-hashes -r requirements-dev.lock",
+        "python -m pip install --require-hashes -r requirements-build.lock",
         "python -m pip install --no-build-isolation --no-deps -e .",
         "rtk pytest",
         "python -m pytest",

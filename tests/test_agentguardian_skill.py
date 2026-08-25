@@ -62,6 +62,12 @@ def test_skill_source_has_required_identity_and_license() -> None:
     assert (SOURCE_ROOT / "LICENSE").read_bytes() == (PROJECT_ROOT / "LICENSE").read_bytes()
 
 
+def test_skill_markdown_checkout_is_pinned_to_lf() -> None:
+    attributes = (PROJECT_ROOT / ".gitattributes").read_text(encoding="utf-8")
+
+    assert "skills/agentguardian/*.md text eol=lf" in attributes
+
+
 def test_skill_routes_setup_and_exposes_all_four_audits() -> None:
     skill = (SOURCE_ROOT / "SKILL.md").read_text(encoding="utf-8")
 

@@ -4,3 +4,4 @@ docs/security/personal-exe-private-beta-status.json text eol=lf
 docs/security/integrations-preview-status.json text eol=lf
 docs/security/evidence/*.json text eol=lf
 docs/security/evidence/*.toml text eol=lf
+skills/agentguardian/*.md text eol=lf
