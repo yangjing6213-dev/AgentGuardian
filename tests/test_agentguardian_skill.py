@@ -193,6 +193,11 @@ def test_skill_replaces_zip_and_checksum_atomically(
     assert all(Path(source).parent == Path(destination).parent for source, destination in replacements)
 
 
+def test_skill_rejects_missing_output_parent(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="skill output is invalid"):
+        build_skill(SOURCE_ROOT, tmp_path / "missing" / "output")
+
+
 def test_skill_cleans_partial_outputs_when_checksum_replace_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -250,3 +255,40 @@ def test_skill_restores_existing_pair_when_upgrade_fails(
     assert zip_path.read_bytes() == old_zip
     assert checksum_path.read_bytes() == old_checksum
     assert not tuple(output.glob(".agentguardian-skill-*"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory lock contract")
+def test_windows_directory_lock_blocks_rename(tmp_path: Path) -> None:
+    source = _copy_source(tmp_path)
+    handles = skill_builder._acquire_directory_locks(source)
+    try:
+        with pytest.raises(OSError):
+            os.replace(source, source.with_name("moved"))
+    finally:
+        skill_builder._release_directory_locks(handles)
+
+
+def test_skill_reports_unconfirmed_state_when_rollback_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "output"
+    build_skill(SOURCE_ROOT, output)
+    real_replace = os.replace
+    calls = 0
+
+    def fail_install_and_restore(
+        source: str | os.PathLike[str],
+        target: str | os.PathLike[str],
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        if calls in {4, 5}:
+            raise OSError("synthetic rollback failure")
+        real_replace(source, target)
+
+    monkeypatch.setattr(skill_builder.os, "replace", fail_install_and_restore)
+    with pytest.raises(ValueError, match="output state is unconfirmed"):
+        build_skill(SOURCE_ROOT, output)
+
+    assert tuple(output.glob(".agentguardian-skill-*.backup"))

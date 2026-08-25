@@ -94,15 +94,57 @@ def _same_file_snapshot(first: os.stat_result, second: os.stat_result) -> bool:
     )
 
 
+def _open_read_descriptor(path: Path) -> int:
+    if os.name != "nt":
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        return os.open(os.fspath(path), flags)
+
+    import ctypes
+    import ctypes.wintypes as wintypes
+    import msvcrt
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(
+        os.fspath(path),
+        0x80000000,
+        0x00000001,
+        None,
+        3,
+        0x00200000 | 0x08000000,
+        None,
+    )
+    invalid_handle = ctypes.c_void_p(-1).value
+    if handle in (None, 0, invalid_handle):
+        raise OSError
+    try:
+        return msvcrt.open_osfhandle(
+            int(handle),
+            os.O_RDONLY | getattr(os, "O_BINARY", 0),
+        )
+    except Exception:
+        kernel32.CloseHandle(handle)
+        raise OSError from None
+
+
 def _read_checked_file(path: Path) -> bytes:
     descriptor: int | None = None
     try:
         before = os.lstat(path)
         if _is_reparse_or_link(path, before) or not stat.S_ISREG(before.st_mode):
             raise _fixed_error("skill source entry is invalid")
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(os.fspath(path), flags)
+        descriptor = _open_read_descriptor(path)
         opened = os.fstat(descriptor)
         if _is_reparse_or_link(path, opened) or not _same_file_snapshot(before, opened):
             raise _fixed_error("skill source entry changed")
@@ -299,15 +341,21 @@ def _validated_source(source_root: Path) -> dict[str, bytes]:
         _release_directory_locks(parent_locks)
 
 
-def _new_local_output(output_root: Path) -> Path:
+def _new_local_output(output_root: Path) -> tuple[Path, os.stat_result]:
     _validate_directory_parents(output_root)
     try:
+        parent = output_root.parent
+        parent_metadata = os.lstat(parent)
+        if _is_reparse_or_link(parent, parent_metadata) or not stat.S_ISDIR(
+            parent_metadata.st_mode
+        ):
+            raise _fixed_error("skill output is invalid")
         if os.path.lexists(output_root):
             existing = os.lstat(output_root)
             if _is_reparse_or_link(output_root, existing):
                 raise _fixed_error("skill output is invalid")
         else:
-            output_root.mkdir(parents=True, exist_ok=True)
+            output_root.mkdir()
         metadata = os.lstat(output_root)
     except ValueError:
         raise
@@ -315,7 +363,7 @@ def _new_local_output(output_root: Path) -> Path:
         raise _fixed_error("skill output is invalid") from None
     if _is_reparse_or_link(output_root, metadata) or not stat.S_ISDIR(metadata.st_mode):
         raise _fixed_error("skill output is invalid")
-    return output_root
+    return output_root, metadata
 
 
 def _write_temporary_bytes(output: Path, data: bytes, suffix: str) -> Path:
@@ -347,12 +395,13 @@ def _write_temporary_bytes(output: Path, data: bytes, suffix: str) -> Path:
         raise _fixed_error("skill build failed") from None
 
 
-def _remove_file(path: Path) -> None:
+def _remove_file(path: Path) -> bool:
     try:
         if os.path.lexists(path):
             os.unlink(path)
+        return True
     except OSError:
-        pass
+        return False
 
 
 def _existing_regular_bytes(path: Path) -> bytes | None:
@@ -385,11 +434,12 @@ def _rollback_artifacts(
     checksum_backup: Path | None,
     target_installed: bool,
     checksum_installed: bool,
-) -> None:
+) -> bool:
+    complete = True
     if target_installed:
-        _remove_file(target)
+        complete = _remove_file(target) and complete
     if checksum_installed:
-        _remove_file(checksum)
+        complete = _remove_file(checksum) and complete
     for backup, destination in (
         (target_backup, target),
         (checksum_backup, checksum),
@@ -400,7 +450,8 @@ def _rollback_artifacts(
             if os.path.lexists(backup):
                 os.replace(os.fspath(backup), os.fspath(destination))
         except OSError:
-            pass
+            complete = False
+    return complete
 
 
 def _build_skill_artifacts(files: dict[str, bytes], output: Path) -> tuple[Path, str]:
@@ -417,6 +468,7 @@ def _build_skill_artifacts(files: dict[str, bytes], output: Path) -> tuple[Path,
     checksum_backup: Path | None = None
     target_installed = False
     checksum_installed = False
+    preserve_backups = False
     try:
         zip_temp = _write_temporary_bytes(output, zip_data, ".zip.tmp")
         checksum_temp = _write_temporary_bytes(output, checksum_data, ".sha256.tmp")
@@ -433,7 +485,7 @@ def _build_skill_artifacts(files: dict[str, bytes], output: Path) -> tuple[Path,
         checksum_temp = None
         checksum_installed = True
     except ValueError:
-        _rollback_artifacts(
+        rollback_complete = _rollback_artifacts(
             target,
             checksum,
             target_backup,
@@ -441,9 +493,12 @@ def _build_skill_artifacts(files: dict[str, bytes], output: Path) -> tuple[Path,
             target_installed,
             checksum_installed,
         )
+        if not rollback_complete:
+            preserve_backups = True
+            raise _fixed_error("skill build failed; output state is unconfirmed") from None
         raise
     except Exception:
-        _rollback_artifacts(
+        rollback_complete = _rollback_artifacts(
             target,
             checksum,
             target_backup,
@@ -451,11 +506,18 @@ def _build_skill_artifacts(files: dict[str, bytes], output: Path) -> tuple[Path,
             target_installed,
             checksum_installed,
         )
+        if not rollback_complete:
+            preserve_backups = True
+            raise _fixed_error("skill build failed; output state is unconfirmed") from None
         raise _fixed_error("skill build failed") from None
     finally:
-        for temporary in (zip_temp, checksum_temp, target_backup, checksum_backup):
+        for temporary in (zip_temp, checksum_temp):
             if temporary is not None:
                 _remove_file(temporary)
+        if not preserve_backups:
+            for backup in (target_backup, checksum_backup):
+                if backup is not None:
+                    _remove_file(backup)
     return target, digest
 
 
@@ -464,8 +526,14 @@ def build_skill(source_root: Path, output_root: Path) -> tuple[Path, str]:
     parent_locks = _acquire_directory_locks(output_root.parent)
     output_locks: list[object] = []
     try:
-        output = _new_local_output(output_root)
+        output, output_snapshot = _new_local_output(output_root)
         output_locks = _acquire_directory_locks(output)
+        try:
+            current_output = os.lstat(output)
+        except OSError:
+            raise _fixed_error("skill output changed") from None
+        if not _same_file_snapshot(output_snapshot, current_output):
+            raise _fixed_error("skill output changed")
         return _build_skill_artifacts(files, output)
     finally:
         _release_directory_locks(output_locks)
