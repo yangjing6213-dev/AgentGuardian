@@ -452,6 +452,12 @@ def test_integrations_preview_command_uses_one_reviewed_spec_and_two_launchers(
     assert "--specpath" not in command
     assert "AgentGuardianIntegrationsPreview.spec" in command[-1]
 
+    spec = (
+        PROJECT_ROOT / "packaging/windows/AgentGuardianIntegrationsPreview.spec"
+    ).read_text(encoding="utf-8")
+    assert "Path(SPECPATH)" in spec
+    assert "Path(__file__)" not in spec
+
 
 def test_qt_gui_hook_filters_only_unused_network_dependency_chain() -> None:
     binaries = [

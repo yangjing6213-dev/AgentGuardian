@@ -3,7 +3,8 @@
 from pathlib import Path
 
 
-project_root = Path(__file__).resolve().parents[2]
+# PyInstaller executes spec files without defining __file__.
+project_root = Path(SPECPATH).resolve().parents[1]
 source_root = project_root / "src"
 package_root = source_root / "agentguardian"
 skill_root = project_root / "skills/agentguardian"
