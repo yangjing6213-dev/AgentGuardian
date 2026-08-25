@@ -113,6 +113,7 @@ def test_preview_lifecycle_script_is_bounded_and_native() -> None:
         "agentguardian_inno_test_mode",
         "agentguardian_test_mode",
         '"/dir=$installroot"',
+        "sha256]::create",
     ):
         assert required.casefold() in folded
     for forbidden in (
@@ -122,6 +123,7 @@ def test_preview_lifecycle_script_is_bounded_and_native() -> None:
         "set-executionpolicy",
         "-verb runas",
         "api.openai.com",
+        "get-filehash",
     ):
         assert forbidden not in folded
 
