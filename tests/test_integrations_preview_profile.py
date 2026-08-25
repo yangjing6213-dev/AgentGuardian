@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -58,6 +59,43 @@ def test_integrations_preview_profile_is_canonical_and_verifies() -> None:
     snapshot = verifier.load_profile_snapshot(ROOT, PROFILE_PATH)
     assert raw == verifier.canonical_json_bytes(json.loads(raw.decode("ascii")))
     assert verifier.verify_profile(ROOT, snapshot) == {
+        "profile": "integrations_preview",
+        "status": "pass",
+    }
+
+
+def test_integrations_preview_profile_accepts_windows_source_newlines(
+    tmp_path: Path,
+) -> None:
+    verifier = _verifier()
+    project = tmp_path / "project"
+    shutil.copytree(
+        ROOT,
+        project,
+        ignore=shutil.ignore_patterns(
+            ".analysis",
+            ".git",
+            ".local-audit",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".superpowers",
+            ".tmp",
+            "__pycache__",
+            "build",
+            "dist",
+            "venv",
+            ".venv",
+        ),
+    )
+    source = project / "src" / "agentguardian" / "self_audit.py"
+    normalized = source.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    source.write_bytes(normalized.replace(b"\n", b"\r\n"))
+    snapshot = verifier.load_profile_snapshot(
+        project, project / "release_profiles" / "integrations_preview.json"
+    )
+
+    assert verifier.verify_profile(project, snapshot) == {
         "profile": "integrations_preview",
         "status": "pass",
     }

@@ -6,10 +6,12 @@ import argparse
 import ast
 import fnmatch
 import hashlib
+import io
 import json
 from pathlib import Path
 import stat
 import sys
+import tokenize
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
@@ -496,7 +498,7 @@ def _verify_static_contracts(root: Path, profile: Mapping[str, Any]) -> None:
     if set(modules) != {path.name for path in package.glob("*.py")}:
         _fail("PROFILE_SOURCE_POLICY_INVALID")
     for name, expected in modules.items():
-        if hashlib.sha256((package / name).read_bytes()).hexdigest() != expected:
+        if _canonical_source_sha256((package / name).read_bytes()) != expected:
             _fail("PROFILE_SOURCE_POLICY_INVALID")
     skill = root / "skills" / "agentguardian"
     if tuple(sorted(path.name for path in skill.iterdir())) != ("LICENSE", "README.md", "SKILL.md"):
@@ -518,6 +520,13 @@ def _verify_static_contracts(root: Path, profile: Mapping[str, Any]) -> None:
     integration = _read_text(package / "codex_integration.py", MAX_RUNTIME_SOURCE_BYTES, "PROFILE_RUNTIME_SYNTAX_INVALID")
     if 'args = ["--stdio-mcp"]' not in integration or "default_tools_approval_mode = \"prompt\"" not in integration:
         _fail("PROFILE_INTEGRATION_CONTRACT_INVALID")
+
+
+def _canonical_source_sha256(source: bytes) -> str:
+    normalized = source.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    encoding, _ = tokenize.detect_encoding(io.BytesIO(normalized).readline)
+    decoded = normalized.decode(encoding)
+    return hashlib.sha256(decoded.encode("utf-8")).hexdigest()
 
 
 def _verify_mcp_ast(source: str) -> None:

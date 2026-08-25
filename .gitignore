@@ -3,6 +3,7 @@
 .superpowers/
 .worktrees/
 .local-audit/
+.tmp/
 
 # Local secrets, evidence, and generated artifacts
 .env
