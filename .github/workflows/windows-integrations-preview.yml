@@ -105,8 +105,8 @@ jobs:
         run: |
           python scripts/build_agentguardian_skill.py --output-root $env:SKILL_ONE
           python scripts/build_agentguardian_skill.py --output-root $env:SKILL_TWO
-          $first = Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $env:SKILL_ONE 'AgentGuardian-Skill-0.1.0.zip')
-          $second = Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $env:SKILL_TWO 'AgentGuardian-Skill-0.1.0.zip')
+          $first = Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $env:SKILL_ONE 'AgentGuardian-Skill-0.2.0.zip')
+          $second = Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $env:SKILL_TWO 'AgentGuardian-Skill-0.2.0.zip')
           if ($first.Hash -cne $second.Hash) { throw 'Skill ZIP is not deterministic' }
 
       - name: Build deterministic preview portable payloads

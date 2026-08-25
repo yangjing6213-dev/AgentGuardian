@@ -23,4 +23,10 @@
 - `agentguardian-cover.svg`：1280 × 640 GitHub 初代封面，数据明确为 `SYNTHETIC DEMO`。
 - PNG 文件是对应的发布预览，不替代 SVG 源文件。
 
+## 权利与来源
+
+这些资产由项目方创作或在项目方授权范围内使用；当前目录不包含第三方
+图库、第三方商标或未授权的外部素材。新增资产必须保留来源、许可和授权
+记录，并通过公开发布前的资产检查。
+
 16px 以下只使用 mark，不使用 wordmark。浅色版使用 Obsidian 与 Trust，深色版使用 Cloud 与 Trust；Warning 和 Critical 只作状态信号，关键状态同时显示文字。

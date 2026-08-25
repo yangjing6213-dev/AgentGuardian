@@ -33,7 +33,7 @@ def test_integrations_preview_profile_has_exact_identity() -> None:
     assert profile["install_directory"] == (
         r"{localappdata}\Programs\AgentGuardian Integrations Preview"
     )
-    assert profile["skill_version"] == "0.1.0"
+    assert profile["skill_version"] == "0.2.0"
     assert profile["mcp_sdk"] == "2.0.0"
     assert profile["transport"] == "stdio"
     assert profile["mcp_tools"] == ["prepare_audit", "run_prepared_audit"]

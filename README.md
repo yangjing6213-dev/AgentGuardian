@@ -70,6 +70,9 @@ The self-audit reports the Python 版本 but does not expose the interpreter pat
 
 ## Active product documents
 
+- [Security policy](SECURITY.md)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
 - [Architecture](docs/architecture.md)
 - [Threat model](docs/security/personal-v1-threat-model.md)
 - [Privacy](docs/security/personal-v1-privacy.md)

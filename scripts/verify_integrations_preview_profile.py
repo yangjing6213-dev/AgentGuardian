@@ -129,7 +129,7 @@ _IDENTITY = {
     "product_version": "0.3.0-preview.1",
     "python_package_version": "0.3.0a1",
     "schema": 1,
-    "skill_version": "0.1.0",
+    "skill_version": "0.2.0",
     "status": "INTEGRATIONS-PREVIEW-NOT-READY",
     "windows_file_version": "0.3.0.1",
 }
@@ -502,7 +502,7 @@ def _verify_static_contracts(root: Path, profile: Mapping[str, Any]) -> None:
     if tuple(sorted(path.name for path in skill.iterdir())) != ("LICENSE", "README.md", "SKILL.md"):
         _fail("PROFILE_SKILL_INVALID")
     skill_text = _read_text(skill / "SKILL.md", MAX_DOCUMENT_BYTES, "PROFILE_SKILL_INVALID")
-    if "name: agentguardian" not in skill_text or 'version: "0.1.0"' not in skill_text:
+    if "name: agentguardian" not in skill_text or 'version: "0.2.0"' not in skill_text:
         _fail("PROFILE_SKILL_INVALID")
     spec = _read_text(root / profile["pyinstaller_spec"], MAX_DOCUMENT_BYTES, "PROFILE_PACKAGING_INVALID")
     if spec.count("Analysis(") != 1 or spec.count("PYZ(") != 1 or spec.count("COLLECT(") != 1:

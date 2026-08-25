@@ -32,7 +32,7 @@ Authoritative references used by this plan:
 - Approved design commit: `5cef0d28701b0c96fa466b64c9e7a47043b1fb9a`.
 - Development branch: `codex/0.3-integrations-preview`.
 - Revalidated baseline: `1838 passed, 16 skipped` on 2026-08-24 before implementation.
-- Preview versions: Python `0.3.0a1`, product `0.3.0-preview.1`, Windows file `0.3.0.1`, Skill `0.1.0`.
+- Preview versions: Python `0.3.0a1`, product `0.3.0-preview.1`, Windows file `0.3.0.1`, Skill `0.2.0`.
 - Preview status remains `INTEGRATIONS-PREVIEW-NOT-READY` and formal release remains `NO-GO` until every exact-SHA gate is evidenced.
 - Do not push, publish, deploy, upload to a marketplace, create a GitHub Release, or claim production safety while executing this plan.
 - Stage only the paths named in each task. Never use `git add .` or `git add -A`.
@@ -942,7 +942,7 @@ Create `README.md` containing the independent Skill version, Apache-2.0 status, 
 `build_agentguardian_skill.py` must export:
 
 ```python
-SKILL_VERSION = "0.1.0"
+SKILL_VERSION = "0.2.0"
 ALLOWED_FILES = ("LICENSE", "README.md", "SKILL.md")
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
@@ -974,7 +974,7 @@ The validators must use `os.lstat`, reject links/reparse points and unexpected f
 .analysis\venv-0.3\Scripts\python.exe -m pytest -q tests/test_agentguardian_skill.py -p no:cacheprovider
 .analysis\venv-0.3\Scripts\python.exe scripts/build_agentguardian_skill.py --output-root .analysis\skill-build-one
 .analysis\venv-0.3\Scripts\python.exe scripts/build_agentguardian_skill.py --output-root .analysis\skill-build-two
-rtk proxy powershell -NoProfile -Command "if ((Get-FileHash -Algorithm SHA256 -LiteralPath '.analysis\skill-build-one\AgentGuardian-Skill-0.1.0.zip').Hash -cne (Get-FileHash -Algorithm SHA256 -LiteralPath '.analysis\skill-build-two\AgentGuardian-Skill-0.1.0.zip').Hash) { throw 'Skill ZIP mismatch' }"
+rtk proxy powershell -NoProfile -Command "if ((Get-FileHash -Algorithm SHA256 -LiteralPath '.analysis\skill-build-one\AgentGuardian-Skill-0.2.0.zip').Hash -cne (Get-FileHash -Algorithm SHA256 -LiteralPath '.analysis\skill-build-two\AgentGuardian-Skill-0.2.0.zip').Hash) { throw 'Skill ZIP mismatch' }"
 rtk git diff --check
 rtk git add skills/agentguardian/SKILL.md skills/agentguardian/README.md skills/agentguardian/LICENSE scripts/build_agentguardian_skill.py tests/test_agentguardian_skill.py
 rtk git commit -m "Add standalone AgentGuardian Codex Skill"
@@ -1207,7 +1207,7 @@ Inspect `packaging/windows/AgentGuardianIntegrationsPreview.spec` and the built 
 
 Add lifecycle-script contract tests for: Skill-only, MCP-only, both, pre-existing config preservation, foreign conflicts, upgrade, modified Skill preservation, exact block removal, no report deletion, no network check, no elevation, bounded JSON evidence, and a real subprocess using installed `AgentGuardianMcp.exe --stdio-mcp` with redirected stdin/stdout pipes. An in-process server fixture or invocation of the windowed launcher does not satisfy this lifecycle test.
 
-In `tests/test_integrations_preview_profile.py`, require canonical schema `1`, name/channel `integrations_preview`, versions `0.3.0a1` / `0.3.0-preview.1` / `0.3.0.1`, AppId `{A64DBF23-FE14-4E04-89AE-0924666A03DE}`, installer filename `AgentGuardian-Setup-0.3.0-preview.1-x64.exe`, exact install directory `{localappdata}\Programs\AgentGuardian Integrations Preview`, exact launcher inventory `AgentGuardian.exe` and `AgentGuardianMcp.exe` with their console modes, Skill `0.1.0`, Skill path `%USERPROFILE%\.agents\skills\agentguardian`, config/backup/manifest paths from the approved design, SDK `mcp==2.0.0`, transport `stdio`, and exactly the two approved tool names. Reject unknown keys, duplicate arrays, noncanonical JSON, wrong versions, a third launcher or tool, non-STDIO transport, default-selected integration tasks, `.codex\skills`, Provider SDK imports, and 0.2 evidence represented as current.
+In `tests/test_integrations_preview_profile.py`, require canonical schema `1`, name/channel `integrations_preview`, versions `0.3.0a1` / `0.3.0-preview.1` / `0.3.0.1`, AppId `{A64DBF23-FE14-4E04-89AE-0924666A03DE}`, installer filename `AgentGuardian-Setup-0.3.0-preview.1-x64.exe`, exact install directory `{localappdata}\Programs\AgentGuardian Integrations Preview`, exact launcher inventory `AgentGuardian.exe` and `AgentGuardianMcp.exe` with their console modes, Skill `0.2.0`, Skill path `%USERPROFILE%\.agents\skills\agentguardian`, config/backup/manifest paths from the approved design, SDK `mcp==2.0.0`, transport `stdio`, and exactly the two approved tool names. Reject unknown keys, duplicate arrays, noncanonical JSON, wrong versions, a third launcher or tool, non-STDIO transport, default-selected integration tasks, `.codex\skills`, Provider SDK imports, and 0.2 evidence represented as current.
 
 In `tests/test_personal_release_profile.py`, retain the exact frozen 0.2 verifier/profile assertions and add a build-dispatch test proving that selecting `personal_exe_private_beta` against the current `0.3.0a1` package/source identity fails closed before PyInstaller runs. Historical verification by `scripts/verify_personal_release_profile.py` must still pass unchanged.
 

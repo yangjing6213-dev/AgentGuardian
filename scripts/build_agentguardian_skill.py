@@ -18,7 +18,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from agentguardian.domain import _UNMASKED_SECRET_PATTERNS  # noqa: E402
 
 
-SKILL_VERSION = "0.1.0"
+SKILL_VERSION = "0.2.0"
 ALLOWED_FILES = ("LICENSE", "README.md", "SKILL.md")
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 MAX_FILE_BYTES = 256 * 1024
@@ -29,19 +29,29 @@ _EXPECTED_FRONTMATTER = (
     "name: agentguardian\n"
     "description: Use AgentGuardian to audit one bounded local AI configuration scope, browser history database aggregate, current clipboard value, or public share URL. Requires the local AgentGuardian MCP tools and must not be used for regulated or highly sensitive data.\n"
     "metadata:\n"
-    '  version: "0.1.0"\n'
+    '  version: "0.2.0"\n'
     '  requires-agentguardian: ">=0.3.0a1,<0.4"\n'
     "---\n"
 )
 _README_REQUIREMENTS = (
-    "version",
+    "0.2.0",
     "Apache-2.0",
     "%USERPROFILE%\\.agents\\skills\\agentguardian",
     "prepare_audit",
     "run_prepared_audit",
+    "AgentGuardianMcp.exe --stdio-mcp",
+    "https://github.com/yangjing6213-dev/AgentGuardian",
+    "release asset",
     "personal_non_regulated",
     "Codex model context",
     "not production-safe",
+)
+_SKILL_REQUIREMENTS = (
+    "## Setup when the MCP tools are missing",
+    "AgentGuardianMcp.exe --stdio-mcp",
+    "does not download, install, or edit host configuration",
+    "Never guess an executable path",
+    "personal_non_regulated",
 )
 _DOWNLOADER_MARKERS = (
     "curl ",
@@ -281,6 +291,8 @@ def _validate_bytes(name: str, data: bytes) -> str:
         raise _fixed_error("skill file contains a secret pattern")
     if name == "SKILL.md" and not text.startswith(_EXPECTED_FRONTMATTER):
         raise _fixed_error("skill frontmatter is invalid")
+    if name == "SKILL.md" and any(value not in text for value in _SKILL_REQUIREMENTS):
+        raise _fixed_error("skill setup contract is incomplete")
     if name == "README.md" and any(value not in text for value in _README_REQUIREMENTS):
         raise _fixed_error("skill README is incomplete")
     return text

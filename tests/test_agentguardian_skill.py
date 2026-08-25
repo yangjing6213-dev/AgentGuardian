@@ -19,6 +19,7 @@ EXPECTED_ENTRIES = (
     "agentguardian/README.md",
     "agentguardian/SKILL.md",
 )
+EXPECTED_SKILL_VERSION = "0.2.0"
 
 
 def _copy_source(tmp_path: Path) -> Path:
@@ -54,11 +55,33 @@ def test_skill_source_has_required_identity_and_license() -> None:
         "name: agentguardian\n"
         "description: Use AgentGuardian to audit one bounded local AI configuration scope, browser history database aggregate, current clipboard value, or public share URL. Requires the local AgentGuardian MCP tools and must not be used for regulated or highly sensitive data.\n"
         "metadata:\n"
-        '  version: "0.1.0"\n'
+        f'  version: "{EXPECTED_SKILL_VERSION}"\n'
         '  requires-agentguardian: ">=0.3.0a1,<0.4"\n'
         "---\n"
     )
     assert (SOURCE_ROOT / "LICENSE").read_bytes() == (PROJECT_ROOT / "LICENSE").read_bytes()
+
+
+def test_skill_routes_setup_and_exposes_all_four_audits() -> None:
+    skill = (SOURCE_ROOT / "SKILL.md").read_text(encoding="utf-8")
+
+    for marker in (
+        "prepare_audit",
+        "run_prepared_audit",
+        "AgentGuardianMcp.exe --stdio-mcp",
+        "https://github.com/yangjing6213-dev/AgentGuardian",
+        "files",
+        "browser",
+        "clipboard",
+        "public_share",
+        "does not download, install, or edit host configuration",
+        "personal_non_regulated",
+    ):
+        assert marker in skill
+
+    assert "## Setup when the MCP tools are missing" in skill
+    assert "release asset" in skill
+    assert "Never guess an executable path" in skill
 
 
 @pytest.mark.parametrize(
@@ -97,7 +120,24 @@ def test_skill_rejects_frontmatter_mismatch(tmp_path: Path) -> None:
     source = _copy_source(tmp_path)
     skill = source / "SKILL.md"
     skill.write_text(
-        skill.read_text(encoding="utf-8").replace("version: \"0.1.0\"", "version: \"9.9.9\""),
+        skill.read_text(encoding="utf-8").replace(
+            f'version: "{EXPECTED_SKILL_VERSION}"', 'version: "9.9.9"'
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    with pytest.raises(ValueError):
+        _build(source, tmp_path)
+
+
+def test_skill_rejects_missing_setup_contract(tmp_path: Path) -> None:
+    source = _copy_source(tmp_path)
+    skill = source / "SKILL.md"
+    skill.write_text(
+        skill.read_text(encoding="utf-8").replace(
+            "## Setup when the MCP tools are missing", "## Setup route removed"
+        ),
         encoding="utf-8",
         newline="\n",
     )
@@ -220,8 +260,10 @@ def test_skill_cleans_partial_outputs_when_checksum_replace_fails(
     with pytest.raises(ValueError, match="skill build failed"):
         build_skill(SOURCE_ROOT, output)
 
-    assert not (output / "AgentGuardian-Skill-0.1.0.zip").exists()
-    assert not (output / "AgentGuardian-Skill-0.1.0.zip.sha256").exists()
+    assert not (output / f"AgentGuardian-Skill-{skill_builder.SKILL_VERSION}.zip").exists()
+    assert not (
+        output / f"AgentGuardian-Skill-{skill_builder.SKILL_VERSION}.zip.sha256"
+    ).exists()
     assert not tuple(output.glob(".agentguardian-skill-*"))
 
 
@@ -231,8 +273,8 @@ def test_skill_restores_existing_pair_when_upgrade_fails(
 ) -> None:
     output = tmp_path / "output"
     build_skill(SOURCE_ROOT, output)
-    zip_path = output / "AgentGuardian-Skill-0.1.0.zip"
-    checksum_path = output / "AgentGuardian-Skill-0.1.0.zip.sha256"
+    zip_path = output / f"AgentGuardian-Skill-{skill_builder.SKILL_VERSION}.zip"
+    checksum_path = output / f"AgentGuardian-Skill-{skill_builder.SKILL_VERSION}.zip.sha256"
     old_zip = zip_path.read_bytes()
     old_checksum = checksum_path.read_bytes()
     real_replace = os.replace
