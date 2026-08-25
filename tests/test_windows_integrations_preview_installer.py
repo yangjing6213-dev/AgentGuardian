@@ -135,10 +135,13 @@ def test_preview_lifecycle_retries_bounded_inno_self_delete_cleanup() -> None:
     script = LIFECYCLE_PATH.read_text(encoding="ascii").casefold()
     for required in (
         "function remove-fixtureroot",
+        "function wait-pathabsent",
         "fixture_cleanup_timeout",
+        "uninstall_cleanup_timeout",
         "getfullpath([io.path]::gettemppath())",
         "start-sleep -milliseconds 250",
         "remove-fixtureroot $fixtureroot",
+        "wait-pathabsent $installroot",
     ):
         assert required in script
 

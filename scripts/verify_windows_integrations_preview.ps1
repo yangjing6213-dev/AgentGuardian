@@ -165,6 +165,15 @@ function Remove-FixtureRoot([string]$Path) {
     }
 }
 
+function Wait-PathAbsent([string]$Path, [string]$TimeoutCode) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return }
+    $deadline = [DateTime]::UtcNow.AddSeconds(60)
+    while (Test-Path -LiteralPath $Path) {
+        if ([DateTime]::UtcNow -ge $deadline) { throw $TimeoutCode }
+        Start-Sleep -Milliseconds 250
+    }
+}
+
 function Invoke-McpSdkClient([string]$Executable) {
     if ([string]::IsNullOrWhiteSpace($Python_Path)) {
         $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
@@ -528,6 +537,7 @@ try {
         $uninstallResult.Dispose()
     }
     if ($uninstallExit -ne 0) { throw 'UNINSTALL_FAILED' }
+    Wait-PathAbsent $installRoot 'UNINSTALL_CLEANUP_TIMEOUT'
     Assert-UninstalledState
     $frozenUnchanged = (Get-TreeDigest $frozenRoot) -eq $frozenBefore
     if (-not $frozenUnchanged) { throw 'FROZEN_02_MUTATED' }
