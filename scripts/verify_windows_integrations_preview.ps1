@@ -266,6 +266,10 @@ asyncio.run(main())
 function Invoke-Installer([string]$Path, [string]$Tasks) {
     $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
     if ($Tasks) { $arguments += "/TASKS=$Tasks" }
+    if ($TestMode) {
+        $arguments += '/AGENTGUARDIAN_TEST_MODE'
+        $arguments += "/DIR=$installRoot"
+    }
     Assert-NoAgentGuardianNetworkConnection
     $result = Start-Process -FilePath $Path -ArgumentList $arguments -PassThru -WindowStyle Hidden
     try {
@@ -361,7 +365,7 @@ try {
     if (-not $TestMode) { throw 'TEST_MODE_REQUIRED' }
     Assert-LocalFile $Installer_Path
     if ((Get-Sha256 $Installer_Path) -ne $Installer_Sha256.ToLowerInvariant()) { throw 'INSTALLER_HASH_MISMATCH' }
-    foreach ($name in @('USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP')) {
+    foreach ($name in @('USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP', 'AGENTGUARDIAN_INNO_TEST_MODE', 'AGENTGUARDIAN_INNO_TEST_INSTALL_ROOT')) {
         $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
     }
     if ($TestMode) {
@@ -379,7 +383,11 @@ try {
         $env:TMP = Join-Path $fixtureRoot 'Temp'
     }
     New-Item -ItemType Directory -Path $env:USERPROFILE, $env:LOCALAPPDATA, $env:APPDATA, $env:TEMP -Force | Out-Null
-    $installRoot = Join-Path $env:LOCALAPPDATA 'Programs\AgentGuardian Integrations Preview'
+    if ($TestMode) {
+        $installRoot = Join-Path $fixtureRoot 'Install\AgentGuardian Integrations Preview'
+    } else {
+        $installRoot = Join-Path $env:LOCALAPPDATA 'Programs\AgentGuardian Integrations Preview'
+    }
     $stateRoot = Join-Path $env:LOCALAPPDATA 'AgentGuardian'
     $skillRoot = Join-Path $env:USERPROFILE '.agents\skills\agentguardian'
     $configPath = Join-Path $env:USERPROFILE '.codex\config.toml'
@@ -390,6 +398,10 @@ try {
     $frozenRoot = Join-Path $env:LOCALAPPDATA 'Programs\AgentGuardian'
     $startMenuShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\AgentGuardian.lnk'
     $desktopShortcut = Join-Path $env:USERPROFILE 'Desktop\AgentGuardian.lnk'
+    if ($TestMode) {
+        $env:AGENTGUARDIAN_INNO_TEST_MODE = '1'
+        $env:AGENTGUARDIAN_INNO_TEST_INSTALL_ROOT = $installRoot
+    }
     if ($TestMode) {
         New-Item -ItemType Directory -Path $frozenRoot -Force | Out-Null
         [IO.File]::WriteAllText(

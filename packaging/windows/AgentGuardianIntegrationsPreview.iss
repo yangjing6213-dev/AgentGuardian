@@ -70,6 +70,33 @@ const
   UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{A64DBF23-FE14-4E04-89AE-0924666A03DE}_is1';
   FileVersionValue = 'AgentGuardianFileVersion';
   PurgeStateParameter = '/PURGEAGENTGUARDIANSTATE';
+  TestModeArgument = '/AGENTGUARDIAN_TEST_MODE';
+  TestModeEnvironment = 'AGENTGUARDIAN_INNO_TEST_MODE';
+  TestInstallRootEnvironment = 'AGENTGUARDIAN_INNO_TEST_INSTALL_ROOT';
+
+function IsLifecycleTestMode(): Boolean;
+var
+  Index: Integer;
+begin
+  Result := GetEnv(TestModeEnvironment) = '1';
+  if not Result then
+    exit;
+  Result := False;
+  for Index := 1 to ParamCount do
+    if CompareText(ParamStr(Index), TestModeArgument) = 0 then begin
+      Result := True;
+      exit;
+    end;
+end;
+
+function TestInstallRootMatches(): Boolean;
+var
+  ExpectedRoot: String;
+begin
+  ExpectedRoot := GetEnv(TestInstallRootEnvironment);
+  Result := IsLifecycleTestMode() and (ExpectedRoot <> '') and
+    (CompareText(ExpandFileName(WizardDirValue), ExpandFileName(ExpectedRoot)) = 0);
+end;
 
 function ReadInstalledFileVersion(var InstalledVersion: String): Boolean;
 begin
@@ -114,7 +141,12 @@ var
 begin
   Result := '';
   NeedsRestart := False;
-  if WizardDirValue <> ExpandConstant('{localappdata}\Programs\AgentGuardian Integrations Preview') then begin
+  if IsLifecycleTestMode() then begin
+    if not TestInstallRootMatches() then begin
+      Result := 'AgentGuardian test installation root is invalid.';
+      exit;
+    end;
+  end else if WizardDirValue <> ExpandConstant('{localappdata}\Programs\AgentGuardian Integrations Preview') then begin
     Result := 'AgentGuardian must be installed in the current-user preview directory.';
     exit;
   end;

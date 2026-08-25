@@ -109,6 +109,9 @@ def test_preview_lifecycle_script_is_bounded_and_native() -> None:
         "test_mode_required",
         "evidence_path_ownership_conflict",
         "agentguardian-mcp-fixture",
+        "agentguardian_inno_test_mode",
+        "agentguardian_test_mode",
+        '"/dir=$installroot"',
     ):
         assert required.casefold() in folded
     for forbidden in (
