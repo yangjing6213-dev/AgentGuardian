@@ -208,6 +208,32 @@ async def main() -> None:
             prepared_payload = prepared.structured_content or {}
             if prepared.is_error or prepared_payload.get("status") != "prepared":
                 raise RuntimeError("MCP_PREPARE_BEHAVIOR_INVALID")
+            authorized = await session.call_tool(
+                "run_prepared_audit",
+                arguments={
+                    "authorization_id": prepared_payload["authorization_id"],
+                    "scope_digest": prepared_payload["scope_digest"],
+                    "consent_summary": prepared_payload["consent_summary"],
+                },
+            )
+            authorized_payload = authorized.structured_content or {}
+            if (
+                authorized.is_error
+                or authorized_payload.get("status") != "completed"
+                or authorized_payload.get("operation") != "files"
+                or not isinstance(authorized_payload.get("findings"), list)
+            ):
+                raise RuntimeError("MCP_AUTHORIZED_RUN_INVALID")
+            prepared_again = await session.call_tool(
+                "prepare_audit",
+                arguments={
+                    "operation": "files",
+                    "classification": "personal_non_regulated",
+                    "roots": [os.environ["AGENTGUARDIAN_MCP_FIXTURE_ROOT"]],
+                },
+            )
+            if prepared_again.is_error or (prepared_again.structured_content or {}).get("status") != "prepared":
+                raise RuntimeError("MCP_PREPARE_BEHAVIOR_INVALID")
             rejected = await session.call_tool(
                 "run_prepared_audit",
                 arguments={

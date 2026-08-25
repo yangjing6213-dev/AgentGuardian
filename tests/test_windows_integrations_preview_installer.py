@@ -104,6 +104,7 @@ def test_preview_lifecycle_script_is_bounded_and_native() -> None:
         "get-nettcpconnection",
         "agentguardian.lnk",
         "mcp_prepare_schema_invalid",
+        "mcp_authorized_run_invalid",
         "mcp_authorization_rejection_invalid",
         "default_tools_approval_mode = \"prompt\"",
         "test_mode_required",
@@ -123,6 +124,36 @@ def test_preview_lifecycle_script_is_bounded_and_native() -> None:
         "api.openai.com",
     ):
         assert forbidden not in folded
+
+
+def test_preview_payload_integrity_rejects_tampering(tmp_path: Path) -> None:
+    builder = _builder()
+    portable = importlib.import_module("scripts.build_windows_portable")
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "AgentGuardian.exe").write_bytes(b"synthetic gui")
+    (bundle / "_internal").mkdir()
+    (bundle / "_internal" / "runtime.bin").write_bytes(b"synthetic runtime")
+    manifest = portable.artifact_manifest(bundle)
+    (bundle / "PAYLOAD-MANIFEST.json").write_bytes(
+        portable.canonical_json_bytes(manifest)
+    )
+    checksummed = (*manifest["files"], {
+        "path": "PAYLOAD-MANIFEST.json",
+        "sha256": builder._sha256_file(bundle / "PAYLOAD-MANIFEST.json", builder.MAX_FILE_BYTES),
+        "size": (bundle / "PAYLOAD-MANIFEST.json").stat().st_size,
+    })
+    (bundle / "SHA256SUMS").write_bytes(
+        "".join(
+            f"{entry['sha256']} *{entry['path']}\n"
+            for entry in sorted(checksummed, key=lambda item: item["path"])
+        ).encode("ascii")
+    )
+
+    builder.verify_payload_integrity(bundle)
+    (bundle / "AgentGuardian.exe").write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="payload manifest"):
+        builder.verify_payload_integrity(bundle)
 
 
 def test_preview_bundle_profile_evidence_binds_source_sha(tmp_path: Path) -> None:

@@ -19,6 +19,7 @@ from scripts.build_windows_portable import (
     validate_build_time,
     validate_git_build_context,
 )
+from scripts.build_windows_installer import verify_payload_integrity
 from scripts.verify_integrations_preview_profile import (
     ProfileSnapshot,
     load_profile_snapshot,
@@ -136,6 +137,7 @@ def build_installer(
     verify_installer_script(script_snapshot)
     validate_preview_layout(bundle)
     verify_payload(bundle, snapshot)
+    verify_payload_integrity(bundle)
     verify_profile_evidence(bundle, snapshot, source_commit)
     output.mkdir(parents=True)
     subprocess.run(
@@ -160,6 +162,7 @@ def build_installer(
     verify_installer_script(script.read_bytes())
     validate_preview_layout(bundle)
     verify_payload(bundle, snapshot)
+    verify_payload_integrity(bundle)
     verify_profile_evidence(bundle, snapshot, source_commit)
     installer = output / INSTALLER_NAME
     output_files = tuple(path for path in output.iterdir() if path.is_file())

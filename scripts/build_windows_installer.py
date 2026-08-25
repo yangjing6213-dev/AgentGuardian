@@ -173,55 +173,7 @@ def verify_portable_bundle(
     ):
         raise ValueError("portable build metadata is invalid")
 
-    manifest_path = bundle / _MANIFEST_NAME
-    manifest = _load_canonical_json(
-        manifest_path,
-        MAX_MANIFEST_BYTES,
-        "portable payload manifest is invalid",
-    )
-    entries = _validated_manifest_entries(manifest)
-    actual_files = _walk_regular_files(bundle, "portable payload is invalid")
-    actual_by_name = {
-        path.relative_to(bundle).as_posix(): path for path in actual_files
-    }
-    declared_names = tuple(entry["path"] for entry in entries)
-    expected_names = set(declared_names) | {_MANIFEST_NAME, _CHECKSUMS_NAME}
-    if set(actual_by_name) != expected_names:
-        raise ValueError("portable payload file set is invalid")
-    if "AgentGuardian.exe" not in declared_names:
-        raise ValueError("portable payload file set is invalid")
-
-    total_size = 0
-    for entry in entries:
-        path = actual_by_name[entry["path"]]
-        size, digest = _file_identity(path)
-        total_size += size
-        if total_size > MAX_PAYLOAD_BYTES:
-            raise ValueError("portable payload exceeds the size limit")
-        if size != entry["size"] or digest != entry["sha256"]:
-            raise ValueError("portable payload manifest is invalid")
-
-    manifest_size, manifest_digest = _file_identity(manifest_path)
-    checksum_entries = sorted(
-        (
-            *entries,
-            {
-                "path": _MANIFEST_NAME,
-                "sha256": manifest_digest,
-                "size": manifest_size,
-            },
-        ),
-        key=lambda entry: entry["path"],
-    )
-    expected_checksums = "".join(
-        f"{entry['sha256']} *{entry['path']}\n" for entry in checksum_entries
-    ).encode("ascii")
-    if _read_bounded(
-        bundle / _CHECKSUMS_NAME,
-        MAX_MANIFEST_BYTES,
-        "portable checksums are invalid",
-    ) != expected_checksums:
-        raise ValueError("portable checksums are invalid")
+    verify_payload_integrity(bundle)
 
 
 def build_installer(
@@ -317,6 +269,58 @@ def build_installer(
     if output_files != (installer,) or installer.stat().st_size <= 0:
         raise ValueError("installer output is invalid")
     return installer
+
+
+def verify_payload_integrity(bundle_root: Path) -> None:
+    """Verify every manifest entry and checksum before packaging or delivery."""
+    bundle = _existing_absolute_directory(bundle_root, "portable bundle is invalid")
+    manifest_path = bundle / _MANIFEST_NAME
+    manifest = _load_canonical_json(
+        manifest_path,
+        MAX_MANIFEST_BYTES,
+        "portable payload manifest is invalid",
+    )
+    entries = _validated_manifest_entries(manifest)
+    actual_files = _walk_regular_files(bundle, "portable payload is invalid")
+    actual_by_name = {
+        path.relative_to(bundle).as_posix(): path for path in actual_files
+    }
+    declared_names = tuple(entry["path"] for entry in entries)
+    expected_names = set(declared_names) | {_MANIFEST_NAME, _CHECKSUMS_NAME}
+    if set(actual_by_name) != expected_names:
+        raise ValueError("portable payload file set is invalid")
+
+    total_size = 0
+    for entry in entries:
+        path = actual_by_name[entry["path"]]
+        size, digest = _file_identity(path)
+        total_size += size
+        if total_size > MAX_PAYLOAD_BYTES:
+            raise ValueError("portable payload exceeds the size limit")
+        if size != entry["size"] or digest != entry["sha256"]:
+            raise ValueError("portable payload manifest is invalid")
+
+    manifest_size, manifest_digest = _file_identity(manifest_path)
+    checksum_entries = sorted(
+        (
+            *entries,
+            {
+                "path": _MANIFEST_NAME,
+                "sha256": manifest_digest,
+                "size": manifest_size,
+            },
+        ),
+        key=lambda entry: entry["path"],
+    )
+    expected_checksums = "".join(
+        f"{entry['sha256']} *{entry['path']}\n" for entry in checksum_entries
+    ).encode("ascii")
+    if _read_bounded(
+        bundle / _CHECKSUMS_NAME,
+        MAX_MANIFEST_BYTES,
+        "portable checksums are invalid",
+    ) != expected_checksums:
+        raise ValueError("portable checksums are invalid")
 
 
 def assemble_installer_evidence(
