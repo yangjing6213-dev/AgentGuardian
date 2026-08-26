@@ -14,8 +14,13 @@ ACTIVE_DOC = ROOT / "docs" / "security" / "integrations-preview.md"
 PROFILE = ROOT / "release_profiles" / "integrations_preview.json"
 
 
+def _release_profile() -> dict[str, object]:
+    return json.loads(PROFILE.read_text(encoding="ascii"))
+
+
 def test_integrations_preview_workflow_is_exact_sha_and_non_publishing() -> None:
     workflow = WORKFLOW.read_text(encoding="ascii")
+    profile = _release_profile()
     assert "runs-on: windows-2025" in workflow
     assert "permissions:\n  contents: read" in workflow
     assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in workflow
@@ -43,6 +48,10 @@ def test_integrations_preview_workflow_is_exact_sha_and_non_publishing() -> None
         "source_sha",
     ):
         assert required in workflow
+    assert profile["installer_filename"] in workflow
+    assert (
+        str(profile["portable_filename"]).removesuffix(".zip") + "-*.zip"
+    ) in workflow
     assert "pull_request_target" not in workflow
     assert "permissions: write" not in workflow.casefold()
     assert "secrets." not in workflow

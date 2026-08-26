@@ -10,6 +10,29 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE_PATH = ROOT / "release_profiles" / "integrations_preview.json"
+RELEASE_CONTRACT = {
+    "release_artifact_status": "unsigned_public_preview",
+    "release_tag": "v0.3.0-preview.1",
+    "release_title": "AgentGuardian 0.3.0 Public Preview (Unsigned)",
+    "release_draft": False,
+    "release_prerelease": False,
+    "primary_download_filename": "AgentGuardian-Setup-Windows-x64.exe",
+    "portable_filename": "AgentGuardian-0.3.0-preview.1-windows-x64.zip",
+    "release_download_url": (
+        "https://github.com/yangjing6213-dev/AgentGuardian/releases/latest/"
+        "download/AgentGuardian-Setup-Windows-x64.exe"
+    ),
+    "release_assets": [
+        "AgentGuardian-0.3.0-preview.1-windows-x64.zip",
+        "AgentGuardian-Setup-0.3.0-preview.1-x64.exe",
+        "AgentGuardian-Setup-Windows-x64.exe",
+        "AgentGuardian-Skill-0.2.0.zip",
+        "DOWNLOAD-METADATA.json",
+        "LICENSE",
+        "SHA256SUMS",
+        "THIRD_PARTY_NOTICES.md",
+    ],
+}
 
 
 def _verifier():
@@ -21,7 +44,7 @@ def _verifier():
 
 def test_integrations_preview_profile_has_exact_identity() -> None:
     profile = json.loads(PROFILE_PATH.read_text(encoding="ascii"))
-    assert profile["schema"] == 1
+    assert profile["schema"] == 2
     assert profile["name"] == "integrations_preview"
     assert profile["channel"] == "integrations_preview"
     assert profile["python_package_version"] == "0.3.0a1"
@@ -51,6 +74,108 @@ def test_integrations_preview_profile_has_exact_identity() -> None:
         {"console": True, "name": "AgentGuardianMcp.exe"},
     ]
     assert all(not task["default_selected"] for task in profile["installer_tasks"])
+    for field, expected in RELEASE_CONTRACT.items():
+        assert profile[field] == expected
+
+
+@pytest.mark.parametrize(
+    ("field", "mutated"),
+    [
+        ("schema", 1),
+        ("release_artifact_status", "unsigned_development_only"),
+        ("release_tag", "v0.3.0-preview.2"),
+        ("release_title", "AgentGuardian 0.3.0 Private Beta"),
+        ("release_draft", True),
+        ("release_prerelease", True),
+        ("primary_download_filename", "AgentGuardian-Setup-Windows-arm64.exe"),
+        ("portable_filename", "AgentGuardian-0.3.0-preview.1-windows-arm64.zip"),
+        (
+            "release_download_url",
+            "https://example.invalid/private-token.exe",
+        ),
+        (
+            "release_assets",
+            [
+                "AgentGuardian-0.3.0-preview.1-windows-x64.zip",
+                "AgentGuardian-Setup-0.3.0-preview.1-x64.exe",
+                "AgentGuardian-Setup-Windows-x64.exe",
+                "AgentGuardian-Skill-0.2.0.zip",
+                "DOWNLOAD-METADATA.json",
+                "LICENSE",
+                "SHA256SUMS",
+            ],
+        ),
+    ],
+)
+def test_integrations_preview_profile_rejects_release_contract_drift(
+    field: str, mutated: object
+) -> None:
+    verifier = _verifier()
+    profile = json.loads(PROFILE_PATH.read_text(encoding="ascii"))
+    profile[field] = mutated
+
+    with pytest.raises(
+        verifier.ProfileViolation,
+        match="^PROFILE_RELEASE_CONTRACT_INVALID$",
+    ) as caught:
+        verifier.profile_snapshot_from_bytes(
+            verifier.canonical_json_bytes(profile)
+        )
+
+    assert str(caught.value) == "PROFILE_RELEASE_CONTRACT_INVALID"
+    assert "private-token" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_type"),
+    [
+        ("release_draft", "false"),
+        ("release_prerelease", 0),
+        ("primary_download_filename", 7),
+        ("portable_filename", ["AgentGuardian.zip"]),
+        ("release_download_url", ["https://example.invalid/file.exe"]),
+        ("release_tag", False),
+        ("release_title", {"title": "preview"}),
+        ("release_assets", ["LICENSE", 7]),
+    ],
+)
+def test_integrations_preview_profile_rejects_release_contract_types(
+    field: str, invalid_type: object
+) -> None:
+    verifier = _verifier()
+    profile = json.loads(PROFILE_PATH.read_text(encoding="ascii"))
+    profile[field] = invalid_type
+
+    with pytest.raises(
+        verifier.ProfileViolation,
+        match="^PROFILE_RELEASE_CONTRACT_INVALID$",
+    ):
+        verifier.profile_snapshot_from_bytes(
+            verifier.canonical_json_bytes(profile)
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "unsafe_name"),
+    [
+        ("primary_download_filename", "../AgentGuardian-Setup-Windows-x64.exe"),
+        ("portable_filename", "nested/AgentGuardian-preview.zip"),
+    ],
+)
+def test_integrations_preview_profile_rejects_release_paths(
+    field: str, unsafe_name: str
+) -> None:
+    verifier = _verifier()
+    profile = json.loads(PROFILE_PATH.read_text(encoding="ascii"))
+    profile[field] = unsafe_name
+
+    with pytest.raises(
+        verifier.ProfileViolation,
+        match="^PROFILE_RELEASE_CONTRACT_INVALID$",
+    ):
+        verifier.profile_snapshot_from_bytes(
+            verifier.canonical_json_bytes(profile)
+        )
 
 
 def test_integrations_preview_profile_is_canonical_and_verifies() -> None:

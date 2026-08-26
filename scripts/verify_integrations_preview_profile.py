@@ -41,9 +41,12 @@ _ROOT_EXCLUSIONS = frozenset(
     {
         ".analysis",
         ".git",
+        ".local-audit",
         ".mypy_cache",
         ".pytest_cache",
         ".ruff_cache",
+        ".superpowers",
+        ".tmp",
         ".tox",
         ".venv",
         "__pycache__",
@@ -93,10 +96,19 @@ _PROFILE_KEYS = frozenset(
         "network_import_families",
         "ownership_paths",
         "package_input_paths",
+        "portable_filename",
+        "primary_download_filename",
         "pending_path",
         "product_version",
         "pyinstaller_spec",
         "python_package_version",
+        "release_artifact_status",
+        "release_assets",
+        "release_download_url",
+        "release_draft",
+        "release_prerelease",
+        "release_tag",
+        "release_title",
         "required_document_markers",
         "required_source_paths",
         "schema",
@@ -107,6 +119,21 @@ _PROFILE_KEYS = frozenset(
         "supported_operations",
         "transport",
         "windows_file_version",
+    }
+)
+
+_RELEASE_CONTRACT_KEYS = frozenset(
+    {
+        "schema",
+        "release_artifact_status",
+        "release_assets",
+        "release_download_url",
+        "release_draft",
+        "release_prerelease",
+        "release_tag",
+        "release_title",
+        "primary_download_filename",
+        "portable_filename",
     }
 )
 
@@ -128,9 +155,30 @@ _IDENTITY = {
     "installer_app_id": "{A64DBF23-FE14-4E04-89AE-0924666A03DE}",
     "installer_filename": "AgentGuardian-Setup-0.3.0-preview.1-x64.exe",
     "name": "integrations_preview",
+    "portable_filename": "AgentGuardian-0.3.0-preview.1-windows-x64.zip",
+    "primary_download_filename": "AgentGuardian-Setup-Windows-x64.exe",
     "product_version": "0.3.0-preview.1",
     "python_package_version": "0.3.0a1",
-    "schema": 1,
+    "release_artifact_status": "unsigned_public_preview",
+    "release_assets": [
+        "AgentGuardian-0.3.0-preview.1-windows-x64.zip",
+        "AgentGuardian-Setup-0.3.0-preview.1-x64.exe",
+        "AgentGuardian-Setup-Windows-x64.exe",
+        "AgentGuardian-Skill-0.2.0.zip",
+        "DOWNLOAD-METADATA.json",
+        "LICENSE",
+        "SHA256SUMS",
+        "THIRD_PARTY_NOTICES.md",
+    ],
+    "release_download_url": (
+        "https://github.com/yangjing6213-dev/AgentGuardian/releases/latest/"
+        "download/AgentGuardian-Setup-Windows-x64.exe"
+    ),
+    "release_draft": False,
+    "release_prerelease": False,
+    "release_tag": "v0.3.0-preview.1",
+    "release_title": "AgentGuardian 0.3.0 Public Preview (Unsigned)",
+    "schema": 2,
     "skill_version": "0.2.0",
     "status": "INTEGRATIONS-PREVIEW-NOT-READY",
     "windows_file_version": "0.3.0.1",
@@ -166,6 +214,7 @@ _STRING_ARRAY_KEYS = frozenset(
         "package_input_paths",
         "required_document_markers",
         "required_source_paths",
+        "release_assets",
         "skill_files",
         "supported_operations",
     }
@@ -258,9 +307,10 @@ def load_profile_snapshot(
 
 def _validate_profile(value: dict[str, Any]) -> None:
     if set(value) != _PROFILE_KEYS:
+        if (set(value) ^ _PROFILE_KEYS) & _RELEASE_CONTRACT_KEYS:
+            _fail("PROFILE_RELEASE_CONTRACT_INVALID")
         _fail("PROFILE_SCHEMA_INVALID")
-    if any(value.get(key) != expected for key, expected in _IDENTITY.items()):
-        _fail("PROFILE_IDENTITY_INVALID")
+    _validate_release_contract_types(value)
     for key in _STRING_ARRAY_KEYS:
         items = value[key]
         if (
@@ -273,10 +323,25 @@ def _validate_profile(value: dict[str, Any]) -> None:
                 or "\x00" in item
                 for item in items
             )
+            or (
+                key == "release_assets"
+                and any(not _safe_basename(item) for item in items)
+            )
             or items != sorted(items)
             or len({item.casefold() for item in items}) != len(items)
         ):
-            _fail("PROFILE_ARRAY_INVALID")
+            _fail(
+                "PROFILE_RELEASE_CONTRACT_INVALID"
+                if key == "release_assets"
+                else "PROFILE_ARRAY_INVALID"
+            )
+    for key, expected in _IDENTITY.items():
+        if value.get(key) != expected:
+            _fail(
+                "PROFILE_RELEASE_CONTRACT_INVALID"
+                if key in _RELEASE_CONTRACT_KEYS
+                else "PROFILE_IDENTITY_INVALID"
+            )
     for key in _PATH_ARRAY_KEYS:
         if any(not _safe_relative_pattern(item) for item in value[key]):
             _fail("PROFILE_PATH_INVALID")
@@ -328,6 +393,31 @@ def _validate_profile(value: dict[str, Any]) -> None:
         "run_prepared_audit": "prompt",
     }:
         _fail("PROFILE_APPROVAL_CONTRACT_INVALID")
+
+
+def _validate_release_contract_types(value: Mapping[str, Any]) -> None:
+    if type(value["schema"]) is not int:
+        _fail("PROFILE_RELEASE_CONTRACT_INVALID")
+    for key in (
+        "release_artifact_status",
+        "release_download_url",
+        "release_tag",
+        "release_title",
+    ):
+        item = value[key]
+        if (
+            type(item) is not str
+            or not item
+            or len(item) > MAX_VALUE_LENGTH
+            or "\x00" in item
+        ):
+            _fail("PROFILE_RELEASE_CONTRACT_INVALID")
+    for key in ("release_draft", "release_prerelease"):
+        if type(value[key]) is not bool:
+            _fail("PROFILE_RELEASE_CONTRACT_INVALID")
+    for key in ("primary_download_filename", "portable_filename"):
+        if not _safe_basename(value[key]):
+            _fail("PROFILE_RELEASE_CONTRACT_INVALID")
 
 
 def verify_profile(
@@ -734,6 +824,18 @@ def _safe_relative_pattern(value: str) -> bool:
         return False
     parts = value.split("/")
     return all(part not in {"", ".", ".."} and ":" not in part for part in parts)
+
+
+def _safe_basename(value: object) -> bool:
+    if type(value) is not str or not value or len(value) > MAX_VALUE_LENGTH:
+        return False
+    if "\x00" in value or any(ord(character) < 32 for character in value):
+        return False
+    if value in {".", ".."} or any(
+        character in value for character in '/\\:<>"|?*'
+    ):
+        return False
+    return not value.endswith((".", " "))
 
 
 def _matches_any(path: str, patterns: Iterable[str]) -> bool:
