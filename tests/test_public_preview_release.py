@@ -5,6 +5,8 @@ import importlib
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -26,6 +28,39 @@ ASSET_NAMES = (
 
 def _module():
     return importlib.import_module("scripts.stage_public_preview_release")
+
+
+def test_direct_script_invocation_loads_project_modules() -> None:
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "stage_public_preview_release.py"), "--help"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "ModuleNotFoundError" not in completed.stderr
+    assert "usage:" in completed.stdout
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (("--unknown",), ("--project-root", str(ROOT))),
+)
+def test_cli_argument_errors_use_fixed_json(
+    arguments: tuple[str, ...],
+) -> None:
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "stage_public_preview_release.py"), *arguments],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode != 0
+    assert completed.stdout == ""
+    assert completed.stderr == '{"error":"RELEASE_CLI_ARGUMENT_INVALID","status":"fail"}\n'
+    assert "usage:" not in completed.stderr
 
 
 def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -310,4 +345,3 @@ def test_stage_rejects_private_marker_without_leaking_marker_or_path(
     )
     assert marker.decode("ascii") not in str(caught.value)
     assert str(tmp_path) not in str(caught.value)
-

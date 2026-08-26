@@ -13,6 +13,10 @@ import subprocess
 import sys
 from typing import Any, Iterable
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from scripts.verify_integrations_preview_profile import (
     ProfileViolation,
     _has_reparse_component,
@@ -72,6 +76,11 @@ class ReleaseViolation(ValueError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(_PRIVATE_REMEDIATION if code == "RELEASE_PRIVATE_DATA_DETECTED" else code)
+
+
+class _ReleaseArgumentParser(argparse.ArgumentParser):
+    def error(self, _message: str) -> None:
+        raise ReleaseViolation("RELEASE_CLI_ARGUMENT_INVALID")
 
 
 def _fail(code: str) -> None:
@@ -603,7 +612,7 @@ def verify_staged_release(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = _ReleaseArgumentParser(description=__doc__)
     parser.add_argument("--project-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
@@ -612,8 +621,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--portable-path", type=Path)
     parser.add_argument("--skill-path", type=Path)
     parser.add_argument("--verify", action="store_true")
-    args = parser.parse_args(argv)
     try:
+        args = parser.parse_args(argv)
         if args.verify:
             result = verify_staged_release(
                 args.output_root, args.project_root, source_commit=args.source_commit
