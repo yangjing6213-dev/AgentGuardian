@@ -294,6 +294,36 @@ def test_verify_rejects_tampered_metadata(
         module.verify_staged_release(output, ROOT, source_commit=COMMIT)
 
 
+def test_verify_rejects_reordered_metadata_records_with_valid_checksum(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    _, output, _ = _stage(tmp_path, monkeypatch)
+    metadata_path = output / "DOWNLOAD-METADATA.json"
+    metadata = json.loads(metadata_path.read_text("ascii"))
+    metadata["files"] = list(reversed(metadata["files"]))
+    metadata_bytes = module.canonical_json_bytes(metadata)
+    metadata_path.write_bytes(metadata_bytes)
+    checksum_path = output / "SHA256SUMS"
+    checksum_lines = checksum_path.read_text("ascii").splitlines()
+    metadata_digest = hashlib.sha256(metadata_bytes).hexdigest()
+    checksum_path.write_bytes(
+        (
+            "\n".join(
+                (
+                    f"{metadata_digest}  DOWNLOAD-METADATA.json"
+                    if line.endswith("  DOWNLOAD-METADATA.json")
+                    else line
+                )
+                for line in checksum_lines
+            )
+            + "\n"
+        ).encode("ascii")
+    )
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_MANIFEST_INVALID$"):
+        module.verify_staged_release(output, ROOT, source_commit=COMMIT)
+
+
 def test_verify_rejects_checksum_mismatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -722,11 +752,11 @@ def test_cleanup_without_directory_token_fails_closed(
     assert (staging / "keep.txt").read_text(encoding="ascii") == "keep"
 
 
-def test_create_output_file_rejects_staging_replacement_after_validation(
+def test_cleanup_rejects_staging_replacement_after_validation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     if os.name != "nt":
-        pytest.fail("Windows handle-relative creation test requires Windows")
+        pytest.fail("Windows handle-relative cleanup test requires Windows")
     module = _module()
     parent = tmp_path / "parent"
     parent.mkdir()
@@ -754,13 +784,113 @@ def test_create_output_file_rejects_staging_replacement_after_validation(
 
     monkeypatch.setattr(module, "_validated_staging_path", replace_after_validation)
     try:
-        with pytest.raises(
-            module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"
-        ):
-            with module._create_output_file(staging / "payload.bin", token) as stream:
-                stream.write(b"must not be written")
-        assert not (staging / "payload.bin").exists()
+        assert (
+            module._cleanup_temporary_output(staging, token)
+            == "RELEASE_CLEANUP_FAILED"
+        )
         assert (staging / "keep.txt").read_text(encoding="ascii") == "keep"
+    finally:
+        module._close_staging_token(token)
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(moved, ignore_errors=True)
+        shutil.rmtree(parent, ignore_errors=True)
+
+
+def test_create_output_file_binds_native_creation_before_path_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "nt":
+        pytest.fail("Windows handle-relative creation test requires Windows")
+    module = _module()
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    staging = parent / ".release.staging-test"
+    staging.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "keep.txt").write_text("keep", encoding="ascii")
+    parent_binding = module._bind_directory(parent, 0x00000080 | 0x00000001)
+    token = module._snapshot_staging_directory(
+        staging, ".release.staging-", parent_binding
+    )
+    moved = tmp_path / "moved"
+    original_create = module._ntdll_create_staging_file
+    original_win_dll = ctypes.WinDLL
+    native_calls: list[tuple[int, str, int, int, int]] = []
+    from ctypes import wintypes
+
+    class UnicodeString(ctypes.Structure):
+        _fields_ = [
+            ("length", wintypes.USHORT),
+            ("maximum_length", wintypes.USHORT),
+            ("buffer", wintypes.LPWSTR),
+        ]
+
+    class ObjectAttributes(ctypes.Structure):
+        _fields_ = [
+            ("length", wintypes.ULONG),
+            ("root_directory", wintypes.HANDLE),
+            ("object_name", ctypes.POINTER(UnicodeString)),
+            ("attributes", wintypes.ULONG),
+            ("security_descriptor", wintypes.LPVOID),
+            ("security_quality_of_service", wintypes.LPVOID),
+        ]
+
+    class CapturedNtCreateFile:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *args: object) -> int:
+            attributes = ctypes.cast(
+                args[2], ctypes.POINTER(ObjectAttributes)
+            ).contents
+            unicode_name = attributes.object_name.contents
+            name = ctypes.wstring_at(
+                unicode_name.buffer, unicode_name.length // 2
+            )
+            native_calls.append(
+                (
+                    int(attributes.root_directory),
+                    name,
+                    int(attributes.attributes),
+                    int(args[7]),
+                    int(args[8]),
+                )
+            )
+            return real_create(*args)
+
+    real_ntdll = original_win_dll("ntdll", use_last_error=True)
+    real_create = real_ntdll.NtCreateFile
+
+    class CapturedNtdll:
+        NtCreateFile = CapturedNtCreateFile()
+
+    def win_dll(name: str, *args: object, **kwargs: object) -> object:
+        if name == "ntdll":
+            return CapturedNtdll()
+        return original_win_dll(name, *args, **kwargs)
+
+    def create_then_replace(*args: object, **kwargs: object) -> int | None:
+        return original_create(*args, **kwargs)
+
+    monkeypatch.setattr(ctypes, "WinDLL", win_dll)
+    monkeypatch.setattr(module, "_ntdll_create_staging_file", create_then_replace)
+    try:
+        with module._create_output_file(staging / "payload.bin", token) as stream:
+            stream.write(b"written through bound handle")
+        staging.rename(moved)
+        external.rename(staging)
+        assert (moved / "payload.bin").read_bytes() == b"written through bound handle"
+        assert (staging / "keep.txt").read_text(encoding="ascii") == "keep"
+        assert native_calls == [
+            (
+                token.directory_handle,
+                "payload.bin",
+                0x00000040 | 0x00001000,
+                0x00000002,
+                0x00000040 | 0x00000020,
+            )
+        ]
     finally:
         module._close_staging_token(token)
         shutil.rmtree(staging, ignore_errors=True)
@@ -816,7 +946,11 @@ def test_open_bound_directory_closes_after_identity_failure(
 
         def __call__(self, handle: int) -> int:
             closed.append(handle)
-            return 1
+            from ctypes import wintypes
+
+            assert self.argtypes == [wintypes.HANDLE]
+            assert self.restype is wintypes.BOOL
+            return 0
 
     class FakeKernel32:
         CreateFileW = FakeCreateFileW()

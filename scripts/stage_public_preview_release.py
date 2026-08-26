@@ -247,8 +247,12 @@ def _win32_open_directory(path: Path, access: int) -> tuple[int, tuple[int, ...]
     ]
     kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
     if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):
-        kernel32.CloseHandle(handle)
-        raise OSError(ctypes.get_last_error(), "GetFileInformationByHandle")
+        error_code = ctypes.get_last_error()
+        try:
+            _close_bound_handle(int(handle))
+        except Exception:
+            pass
+        raise OSError(error_code, "GetFileInformationByHandle")
     return (
         int(handle),
         (
@@ -593,7 +597,6 @@ def _create_output_file(
     path: Path, directory_token: _StagingDirectoryToken | None = None
 ) -> Iterator[BinaryIO]:
     if directory_token is not None:
-        _validated_staging_path(directory_token, path.parent, "RELEASE_OUTPUT_PATH_INVALID")
         _validated_staging_path(directory_token, path.parent, "RELEASE_OUTPUT_PATH_INVALID")
         name = path.name
         if not name or any(separator in name for separator in ("\\", "/")):
@@ -1090,10 +1093,17 @@ def _win32_set_disposition(handle: int) -> None:
 
 
 def _ntdll_create_staging_file(
-    token: _StagingDirectoryToken, name: str
-) -> int:
+    token: _StagingDirectoryToken,
+    name: str,
+    *,
+    create_disposition: int = 0x00000002,
+    desired_access: int = 0x00000002 | 0x00000100 | 0x00100000,
+    create_options: int = 0x00000040 | 0x00000020,
+    allow_missing: bool = False,
+    return_native_handle: bool = False,
+) -> int | None:
     """Create one staging file relative to the bound directory handle."""
-    if token.directory_handle is None:
+    if token.directory_handle is None or not name:
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     import ctypes
     import msvcrt
@@ -1162,26 +1172,34 @@ def _ntdll_create_staging_file(
     try:
         status = native_create(
             ctypes.byref(native_handle),
-            0x00000002 | 0x00000100 | 0x00100000,
+            desired_access,
             ctypes.byref(attributes),
             ctypes.byref(io_status),
             None,
             0x00000080,
             0x00000007,
-            0x00000002,
-            0x00000040 | 0x00000020,
+            create_disposition,
+            create_options,
             None,
             0,
         )
     except (OSError, TypeError, ValueError):
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     handle_value = native_handle.value
-    if (
-        int(status) < 0
-        or io_status.status < 0
-        or handle_value in (None, wintypes.HANDLE(-1).value)
-    ):
+    status_value = int(status)
+    if status_value < 0 or io_status.status < 0:
+        if allow_missing and status_value in (-1073741772, -1073741766):
+            return None
+        if handle_value not in (None, wintypes.HANDLE(-1).value):
+            try:
+                _close_bound_handle(int(handle_value))
+            except Exception:
+                pass
         _fail("RELEASE_OUTPUT_PATH_INVALID")
+    if handle_value in (None, wintypes.HANDLE(-1).value):
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    if return_native_handle:
+        return int(handle_value)
     try:
         descriptor = msvcrt.open_osfhandle(
             int(handle_value), os.O_WRONLY | getattr(os, "O_BINARY", 0)
@@ -1289,14 +1307,35 @@ def _cleanup_bound_staging(
             return True
         if os.name == "nt":
             _validated_staging_path(token, staged, "RELEASE_CLEANUP_FAILED")
-            for child in staged.iterdir():
-                if _is_reparse_point(child) or not child.is_file():
-                    return False
-                child_handle = _win32_open_file(child, 0x00010000 | 0x00000080)
+            _validated_staging_path(token, staged, "RELEASE_CLEANUP_FAILED")
+            allowed_names = (
+                tuple(child.name for child in token.children)
+                or RELEASE_ASSET_NAMES
+            )
+            for name in allowed_names:
+                child_handle = _ntdll_create_staging_file(
+                    token,
+                    name,
+                    create_disposition=0x00000001,
+                    desired_access=0x00010000 | 0x00000080 | 0x00100000,
+                    create_options=0x00000040
+                    | 0x00000020
+                    | 0x00200000,
+                    allow_missing=True,
+                    return_native_handle=True,
+                )
+                if child_handle is None:
+                    continue
+                child_close_failed = False
                 try:
                     _win32_set_disposition(child_handle)
                 finally:
-                    _close_bound_handle(child_handle)
+                    try:
+                        _close_bound_handle(child_handle)
+                    except Exception:
+                        child_close_failed = True
+                if child_close_failed:
+                    return False
             _win32_set_disposition(token.directory_handle)
             return True
     except (FileNotFoundError, OSError, ProfileViolation, ReleaseViolation):
@@ -1463,14 +1502,7 @@ def stage_public_preview_release(
         if (primary_digest, primary_size) != (versioned_digest, versioned_size):
             _fail("RELEASE_ASSET_DIGEST_MISMATCH")
         records: list[dict[str, object]] = []
-        metadata_names = (
-            contract["portable_filename"],
-            contract["versioned_filename"],
-            contract["primary_filename"],
-            contract["skill_filename"],
-            "LICENSE",
-            "THIRD_PARTY_NOTICES.md",
-        )
+        metadata_names = _METADATA_FILE_NAMES
         for name in metadata_names:
             digest, size = _digest_file(temporary / str(name))
             records.append({"name": name, "sha256": digest, "size": size})
@@ -1654,7 +1686,9 @@ def _validate_metadata(
         ):
             _fail("RELEASE_MANIFEST_INVALID")
         seen.add(name)
-    if seen != expected_names:
+    if seen != expected_names or tuple(
+        record["name"] for record in records
+    ) != _METADATA_FILE_NAMES:
         _fail("RELEASE_MANIFEST_INVALID")
     return records
 
