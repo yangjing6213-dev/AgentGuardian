@@ -6,18 +6,24 @@ import argparse
 from datetime import datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import sys
-from typing import Any, Iterable
+import tempfile
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import BinaryIO, Iterable, Iterator
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.verify_integrations_preview_profile import (
+    ProfileSnapshot,
     ProfileViolation,
     _has_reparse_component,
     _is_reparse_point,
@@ -42,6 +48,8 @@ VERSIONED_INSTALLER_NAME = "AgentGuardian-Setup-0.3.0-preview.1-x64.exe"
 PORTABLE_NAME = "AgentGuardian-0.3.0-preview.1-windows-x64.zip"
 SKILL_NAME = "AgentGuardian-Skill-0.2.0.zip"
 MAX_INPUT_BYTES = 2 * 1024 * 1024 * 1024
+MAX_METADATA_BYTES = 256 * 1024
+MAX_CHECKSUM_BYTES = 64 * 1024
 
 _PROFILE_RELATIVE_PATH = "release_profiles/integrations_preview.json"
 _METADATA_NAME = "DOWNLOAD-METADATA.json"
@@ -81,6 +89,13 @@ class ReleaseViolation(ValueError):
 class _ReleaseArgumentParser(argparse.ArgumentParser):
     def error(self, _message: str) -> None:
         raise ReleaseViolation("RELEASE_CLI_ARGUMENT_INVALID")
+
+
+@dataclass(frozen=True)
+class _FileSnapshot:
+    path: Path
+    identity: tuple[int, int, int, int]
+    size: int
 
 
 def _fail(code: str) -> None:
@@ -133,17 +148,21 @@ def _require_built_at(value: str) -> None:
         _fail("RELEASE_MANIFEST_INVALID")
 
 
-def _path_has_reparse(path: Path) -> bool:
+def _file_identity(info: os.stat_result) -> tuple[int, int, int, int]:
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+
+def _path_has_reparse(path: Path, code: str) -> bool:
     try:
         return _has_reparse_component(path)
     except (ProfileViolation, OSError):
-        _fail("RELEASE_INPUT_PATH_INVALID")
+        _fail(code)
     return False
 
 
 def _resolved_project_root(project_root: str | Path) -> Path:
     candidate = Path(project_root).absolute()
-    if _path_has_reparse(candidate):
+    if _path_has_reparse(candidate, "RELEASE_SOURCE_STATE_INVALID"):
         _fail("RELEASE_SOURCE_STATE_INVALID")
     try:
         resolved = candidate.resolve(strict=True)
@@ -162,44 +181,49 @@ def _inside(path: Path, parent: Path) -> bool:
     return True
 
 
-def _resolve_input(path_value: str | Path) -> Path:
+def _snapshot_file(path: Path, *, max_bytes: int, code: str) -> _FileSnapshot:
+    try:
+        if _has_reparse_component(path) or _is_reparse_point(path):
+            _fail(code)
+        resolved = path.resolve(strict=True)
+        info = resolved.stat()
+    except (FileNotFoundError, OSError, ProfileViolation):
+        _fail(code)
+    if not stat.S_ISREG(info.st_mode) or not resolved.is_file():
+        _fail(code)
+    if info.st_size > max_bytes:
+        _fail(code)
+    return _FileSnapshot(resolved, _file_identity(info), info.st_size)
+
+
+def _resolve_input(path_value: str | Path) -> _FileSnapshot:
     candidate = Path(path_value)
     if not candidate.is_absolute():
         _fail("RELEASE_INPUT_PATH_INVALID")
     candidate = candidate.absolute()
-    try:
-        if _has_reparse_component(candidate) or _is_reparse_point(candidate):
-            _fail("RELEASE_INPUT_PATH_INVALID")
-        resolved = candidate.resolve(strict=True)
-        info = resolved.stat()
-    except (FileNotFoundError, OSError, ProfileViolation):
-        _fail("RELEASE_INPUT_PATH_INVALID")
-    if not stat.S_ISREG(info.st_mode) or not resolved.is_file():
-        _fail("RELEASE_INPUT_PATH_INVALID")
-    if info.st_size > MAX_INPUT_BYTES:
-        _fail("RELEASE_INPUT_PATH_INVALID")
-    return resolved
+    return _snapshot_file(
+        candidate, max_bytes=MAX_INPUT_BYTES, code="RELEASE_INPUT_PATH_INVALID"
+    )
 
 
-def _resolve_project_file(root: Path, relative: str) -> Path:
-    path = root / relative
-    try:
-        if _has_reparse_component(path) or _is_reparse_point(path):
-            _fail("RELEASE_INPUT_PATH_INVALID")
-        resolved = path.resolve(strict=True)
-        info = resolved.stat()
-    except (FileNotFoundError, OSError, ProfileViolation):
+def _resolve_project_file(root: Path, relative: str) -> _FileSnapshot:
+    snapshot = _snapshot_file(
+        root / relative,
+        max_bytes=MAX_INPUT_BYTES,
+        code="RELEASE_INPUT_PATH_INVALID",
+    )
+    if not _inside(snapshot.path, root):
         _fail("RELEASE_INPUT_PATH_INVALID")
-    if not _inside(resolved, root) or not stat.S_ISREG(info.st_mode):
-        _fail("RELEASE_INPUT_PATH_INVALID")
-    if info.st_size > MAX_INPUT_BYTES:
-        _fail("RELEASE_INPUT_PATH_INVALID")
-    return resolved
+    return snapshot
 
 
-def _resolve_output(output_root: str | Path, project_root: Path, inputs: Iterable[Path]) -> Path:
+def _resolve_output(
+    output_root: str | Path,
+    project_root: Path,
+    inputs: Iterable[_FileSnapshot],
+) -> Path:
     candidate = Path(output_root).absolute()
-    if _path_has_reparse(candidate):
+    if _path_has_reparse(candidate, "RELEASE_OUTPUT_PATH_INVALID"):
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     try:
         resolved = candidate.resolve(strict=False)
@@ -207,7 +231,7 @@ def _resolve_output(output_root: str | Path, project_root: Path, inputs: Iterabl
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     if _inside(resolved, project_root):
         _fail("RELEASE_OUTPUT_PATH_INVALID")
-    if any(_inside(resolved, path.parent) for path in inputs):
+    if any(_inside(resolved, snapshot.path.parent) for snapshot in inputs):
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     if candidate.exists():
         _fail("RELEASE_OUTPUT_PATH_INVALID")
@@ -218,6 +242,46 @@ def _resolve_output(output_root: str | Path, project_root: Path, inputs: Iterabl
     except (OSError, ProfileViolation):
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     return resolved
+
+
+@contextmanager
+def _open_verified_file(
+    snapshot: _FileSnapshot, *, max_bytes: int, code: str
+) -> Iterator[BinaryIO]:
+    """Open one expected file and verify its path and handle identity."""
+    if snapshot.size > max_bytes:
+        _fail(code)
+    stream: BinaryIO | None = None
+    file_descriptor: int | None = None
+    try:
+        if _has_reparse_component(snapshot.path) or _is_reparse_point(snapshot.path):
+            _fail(code)
+        if _file_identity(snapshot.path.stat()) != snapshot.identity:
+            _fail(code)
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        file_descriptor = os.open(snapshot.path, flags)
+        stream = os.fdopen(file_descriptor, "rb", closefd=True)
+        file_descriptor = None
+        if _file_identity(os.fstat(stream.fileno())) != snapshot.identity:
+            _fail(code)
+        yield stream
+        if _file_identity(os.fstat(stream.fileno())) != snapshot.identity:
+            _fail(code)
+        if _has_reparse_component(snapshot.path) or _is_reparse_point(snapshot.path):
+            _fail(code)
+        if _file_identity(snapshot.path.stat()) != snapshot.identity:
+            _fail(code)
+    except ReleaseViolation:
+        raise
+    except (FileNotFoundError, OSError, ValueError):
+        _fail(code)
+    finally:
+        if stream is not None:
+            stream.close()
+        elif file_descriptor is not None:
+            os.close(file_descriptor)
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -234,56 +298,86 @@ def _reject_json_constant(_: str) -> None:
 
 
 def _read_bounded(path: Path, limit: int, code: str) -> bytes:
+    snapshot = _snapshot_file(path, max_bytes=limit, code=code)
     try:
-        with path.open("rb") as stream:
+        with _open_verified_file(snapshot, max_bytes=limit, code=code) as stream:
             value = stream.read(limit + 1)
-    except (OSError, MemoryError, OverflowError):
+    except (MemoryError, OverflowError):
         _fail(code)
     if len(value) > limit:
         _fail(code)
     return value
 
 
-def _contains_private_marker(path: Path, workflow_markers: Iterable[str]) -> bool:
+def _path_has_private_marker(path: Path, workflow_markers: Iterable[str]) -> bool:
     folded_path = str(path).casefold().encode("utf-8", "ignore")
     if any(marker.casefold().encode("ascii") in folded_path for marker in workflow_markers):
         return True
     if any(pattern.search(folded_path) for pattern in _PRIVATE_PATTERNS):
         return True
-    try:
-        with path.open("rb") as stream:
-            carry = b""
-            while True:
-                chunk = stream.read(1024 * 1024)
-                if not chunk:
-                    return False
-                data = carry + chunk
-                folded = data.lower()
-                if any(pattern.search(data) for pattern in _PRIVATE_PATTERNS):
-                    return True
-                if any(
-                    marker.casefold().encode("ascii") in folded
-                    for marker in workflow_markers
-                ):
-                    return True
-                carry = data[-256:]
-    except (OSError, MemoryError):
-        _fail("RELEASE_INPUT_PATH_INVALID")
     return False
 
 
-def _reject_private_data(paths: Iterable[Path], workflow_markers: Iterable[str]) -> None:
+def _stream_has_private_marker(
+    stream: BinaryIO, workflow_markers: Iterable[str]
+) -> bool:
+    markers = tuple(marker.casefold().encode("ascii") for marker in workflow_markers)
+    carry = b""
+    while True:
+        chunk = stream.read(1024 * 1024)
+        if not chunk:
+            return False
+        data = carry + chunk
+        folded = data.lower()
+        if any(pattern.search(data) for pattern in _PRIVATE_PATTERNS):
+            return True
+        if any(marker in folded for marker in markers):
+            return True
+        carry = data[-256:]
+
+
+def _reject_private_data(
+    snapshots: Iterable[_FileSnapshot],
+    workflow_markers: Iterable[str],
+    *,
+    max_bytes: int,
+    code: str,
+) -> None:
     markers = tuple(workflow_markers)
-    for path in paths:
-        if _contains_private_marker(path, markers):
+    for snapshot in snapshots:
+        if _path_has_private_marker(snapshot.path, markers):
             _fail("RELEASE_PRIVATE_DATA_DETECTED")
+        try:
+            with _open_verified_file(snapshot, max_bytes=max_bytes, code=code) as stream:
+                if _stream_has_private_marker(stream, markers):
+                    _fail("RELEASE_PRIVATE_DATA_DETECTED")
+        except MemoryError:
+            _fail(code)
 
 
-def _copy_and_digest(source: Path, target: Path) -> tuple[str, int]:
+def _copy_and_digest(
+    source: _FileSnapshot | Path,
+    target: Path,
+    workflow_markers: Iterable[str] = (),
+) -> tuple[str, int]:
+    snapshot = (
+        source
+        if isinstance(source, _FileSnapshot)
+        else _snapshot_file(
+            source,
+            max_bytes=MAX_INPUT_BYTES,
+            code="RELEASE_ASSET_DIGEST_MISMATCH",
+        )
+    )
     digest = hashlib.sha256()
     size = 0
     try:
-        with source.open("rb") as source_stream, target.open("wb") as target_stream:
+        with _open_verified_file(
+            snapshot,
+            max_bytes=MAX_INPUT_BYTES,
+            code="RELEASE_INPUT_PATH_INVALID",
+        ) as source_stream, target.open("wb") as target_stream:
+            carry = b""
             while True:
                 chunk = source_stream.read(1024 * 1024)
                 if not chunk:
@@ -291,6 +385,13 @@ def _copy_and_digest(source: Path, target: Path) -> tuple[str, int]:
                 size += len(chunk)
                 if size > MAX_INPUT_BYTES:
                     _fail("RELEASE_INPUT_PATH_INVALID")
+                data = carry + chunk
+                if any(pattern.search(data) for pattern in _PRIVATE_PATTERNS) or any(
+                    marker.casefold().encode("ascii") in data.lower()
+                    for marker in workflow_markers
+                ):
+                    _fail("RELEASE_PRIVATE_DATA_DETECTED")
+                carry = data[-256:]
                 digest.update(chunk)
                 target_stream.write(chunk)
     except ReleaseViolation:
@@ -300,23 +401,33 @@ def _copy_and_digest(source: Path, target: Path) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
-def _digest_file(path: Path) -> tuple[str, int]:
+def _digest_file(
+    path: Path | _FileSnapshot,
+    *,
+    max_bytes: int = MAX_INPUT_BYTES,
+    code: str = "RELEASE_ASSET_DIGEST_MISMATCH",
+) -> tuple[str, int]:
+    snapshot = (
+        path
+        if isinstance(path, _FileSnapshot)
+        else _snapshot_file(path, max_bytes=max_bytes, code=code)
+    )
     digest = hashlib.sha256()
     size = 0
     try:
-        with path.open("rb") as stream:
+        with _open_verified_file(snapshot, max_bytes=max_bytes, code=code) as stream:
             while True:
                 chunk = stream.read(1024 * 1024)
                 if not chunk:
                     break
                 size += len(chunk)
                 digest.update(chunk)
-    except (OSError, MemoryError):
-        _fail("RELEASE_ASSET_DIGEST_MISMATCH")
+    except MemoryError:
+        _fail(code)
     return digest.hexdigest(), size
 
 
-def _verified_profile(project_root: Path):
+def _verified_profile(project_root: Path) -> ProfileSnapshot:
     try:
         snapshot = load_profile_snapshot(
             project_root, project_root / _PROFILE_RELATIVE_PATH
@@ -327,39 +438,78 @@ def _verified_profile(project_root: Path):
     return snapshot
 
 
+def _release_contract(profile: ProfileSnapshot) -> dict[str, object]:
+    values = profile.profile
+    expected_skill_name = f"AgentGuardian-Skill-{values['skill_version']}.zip"
+    expected_assets = (
+        values["portable_filename"],
+        values["installer_filename"],
+        values["primary_download_filename"],
+        expected_skill_name,
+        _METADATA_NAME,
+        "LICENSE",
+        _CHECKSUMS_NAME,
+        "THIRD_PARTY_NOTICES.md",
+    )
+    if (
+        tuple(values["release_assets"]) != RELEASE_ASSET_NAMES
+        or values["primary_download_filename"] != PRIMARY_INSTALLER_NAME
+        or values["installer_filename"] != VERSIONED_INSTALLER_NAME
+        or values["portable_filename"] != PORTABLE_NAME
+        or expected_skill_name != SKILL_NAME
+        or expected_assets != RELEASE_ASSET_NAMES
+        or values["product_version"] != "0.3.0-preview.1"
+    ):
+        _fail("RELEASE_MANIFEST_INVALID")
+    return {
+        "architecture": values["architecture"],
+        "artifact_status": values["release_artifact_status"],
+        "channel": values["channel"],
+        "primary_filename": values["primary_download_filename"],
+        "versioned_filename": values["installer_filename"],
+        "portable_filename": values["portable_filename"],
+        "skill_filename": expected_skill_name,
+        "version": values["product_version"],
+        "release_tag": values["release_tag"],
+        "release_title": values["release_title"],
+        "release_draft": values["release_draft"],
+        "release_prerelease": values["release_prerelease"],
+        "release_download_url": values["release_download_url"],
+    }
+
+
 def _metadata(
-    profile: Any,
+    contract: dict[str, object],
     source_commit: str,
     built_at: str,
     records: list[dict[str, object]],
 ) -> dict[str, object]:
-    values = profile.profile
     return {
-        "architecture": "x64",
-        "artifact_status": "unsigned_public_preview",
-        "channel": "integrations_preview",
+        "architecture": contract["architecture"],
+        "artifact_status": contract["artifact_status"],
+        "channel": contract["channel"],
         "files": records,
         "installer": {
-            "primary_filename": PRIMARY_INSTALLER_NAME,
-            "versioned_filename": VERSIONED_INSTALLER_NAME,
+            "primary_filename": contract["primary_filename"],
+            "versioned_filename": contract["versioned_filename"],
             "built_at": built_at,
         },
         "release": {
-            "tag": values["release_tag"],
-            "title": values["release_title"],
-            "draft": values["release_draft"],
-            "prerelease": values["release_prerelease"],
-            "fixed_download_url": values["release_download_url"],
+            "tag": contract["release_tag"],
+            "title": contract["release_title"],
+            "draft": contract["release_draft"],
+            "prerelease": contract["release_prerelease"],
+            "fixed_download_url": contract["release_download_url"],
         },
         "schema": 1,
         "source_commit": source_commit,
         "supported_platform": "Windows 11 x64",
-        "version": "0.3.0-preview.1",
+        "version": contract["version"],
     }
 
 
 def _write_checksums(output_root: Path) -> None:
-    lines = []
+    lines: list[str] = []
     for name in sorted(_CHECKSUM_FILE_NAMES):
         digest, _ = _digest_file(output_root / name)
         lines.append(f"{digest}  {name}")
@@ -369,6 +519,44 @@ def _write_checksums(output_root: Path) -> None:
         )
     except (OSError, UnicodeError):
         _fail("RELEASE_MANIFEST_INVALID")
+
+
+def _cleanup_temporary_output(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        if path.exists():
+            shutil.rmtree(path)
+    except OSError:
+        pass
+
+
+def _publish_staged_output(staged: Path, output: Path) -> None:
+    if output.exists():
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    try:
+        if os.name == "nt":
+            os.rename(staged, output)
+            return
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is None:
+            _fail("RELEASE_OUTPUT_PATH_INVALID")
+        result = renameat2(
+            -100,
+            os.fsencode(staged),
+            -100,
+            os.fsencode(output),
+            1,
+        )
+        if result != 0:
+            _fail("RELEASE_OUTPUT_PATH_INVALID")
+    except FileExistsError:
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    except (OSError, TypeError):
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
 
 
 def stage_public_preview_release(
@@ -385,52 +573,84 @@ def stage_public_preview_release(
     _require_source_state(root, source_commit)
     _require_built_at(built_at)
     profile = _verified_profile(root)
+    contract = _release_contract(profile)
     installer = _resolve_input(installer_path)
     portable = _resolve_input(portable_path)
     skill = _resolve_input(skill_path)
     license_path = _resolve_project_file(root, "LICENSE")
     notices_path = _resolve_project_file(root, "THIRD_PARTY_NOTICES.md")
     inputs = (installer, portable, skill, license_path, notices_path)
-    _reject_private_data(inputs, profile.profile["forbidden_workflow_tokens"])
+    workflow_markers = profile.profile["forbidden_workflow_tokens"]
+    if any(_path_has_private_marker(snapshot.path, workflow_markers) for snapshot in inputs):
+        _fail("RELEASE_PRIVATE_DATA_DETECTED")
     output = _resolve_output(output_root, root, inputs)
 
+    temporary: Path | None = None
     try:
-        output.mkdir()
-    except OSError:
-        _fail("RELEASE_OUTPUT_PATH_INVALID")
-
-    sources = (
-        (portable, PORTABLE_NAME),
-        (installer, VERSIONED_INSTALLER_NAME),
-        (skill, SKILL_NAME),
-        (license_path, "LICENSE"),
-        (notices_path, "THIRD_PARTY_NOTICES.md"),
-    )
-    for source, name in sources:
-        _copy_and_digest(source, output / name)
-    _copy_and_digest(output / VERSIONED_INSTALLER_NAME, output / PRIMARY_INSTALLER_NAME)
-
-    versioned_digest, versioned_size = _digest_file(output / VERSIONED_INSTALLER_NAME)
-    primary_digest, primary_size = _digest_file(output / PRIMARY_INSTALLER_NAME)
-    if (primary_digest, primary_size) != (versioned_digest, versioned_size):
-        _fail("RELEASE_ASSET_DIGEST_MISMATCH")
-    records = []
-    for name in _METADATA_FILE_NAMES:
-        digest, size = _digest_file(output / name)
-        records.append({"name": name, "sha256": digest, "size": size})
-    try:
-        (output / _METADATA_NAME).write_bytes(
-            canonical_json_bytes(_metadata(profile, source_commit, built_at, records))
+        try:
+            temporary = Path(
+                tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
+            )
+        except OSError:
+            _fail("RELEASE_OUTPUT_PATH_INVALID")
+        sources = (
+            (portable, PORTABLE_NAME),
+            (installer, VERSIONED_INSTALLER_NAME),
+            (skill, SKILL_NAME),
+            (license_path, "LICENSE"),
+            (notices_path, "THIRD_PARTY_NOTICES.md"),
         )
-    except (OSError, MemoryError):
-        _fail("RELEASE_MANIFEST_INVALID")
-    _write_checksums(output)
-    return {"status": "pass", "source_commit": source_commit, "files": list(RELEASE_ASSET_NAMES)}
+        for source, name in sources:
+            _copy_and_digest(source, temporary / name, workflow_markers)
+        _copy_and_digest(
+            temporary / VERSIONED_INSTALLER_NAME,
+            temporary / PRIMARY_INSTALLER_NAME,
+        )
+
+        versioned_digest, versioned_size = _digest_file(
+            temporary / VERSIONED_INSTALLER_NAME
+        )
+        primary_digest, primary_size = _digest_file(
+            temporary / PRIMARY_INSTALLER_NAME
+        )
+        if (primary_digest, primary_size) != (versioned_digest, versioned_size):
+            _fail("RELEASE_ASSET_DIGEST_MISMATCH")
+        records: list[dict[str, object]] = []
+        metadata_names = (
+            contract["portable_filename"],
+            contract["versioned_filename"],
+            contract["primary_filename"],
+            contract["skill_filename"],
+            "LICENSE",
+            "THIRD_PARTY_NOTICES.md",
+        )
+        for name in metadata_names:
+            digest, size = _digest_file(temporary / str(name))
+            records.append({"name": name, "sha256": digest, "size": size})
+        try:
+            (temporary / _METADATA_NAME).write_bytes(
+                canonical_json_bytes(
+                    _metadata(contract, source_commit, built_at, records)
+                )
+            )
+        except (OSError, MemoryError):
+            _fail("RELEASE_MANIFEST_INVALID")
+        _write_checksums(temporary)
+        result = verify_staged_release(
+            temporary, root, source_commit=source_commit
+        )
+        _publish_staged_output(temporary, output)
+        temporary = None
+        return result
+    finally:
+        _cleanup_temporary_output(temporary)
 
 
 def _load_metadata(output_root: Path) -> dict[str, object]:
     raw = _read_bounded(
-        output_root / _METADATA_NAME, MAX_INPUT_BYTES, "RELEASE_MANIFEST_INVALID"
+        output_root / _METADATA_NAME,
+        MAX_METADATA_BYTES,
+        "RELEASE_MANIFEST_TOO_LARGE",
     )
     try:
         value = json.loads(
@@ -448,7 +668,7 @@ def _load_metadata(output_root: Path) -> dict[str, object]:
 
 
 def _validate_metadata(
-    metadata: dict[str, object], profile: Any, source_commit: str
+    metadata: dict[str, object], contract: dict[str, object], source_commit: str
 ) -> list[dict[str, object]]:
     if set(metadata) != {
         "architecture",
@@ -463,16 +683,17 @@ def _validate_metadata(
         "version",
     }:
         _fail("RELEASE_MANIFEST_INVALID")
-    if (
-        type(metadata["architecture"]) is not str
-        or metadata["architecture"] != "x64"
-        or type(metadata["artifact_status"]) is not str
-        or metadata["artifact_status"] != "unsigned_public_preview"
-    ):
+    if metadata["architecture"] != contract["architecture"] or type(
+        metadata["architecture"]
+    ) is not str:
+        _fail("RELEASE_MANIFEST_INVALID")
+    if metadata["artifact_status"] != contract["artifact_status"] or type(
+        metadata["artifact_status"]
+    ) is not str:
         _fail("RELEASE_MANIFEST_INVALID")
     if (
         type(metadata["channel"]) is not str
-        or metadata["channel"] != "integrations_preview"
+        or metadata["channel"] != contract["channel"]
         or type(metadata["schema"]) is not int
         or metadata["schema"] != 1
     ):
@@ -484,7 +705,7 @@ def _validate_metadata(
         or metadata["supported_platform"] != "Windows 11 x64"
     ):
         _fail("RELEASE_MANIFEST_INVALID")
-    if type(metadata["version"]) is not str or metadata["version"] != "0.3.0-preview.1":
+    if type(metadata["version"]) is not str or metadata["version"] != contract["version"]:
         _fail("RELEASE_MANIFEST_INVALID")
     installer = metadata["installer"]
     if not isinstance(installer, dict) or set(installer) != {
@@ -493,11 +714,15 @@ def _validate_metadata(
         "built_at",
     }:
         _fail("RELEASE_MANIFEST_INVALID")
-    if installer["primary_filename"] != PRIMARY_INSTALLER_NAME or installer["versioned_filename"] != VERSIONED_INSTALLER_NAME:
+    if (
+        type(installer["primary_filename"]) is not str
+        or type(installer["versioned_filename"]) is not str
+        or installer["primary_filename"] != contract["primary_filename"]
+        or installer["versioned_filename"] != contract["versioned_filename"]
+    ):
         _fail("RELEASE_MANIFEST_INVALID")
     _require_built_at(installer["built_at"])
     release = metadata["release"]
-    expected_release = profile.profile
     if not isinstance(release, dict) or set(release) != {
         "tag",
         "title",
@@ -513,18 +738,25 @@ def _validate_metadata(
         or type(release["prerelease"]) is not bool
         or type(release["fixed_download_url"]) is not str
         or release != {
-        "tag": expected_release["release_tag"],
-        "title": expected_release["release_title"],
-        "draft": expected_release["release_draft"],
-        "prerelease": expected_release["release_prerelease"],
-        "fixed_download_url": expected_release["release_download_url"],
+        "tag": contract["release_tag"],
+        "title": contract["release_title"],
+        "draft": contract["release_draft"],
+        "prerelease": contract["release_prerelease"],
+        "fixed_download_url": contract["release_download_url"],
         }
     ):
         _fail("RELEASE_MANIFEST_INVALID")
     records = metadata["files"]
     if not isinstance(records, list) or len(records) != 6:
         _fail("RELEASE_MANIFEST_INVALID")
-    expected_names = set(_METADATA_FILE_NAMES)
+    expected_names = {
+        contract["portable_filename"],
+        contract["versioned_filename"],
+        contract["primary_filename"],
+        contract["skill_filename"],
+        "LICENSE",
+        "THIRD_PARTY_NOTICES.md",
+    }
     seen: set[str] = set()
     for record in records:
         if not isinstance(record, dict) or set(record) != {"name", "sha256", "size"}:
@@ -549,15 +781,19 @@ def _validate_metadata(
 
 def _verify_checksums(output_root: Path) -> None:
     raw = _read_bounded(
-        output_root / _CHECKSUMS_NAME, MAX_INPUT_BYTES, "RELEASE_CHECKSUM_INVALID"
+        output_root / _CHECKSUMS_NAME,
+        MAX_CHECKSUM_BYTES,
+        "RELEASE_CHECKSUM_TOO_LARGE",
     )
     try:
         text = raw.decode("ascii")
     except UnicodeError:
         _fail("RELEASE_CHECKSUM_INVALID")
-    if not raw.endswith(b"\n") or b"\r" in raw:
+    if not raw.endswith(b"\n") or any(
+        separator in raw for separator in (b"\r", b"\v", b"\f", b"\x1c", b"\x1d", b"\x1e")
+    ):
         _fail("RELEASE_CHECKSUM_INVALID")
-    lines = text.splitlines()
+    lines = text[:-1].split("\n")
     pattern = re.compile(r"^([0-9a-f]{64})  ([^\s]+)$")
     found: dict[str, str] = {}
     for line in lines:
@@ -568,7 +804,17 @@ def _verify_checksums(output_root: Path) -> None:
     if set(found) != set(_CHECKSUM_FILE_NAMES) or list(found) != sorted(found):
         _fail("RELEASE_CHECKSUM_INVALID")
     for name, expected in found.items():
-        actual, _ = _digest_file(output_root / name)
+        max_bytes = (
+            MAX_METADATA_BYTES if name == _METADATA_NAME else MAX_INPUT_BYTES
+        )
+        code = (
+            "RELEASE_MANIFEST_TOO_LARGE"
+            if name == _METADATA_NAME
+            else "RELEASE_ASSET_TOO_LARGE"
+        )
+        actual, _ = _digest_file(
+            output_root / name, max_bytes=max_bytes, code=code
+        )
         if actual != expected:
             _fail("RELEASE_CHECKSUM_INVALID")
 
@@ -579,6 +825,7 @@ def verify_staged_release(
     root = _resolved_project_root(project_root)
     _require_source_state(root, source_commit)
     profile = _verified_profile(root)
+    contract = _release_contract(profile)
     candidate = Path(output_root).absolute()
     try:
         if _has_reparse_component(candidate):
@@ -596,15 +843,54 @@ def verify_staged_release(
         _fail("RELEASE_MANIFEST_INVALID")
     if tuple(sorted(path.name for path in entries)) != tuple(sorted(RELEASE_ASSET_NAMES)):
         _fail("RELEASE_MANIFEST_INVALID")
-    _reject_private_data(entries, profile.profile["forbidden_workflow_tokens"])
+    snapshots: dict[str, _FileSnapshot] = {}
+    for path in entries:
+        if path.name == _METADATA_NAME:
+            snapshot = _snapshot_file(
+                path,
+                max_bytes=MAX_METADATA_BYTES,
+                code="RELEASE_MANIFEST_TOO_LARGE",
+            )
+        elif path.name == _CHECKSUMS_NAME:
+            snapshot = _snapshot_file(
+                path,
+                max_bytes=MAX_CHECKSUM_BYTES,
+                code="RELEASE_CHECKSUM_TOO_LARGE",
+            )
+        else:
+            snapshot = _snapshot_file(
+                path,
+                max_bytes=MAX_INPUT_BYTES,
+                code="RELEASE_ASSET_TOO_LARGE",
+            )
+        snapshots[path.name] = snapshot
+    markers = profile.profile["forbidden_workflow_tokens"]
+    for name, snapshot in snapshots.items():
+        if name == _METADATA_NAME:
+            limit, code = MAX_METADATA_BYTES, "RELEASE_MANIFEST_TOO_LARGE"
+        elif name == _CHECKSUMS_NAME:
+            limit, code = MAX_CHECKSUM_BYTES, "RELEASE_CHECKSUM_TOO_LARGE"
+        else:
+            limit, code = MAX_INPUT_BYTES, "RELEASE_ASSET_TOO_LARGE"
+        _reject_private_data((snapshot,), markers, max_bytes=limit, code=code)
     metadata = _load_metadata(output)
-    records = _validate_metadata(metadata, profile, source_commit)
+    records = _validate_metadata(metadata, contract, source_commit)
     for record in records:
-        actual_digest, actual_size = _digest_file(output / record["name"])
+        actual_digest, actual_size = _digest_file(
+            snapshots[record["name"]],
+            max_bytes=MAX_INPUT_BYTES,
+            code="RELEASE_ASSET_TOO_LARGE",
+        )
         if actual_digest != record["sha256"] or actual_size != record["size"]:
             _fail("RELEASE_ASSET_DIGEST_MISMATCH")
-    if _digest_file(output / PRIMARY_INSTALLER_NAME) != _digest_file(
-        output / VERSIONED_INSTALLER_NAME
+    if _digest_file(
+        snapshots[PRIMARY_INSTALLER_NAME],
+        max_bytes=MAX_INPUT_BYTES,
+        code="RELEASE_ASSET_TOO_LARGE",
+    ) != _digest_file(
+        snapshots[VERSIONED_INSTALLER_NAME],
+        max_bytes=MAX_INPUT_BYTES,
+        code="RELEASE_ASSET_TOO_LARGE",
     ):
         _fail("RELEASE_ASSET_DIGEST_MISMATCH")
     _verify_checksums(output)

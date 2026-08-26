@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -216,7 +215,10 @@ def test_verify_rejects_checksum_mismatch(
     _, output, _ = _stage(tmp_path, monkeypatch)
     checksum_path = output / "SHA256SUMS"
     lines = checksum_path.read_text("ascii").splitlines()
-    checksum_path.write_text("0" * 64 + lines[0][64:] + "\n" + "\n".join(lines[1:]) + "\n", encoding="ascii")
+    checksum_path.write_text(
+        "0" * 64 + lines[0][64:] + "\n" + "\n".join(lines[1:]) + "\n",
+        encoding="ascii",
+    )
     with pytest.raises(module.ReleaseViolation, match="^RELEASE_CHECKSUM_INVALID$"):
         module.verify_staged_release(output, ROOT, source_commit=COMMIT)
 
@@ -345,3 +347,228 @@ def test_stage_rejects_private_marker_without_leaking_marker_or_path(
     )
     assert marker.decode("ascii") not in str(caught.value)
     assert str(tmp_path) not in str(caught.value)
+
+
+def _assert_no_release_or_staging_directories(tmp_path: Path, output: Path) -> None:
+    assert not output.exists()
+    assert not any(
+        path.is_dir() and path.name != "inputs"
+        for path in tmp_path.iterdir()
+    )
+
+
+@pytest.mark.parametrize("failure_point", ("copy", "checksums"))
+def test_stage_cleans_failed_temporary_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_point: str,
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    output = tmp_path / "release"
+    if failure_point == "copy":
+        monkeypatch.setattr(
+            module,
+            "_copy_and_digest",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                module.ReleaseViolation("RELEASE_INPUT_PATH_INVALID")
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            module,
+            "_write_checksums",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                module.ReleaseViolation("RELEASE_CHECKSUM_INVALID")
+            ),
+        )
+
+    with pytest.raises(module.ReleaseViolation):
+        module.stage_public_preview_release(
+            ROOT,
+            output,
+            installer_path=installer,
+            portable_path=portable,
+            skill_path=skill,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
+    _assert_no_release_or_staging_directories(tmp_path, output)
+
+
+def test_stage_runs_final_verifier_before_publish_and_cleans_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    output = tmp_path / "release"
+    calls: list[Path] = []
+
+    def reject_verification(staged: Path, _root: Path, *, source_commit: str):
+        calls.append(staged)
+        raise module.ReleaseViolation("RELEASE_MANIFEST_INVALID")
+
+    monkeypatch.setattr(module, "verify_staged_release", reject_verification)
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_MANIFEST_INVALID$"):
+        module.stage_public_preview_release(
+            ROOT,
+            output,
+            installer_path=installer,
+            portable_path=portable,
+            skill_path=skill,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
+    assert len(calls) == 1
+    assert calls[0] != output
+    _assert_no_release_or_staging_directories(tmp_path, output)
+
+
+def test_stage_rejects_target_competition_without_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    output = tmp_path / "release"
+    original_verify = module.verify_staged_release
+
+    def compete(staged: Path, root: Path, *, source_commit: str):
+        output.mkdir()
+        (output / "competitor").write_text("keep", encoding="ascii")
+        return original_verify(staged, root, source_commit=source_commit)
+
+    monkeypatch.setattr(module, "verify_staged_release", compete)
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"):
+        module.stage_public_preview_release(
+            ROOT,
+            output,
+            installer_path=installer,
+            portable_path=portable,
+            skill_path=skill,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
+    assert (output / "competitor").read_text(encoding="ascii") == "keep"
+    assert not any(
+        path.is_dir() and path.name.startswith(f".{output.name}.staging-")
+        for path in tmp_path.iterdir()
+    )
+
+
+def test_stage_rejects_input_replaced_before_verified_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    output = tmp_path / "release"
+    calls: list[Path] = []
+
+    def reject_replaced(snapshot, *_args, **_kwargs):
+        calls.append(snapshot.path)
+        raise module.ReleaseViolation("RELEASE_INPUT_PATH_INVALID")
+
+    monkeypatch.setattr(module, "_open_verified_file", reject_replaced, raising=False)
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_INPUT_PATH_INVALID$"):
+        module.stage_public_preview_release(
+            ROOT,
+            output,
+            installer_path=installer,
+            portable_path=portable,
+            skill_path=skill,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
+    assert calls == [portable]
+    _assert_no_release_or_staging_directories(tmp_path, output)
+
+
+def test_verified_file_snapshot_rejects_replaced_input(
+    tmp_path: Path,
+) -> None:
+    module = _module()
+    installer, _, _ = _inputs(tmp_path)
+    snapshot = module._resolve_input(installer)
+    installer.write_bytes(b"replaced-input")
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_INPUT_PATH_INVALID$"):
+        module._digest_file(
+            snapshot,
+            max_bytes=module.MAX_INPUT_BYTES,
+            code="RELEASE_INPUT_PATH_INVALID",
+        )
+
+
+def test_verify_rejects_oversized_staged_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    _, output, _ = _stage(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, "MAX_INPUT_BYTES", 32)
+    (output / module.PORTABLE_NAME).write_bytes(b"x" * 33)
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_ASSET_TOO_LARGE$"):
+        module.verify_staged_release(output, ROOT, source_commit=COMMIT)
+
+
+def test_verify_rejects_oversized_metadata_before_parsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    _, output, _ = _stage(tmp_path, monkeypatch)
+    metadata_limit = 256 * 1024
+    monkeypatch.setattr(module, "MAX_METADATA_BYTES", metadata_limit)
+    (output / "DOWNLOAD-METADATA.json").write_bytes(b"{" + b"x" * metadata_limit)
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_MANIFEST_TOO_LARGE$"):
+        module.verify_staged_release(output, ROOT, source_commit=COMMIT)
+
+
+def test_verify_rejects_oversized_checksums_before_parsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    _, output, _ = _stage(tmp_path, monkeypatch)
+    checksum_limit = 64 * 1024
+    monkeypatch.setattr(module, "MAX_CHECKSUM_BYTES", checksum_limit)
+    (output / "SHA256SUMS").write_bytes(b"x" * (checksum_limit + 1))
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_CHECKSUM_TOO_LARGE$"):
+        module.verify_staged_release(output, ROOT, source_commit=COMMIT)
+
+
+@pytest.mark.parametrize("separator", (b"\r\n", b"\v\n", b"\x1c\n", b"\n\n"))
+def test_verify_rejects_non_lf_checksum_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, separator: bytes
+) -> None:
+    module = _module()
+    _, output, _ = _stage(tmp_path, monkeypatch)
+    checksum_path = output / "SHA256SUMS"
+    raw = checksum_path.read_bytes()
+    checksum_path.write_bytes(raw.replace(b"\n", separator, 1))
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_CHECKSUM_INVALID$"):
+        module.verify_staged_release(output, ROOT, source_commit=COMMIT)
+
+
+def test_stage_rejects_reparse_ancestor_when_supported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    linked_parent = tmp_path / "linked-parent"
+    real_parent = tmp_path / "real-parent"
+    real_parent.mkdir()
+    try:
+        linked_parent.symlink_to(real_parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation is unavailable")
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"):
+        module.stage_public_preview_release(
+            ROOT,
+            linked_parent / "release",
+            installer_path=installer,
+            portable_path=portable,
+            skill_path=skill,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
