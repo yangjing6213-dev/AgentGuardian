@@ -98,6 +98,19 @@ class _FileSnapshot:
     size: int
 
 
+@dataclass(frozen=True)
+class _StagingDirectoryToken:
+    parent: Path
+    name: str
+    prefix: str
+    identity: tuple[int, int]
+    is_reparse_point: bool
+
+    @property
+    def path(self) -> Path:
+        return self.parent / self.name
+
+
 def _fail(code: str) -> None:
     raise ReleaseViolation(code)
 
@@ -150,6 +163,10 @@ def _require_built_at(value: str) -> None:
 
 def _file_identity(info: os.stat_result) -> tuple[int, int, int, int]:
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+
+def _directory_identity(info: os.stat_result) -> tuple[int, int]:
+    return (info.st_dev, info.st_ino)
 
 
 def _path_has_reparse(path: Path, code: str) -> bool:
@@ -521,17 +538,70 @@ def _write_checksums(output_root: Path) -> None:
         _fail("RELEASE_MANIFEST_INVALID")
 
 
-def _cleanup_temporary_output(path: Path | None) -> None:
-    if path is None:
+def _snapshot_staging_directory(path: Path, prefix: str) -> _StagingDirectoryToken:
+    candidate = path.absolute()
+    try:
+        parent = candidate.parent.resolve(strict=True)
+        info = candidate.lstat()
+        is_reparse = _is_reparse_point(candidate)
+        if _has_reparse_component(candidate) or is_reparse:
+            _fail("RELEASE_OUTPUT_PATH_INVALID")
+    except (FileNotFoundError, OSError, ProfileViolation):
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or not candidate.name.startswith(prefix)
+    ):
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    return _StagingDirectoryToken(
+        parent=parent,
+        name=candidate.name,
+        prefix=prefix,
+        identity=_directory_identity(info),
+        is_reparse_point=is_reparse,
+    )
+
+
+def _validated_staging_path(
+    token: _StagingDirectoryToken, staged: Path, code: str
+) -> Path:
+    candidate = staged.absolute()
+    try:
+        parent = candidate.parent.resolve(strict=True)
+        info = candidate.lstat()
+        is_reparse = _is_reparse_point(candidate)
+        if (
+            parent != token.parent
+            or candidate.name != token.name
+            or not candidate.name.startswith(token.prefix)
+            or _has_reparse_component(candidate)
+            or is_reparse
+            or is_reparse != token.is_reparse_point
+            or not stat.S_ISDIR(info.st_mode)
+            or _directory_identity(info) != token.identity
+        ):
+            _fail(code)
+    except (FileNotFoundError, OSError, ProfileViolation):
+        _fail(code)
+    return candidate
+
+
+def _cleanup_temporary_output(token: _StagingDirectoryToken | None) -> None:
+    if token is None:
         return
     try:
-        if path.exists():
-            shutil.rmtree(path)
-    except OSError:
+        staged = _validated_staging_path(
+            token, token.path, "RELEASE_OUTPUT_PATH_INVALID"
+        )
+        shutil.rmtree(staged)
+    except (OSError, ReleaseViolation):
         pass
 
 
-def _publish_staged_output(staged: Path, output: Path) -> None:
+def _publish_staged_output(
+    staged: Path, output: Path, token: _StagingDirectoryToken
+) -> None:
+    _validated_staging_path(token, staged, "RELEASE_OUTPUT_PATH_INVALID")
     if output.exists():
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     try:
@@ -586,13 +656,16 @@ def stage_public_preview_release(
     output = _resolve_output(output_root, root, inputs)
 
     temporary: Path | None = None
+    temporary_token: _StagingDirectoryToken | None = None
     try:
+        staging_prefix = f".{output.name}.staging-"
         try:
             temporary = Path(
-                tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
+                tempfile.mkdtemp(prefix=staging_prefix, dir=output.parent)
             )
         except OSError:
             _fail("RELEASE_OUTPUT_PATH_INVALID")
+        temporary_token = _snapshot_staging_directory(temporary, staging_prefix)
         sources = (
             (portable, PORTABLE_NAME),
             (installer, VERSIONED_INSTALLER_NAME),
@@ -639,11 +712,11 @@ def stage_public_preview_release(
         result = verify_staged_release(
             temporary, root, source_commit=source_commit
         )
-        _publish_staged_output(temporary, output)
+        _publish_staged_output(temporary, output, temporary_token)
         temporary = None
         return result
     finally:
-        _cleanup_temporary_output(temporary)
+        _cleanup_temporary_output(temporary_token)
 
 
 def _load_metadata(output_root: Path) -> dict[str, object]:

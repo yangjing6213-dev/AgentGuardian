@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -456,6 +457,75 @@ def test_stage_rejects_target_competition_without_overwrite(
         path.is_dir() and path.name.startswith(f".{output.name}.staging-")
         for path in tmp_path.iterdir()
     )
+
+
+def test_stage_rejects_replaced_staging_directory_before_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    output = tmp_path / "release"
+    original_publish = module._publish_staged_output
+    replaced_path: list[Path] = []
+
+    def replace_staging(staged: Path, target: Path, *args: object, **kwargs: object) -> None:
+        staged.rename(tmp_path / "verified-staging")
+        staged.mkdir()
+        (staged / "unverified").write_text("unverified", encoding="ascii")
+        replaced_path.append(staged)
+        original_publish(staged, target, *args, **kwargs)
+
+    monkeypatch.setattr(module, "_publish_staged_output", replace_staging)
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"):
+        module.stage_public_preview_release(
+            ROOT,
+            output,
+            installer_path=installer,
+            portable_path=portable,
+            skill_path=skill,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
+    assert not output.exists()
+    assert len(replaced_path) == 1
+    assert (replaced_path[0] / "unverified").read_text(encoding="ascii") == "unverified"
+
+
+def test_cleanup_does_not_remove_replaced_staging_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    output = tmp_path / "release"
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    (unrelated / "keep.txt").write_text("keep", encoding="ascii")
+    replaced_path: list[Path] = []
+
+    def replace_then_fail(staged: Path, *args: object, **kwargs: object) -> None:
+        shutil.rmtree(staged)
+        unrelated.rename(staged)
+        replaced_path.append(staged)
+        raise module.ReleaseViolation("RELEASE_CHECKSUM_INVALID")
+
+    monkeypatch.setattr(module, "_write_checksums", replace_then_fail)
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_CHECKSUM_INVALID$"):
+        module.stage_public_preview_release(
+            ROOT,
+            output,
+            installer_path=installer,
+            portable_path=portable,
+            skill_path=skill,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
+    assert not output.exists()
+    assert len(replaced_path) == 1
+    replaced_staging = replaced_path[0]
+    assert replaced_staging.exists()
+    assert (replaced_staging / "keep.txt").read_text(encoding="ascii") == "keep"
 
 
 def test_stage_rejects_input_replaced_before_verified_open(
