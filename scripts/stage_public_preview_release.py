@@ -9,13 +9,12 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import BinaryIO, Iterable, Iterator
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -99,12 +98,23 @@ class _FileSnapshot:
 
 
 @dataclass(frozen=True)
+class _StagedChildToken:
+    name: str
+    snapshot: _FileSnapshot
+    digest: str
+
+
+@dataclass(frozen=True)
 class _StagingDirectoryToken:
     parent: Path
     name: str
     prefix: str
-    identity: tuple[int, int]
+    parent_identity: tuple[int, ...]
+    identity: tuple[int, ...]
     is_reparse_point: bool
+    parent_handle: int | None
+    directory_handle: int | None
+    children: tuple[_StagedChildToken, ...] = ()
 
     @property
     def path(self) -> Path:
@@ -169,6 +179,148 @@ def _directory_identity(info: os.stat_result) -> tuple[int, int]:
     return (info.st_dev, info.st_ino)
 
 
+def _win32_open_directory(path: Path, access: int) -> tuple[int, tuple[int, ...]]:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    handle = kernel32.CreateFileW(
+        str(path),
+        access,
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,
+        0x02000000 | 0x00200000,
+        None,
+    )
+    if handle == wintypes.HANDLE(-1).value:
+        raise OSError(ctypes.get_last_error(), "CreateFileW")
+
+    class _FileTime(ctypes.Structure):
+        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+    class _ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("attributes", wintypes.DWORD),
+            ("creation_time", _FileTime),
+            ("last_access_time", _FileTime),
+            ("last_write_time", _FileTime),
+            ("volume_serial", wintypes.DWORD),
+            ("file_size_high", wintypes.DWORD),
+            ("file_size_low", wintypes.DWORD),
+            ("number_of_links", wintypes.DWORD),
+            ("file_index_high", wintypes.DWORD),
+            ("file_index_low", wintypes.DWORD),
+        ]
+
+    info = _ByHandleFileInformation()
+    kernel32.GetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_ByHandleFileInformation),
+    ]
+    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):
+        kernel32.CloseHandle(handle)
+        raise OSError(ctypes.get_last_error(), "GetFileInformationByHandle")
+    return (
+        int(handle),
+        (
+            int(info.volume_serial),
+            int(info.file_index_high),
+            int(info.file_index_low),
+        ),
+    )
+
+
+def _win32_open_file(path: Path, access: int) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    handle = kernel32.CreateFileW(
+        str(path),
+        access,
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,
+        0x00200000,
+        None,
+    )
+    if handle == wintypes.HANDLE(-1).value:
+        raise OSError(ctypes.get_last_error(), "CreateFileW")
+    return int(handle)
+
+
+def _close_bound_handle(handle: int | None) -> None:
+    if handle is None:
+        return
+    if os.name == "nt":
+        import ctypes
+
+        ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(handle)
+    else:
+        os.close(handle)
+
+
+def _bound_handle_identity(handle: int) -> tuple[int, ...]:
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        class _FileTime(ctypes.Structure):
+            _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+        class _ByHandleFileInformation(ctypes.Structure):
+            _fields_ = [
+                ("attributes", wintypes.DWORD),
+                ("creation_time", _FileTime),
+                ("last_access_time", _FileTime),
+                ("last_write_time", _FileTime),
+                ("volume_serial", wintypes.DWORD),
+                ("file_size_high", wintypes.DWORD),
+                ("file_size_low", wintypes.DWORD),
+                ("number_of_links", wintypes.DWORD),
+                ("file_index_high", wintypes.DWORD),
+                ("file_index_low", wintypes.DWORD),
+            ]
+
+        info = _ByHandleFileInformation()
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetFileInformationByHandle.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(_ByHandleFileInformation),
+        ]
+        kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+        if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):
+            raise OSError(ctypes.get_last_error(), "GetFileInformationByHandle")
+        return (
+            int(info.volume_serial),
+            int(info.file_index_high),
+            int(info.file_index_low),
+        )
+    return _directory_identity(os.fstat(handle))
+
+
 def _path_has_reparse(path: Path, code: str) -> bool:
     try:
         return _has_reparse_component(path)
@@ -177,7 +329,21 @@ def _path_has_reparse(path: Path, code: str) -> bool:
     return False
 
 
+def _reject_windows_special_path(path_value: str | Path, code: str) -> None:
+    if os.name != "nt":
+        return
+    try:
+        raw = os.fspath(path_value)
+    except TypeError:
+        _fail(code)
+    if isinstance(raw, bytes):
+        _fail(code)
+    if raw.startswith(("\\\\", "//")):
+        _fail(code)
+
+
 def _resolved_project_root(project_root: str | Path) -> Path:
+    _reject_windows_special_path(project_root, "RELEASE_SOURCE_STATE_INVALID")
     candidate = Path(project_root).absolute()
     if _path_has_reparse(candidate, "RELEASE_SOURCE_STATE_INVALID"):
         _fail("RELEASE_SOURCE_STATE_INVALID")
@@ -214,6 +380,7 @@ def _snapshot_file(path: Path, *, max_bytes: int, code: str) -> _FileSnapshot:
 
 
 def _resolve_input(path_value: str | Path) -> _FileSnapshot:
+    _reject_windows_special_path(path_value, "RELEASE_INPUT_PATH_INVALID")
     candidate = Path(path_value)
     if not candidate.is_absolute():
         _fail("RELEASE_INPUT_PATH_INVALID")
@@ -239,6 +406,7 @@ def _resolve_output(
     project_root: Path,
     inputs: Iterable[_FileSnapshot],
 ) -> Path:
+    _reject_windows_special_path(output_root, "RELEASE_OUTPUT_PATH_INVALID")
     candidate = Path(output_root).absolute()
     if _path_has_reparse(candidate, "RELEASE_OUTPUT_PATH_INVALID"):
         _fail("RELEASE_OUTPUT_PATH_INVALID")
@@ -372,10 +540,42 @@ def _reject_private_data(
             _fail(code)
 
 
+@contextmanager
+def _create_output_file(
+    path: Path, directory_token: _StagingDirectoryToken | None = None
+) -> Iterator[BinaryIO]:
+    if directory_token is not None:
+        _validated_staging_path(directory_token, path.parent, "RELEASE_OUTPUT_PATH_INVALID")
+    descriptor: int | None = None
+    try:
+        if _has_reparse_component(path) or _is_reparse_point(path):
+            _fail("RELEASE_OUTPUT_PATH_INVALID")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags, 0o600)
+        stream = os.fdopen(descriptor, "wb", closefd=True)
+        descriptor = None
+    except ReleaseViolation:
+        raise
+    except FileExistsError:
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    except (OSError, ValueError):
+        if descriptor is not None:
+            os.close(descriptor)
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    try:
+        yield stream
+    finally:
+        stream.close()
+
+
 def _copy_and_digest(
     source: _FileSnapshot | Path,
     target: Path,
     workflow_markers: Iterable[str] = (),
+    *,
+    directory_token: _StagingDirectoryToken | None = None,
 ) -> tuple[str, int]:
     snapshot = (
         source
@@ -393,7 +593,9 @@ def _copy_and_digest(
             snapshot,
             max_bytes=MAX_INPUT_BYTES,
             code="RELEASE_INPUT_PATH_INVALID",
-        ) as source_stream, target.open("wb") as target_stream:
+        ) as source_stream, _create_output_file(
+            target, directory_token
+        ) as target_stream:
             carry = b""
             while True:
                 chunk = source_stream.read(1024 * 1024)
@@ -525,40 +727,71 @@ def _metadata(
     }
 
 
-def _write_checksums(output_root: Path) -> None:
+def _write_checksums(
+    output_root: Path, directory_token: _StagingDirectoryToken | None = None
+) -> None:
     lines: list[str] = []
     for name in sorted(_CHECKSUM_FILE_NAMES):
         digest, _ = _digest_file(output_root / name)
         lines.append(f"{digest}  {name}")
     try:
-        (output_root / _CHECKSUMS_NAME).write_text(
-            "\n".join(lines) + "\n", encoding="ascii", newline="\n"
-        )
+        with _create_output_file(
+            output_root / _CHECKSUMS_NAME, directory_token
+        ) as stream:
+            stream.write(("\n".join(lines) + "\n").encode("ascii"))
     except (OSError, UnicodeError):
         _fail("RELEASE_MANIFEST_INVALID")
 
 
+def _open_bound_directory(path: Path, access: int) -> tuple[int, tuple[int, ...]]:
+    if os.name == "nt":
+        return _win32_open_directory(path, access)
+    if os.name == "posix":
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        handle = os.open(path, flags)
+        return handle, _bound_handle_identity(handle)
+    _fail("RELEASE_OUTPUT_PATH_INVALID")
+
+
 def _snapshot_staging_directory(path: Path, prefix: str) -> _StagingDirectoryToken:
     candidate = path.absolute()
+    parent_handle: int | None = None
+    directory_handle: int | None = None
     try:
         parent = candidate.parent.resolve(strict=True)
         info = candidate.lstat()
         is_reparse = _is_reparse_point(candidate)
-        if _has_reparse_component(candidate) or is_reparse:
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or not candidate.name.startswith(prefix)
+            or _has_reparse_component(candidate)
+            or is_reparse
+        ):
             _fail("RELEASE_OUTPUT_PATH_INVALID")
+        if os.name == "nt":
+            parent_access = 0x00000080 | 0x00000001 | 0x00000004 | 0x00000020
+            directory_access = 0x00010000 | 0x00000080 | 0x00000001
+        else:
+            parent_access = directory_access = 0
+        parent_handle, parent_identity = _open_bound_directory(parent, parent_access)
+        directory_handle, identity = _open_bound_directory(
+            candidate, directory_access
+        )
     except (FileNotFoundError, OSError, ProfileViolation):
-        _fail("RELEASE_OUTPUT_PATH_INVALID")
-    if (
-        not stat.S_ISDIR(info.st_mode)
-        or not candidate.name.startswith(prefix)
-    ):
+        _close_bound_handle(directory_handle)
+        _close_bound_handle(parent_handle)
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     return _StagingDirectoryToken(
         parent=parent,
         name=candidate.name,
         prefix=prefix,
-        identity=_directory_identity(info),
-        is_reparse_point=is_reparse,
+        parent_identity=parent_identity,
+        identity=identity,
+        is_reparse_point=False,
+        parent_handle=parent_handle,
+        directory_handle=directory_handle,
     )
 
 
@@ -566,6 +799,8 @@ def _validated_staging_path(
     token: _StagingDirectoryToken, staged: Path, code: str
 ) -> Path:
     candidate = staged.absolute()
+    if token.parent_handle is None or token.directory_handle is None:
+        _fail(code)
     try:
         parent = candidate.parent.resolve(strict=True)
         info = candidate.lstat()
@@ -578,50 +813,255 @@ def _validated_staging_path(
             or is_reparse
             or is_reparse != token.is_reparse_point
             or not stat.S_ISDIR(info.st_mode)
-            or _directory_identity(info) != token.identity
         ):
+            _fail(code)
+        if _bound_handle_identity(token.parent_handle) != token.parent_identity:
+            _fail(code)
+        if _bound_handle_identity(token.directory_handle) != token.identity:
+            _fail(code)
+        current_parent_handle, current_parent_identity = _open_bound_directory(
+            parent, 0
+        )
+        _close_bound_handle(current_parent_handle)
+        if current_parent_identity != token.parent_identity:
+            _fail(code)
+        current_handle, current_identity = _open_bound_directory(candidate, 0)
+        _close_bound_handle(current_handle)
+        if current_identity != token.identity:
             _fail(code)
     except (FileNotFoundError, OSError, ProfileViolation):
         _fail(code)
     return candidate
 
 
-def _cleanup_temporary_output(token: _StagingDirectoryToken | None) -> None:
+def _staging_file_limit(name: str) -> tuple[int, str]:
+    if name == _METADATA_NAME:
+        return MAX_METADATA_BYTES, "RELEASE_MANIFEST_TOO_LARGE"
+    if name == _CHECKSUMS_NAME:
+        return MAX_CHECKSUM_BYTES, "RELEASE_CHECKSUM_TOO_LARGE"
+    return MAX_INPUT_BYTES, "RELEASE_ASSET_TOO_LARGE"
+
+
+def _bind_staging_contents(
+    token: _StagingDirectoryToken, staged: Path
+) -> _StagingDirectoryToken:
+    path = _validated_staging_path(token, staged, "RELEASE_OUTPUT_PATH_INVALID")
+    try:
+        entries = tuple(path.iterdir())
+    except OSError:
+        _fail("RELEASE_MANIFEST_INVALID")
+    if tuple(sorted(entry.name for entry in entries)) != tuple(
+        sorted(RELEASE_ASSET_NAMES)
+    ):
+        _fail("RELEASE_MANIFEST_INVALID")
+    children: list[_StagedChildToken] = []
+    for entry in entries:
+        limit, code = _staging_file_limit(entry.name)
+        snapshot = _snapshot_file(entry, max_bytes=limit, code=code)
+        digest, _ = _digest_file(snapshot, max_bytes=limit, code=code)
+        children.append(_StagedChildToken(entry.name, snapshot, digest))
+    return replace(token, children=tuple(sorted(children, key=lambda item: item.name)))
+
+
+def _validate_staging_contents(
+    token: _StagingDirectoryToken, staged: Path
+) -> None:
+    path = _validated_staging_path(token, staged, "RELEASE_OUTPUT_PATH_INVALID")
+    if not token.children:
+        _fail("RELEASE_MANIFEST_INVALID")
+    try:
+        entries = tuple(path.iterdir())
+    except OSError:
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    expected = tuple(child.name for child in token.children)
+    if tuple(sorted(entry.name for entry in entries)) != expected:
+        _fail("RELEASE_MANIFEST_INVALID")
+    for child in token.children:
+        limit, code = _staging_file_limit(child.name)
+        snapshot = _snapshot_file(path / child.name, max_bytes=limit, code=code)
+        if snapshot.identity != child.snapshot.identity or snapshot.size != child.snapshot.size:
+            _fail("RELEASE_ASSET_DIGEST_MISMATCH")
+        digest, _ = _digest_file(snapshot, max_bytes=limit, code=code)
+        if digest != child.digest:
+            _fail("RELEASE_ASSET_DIGEST_MISMATCH")
+
+
+def _load_renameat2():
+    if os.name != "posix":
+        return None
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is None:
+            return None
+        renameat2.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameat2.restype = ctypes.c_int
+        return renameat2
+    except (AttributeError, OSError):
+        return None
+
+
+def _rename_staged_posix(
+    staged: Path, output: Path, token: _StagingDirectoryToken | None
+) -> None:
+    if token is None or token.parent_handle is None or token.directory_handle is None:
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    if output.parent.resolve(strict=True) != token.parent:
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    renameat2 = _load_renameat2()
+    if renameat2 is None:
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    try:
+        result = renameat2(
+            token.parent_handle,
+            os.fsencode(token.name),
+            token.parent_handle,
+            os.fsencode(output.name),
+            1,
+        )
+    except (OSError, TypeError):
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    if result != 0:
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+
+
+def _win32_set_disposition(handle: int) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    class _FileDispositionInfoEx(ctypes.Structure):
+        _fields_ = [("flags", wintypes.DWORD)]
+
+    info = _FileDispositionInfoEx(0x00000001 | 0x00000002)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+    if not kernel32.SetFileInformationByHandle(
+        handle, 21, ctypes.byref(info), ctypes.sizeof(info)
+    ):
+        _fail("RELEASE_CLEANUP_FAILED")
+
+
+def _win32_rename_staged(token: _StagingDirectoryToken, output: Path) -> None:
+    if token.parent_handle is None or token.directory_handle is None:
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    import ctypes
+    from ctypes import wintypes
+
+    class _FileRenameInfoEx(ctypes.Structure):
+        _fields_ = [
+            ("flags", wintypes.DWORD),
+            ("root_directory", wintypes.HANDLE),
+            ("file_name_length", wintypes.DWORD),
+            ("file_name", wintypes.WCHAR * 1),
+        ]
+
+    encoded_name = str(output).encode("utf-16-le")
+    size = _FileRenameInfoEx.file_name.offset + len(encoded_name) + 2
+    buffer = ctypes.create_string_buffer(size)
+    info = ctypes.cast(buffer, ctypes.POINTER(_FileRenameInfoEx)).contents
+    info.flags = 0
+    info.root_directory = None
+    info.file_name_length = len(encoded_name)
+    ctypes.memmove(
+        ctypes.addressof(buffer) + _FileRenameInfoEx.file_name.offset,
+        encoded_name,
+        len(encoded_name),
+    )
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+    if not kernel32.SetFileInformationByHandle(
+        token.directory_handle, 22, buffer, size
+    ):
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+
+
+def _cleanup_bound_staging(
+    token: _StagingDirectoryToken, staged: Path
+) -> bool:
+    try:
+        if os.name == "posix":
+            if token.directory_handle is None or token.parent_handle is None:
+                return False
+            names = os.listdir(token.directory_handle)
+            for name in names:
+                info = os.stat(
+                    name, dir_fd=token.directory_handle, follow_symlinks=False
+                )
+                if stat.S_ISDIR(info.st_mode):
+                    return False
+                os.unlink(name, dir_fd=token.directory_handle)
+            _validated_staging_path(token, staged, "RELEASE_CLEANUP_FAILED")
+            os.rmdir(token.name, dir_fd=token.parent_handle)
+            return True
+        if os.name == "nt":
+            _validated_staging_path(token, staged, "RELEASE_CLEANUP_FAILED")
+            for child in staged.iterdir():
+                if _is_reparse_point(child) or not child.is_file():
+                    return False
+                child_handle = _win32_open_file(child, 0x00010000 | 0x00000080)
+                try:
+                    _win32_set_disposition(child_handle)
+                finally:
+                    _close_bound_handle(child_handle)
+            _win32_set_disposition(token.directory_handle)
+            return True
+    except (FileNotFoundError, OSError, ProfileViolation, ReleaseViolation):
+        return False
+    return False
+
+
+def _cleanup_temporary_output(
+    path: Path | None, token: _StagingDirectoryToken | None
+) -> str | None:
+    if path is None:
+        return None
+    if token is None:
+        return "RELEASE_CLEANUP_FAILED"
+    return None if _cleanup_bound_staging(token, path) else "RELEASE_CLEANUP_FAILED"
+
+
+def _close_staging_token(token: _StagingDirectoryToken | None) -> None:
     if token is None:
         return
-    try:
-        staged = _validated_staging_path(
-            token, token.path, "RELEASE_OUTPUT_PATH_INVALID"
-        )
-        shutil.rmtree(staged)
-    except (OSError, ReleaseViolation):
-        pass
+    _close_bound_handle(token.directory_handle)
+    _close_bound_handle(token.parent_handle)
 
 
 def _publish_staged_output(
     staged: Path, output: Path, token: _StagingDirectoryToken
 ) -> None:
     _validated_staging_path(token, staged, "RELEASE_OUTPUT_PATH_INVALID")
+    _validate_staging_contents(token, staged)
     if output.exists():
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    if output.parent.resolve(strict=True) != token.parent:
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     try:
         if os.name == "nt":
-            os.rename(staged, output)
-            return
-        import ctypes
-
-        libc = ctypes.CDLL(None, use_errno=True)
-        renameat2 = getattr(libc, "renameat2", None)
-        if renameat2 is None:
-            _fail("RELEASE_OUTPUT_PATH_INVALID")
-        result = renameat2(
-            -100,
-            os.fsencode(staged),
-            -100,
-            os.fsencode(output),
-            1,
-        )
-        if result != 0:
+            _win32_rename_staged(token, output)
+        elif os.name == "posix":
+            _rename_staged_posix(staged, output, token)
+        else:
             _fail("RELEASE_OUTPUT_PATH_INVALID")
     except FileExistsError:
         _fail("RELEASE_OUTPUT_PATH_INVALID")
@@ -674,10 +1114,16 @@ def stage_public_preview_release(
             (notices_path, "THIRD_PARTY_NOTICES.md"),
         )
         for source, name in sources:
-            _copy_and_digest(source, temporary / name, workflow_markers)
+            _copy_and_digest(
+                source,
+                temporary / name,
+                workflow_markers,
+                directory_token=temporary_token,
+            )
         _copy_and_digest(
             temporary / VERSIONED_INSTALLER_NAME,
             temporary / PRIMARY_INSTALLER_NAME,
+            directory_token=temporary_token,
         )
 
         versioned_digest, versioned_size = _digest_file(
@@ -701,22 +1147,27 @@ def stage_public_preview_release(
             digest, size = _digest_file(temporary / str(name))
             records.append({"name": name, "sha256": digest, "size": size})
         try:
-            (temporary / _METADATA_NAME).write_bytes(
-                canonical_json_bytes(
-                    _metadata(contract, source_commit, built_at, records)
+            with _create_output_file(
+                temporary / _METADATA_NAME, temporary_token
+            ) as stream:
+                stream.write(
+                    canonical_json_bytes(
+                        _metadata(contract, source_commit, built_at, records)
+                    )
                 )
-            )
         except (OSError, MemoryError):
             _fail("RELEASE_MANIFEST_INVALID")
-        _write_checksums(temporary)
+        _write_checksums(temporary, temporary_token)
         result = verify_staged_release(
             temporary, root, source_commit=source_commit
         )
-        _publish_staged_output(temporary, output, temporary_token)
+        publish_token = _bind_staging_contents(temporary_token, temporary)
+        _publish_staged_output(temporary, output, publish_token)
         temporary = None
         return result
     finally:
-        _cleanup_temporary_output(temporary_token)
+        _cleanup_temporary_output(temporary, temporary_token)
+        _close_staging_token(temporary_token)
 
 
 def _load_metadata(output_root: Path) -> dict[str, object]:
@@ -1000,6 +1451,13 @@ def main(argv: list[str] | None = None) -> int:
             )
     except ReleaseViolation as error:
         sys.stderr.buffer.write(canonical_json_bytes({"error": error.code, "status": "fail"}))
+        return 1
+    except Exception:
+        sys.stderr.buffer.write(
+            canonical_json_bytes(
+                {"error": "RELEASE_OPERATION_FAILED", "status": "fail"}
+            )
+        )
         return 1
     sys.stdout.buffer.write(canonical_json_bytes(result))
     return 0

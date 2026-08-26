@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -61,6 +62,34 @@ def test_cli_argument_errors_use_fixed_json(
     assert completed.stdout == ""
     assert completed.stderr == '{"error":"RELEASE_CLI_ARGUMENT_INVALID","status":"fail"}\n'
     assert "usage:" not in completed.stderr
+
+
+def test_cli_maps_expected_platform_error_to_fixed_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _module()
+
+    def fail_verification(*_args: object, **_kwargs: object) -> None:
+        raise OSError("sensitive path details")
+
+    monkeypatch.setattr(module, "verify_staged_release", fail_verification)
+    result = module.main(
+        [
+            "--project-root",
+            str(ROOT),
+            "--output-root",
+            str(tmp_path / "release"),
+            "--source-commit",
+            COMMIT,
+            "--verify",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert result == 1
+    assert captured.out == ""
+    assert captured.err == '{"error":"RELEASE_OPERATION_FAILED","status":"fail"}\n'
+    assert "sensitive path details" not in captured.err
+    assert str(tmp_path) not in captured.err
 
 
 def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -492,6 +521,68 @@ def test_stage_rejects_replaced_staging_directory_before_publish(
     assert (replaced_path[0] / "unverified").read_text(encoding="ascii") == "unverified"
 
 
+def test_stage_rejects_asset_tampering_after_verifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    output = tmp_path / "release"
+    original_publish = module._publish_staged_output
+
+    def tamper_asset(staged: Path, target: Path, *args: object, **kwargs: object) -> None:
+        (staged / module.PORTABLE_NAME).write_bytes(b"tampered-after-verifier")
+        original_publish(staged, target, *args, **kwargs)
+
+    monkeypatch.setattr(module, "_publish_staged_output", tamper_asset)
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_ASSET_DIGEST_MISMATCH$"):
+        module.stage_public_preview_release(
+            ROOT,
+            output,
+            installer_path=installer,
+            portable_path=portable,
+            skill_path=skill,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
+    assert not output.exists()
+
+
+def test_publish_rejects_asset_replaced_by_symlink_without_touching_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    output = tmp_path / "release"
+    external = tmp_path / "external.bin"
+    external.write_bytes(b"must-remain-unchanged")
+    original_publish = module._publish_staged_output
+
+    def replace_asset(staged: Path, target: Path, *args: object, **kwargs: object) -> None:
+        asset = staged / module.PORTABLE_NAME
+        asset.unlink()
+        try:
+            asset.symlink_to(external)
+        except OSError:
+            pytest.skip("symlink creation is unavailable")
+        original_publish(staged, target, *args, **kwargs)
+
+    monkeypatch.setattr(module, "_publish_staged_output", replace_asset)
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"):
+        module.stage_public_preview_release(
+            ROOT,
+            output,
+            installer_path=installer,
+            portable_path=portable,
+            skill_path=skill,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
+    assert not output.exists()
+    assert external.read_bytes() == b"must-remain-unchanged"
+
+
 def test_cleanup_does_not_remove_replaced_staging_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -526,6 +617,47 @@ def test_cleanup_does_not_remove_replaced_staging_directory(
     replaced_staging = replaced_path[0]
     assert replaced_staging.exists()
     assert (replaced_staging / "keep.txt").read_text(encoding="ascii") == "keep"
+
+
+def test_cleanup_without_directory_token_fails_closed(
+    tmp_path: Path,
+) -> None:
+    module = _module()
+    staging = tmp_path / ".release.staging-unbound"
+    staging.mkdir()
+    (staging / "keep.txt").write_text("keep", encoding="ascii")
+    assert module._cleanup_temporary_output(staging, None) == "RELEASE_CLEANUP_FAILED"
+    assert (staging / "keep.txt").read_text(encoding="ascii") == "keep"
+
+
+@pytest.mark.parametrize(
+    "path_value",
+    (r"\\server\share\installer.exe", r"\\?\C:\installer.exe", r"\\.\PIPE\installer"),
+)
+def test_rejects_windows_special_input_paths_before_filesystem_access(
+    path_value: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows path boundary")
+    module = _module()
+
+    def filesystem_access_is_unexpected(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("special Windows path reached filesystem resolution")
+
+    monkeypatch.setattr(module, "_snapshot_file", filesystem_access_is_unexpected)
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_INPUT_PATH_INVALID$"):
+        module._resolve_input(path_value)
+
+
+def test_posix_rename_without_renameat2_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "posix":
+        pytest.skip("POSIX platform branch")
+    module = _module()
+    monkeypatch.setattr(module, "_load_renameat2", lambda: None, raising=False)
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"):
+        module._rename_staged_posix(tmp_path / "staging", tmp_path / "release", None)
 
 
 def test_stage_rejects_input_replaced_before_verified_open(
