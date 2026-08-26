@@ -1060,13 +1060,21 @@ def _win32_set_disposition(handle: int) -> None:
         _fail("RELEASE_CLEANUP_FAILED")
 
 
-def _win32_rename_staged(token: _StagingDirectoryToken, output: Path) -> None:
+def _ntdll_rename_staged(token: _StagingDirectoryToken, output: Path) -> None:
+    """Use the Windows 11 x64 preview capability, not a universal Windows guarantee."""
     if token.parent_handle is None or token.directory_handle is None:
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     import ctypes
     from ctypes import wintypes
 
-    class _FileRenameInfoEx(ctypes.Structure):
+    class _IoStatusBlock(ctypes.Structure):
+        _fields_ = [
+            ("status", ctypes.c_int32),
+            ("status_padding", wintypes.DWORD),
+            ("information", ctypes.c_size_t),
+        ]
+
+    class _FileRenameInformationEx(ctypes.Structure):
         _fields_ = [
             ("flags", wintypes.DWORD),
             ("root_directory", wintypes.HANDLE),
@@ -1074,30 +1082,50 @@ def _win32_rename_staged(token: _StagingDirectoryToken, output: Path) -> None:
             ("file_name", wintypes.WCHAR * 1),
         ]
 
+    if not output.name or any(separator in output.name for separator in ("\\", "/")):
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
     encoded_name = output.name.encode("utf-16-le")
-    size = _FileRenameInfoEx.file_name.offset + len(encoded_name) + 2
+    size = _FileRenameInformationEx.file_name.offset + len(encoded_name) + 2
     buffer = ctypes.create_string_buffer(size)
-    info = ctypes.cast(buffer, ctypes.POINTER(_FileRenameInfoEx)).contents
+    info = ctypes.cast(buffer, ctypes.POINTER(_FileRenameInformationEx)).contents
     info.flags = 0
     info.root_directory = wintypes.HANDLE(token.parent_handle)
     info.file_name_length = len(encoded_name)
     ctypes.memmove(
-        ctypes.addressof(buffer) + _FileRenameInfoEx.file_name.offset,
+        ctypes.addressof(buffer) + _FileRenameInformationEx.file_name.offset,
         encoded_name,
         len(encoded_name),
     )
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.SetFileInformationByHandle.argtypes = [
+    try:
+        ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+        native_rename = ntdll.NtSetInformationFile
+    except (AttributeError, OSError):
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    native_rename.argtypes = [
         wintypes.HANDLE,
-        ctypes.c_int,
+        ctypes.POINTER(_IoStatusBlock),
         ctypes.c_void_p,
         wintypes.DWORD,
+        ctypes.c_int,
     ]
-    kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
-    if not kernel32.SetFileInformationByHandle(
-        token.directory_handle, 22, buffer, size
-    ):
+    native_rename.restype = ctypes.c_int32
+    io_status = _IoStatusBlock()
+    try:
+        status = native_rename(
+            token.directory_handle,
+            ctypes.byref(io_status),
+            buffer,
+            size,
+            65,
+        )
+    except (OSError, TypeError, ValueError):
         _fail("RELEASE_OUTPUT_PATH_INVALID")
+    if int(status) < 0 or io_status.status < 0:
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+
+
+def _win32_rename_staged(token: _StagingDirectoryToken, output: Path) -> None:
+    _ntdll_rename_staged(token, output)
 
 
 def _cleanup_bound_staging(

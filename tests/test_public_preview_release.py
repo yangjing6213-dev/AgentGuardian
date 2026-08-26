@@ -802,6 +802,39 @@ def test_stage_rejects_source_state_changed_before_publish(
 
 
 @pytest.mark.parametrize(
+    ("name", "max_bytes", "code"),
+    (
+        ("integrations_preview.json", 256 * 1024, "RELEASE_MANIFEST_INVALID"),
+        ("LICENSE", 2 * 1024 * 1024 * 1024, "RELEASE_INPUT_PATH_INVALID"),
+        ("THIRD_PARTY_NOTICES.md", 2 * 1024 * 1024 * 1024, "RELEASE_INPUT_PATH_INVALID"),
+    ),
+)
+def test_source_input_snapshot_rejects_content_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    max_bytes: int,
+    code: str,
+) -> None:
+    module = _module()
+    source = tmp_path / name
+    source.write_bytes(b"before")
+    snapshot = module._snapshot_file(source, max_bytes=max_bytes, code=code)
+    token = module._capture_source_file(snapshot, max_bytes=max_bytes, code=code)
+    source.write_bytes(b"after")
+    monkeypatch.setattr(module, "_require_source_state", lambda *_args: None)
+    monkeypatch.setattr(module, "_verified_profile", lambda _root: object())
+    monkeypatch.setattr(module, "_release_contract", lambda _profile: {"same": True})
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_SOURCE_STATE_INVALID$"):
+        module._verify_source_inputs(
+            tmp_path,
+            COMMIT,
+            {"same": True},
+            (token,),
+        )
+
+
+@pytest.mark.parametrize(
     "path_value",
     (r"\\server\share\installer.exe", r"\\?\C:\installer.exe", r"\\.\PIPE\installer"),
 )
@@ -839,18 +872,18 @@ def test_windows_rename_uses_bound_parent_and_target_basename(
     module = _module()
     calls: list[tuple[object, ...]] = []
 
-    class FakeSetFileInformationByHandle:
+    class FakeNtSetInformationFile:
         argtypes = None
         restype = None
 
         def __call__(self, *args):
             calls.append(args)
-            return 1
+            return 0
 
-    class FakeKernel32:
-        SetFileInformationByHandle = FakeSetFileInformationByHandle()
+    class FakeNtdll:
+        NtSetInformationFile = FakeNtSetInformationFile()
 
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32())
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeNtdll())
     token = module._StagingDirectoryToken(
         parent=tmp_path,
         name=".release.staging-test",
@@ -861,12 +894,21 @@ def test_windows_rename_uses_bound_parent_and_target_basename(
         parent_handle=101,
         directory_handle=202,
     )
-    module._win32_rename_staged(token, tmp_path / "release")
+    module._ntdll_rename_staged(token, tmp_path / "release")
 
     assert len(calls) == 1
-    source_handle, information_class, buffer, _size = calls[0]
+    source_handle, io_status, buffer, size, information_class = calls[0]
     assert source_handle == 202
-    assert information_class == 22
+    assert information_class == 65
+    class IoStatusBlock(ctypes.Structure):
+        _fields_ = [
+            ("status", ctypes.c_int32),
+            ("status_padding", ctypes.c_uint32),
+            ("information", ctypes.c_size_t),
+        ]
+
+    assert ctypes.sizeof(IoStatusBlock) == 16
+    assert ctypes.cast(io_status, ctypes.POINTER(IoStatusBlock)).contents.status == 0
     class RenameInfo(ctypes.Structure):
         _fields_ = [
             ("flags", ctypes.c_uint32),
@@ -876,12 +918,46 @@ def test_windows_rename_uses_bound_parent_and_target_basename(
         ]
 
     info = ctypes.cast(buffer, ctypes.POINTER(RenameInfo)).contents
+    assert info.flags == 0
     assert info.root_directory == 101
     assert info.file_name_length == len("release".encode("utf-16-le"))
+    assert size == RenameInfo.file_name.offset + info.file_name_length + 2
     assert ctypes.string_at(
         ctypes.addressof(buffer) + RenameInfo.file_name.offset,
         info.file_name_length,
     ).decode("utf-16-le") == "release"
+
+
+@pytest.mark.parametrize("mode", ("missing", "unsupported"))
+def test_windows_native_rename_unavailable_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    module = _module()
+
+    class UnsupportedNtSetInformationFile:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *_args: object) -> int:
+            return ctypes.c_int32(0xC0000003).value
+
+    class UnsupportedNtdll:
+        NtSetInformationFile = UnsupportedNtSetInformationFile()
+
+    fake_ntdll = object() if mode == "missing" else UnsupportedNtdll()
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: fake_ntdll)
+    token = module._StagingDirectoryToken(
+        parent=tmp_path,
+        name=".release.staging-test",
+        prefix=".release.staging-",
+        parent_identity=(1,),
+        identity=(2,),
+        is_reparse_point=False,
+        parent_handle=101,
+        directory_handle=202,
+    )
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"):
+        module._ntdll_rename_staged(token, tmp_path / "release")
 
 
 def test_stage_rejects_input_replaced_before_verified_open(
