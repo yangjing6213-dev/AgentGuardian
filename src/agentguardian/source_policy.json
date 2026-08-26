@@ -22,7 +22,7 @@
     "scoring.py": "ed04a103981b08e4fd55cb15e36a32487ee76db85c5d494fe4918f3b1092dd7d",
     "self_audit.py": "a08d8f256042a3dc65c79b8fb6aef217d520c8329ee1bac3857125cc68375a8a",
     "share_verification.py": "c3777d900218b39b0155a37132a706169b3650d887b802392580fa10ae9668da",
-    "state_store.py": "3b26bf73293f49615c327dc3ebbe9874a574143f6b737069d1e441c99b483eee",
+    "state_store.py": "495e71ce66ecfda3c601bf0ad29ee19935d739467394dcb5c360810643163410",
     "windows_dpapi.py": "e66caabc5ba7d5c1c4d19180d805e945c8c07cbe5116b5539a7bbcf2ba01f8fd",
     "workflow.py": "e6fa9320247da0388358999a6d1d4aca03478c2b1e4b42b2ffbcbc175b10b780"
   }

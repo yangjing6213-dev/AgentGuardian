@@ -175,6 +175,8 @@ def _purge_windows_target(target: Path, parent: Path) -> bool:
         if error in not_found_errors:
             return False
         raise OSError(error, "parent open failed")
+    primary_error: BaseException | None = None
+    result = True
     try:
         parent_attributes = attributes(parent_handle)
         if (
@@ -193,32 +195,51 @@ def _purge_windows_target(target: Path, parent: Path) -> bool:
         if target_handle == invalid_handle:
             error = ctypes.get_last_error()
             if error in not_found_errors:
-                return False
-            raise OSError(error, "target open failed")
-        try:
-            target_attributes = attributes(target_handle)
-            if target_attributes & (directory_attribute | reparse_attribute):
-                raise StateStoreError("PROTECTED_STATE_PURGE_FAILED")
-            actual_target = final_path(target_handle)
-            if (
-                os.path.dirname(actual_target) != actual_parent
-                or os.path.basename(actual_target).casefold()
-                != STATE_FILENAME.casefold()
-            ):
-                raise StateStoreError("PROTECTED_STATE_PURGE_FAILED")
-            disposition = FileDispositionInformation(1)
-            if not set_information(
-                target_handle,
-                file_disposition_info,
-                ctypes.byref(disposition),
-                ctypes.sizeof(disposition),
-            ):
-                raise OSError(ctypes.get_last_error(), "delete failed")
-        finally:
-            close_checked(target_handle)
-        return True
+                result = False
+            else:
+                raise OSError(error, "target open failed")
+        else:
+            try:
+                target_attributes = attributes(target_handle)
+                if target_attributes & (directory_attribute | reparse_attribute):
+                    raise StateStoreError("PROTECTED_STATE_PURGE_FAILED")
+                actual_target = final_path(target_handle)
+                if (
+                    os.path.dirname(actual_target) != actual_parent
+                    or os.path.basename(actual_target).casefold()
+                    != STATE_FILENAME.casefold()
+                ):
+                    raise StateStoreError("PROTECTED_STATE_PURGE_FAILED")
+                disposition = FileDispositionInformation(1)
+                if not set_information(
+                    target_handle,
+                    file_disposition_info,
+                    ctypes.byref(disposition),
+                    ctypes.sizeof(disposition),
+                ):
+                    raise OSError(ctypes.get_last_error(), "delete failed")
+            except BaseException as error:
+                primary_error = error
+            finally:
+                try:
+                    close_checked(target_handle)
+                except Exception:
+                    if primary_error is None:
+                        primary_error = StateStoreError(
+                            "PROTECTED_STATE_PURGE_FAILED"
+                        )
+    except BaseException as error:
+        if primary_error is None:
+            primary_error = error
     finally:
-        close_checked(parent_handle)
+        try:
+            close_checked(parent_handle)
+        except Exception:
+            if primary_error is None:
+                primary_error = StateStoreError("PROTECTED_STATE_PURGE_FAILED")
+    if primary_error is not None:
+        raise primary_error
+    return result
 
 
 def save_protected_state(
