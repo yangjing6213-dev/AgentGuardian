@@ -4,6 +4,8 @@ import hashlib
 import importlib
 import json
 import os
+import ctypes
+from contextlib import contextmanager
 from pathlib import Path
 import shutil
 import subprocess
@@ -62,6 +64,60 @@ def test_cli_argument_errors_use_fixed_json(
     assert completed.stdout == ""
     assert completed.stderr == '{"error":"RELEASE_CLI_ARGUMENT_INVALID","status":"fail"}\n'
     assert "usage:" not in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "special_path",
+    (
+        r"\\server\share\release",
+        r"\\?\C:\release",
+        r"\\.\PIPE\release",
+        r"\Device\HarddiskVolume1\release",
+        r"/Device/HarddiskVolume1/release",
+    ),
+)
+def test_verify_rejects_windows_special_output_before_filesystem_access(
+    special_path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows path boundary")
+    module = _module()
+    monkeypatch.setattr(module, "_resolved_project_root", lambda _root: ROOT)
+    monkeypatch.setattr(module, "_require_source_state", lambda *_args: None)
+    monkeypatch.setattr(module, "_verified_profile", lambda _root: object())
+    monkeypatch.setattr(module, "_release_contract", lambda _profile: {})
+
+    def filesystem_access_is_unexpected(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("special Windows path reached filesystem resolution")
+
+    monkeypatch.setattr(module, "_has_reparse_component", filesystem_access_is_unexpected)
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_MANIFEST_INVALID$"):
+        module.verify_staged_release(special_path, ROOT, source_commit=COMMIT)
+
+
+def test_cli_rejects_special_output_path_with_fixed_json() -> None:
+    if os.name != "nt":
+        pytest.skip("Windows path boundary")
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "stage_public_preview_release.py"),
+            "--project-root",
+            str(ROOT),
+            "--output-root",
+            r"\\?\C:\release",
+            "--source-commit",
+            COMMIT,
+            "--verify",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode != 0
+    assert completed.stdout == ""
+    assert completed.stderr == '{"error":"RELEASE_MANIFEST_INVALID","status":"fail"}\n'
 
 
 def test_cli_maps_expected_platform_error_to_fixed_json(
@@ -488,6 +544,42 @@ def test_stage_rejects_target_competition_without_overwrite(
     )
 
 
+def test_stage_rejects_parent_replacement_before_staging_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    parent = tmp_path / "publish-parent"
+    parent.mkdir()
+    displaced = tmp_path / "displaced-parent"
+    output = parent / "release"
+    original_mkdtemp = module.tempfile.mkdtemp
+
+    def replace_parent(*args: object, **kwargs: object) -> str:
+        parent.rename(displaced)
+        parent.mkdir()
+        return original_mkdtemp(*args, **kwargs)
+
+    monkeypatch.setattr(module.tempfile, "mkdtemp", replace_parent)
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"):
+        module.stage_public_preview_release(
+            ROOT,
+            output,
+            installer_path=installer,
+            portable_path=portable,
+            skill_path=skill,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
+    assert not output.exists()
+    assert displaced.exists()
+    assert all(
+        child.name.startswith(f".{output.name}.staging-")
+        for child in parent.iterdir()
+    )
+
+
 def test_stage_rejects_replaced_staging_directory_before_publish(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -630,6 +722,85 @@ def test_cleanup_without_directory_token_fails_closed(
     assert (staging / "keep.txt").read_text(encoding="ascii") == "keep"
 
 
+def test_close_bound_handles_attempts_all_handles_after_one_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    token = module._StagingDirectoryToken(
+        parent=tmp_path,
+        name=".release.staging-bound",
+        prefix=".release.staging-",
+        parent_identity=(1, 2),
+        identity=(3, 4),
+        is_reparse_point=False,
+        parent_handle=11,
+        directory_handle=22,
+    )
+    calls: list[int] = []
+
+    def close(handle: int) -> None:
+        calls.append(handle)
+        if handle == 22:
+            raise OSError("close failed")
+
+    monkeypatch.setattr(module, "_close_bound_handle", close)
+    assert module._close_staging_token(token) == "RELEASE_RESOURCE_CLOSE_FAILED"
+    assert calls == [22, 11]
+
+
+def test_stage_reports_close_failure_after_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    output = tmp_path / "release"
+
+    def fail_close(_token: object) -> None:
+        raise OSError("close failed")
+
+    monkeypatch.setattr(module, "_close_staging_token", fail_close)
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_RESOURCE_CLOSE_FAILED$"):
+        module.stage_public_preview_release(
+            ROOT,
+            output,
+            installer_path=installer,
+            portable_path=portable,
+            skill_path=skill,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
+    assert output.exists()
+
+
+def test_stage_rejects_source_state_changed_before_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    state = [COMMIT, ""]
+    monkeypatch.setattr(module, "_git_state", lambda _root: tuple(state))
+    installer, portable, skill = _inputs(tmp_path)
+    output = tmp_path / "release"
+    original_publish = module._publish_staged_output
+
+    def change_state(staged: Path, target: Path, *args: object, **kwargs: object) -> None:
+        state[:] = ["b" * 40, ""]
+        original_publish(staged, target, *args, **kwargs)
+
+    monkeypatch.setattr(module, "_publish_staged_output", change_state)
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_SOURCE_STATE_INVALID$"):
+        module.stage_public_preview_release(
+            ROOT,
+            output,
+            installer_path=installer,
+            portable_path=portable,
+            skill_path=skill,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
+    assert not output.exists()
+
+
 @pytest.mark.parametrize(
     "path_value",
     (r"\\server\share\installer.exe", r"\\?\C:\installer.exe", r"\\.\PIPE\installer"),
@@ -660,6 +831,59 @@ def test_posix_rename_without_renameat2_fails_closed(
         module._rename_staged_posix(tmp_path / "staging", tmp_path / "release", None)
 
 
+def test_windows_rename_uses_bound_parent_and_target_basename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows platform branch")
+    module = _module()
+    calls: list[tuple[object, ...]] = []
+
+    class FakeSetFileInformationByHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *args):
+            calls.append(args)
+            return 1
+
+    class FakeKernel32:
+        SetFileInformationByHandle = FakeSetFileInformationByHandle()
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32())
+    token = module._StagingDirectoryToken(
+        parent=tmp_path,
+        name=".release.staging-test",
+        prefix=".release.staging-",
+        parent_identity=(1,),
+        identity=(2,),
+        is_reparse_point=False,
+        parent_handle=101,
+        directory_handle=202,
+    )
+    module._win32_rename_staged(token, tmp_path / "release")
+
+    assert len(calls) == 1
+    source_handle, information_class, buffer, _size = calls[0]
+    assert source_handle == 202
+    assert information_class == 22
+    class RenameInfo(ctypes.Structure):
+        _fields_ = [
+            ("flags", ctypes.c_uint32),
+            ("root_directory", ctypes.c_void_p),
+            ("file_name_length", ctypes.c_uint32),
+            ("file_name", ctypes.c_wchar * 1),
+        ]
+
+    info = ctypes.cast(buffer, ctypes.POINTER(RenameInfo)).contents
+    assert info.root_directory == 101
+    assert info.file_name_length == len("release".encode("utf-16-le"))
+    assert ctypes.string_at(
+        ctypes.addressof(buffer) + RenameInfo.file_name.offset,
+        info.file_name_length,
+    ).decode("utf-16-le") == "release"
+
+
 def test_stage_rejects_input_replaced_before_verified_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -669,9 +893,15 @@ def test_stage_rejects_input_replaced_before_verified_open(
     output = tmp_path / "release"
     calls: list[Path] = []
 
-    def reject_replaced(snapshot, *_args, **_kwargs):
-        calls.append(snapshot.path)
-        raise module.ReleaseViolation("RELEASE_INPUT_PATH_INVALID")
+    original_open_verified_file = module._open_verified_file
+
+    @contextmanager
+    def reject_replaced(snapshot, *args, **kwargs):
+        if snapshot.path == portable:
+            calls.append(snapshot.path)
+            raise module.ReleaseViolation("RELEASE_INPUT_PATH_INVALID")
+        with original_open_verified_file(snapshot, *args, **kwargs) as stream:
+            yield stream
 
     monkeypatch.setattr(module, "_open_verified_file", reject_replaced, raising=False)
     with pytest.raises(module.ReleaseViolation, match="^RELEASE_INPUT_PATH_INVALID$"):

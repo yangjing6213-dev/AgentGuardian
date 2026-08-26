@@ -105,6 +105,21 @@ class _StagedChildToken:
 
 
 @dataclass(frozen=True)
+class _SourceFileToken:
+    snapshot: _FileSnapshot
+    digest: str
+    max_bytes: int
+    code: str
+
+
+@dataclass(frozen=True)
+class _DirectoryBinding:
+    path: Path
+    identity: tuple[int, ...]
+    handle: int
+
+
+@dataclass(frozen=True)
 class _StagingDirectoryToken:
     parent: Path
     name: str
@@ -338,7 +353,11 @@ def _reject_windows_special_path(path_value: str | Path, code: str) -> None:
         _fail(code)
     if isinstance(raw, bytes):
         _fail(code)
-    if raw.startswith(("\\\\", "//")):
+    folded = raw.casefold()
+    if (
+        raw.startswith(("\\\\", "//", "\\Device\\", "/Device/"))
+        or folded.startswith(("\\device\\", "/device/"))
+    ):
         _fail(code)
 
 
@@ -438,6 +457,7 @@ def _open_verified_file(
         _fail(code)
     stream: BinaryIO | None = None
     file_descriptor: int | None = None
+    primary_error: BaseException | None = None
     try:
         if _has_reparse_component(snapshot.path) or _is_reparse_point(snapshot.path):
             _fail(code)
@@ -458,15 +478,36 @@ def _open_verified_file(
             _fail(code)
         if _file_identity(snapshot.path.stat()) != snapshot.identity:
             _fail(code)
-    except ReleaseViolation:
+    except ReleaseViolation as error:
+        primary_error = error
         raise
-    except (FileNotFoundError, OSError, ValueError):
-        _fail(code)
+    except (FileNotFoundError, OSError, ValueError) as error:
+        try:
+            _fail(code)
+        except BaseException as mapped:
+            primary_error = mapped
+            raise
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
+        close_failed = False
         if stream is not None:
-            stream.close()
+            try:
+                stream.close()
+            except Exception:
+                close_failed = True
+                try:
+                    os.close(stream.fileno())
+                except Exception:
+                    pass
         elif file_descriptor is not None:
-            os.close(file_descriptor)
+            try:
+                os.close(file_descriptor)
+            except Exception:
+                close_failed = True
+        if close_failed and primary_error is None:
+            _fail("RELEASE_RESOURCE_CLOSE_FAILED")
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -564,10 +605,18 @@ def _create_output_file(
         if descriptor is not None:
             os.close(descriptor)
         _fail("RELEASE_OUTPUT_PATH_INVALID")
+    primary_error: BaseException | None = None
     try:
         yield stream
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        stream.close()
+        try:
+            stream.close()
+        except Exception:
+            if primary_error is None:
+                _fail("RELEASE_RESOURCE_CLOSE_FAILED")
 
 
 def _copy_and_digest(
@@ -697,6 +746,42 @@ def _release_contract(profile: ProfileSnapshot) -> dict[str, object]:
     }
 
 
+def _capture_source_file(path: _FileSnapshot, *, max_bytes: int, code: str) -> _SourceFileToken:
+    digest, size = _digest_file(path, max_bytes=max_bytes, code=code)
+    if size != path.size:
+        _fail("RELEASE_SOURCE_STATE_INVALID")
+    return _SourceFileToken(path, digest, max_bytes, code)
+
+
+def _verify_source_inputs(
+    root: Path,
+    source_commit: str,
+    initial_contract: dict[str, object],
+    source_files: tuple[_SourceFileToken, ...],
+) -> None:
+    _require_source_state(root, source_commit)
+    try:
+        current_profile = _verified_profile(root)
+        if _release_contract(current_profile) != initial_contract:
+            _fail("RELEASE_SOURCE_STATE_INVALID")
+    except ReleaseViolation:
+        raise
+    for source in source_files:
+        current = _snapshot_file(
+            source.snapshot.path, max_bytes=source.max_bytes, code=source.code
+        )
+        if (
+            current.identity != source.snapshot.identity
+            or current.size != source.snapshot.size
+        ):
+            _fail("RELEASE_SOURCE_STATE_INVALID")
+        digest, size = _digest_file(
+            current, max_bytes=source.max_bytes, code=source.code
+        )
+        if size != source.snapshot.size or digest != source.digest:
+            _fail("RELEASE_SOURCE_STATE_INVALID")
+
+
 def _metadata(
     contract: dict[str, object],
     source_commit: str,
@@ -755,9 +840,24 @@ def _open_bound_directory(path: Path, access: int) -> tuple[int, tuple[int, ...]
     _fail("RELEASE_OUTPUT_PATH_INVALID")
 
 
-def _snapshot_staging_directory(path: Path, prefix: str) -> _StagingDirectoryToken:
+def _bind_directory(path: Path, access: int) -> _DirectoryBinding:
     candidate = path.absolute()
-    parent_handle: int | None = None
+    try:
+        if _has_reparse_component(candidate) or _is_reparse_point(candidate):
+            _fail("RELEASE_OUTPUT_PATH_INVALID")
+        resolved = candidate.resolve(strict=True)
+        if not resolved.is_dir():
+            _fail("RELEASE_OUTPUT_PATH_INVALID")
+        handle, identity = _open_bound_directory(resolved, access)
+    except (FileNotFoundError, OSError, ProfileViolation):
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    return _DirectoryBinding(resolved, identity, handle)
+
+
+def _snapshot_staging_directory(
+    path: Path, prefix: str, parent_binding: _DirectoryBinding
+) -> _StagingDirectoryToken:
+    candidate = path.absolute()
     directory_handle: int | None = None
     try:
         parent = candidate.parent.resolve(strict=True)
@@ -770,27 +870,32 @@ def _snapshot_staging_directory(path: Path, prefix: str) -> _StagingDirectoryTok
             or is_reparse
         ):
             _fail("RELEASE_OUTPUT_PATH_INVALID")
+        if parent != parent_binding.path:
+            _fail("RELEASE_OUTPUT_PATH_INVALID")
+        visible_parent_handle, visible_parent_identity = _open_bound_directory(
+            parent, 0
+        )
+        _close_bound_handle(visible_parent_handle)
+        if visible_parent_identity != parent_binding.identity:
+            _fail("RELEASE_OUTPUT_PATH_INVALID")
         if os.name == "nt":
-            parent_access = 0x00000080 | 0x00000001 | 0x00000004 | 0x00000020
             directory_access = 0x00010000 | 0x00000080 | 0x00000001
         else:
-            parent_access = directory_access = 0
-        parent_handle, parent_identity = _open_bound_directory(parent, parent_access)
+            directory_access = 0
         directory_handle, identity = _open_bound_directory(
             candidate, directory_access
         )
     except (FileNotFoundError, OSError, ProfileViolation):
         _close_bound_handle(directory_handle)
-        _close_bound_handle(parent_handle)
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     return _StagingDirectoryToken(
         parent=parent,
         name=candidate.name,
         prefix=prefix,
-        parent_identity=parent_identity,
+        parent_identity=parent_binding.identity,
         identity=identity,
         is_reparse_point=False,
-        parent_handle=parent_handle,
+        parent_handle=parent_binding.handle,
         directory_handle=directory_handle,
     )
 
@@ -969,12 +1074,12 @@ def _win32_rename_staged(token: _StagingDirectoryToken, output: Path) -> None:
             ("file_name", wintypes.WCHAR * 1),
         ]
 
-    encoded_name = str(output).encode("utf-16-le")
+    encoded_name = output.name.encode("utf-16-le")
     size = _FileRenameInfoEx.file_name.offset + len(encoded_name) + 2
     buffer = ctypes.create_string_buffer(size)
     info = ctypes.cast(buffer, ctypes.POINTER(_FileRenameInfoEx)).contents
     info.flags = 0
-    info.root_directory = None
+    info.root_directory = wintypes.HANDLE(token.parent_handle)
     info.file_name_length = len(encoded_name)
     ctypes.memmove(
         ctypes.addressof(buffer) + _FileRenameInfoEx.file_name.offset,
@@ -1040,16 +1145,42 @@ def _cleanup_temporary_output(
     return None if _cleanup_bound_staging(token, path) else "RELEASE_CLEANUP_FAILED"
 
 
-def _close_staging_token(token: _StagingDirectoryToken | None) -> None:
+def _close_directory_binding(binding: _DirectoryBinding | None) -> str | None:
+    if binding is None:
+        return None
+    try:
+        _close_bound_handle(binding.handle)
+    except Exception:
+        return "RELEASE_RESOURCE_CLOSE_FAILED"
+    return None
+
+
+def _close_staging_token(token: _StagingDirectoryToken | None) -> str | None:
     if token is None:
-        return
-    _close_bound_handle(token.directory_handle)
-    _close_bound_handle(token.parent_handle)
+        return None
+    failed = False
+    for handle in (token.directory_handle, token.parent_handle):
+        try:
+            _close_bound_handle(handle)
+        except Exception:
+            failed = True
+    return "RELEASE_RESOURCE_CLOSE_FAILED" if failed else None
 
 
 def _publish_staged_output(
-    staged: Path, output: Path, token: _StagingDirectoryToken
+    staged: Path,
+    output: Path,
+    token: _StagingDirectoryToken,
+    *,
+    project_root: Path | None = None,
+    source_commit: str | None = None,
+    source_files: tuple[_SourceFileToken, ...] = (),
+    contract: dict[str, object] | None = None,
 ) -> None:
+    if project_root is not None and source_commit is not None and contract is not None:
+        _verify_source_inputs(
+            project_root, source_commit, contract, source_files
+        )
     _validated_staging_path(token, staged, "RELEASE_OUTPUT_PATH_INVALID")
     _validate_staging_contents(token, staged)
     if output.exists():
@@ -1087,8 +1218,26 @@ def stage_public_preview_release(
     installer = _resolve_input(installer_path)
     portable = _resolve_input(portable_path)
     skill = _resolve_input(skill_path)
+    profile_path = _resolve_project_file(root, _PROFILE_RELATIVE_PATH)
     license_path = _resolve_project_file(root, "LICENSE")
     notices_path = _resolve_project_file(root, "THIRD_PARTY_NOTICES.md")
+    source_files = (
+        _capture_source_file(
+            profile_path,
+            max_bytes=MAX_METADATA_BYTES,
+            code="RELEASE_MANIFEST_INVALID",
+        ),
+        _capture_source_file(
+            license_path,
+            max_bytes=MAX_INPUT_BYTES,
+            code="RELEASE_INPUT_PATH_INVALID",
+        ),
+        _capture_source_file(
+            notices_path,
+            max_bytes=MAX_INPUT_BYTES,
+            code="RELEASE_INPUT_PATH_INVALID",
+        ),
+    )
     inputs = (installer, portable, skill, license_path, notices_path)
     workflow_markers = profile.profile["forbidden_workflow_tokens"]
     if any(_path_has_private_marker(snapshot.path, workflow_markers) for snapshot in inputs):
@@ -1097,7 +1246,14 @@ def stage_public_preview_release(
 
     temporary: Path | None = None
     temporary_token: _StagingDirectoryToken | None = None
+    parent_binding: _DirectoryBinding | None = None
+    primary_error: BaseException | None = None
     try:
+        if os.name == "nt":
+            parent_access = 0x00000080 | 0x00000001 | 0x00000004 | 0x00000020
+        else:
+            parent_access = 0
+        parent_binding = _bind_directory(output.parent, parent_access)
         staging_prefix = f".{output.name}.staging-"
         try:
             temporary = Path(
@@ -1105,7 +1261,10 @@ def stage_public_preview_release(
             )
         except OSError:
             _fail("RELEASE_OUTPUT_PATH_INVALID")
-        temporary_token = _snapshot_staging_directory(temporary, staging_prefix)
+        temporary_token = _snapshot_staging_directory(
+            temporary, staging_prefix, parent_binding
+        )
+        parent_binding = None
         sources = (
             (portable, PORTABLE_NAME),
             (installer, VERSIONED_INSTALLER_NAME),
@@ -1161,13 +1320,41 @@ def stage_public_preview_release(
         result = verify_staged_release(
             temporary, root, source_commit=source_commit
         )
+        _verify_source_inputs(root, source_commit, contract, source_files)
         publish_token = _bind_staging_contents(temporary_token, temporary)
-        _publish_staged_output(temporary, output, publish_token)
+        _publish_staged_output(
+            temporary,
+            output,
+            publish_token,
+            project_root=root,
+            source_commit=source_commit,
+            source_files=source_files,
+            contract=contract,
+        )
         temporary = None
         return result
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        _cleanup_temporary_output(temporary, temporary_token)
-        _close_staging_token(temporary_token)
+        try:
+            cleanup_code = _cleanup_temporary_output(temporary, temporary_token)
+        except Exception:
+            cleanup_code = "RELEASE_CLEANUP_FAILED"
+        try:
+            close_code = _close_staging_token(temporary_token)
+        except Exception:
+            close_code = "RELEASE_RESOURCE_CLOSE_FAILED"
+        unbound_close_code = None
+        if temporary_token is None:
+            unbound_close_code = _close_directory_binding(parent_binding)
+        if primary_error is None:
+            if cleanup_code is not None:
+                _fail(cleanup_code)
+            if close_code is not None:
+                _fail(close_code)
+            if unbound_close_code is not None:
+                _fail(unbound_close_code)
 
 
 def _load_metadata(output_root: Path) -> dict[str, object]:
@@ -1346,6 +1533,8 @@ def _verify_checksums(output_root: Path) -> None:
 def verify_staged_release(
     output_root: str | Path, project_root: str | Path, *, source_commit: str
 ) -> dict[str, object]:
+    _reject_windows_special_path(output_root, "RELEASE_MANIFEST_INVALID")
+    _reject_windows_special_path(project_root, "RELEASE_SOURCE_STATE_INVALID")
     root = _resolved_project_root(project_root)
     _require_source_state(root, source_commit)
     profile = _verified_profile(root)
