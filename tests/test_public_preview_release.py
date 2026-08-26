@@ -722,6 +722,113 @@ def test_cleanup_without_directory_token_fails_closed(
     assert (staging / "keep.txt").read_text(encoding="ascii") == "keep"
 
 
+def test_create_output_file_rejects_staging_replacement_after_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "nt":
+        pytest.fail("Windows handle-relative creation test requires Windows")
+    module = _module()
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    staging = parent / ".release.staging-test"
+    staging.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "keep.txt").write_text("keep", encoding="ascii")
+    parent_binding = module._bind_directory(parent, 0x00000080 | 0x00000001)
+    token = module._snapshot_staging_directory(
+        staging, ".release.staging-", parent_binding
+    )
+    moved = tmp_path / "moved"
+    original_validate = module._validated_staging_path
+    replaced = False
+
+    def replace_after_validation(*args: object, **kwargs: object) -> Path:
+        nonlocal replaced
+        result = original_validate(*args, **kwargs)
+        if not replaced:
+            staging.rename(moved)
+            external.rename(staging)
+            replaced = True
+        return result
+
+    monkeypatch.setattr(module, "_validated_staging_path", replace_after_validation)
+    try:
+        with pytest.raises(
+            module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"
+        ):
+            with module._create_output_file(staging / "payload.bin", token) as stream:
+                stream.write(b"must not be written")
+        assert not (staging / "payload.bin").exists()
+        assert (staging / "keep.txt").read_text(encoding="ascii") == "keep"
+    finally:
+        module._close_staging_token(token)
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(moved, ignore_errors=True)
+        shutil.rmtree(parent, ignore_errors=True)
+
+
+def test_close_bound_handle_maps_windows_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module.os, "name", "nt")
+
+    class FakeCloseHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, _handle: int) -> int:
+            return 0
+
+    class FakeKernel32:
+        CloseHandle = FakeCloseHandle()
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32())
+    binding = module._DirectoryBinding(tmp_path, (1, 2), 55)
+    assert module._close_directory_binding(binding) == "RELEASE_RESOURCE_CLOSE_FAILED"
+
+
+def test_open_bound_directory_closes_after_identity_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module.os, "name", "nt")
+    closed: list[int] = []
+
+    class FakeCreateFileW:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *_args: object) -> int:
+            return 77
+
+    class FakeGetFileInformationByHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *_args: object) -> int:
+            return 0
+
+    class FakeCloseHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, handle: int) -> int:
+            closed.append(handle)
+            return 1
+
+    class FakeKernel32:
+        CreateFileW = FakeCreateFileW()
+        GetFileInformationByHandle = FakeGetFileInformationByHandle()
+        CloseHandle = FakeCloseHandle()
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32())
+    with pytest.raises(OSError):
+        module._win32_open_directory(tmp_path, 0)
+    assert closed == [77]
+
+
 def test_close_bound_handles_attempts_all_handles_after_one_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

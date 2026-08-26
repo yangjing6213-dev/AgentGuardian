@@ -209,6 +209,8 @@ def _win32_open_directory(path: Path, access: int) -> tuple[int, tuple[int, ...]
         wintypes.HANDLE,
     ]
     kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
     handle = kernel32.CreateFileW(
         str(path),
         access,
@@ -291,8 +293,13 @@ def _close_bound_handle(handle: int | None) -> None:
         return
     if os.name == "nt":
         import ctypes
+        from ctypes import wintypes
 
-        ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(handle)
+        close_handle = ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+        if not close_handle(handle):
+            raise OSError(ctypes.get_last_error(), "CloseHandle")
     else:
         os.close(handle)
 
@@ -587,14 +594,31 @@ def _create_output_file(
 ) -> Iterator[BinaryIO]:
     if directory_token is not None:
         _validated_staging_path(directory_token, path.parent, "RELEASE_OUTPUT_PATH_INVALID")
-    descriptor: int | None = None
-    try:
-        if _has_reparse_component(path) or _is_reparse_point(path):
+        _validated_staging_path(directory_token, path.parent, "RELEASE_OUTPUT_PATH_INVALID")
+        name = path.name
+        if not name or any(separator in name for separator in ("\\", "/")):
             _fail("RELEASE_OUTPUT_PATH_INVALID")
+    descriptor: int | None = None
+    stream: BinaryIO | None = None
+    try:
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
-        descriptor = os.open(path, flags, 0o600)
+        if directory_token is None:
+            if _has_reparse_component(path) or _is_reparse_point(path):
+                _fail("RELEASE_OUTPUT_PATH_INVALID")
+            descriptor = os.open(path, flags, 0o600)
+        elif os.name == "posix":
+            descriptor = os.open(
+                name,
+                flags,
+                0o600,
+                dir_fd=directory_token.directory_handle,
+            )
+        elif os.name == "nt":
+            descriptor = _ntdll_create_staging_file(directory_token, name)
+        else:
+            _fail("RELEASE_OUTPUT_PATH_INVALID")
         stream = os.fdopen(descriptor, "wb", closefd=True)
         descriptor = None
     except ReleaseViolation:
@@ -603,10 +627,15 @@ def _create_output_file(
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     except (OSError, ValueError):
         if descriptor is not None:
-            os.close(descriptor)
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     primary_error: BaseException | None = None
     try:
+        if stream is None:
+            _fail("RELEASE_OUTPUT_PATH_INVALID")
         yield stream
     except BaseException as error:
         primary_error = error
@@ -1058,6 +1087,118 @@ def _win32_set_disposition(handle: int) -> None:
         handle, 21, ctypes.byref(info), ctypes.sizeof(info)
     ):
         _fail("RELEASE_CLEANUP_FAILED")
+
+
+def _ntdll_create_staging_file(
+    token: _StagingDirectoryToken, name: str
+) -> int:
+    """Create one staging file relative to the bound directory handle."""
+    if token.directory_handle is None:
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class _UnicodeString(ctypes.Structure):
+        _fields_ = [
+            ("length", wintypes.USHORT),
+            ("maximum_length", wintypes.USHORT),
+            ("buffer", wintypes.LPWSTR),
+        ]
+
+    class _ObjectAttributes(ctypes.Structure):
+        _fields_ = [
+            ("length", wintypes.ULONG),
+            ("root_directory", wintypes.HANDLE),
+            ("object_name", ctypes.POINTER(_UnicodeString)),
+            ("attributes", wintypes.ULONG),
+            ("security_descriptor", wintypes.LPVOID),
+            ("security_quality_of_service", wintypes.LPVOID),
+        ]
+
+    class _IoStatusBlock(ctypes.Structure):
+        _fields_ = [
+            ("status", ctypes.c_int32),
+            ("status_padding", wintypes.DWORD),
+            ("information", ctypes.c_size_t),
+        ]
+
+    try:
+        ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+        native_create = ntdll.NtCreateFile
+    except (AttributeError, OSError):
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    native_create.argtypes = [
+        ctypes.POINTER(wintypes.HANDLE),
+        wintypes.DWORD,
+        ctypes.POINTER(_ObjectAttributes),
+        ctypes.POINTER(_IoStatusBlock),
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    native_create.restype = ctypes.c_int32
+    name_buffer = ctypes.create_unicode_buffer(name)
+    encoded_length = len(name.encode("utf-16-le"))
+    unicode_name = _UnicodeString(
+        encoded_length,
+        encoded_length + 2,
+        ctypes.cast(name_buffer, wintypes.LPWSTR),
+    )
+    attributes = _ObjectAttributes(
+        ctypes.sizeof(_ObjectAttributes),
+        wintypes.HANDLE(token.directory_handle),
+        ctypes.pointer(unicode_name),
+        0x00000040 | 0x00001000,
+        None,
+        None,
+    )
+    io_status = _IoStatusBlock()
+    native_handle = wintypes.HANDLE()
+    try:
+        status = native_create(
+            ctypes.byref(native_handle),
+            0x00000002 | 0x00000100 | 0x00100000,
+            ctypes.byref(attributes),
+            ctypes.byref(io_status),
+            None,
+            0x00000080,
+            0x00000007,
+            0x00000002,
+            0x00000040 | 0x00000020,
+            None,
+            0,
+        )
+    except (OSError, TypeError, ValueError):
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    handle_value = native_handle.value
+    if (
+        int(status) < 0
+        or io_status.status < 0
+        or handle_value in (None, wintypes.HANDLE(-1).value)
+    ):
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    try:
+        descriptor = msvcrt.open_osfhandle(
+            int(handle_value), os.O_WRONLY | getattr(os, "O_BINARY", 0)
+        )
+    except (OSError, ValueError):
+        try:
+            _close_bound_handle(int(handle_value))
+        except Exception:
+            pass
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    if descriptor < 0:
+        try:
+            _close_bound_handle(int(handle_value))
+        except Exception:
+            pass
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    return descriptor
 
 
 def _ntdll_rename_staged(token: _StagingDirectoryToken, output: Path) -> None:
