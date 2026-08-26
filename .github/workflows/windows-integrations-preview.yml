@@ -192,6 +192,79 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
+      - name: Prepare verified downloadable preview files
+        shell: pwsh
+        run: |
+          $downloadRoot = Join-Path $env:RUNNER_TEMP 'agentguardian-downloadable-preview'
+          if (Test-Path -LiteralPath $downloadRoot) {
+            throw 'download root must not already exist'
+          }
+          New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
+
+          $installer = Get-Item -LiteralPath $env:INSTALLER_PATH -ErrorAction Stop
+          $portableCandidates = @(Get-ChildItem -LiteralPath $env:PORTABLE_ONE -Filter 'AgentGuardian-0.3.0-preview.1-windows-x64-*.zip' -File)
+          if ($portableCandidates.Count -ne 1) {
+            throw 'downloadable portable artifact count is invalid'
+          }
+          $skill = Get-Item -LiteralPath (Join-Path $env:SKILL_ONE 'AgentGuardian-Skill-0.2.0.zip') -ErrorAction Stop
+          $license = Get-Item -LiteralPath (Join-Path $pwd 'LICENSE') -ErrorAction Stop
+          $notices = Get-Item -LiteralPath (Join-Path $pwd 'THIRD_PARTY_NOTICES.md') -ErrorAction Stop
+          $payload = @($installer, $portableCandidates[0], $skill, $license, $notices)
+          foreach ($file in $payload) {
+            if (-not $file.Exists -or $file.Length -le 0) {
+              throw "downloadable file is empty: $($file.Name)"
+            }
+            Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $downloadRoot $file.Name)
+          }
+
+          $payloadFiles = @(Get-ChildItem -LiteralPath $downloadRoot -File | Sort-Object Name)
+          if ($payloadFiles.Count -ne 5) { throw 'downloadable payload file count is invalid' }
+          $payloadMetadata = @($payloadFiles | ForEach-Object {
+            [ordered]@{
+              name = $_.Name
+              sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+              size = $_.Length
+            }
+          })
+          $metadata = [ordered]@{
+            architecture = 'x64'
+            artifact_status = 'unsigned_development_only'
+            channel = 'integrations_preview'
+            checksum_file = 'SHA256SUMS'
+            files = $payloadMetadata
+            schema = 1
+            source_commit = $env:EXPECTED_SOURCE_COMMIT
+            version = '0.3.0-preview.1'
+          }
+          $metadataPath = Join-Path $downloadRoot 'DOWNLOAD-METADATA.json'
+          $metadata | ConvertTo-Json -Depth 5 -Compress | Set-Content -LiteralPath $metadataPath -Encoding ascii -NoNewline
+
+          $checksumTargets = @(Get-ChildItem -LiteralPath $downloadRoot -File | Sort-Object Name)
+          $checksumLines = @($checksumTargets | ForEach-Object {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+            "$hash *$($_.Name)"
+          })
+          $checksumPath = Join-Path $downloadRoot 'SHA256SUMS'
+          [IO.File]::WriteAllText($checksumPath, (($checksumLines -join "`n") + "`n"), [Text.Encoding]::ASCII)
+          foreach ($file in $checksumTargets) {
+            if (-not $file.Exists -or $file.Length -le 0) {
+              throw "downloadable checksum target is invalid: $($file.Name)"
+            }
+          }
+          if ((Get-Content -LiteralPath $checksumPath).Count -ne $checksumTargets.Count) {
+            throw 'downloadable checksum line count is invalid'
+          }
+
+      - name: Archive verified downloadable preview
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: agentguardian-downloadable-preview-${{ env.EXPECTED_SOURCE_COMMIT }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/agentguardian-downloadable-preview/*
+
       - name: Write bounded exact-SHA workflow metadata
         shell: pwsh
         run: |
