@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import ctypes
 import os
 import shutil
+import sys
+import types
 import zipfile
 from pathlib import Path
 
@@ -314,6 +317,127 @@ def test_windows_directory_lock_blocks_rename(tmp_path: Path) -> None:
             os.replace(source, source.with_name("moved"))
     finally:
         skill_builder._release_directory_locks(handles)
+
+
+def test_windows_close_false_maps_to_resource_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(skill_builder.os, "name", "nt")
+    from ctypes import wintypes
+
+    class FakeCloseHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, _handle: int) -> int:
+            return 0
+
+    class FakeKernel32:
+        CloseHandle = FakeCloseHandle()
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32())
+    with pytest.raises(ValueError, match="^skill resource close failed$"):
+        skill_builder._close_windows_handle(99)
+    close_handle = FakeKernel32.CloseHandle
+    assert close_handle.argtypes == (wintypes.HANDLE,)
+    assert close_handle.restype is wintypes.BOOL
+
+
+def test_windows_read_descriptor_checks_close_after_conversion_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(skill_builder.os, "name", "nt")
+    import ctypes.wintypes as wintypes
+
+    closed: list[int] = []
+
+    class FakeCreateFile:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *_args: object) -> int:
+            return 77
+
+    class FakeCloseHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, handle: int) -> int:
+            closed.append(handle)
+            return 0
+
+    class FakeKernel32:
+        CreateFileW = FakeCreateFile()
+        CloseHandle = FakeCloseHandle()
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32())
+    monkeypatch.setitem(
+        sys.modules,
+        "msvcrt",
+        types.SimpleNamespace(
+            open_osfhandle=lambda *_args: (_ for _ in ()).throw(OSError)
+        ),
+    )
+    with pytest.raises(OSError):
+        skill_builder._open_read_descriptor(tmp_path / "input.txt")
+    assert closed == [77]
+    assert FakeKernel32.CloseHandle.argtypes == (wintypes.HANDLE,)
+    assert FakeKernel32.CloseHandle.restype is wintypes.BOOL
+
+
+def test_windows_release_directory_locks_reports_close_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(skill_builder.os, "name", "nt")
+    closed: list[int] = []
+
+    class FakeCloseHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, handle: int) -> int:
+            closed.append(handle)
+            return 0
+
+    class FakeKernel32:
+        CloseHandle = FakeCloseHandle()
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32())
+    assert not skill_builder._release_directory_locks([11, 22])
+    assert closed == [22, 11]
+
+
+def test_windows_lock_cleanup_preserves_primary_error_when_close_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(skill_builder.os, "name", "nt")
+    closed: list[int] = []
+
+    class FakeCreateFile:
+        argtypes = None
+        restype = None
+        calls = 0
+
+        def __call__(self, *_args: object) -> int:
+            self.calls += 1
+            return 101 if self.calls == 1 else 0
+
+    class FakeCloseHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, handle: int) -> int:
+            closed.append(handle)
+            return 0
+
+    class FakeKernel32:
+        CreateFileW = FakeCreateFile()
+        CloseHandle = FakeCloseHandle()
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32())
+    with pytest.raises(ValueError, match="^skill path is busy or invalid$"):
+        skill_builder._acquire_directory_locks(tmp_path / "source")
+    assert closed == [101]
 
 
 def test_skill_reports_unconfirmed_state_when_rollback_fails(

@@ -1103,7 +1103,15 @@ def _ntdll_create_staging_file(
     return_native_handle: bool = False,
 ) -> int | None:
     """Create one staging file relative to the bound directory handle."""
-    if token.directory_handle is None or not name:
+    if (
+        token.directory_handle is None
+        or not isinstance(name, str)
+        or not name
+        or name in {".", ".."}
+        or any(separator in name for separator in ("\\", "/"))
+        or len(name) > 255
+        or name not in RELEASE_ASSET_NAMES
+    ):
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     import ctypes
     import msvcrt
@@ -1308,11 +1316,7 @@ def _cleanup_bound_staging(
         if os.name == "nt":
             _validated_staging_path(token, staged, "RELEASE_CLEANUP_FAILED")
             _validated_staging_path(token, staged, "RELEASE_CLEANUP_FAILED")
-            allowed_names = (
-                tuple(child.name for child in token.children)
-                or RELEASE_ASSET_NAMES
-            )
-            for name in allowed_names:
+            for name in RELEASE_ASSET_NAMES:
                 child_handle = _ntdll_create_staging_file(
                     token,
                     name,

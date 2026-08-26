@@ -796,6 +796,78 @@ def test_cleanup_rejects_staging_replacement_after_validation(
         shutil.rmtree(parent, ignore_errors=True)
 
 
+@pytest.mark.parametrize("name", (r"outside\file", ".", ".."))
+def test_native_staging_file_rejects_untrusted_relative_names(
+    tmp_path: Path, name: str
+) -> None:
+    if os.name != "nt":
+        pytest.fail("Windows handle-relative creation test requires Windows")
+    module = _module()
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    staging = parent / ".release.staging-test"
+    staging.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "keep.txt").write_text("keep", encoding="ascii")
+    parent_binding = module._bind_directory(parent, 0x00000080 | 0x00000001)
+    token = module._snapshot_staging_directory(
+        staging, ".release.staging-", parent_binding
+    )
+    try:
+        with pytest.raises(
+            module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"
+        ):
+            module._ntdll_create_staging_file(token, name)
+        assert (external / "keep.txt").read_text(encoding="ascii") == "keep"
+        assert tuple(child.name for child in external.iterdir()) == ("keep.txt",)
+    finally:
+        module._close_staging_token(token)
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(parent, ignore_errors=True)
+
+
+def test_cleanup_uses_fixed_asset_allowlist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "nt":
+        pytest.fail("Windows handle-relative cleanup test requires Windows")
+    module = _module()
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    staging = parent / ".release.staging-test"
+    staging.mkdir()
+    parent_binding = module._bind_directory(parent, 0x00000080 | 0x00000001)
+    token = module._snapshot_staging_directory(
+        staging, ".release.staging-", parent_binding
+    )
+    token = module.replace(
+        token,
+        children=(
+            module._StagedChildToken(
+                "outside",
+                module._FileSnapshot(staging / "outside", (1, 2, 3, 4), 0),
+                "0" * 64,
+            ),
+        ),
+    )
+    opened: list[str] = []
+    monkeypatch.setattr(
+        module,
+        "_ntdll_create_staging_file",
+        lambda _token, name, **_kwargs: opened.append(name) or None,
+    )
+    monkeypatch.setattr(module, "_win32_set_disposition", lambda _handle: None)
+    try:
+        assert module._cleanup_bound_staging(token, staging)
+        assert tuple(opened) == module.RELEASE_ASSET_NAMES
+        assert not (parent / "outside").exists()
+    finally:
+        module._close_staging_token(token)
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(parent, ignore_errors=True)
+
+
 def test_create_output_file_binds_native_creation_before_path_replacement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -876,16 +948,19 @@ def test_create_output_file_binds_native_creation_before_path_replacement(
     monkeypatch.setattr(ctypes, "WinDLL", win_dll)
     monkeypatch.setattr(module, "_ntdll_create_staging_file", create_then_replace)
     try:
-        with module._create_output_file(staging / "payload.bin", token) as stream:
+        asset = staging / module.PORTABLE_NAME
+        with module._create_output_file(asset, token) as stream:
             stream.write(b"written through bound handle")
         staging.rename(moved)
         external.rename(staging)
-        assert (moved / "payload.bin").read_bytes() == b"written through bound handle"
+        assert (moved / module.PORTABLE_NAME).read_bytes() == (
+            b"written through bound handle"
+        )
         assert (staging / "keep.txt").read_text(encoding="ascii") == "keep"
         assert native_calls == [
             (
                 token.directory_handle,
-                "payload.bin",
+                module.PORTABLE_NAME,
                 0x00000040 | 0x00001000,
                 0x00000002,
                 0x00000040 | 0x00000020,

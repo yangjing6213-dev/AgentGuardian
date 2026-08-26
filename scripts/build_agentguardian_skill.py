@@ -144,8 +144,26 @@ def _open_read_descriptor(path: Path) -> int:
             os.O_RDONLY | getattr(os, "O_BINARY", 0),
         )
     except Exception:
-        kernel32.CloseHandle(handle)
+        try:
+            _close_windows_handle(handle)
+        except ValueError:
+            pass
         raise OSError from None
+
+
+def _close_windows_handle(handle: object) -> None:
+    import ctypes
+    import ctypes.wintypes as wintypes
+
+    close_handle = ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    try:
+        closed = close_handle(handle)
+    except Exception:
+        raise _fixed_error("skill resource close failed") from None
+    if not closed:
+        raise _fixed_error("skill resource close failed")
 
 
 def _read_checked_file(path: Path) -> bytes:
@@ -229,9 +247,6 @@ def _acquire_directory_locks(path: Path) -> list[object]:
         wintypes.HANDLE,
     )
     create_file.restype = wintypes.HANDLE
-    close_handle = kernel32.CloseHandle
-    close_handle.argtypes = (wintypes.HANDLE,)
-    close_handle.restype = wintypes.BOOL
     invalid_handle = ctypes.c_void_p(-1).value
     handles: list[object] = []
     try:
@@ -250,29 +265,31 @@ def _acquire_directory_locks(path: Path) -> list[object]:
             handles.append(handle)
     except ValueError:
         for handle in reversed(handles):
-            close_handle(handle)
+            try:
+                _close_windows_handle(handle)
+            except ValueError:
+                pass
         raise
     except Exception:
         for handle in reversed(handles):
-            close_handle(handle)
+            try:
+                _close_windows_handle(handle)
+            except ValueError:
+                pass
         raise _fixed_error("skill path is busy or invalid") from None
     return handles
 
 
-def _release_directory_locks(handles: list[object]) -> None:
+def _release_directory_locks(handles: list[object]) -> bool:
     if not handles or os.name != "nt":
-        return
-    import ctypes
-    import ctypes.wintypes as wintypes
-
-    close_handle = ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle
-    close_handle.argtypes = (wintypes.HANDLE,)
-    close_handle.restype = wintypes.BOOL
+        return True
+    failed = False
     for handle in reversed(handles):
         try:
-            close_handle(handle)
-        except OSError:
-            pass
+            _close_windows_handle(handle)
+        except ValueError:
+            failed = True
+    return not failed
 
 
 def _validate_bytes(name: str, data: bytes) -> str:
@@ -302,6 +319,7 @@ def _validated_source(source_root: Path) -> dict[str, bytes]:
     _validate_directory_parents(source_root)
     parent_locks = _acquire_directory_locks(source_root.parent)
     root_locks: list[object] = []
+    primary_error: BaseException | None = None
     try:
         try:
             source_metadata = os.lstat(source_root)
@@ -348,9 +366,14 @@ def _validated_source(source_root: Path) -> dict[str, bytes]:
         if files["LICENSE"] != _read_checked_file(PROJECT_ROOT / "LICENSE"):
             raise _fixed_error("skill license does not match project license")
         return files
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        _release_directory_locks(root_locks)
-        _release_directory_locks(parent_locks)
+        close_failed = not _release_directory_locks(root_locks)
+        close_failed = not _release_directory_locks(parent_locks) or close_failed
+        if close_failed and primary_error is None:
+            raise _fixed_error("skill resource close failed")
 
 
 def _new_local_output(output_root: Path) -> tuple[Path, os.stat_result]:
@@ -537,6 +560,7 @@ def build_skill(source_root: Path, output_root: Path) -> tuple[Path, str]:
     files = _validated_source(source_root)
     parent_locks = _acquire_directory_locks(output_root.parent)
     output_locks: list[object] = []
+    primary_error: BaseException | None = None
     try:
         output, output_snapshot = _new_local_output(output_root)
         output_locks = _acquire_directory_locks(output)
@@ -547,9 +571,14 @@ def build_skill(source_root: Path, output_root: Path) -> tuple[Path, str]:
         if not _same_file_snapshot(output_snapshot, current_output):
             raise _fixed_error("skill output changed")
         return _build_skill_artifacts(files, output)
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        _release_directory_locks(output_locks)
-        _release_directory_locks(parent_locks)
+        close_failed = not _release_directory_locks(output_locks)
+        close_failed = not _release_directory_locks(parent_locks) or close_failed
+        if close_failed and primary_error is None:
+            raise _fixed_error("skill resource close failed")
 
 
 def main() -> int:
