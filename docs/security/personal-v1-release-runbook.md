@@ -2,9 +2,19 @@
 
 This runbook is a release gate, not a production-safety claim.
 
+> Historical governance snapshot for Personal v1 (0.2). It does not define the
+> current 0.3 Integrations Preview route; see
+> `docs/security/integrations-preview.md` for the active boundary.
+
 ## Current state
 
-The only active delivery and governance route is `personal_exe_private_beta`: a traditional unsigned offline EXE for known testers. Frozen candidate `8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6` has current local-gate, GitHub CI, native unsigned-installer lifecycle, and independent-review evidence. Version `0.2.0-beta.1` remains `PRIVATE-BETA-NOT-READY` because external license and Qt approval, two-machine acceptance, and operations/security readiness are pending; formal public release remains `NO-GO`. Current evidence does not prove license approval, independent-machine acceptance, or operations readiness.
+For the historical `personal_exe_private_beta` route, the traditional unsigned
+offline EXE was intended for known testers. Frozen candidate
+`8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6` has historical evidence only.
+Version `0.2.0-beta.1` remains `PRIVATE-BETA-NOT-READY` because external
+license and Qt approval, two-machine acceptance, and operations/security
+readiness are pending; formal public release remains `NO-GO`. The current 0.3
+Integrations Preview route is governed separately.
 
 An unsigned installer may trigger Unknown Publisher or SmartScreen warnings. Any private handoff must include an independently retained SHA-256 bound to the exact candidate source commit.
 

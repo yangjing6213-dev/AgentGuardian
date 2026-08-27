@@ -745,6 +745,29 @@ def test_zip_records_detects_contextual_binary_api_key(tmp_path: Path) -> None:
         module._zip_records(snapshot)
 
 
+def test_zip_records_detects_uncontextualized_modern_binary_api_key(
+    tmp_path: Path,
+) -> None:
+    module = _module()
+    archive_path = tmp_path / "binary-modern-secret.zip"
+    modern_key = b"sk-" + b"proj-" + b"a" * 32
+    with zipfile.ZipFile(
+        archive_path, "w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
+        archive.writestr("payload.bin", b"\0" * 32 + modern_key + b"\0" * 32)
+    snapshot = module._snapshot_file(
+        archive_path,
+        max_bytes=module.MAX_INPUT_BYTES,
+        code="RELEASE_INPUT_TYPE_INVALID",
+    )
+
+    with pytest.raises(
+        module.ReleaseViolation,
+        match="^RELEASE_PRIVATE_DATA_DETECTED: remove credentials or private data from release inputs$",
+    ):
+        module._zip_records(snapshot)
+
+
 def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
     module = _module()
     portable_builder = importlib.import_module("scripts.build_windows_portable")

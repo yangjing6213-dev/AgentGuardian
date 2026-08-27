@@ -28,6 +28,9 @@ This bounds the release workflow without claiming to remove all kernel-level
 TOCTOU behavior. A same-user process can still change content in the narrow
 close-to-rename window; such changes are rejected when observed, and
 unsupported handle or filesystem behavior fails closed with a fixed error.
+The source and decompressed-archive checks include high-confidence modern
+OpenAI key formats and GitHub token formats; they are leakage gates, not a
+complete secret scanner or cryptographic build provenance.
 
 ## Operation and approval contract
 

@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "windows-integrations-preview.yml"
 STATUS = ROOT / "docs" / "security" / "integrations-preview-status.json"
 ACTIVE_DOC = ROOT / "docs" / "security" / "integrations-preview.md"
+PERSONAL_RUNBOOK = ROOT / "docs" / "security" / "personal-v1-release-runbook.md"
 PROFILE = ROOT / "release_profiles" / "integrations_preview.json"
 
 
@@ -235,6 +236,9 @@ def test_full_gate_secret_scan_keeps_git_grep_exit_semantics_without_output() ->
     grep_index = lines.index(grep_line)
     assert "$secretScanExitCode = $LASTEXITCODE" in lines[grep_index + 1]
     assert "Assert-GitGrepNoMatches" in lines[grep_index + 2]
+    assert "sk-(proj|live|test)-[A-Za-z0-9]{32,}" in full_gates
+    assert "sk-[A-Za-z0-9]{32,}" in full_gates
+    assert "github[_]pat_[A-Za-z0-9_]{20,}" in full_gates
 
 
 def _public_preview_staging_block(workflow: str) -> str:
@@ -331,6 +335,13 @@ def test_secret_scan_preserves_exit_code_and_fails_closed_without_output() -> No
     assert "candidate secret scan failed with exit code $ExitCode" in scan
     assert "Write-Host $secretMatches" not in scan
     assert "Write-Output $secretMatches" not in scan
+
+
+def test_personal_v1_runbook_is_explicitly_historical_for_current_preview() -> None:
+    document = PERSONAL_RUNBOOK.read_text(encoding="utf-8").casefold()
+
+    assert "historical governance snapshot" in document
+    assert "current 0.3 integrations preview" in document
 
 
 def test_integrations_preview_status_is_canonical_and_all_pending() -> None:

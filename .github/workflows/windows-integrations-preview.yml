@@ -133,7 +133,7 @@ jobs:
           Assert-NativeSuccess $LASTEXITCODE 'python scripts/verify_integrations_preview_profile.py'
           python -m compileall -q src scripts tests
           Assert-NativeSuccess $LASTEXITCODE 'python -m compileall -q src scripts tests'
-          $secretMatches = @(git grep -n -I -E '(sk-[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY)' -- ':!.analysis')
+          $secretMatches = @(git grep -n -I -E '(sk-(proj|live|test)-[A-Za-z0-9]{32,}|sk-[A-Za-z0-9]{32,}|gh[pousr]_[A-Za-z0-9]{20,}|github[_]pat_[A-Za-z0-9_]{20,}|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY)' -- ':!.analysis')
           $secretScanExitCode = $LASTEXITCODE
           Assert-GitGrepNoMatches $secretScanExitCode
           git diff --check

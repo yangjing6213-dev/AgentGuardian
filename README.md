@@ -45,7 +45,15 @@ The intended delivery route is a traditional unsigned offline EXE installer sent
 
 An artifact uploaded by this public repository's GitHub Actions workflow is not an access-controlled private distribution channel. `Private beta` is a maturity label for the known-tester scope, not a claim that an artifact is confidential or access-restricted.
 
-The local gate, pinned installer tool, exact installer build, native lifecycle, and independent review now have evidence for the frozen candidate. External license and Qt review, two independent clean-machine checks, and the operations/security gate remain pending. GitHub Issues is live for ordinary support. GitHub Private Vulnerability Reporting is disabled, so no current private vulnerability intake is claimed. These limits prohibit production-safety, license, or clean-machine claims.
+Fresh local evidence for the current 0.3 candidate covers the source gates,
+deterministic build, exact staging, portable startup smoke, and isolated
+installer lifecycle for one exact SHA. It is retained outside Git and does not
+replace GitHub CI, clean-machine, Codex CLI/Desktop, license/marketplace, or
+operations/security evidence. Historical reports for earlier candidates must
+not be promoted to current release evidence. GitHub Issues is live for ordinary
+support. GitHub Private Vulnerability Reporting is disabled, so no current
+private vulnerability intake is claimed. These limits prohibit production-
+safety, license, or clean-machine claims.
 
 The canonical partial status ledger is [personal-exe-private-beta-status.json](docs/security/personal-exe-private-beta-status.json). Private beta remains `PRIVATE-BETA-NOT-READY` and formal release remains `NO-GO`; exact-SHA evidence must be generated outside the candidate commit.
 
@@ -106,7 +114,11 @@ enterprise control-plane guarantee.
 The historical 0.2 results and earlier CI reports remain historical evidence;
 they are distinct from current revalidation of the 0.3 release candidate.
 
-## Active product documents
+## Reference documents
+
+The Personal v1 links below are historical compatibility and governance
+references. The active 0.3 route is defined in the Integrations Preview section
+and its status ledger.
 
 - [Security policy](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)

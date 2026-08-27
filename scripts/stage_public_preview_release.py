@@ -87,6 +87,10 @@ _PRIVATE_BINARY_API_KEY_PATTERN = re.compile(
     rb"|sk[-_](?:proj|live|test)?[-_]?[A-Za-z0-9_-]{24,}"
     rb"[^\r\n]{0,64}(?:api[_-]?key|access[_-]?key|secret|token|password|authorization))"
 )
+_PRIVATE_BINARY_OPENAI_KEY_PATTERN = re.compile(
+    rb"\bsk[-_](?:(?:proj|live|test)[-_][A-Za-z0-9]{32,}|[A-Za-z0-9]{32,})\b",
+    re.I,
+)
 _TEXT_PAYLOAD_SUFFIXES = frozenset(
     {
         ".bat",
@@ -1387,6 +1391,7 @@ def _private_patterns_for_zip_entry(name: str) -> tuple[re.Pattern[bytes], ...]:
         _PRIVATE_PATTERNS[2],
         _PRIVATE_PATTERNS[3],
         _PRIVATE_BINARY_API_KEY_PATTERN,
+        _PRIVATE_BINARY_OPENAI_KEY_PATTERN,
     )
 
 
