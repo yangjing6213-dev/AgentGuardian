@@ -68,6 +68,7 @@ jobs:
           "PORTABLE_ONE=$env:RUNNER_TEMP\agentguardian-portable-one" >> $env:GITHUB_ENV
           "PORTABLE_TWO=$env:RUNNER_TEMP\agentguardian-portable-two" >> $env:GITHUB_ENV
           "INSTALLER_OUTPUT=$env:RUNNER_TEMP\agentguardian-integrations-installer" >> $env:GITHUB_ENV
+          "RELEASE_ROOT=$env:RUNNER_TEMP\agentguardian-public-preview-release" >> $env:GITHUB_ENV
           "EVIDENCE_ROOT=$env:RUNNER_TEMP\agentguardian-integrations-preview-evidence" >> $env:GITHUB_ENV
 
       - name: Require Windows x64 and local fixed paths
@@ -264,173 +265,109 @@ jobs:
             Assert-NativeSuccess $LASTEXITCODE 'verify_windows_integrations_preview.ps1'
           }
 
-      - name: Prepare verified downloadable preview files
+      - name: Stage verified public preview release bundle
         shell: pwsh
         run: |
-          $downloadRoot = Join-Path $env:RUNNER_TEMP 'agentguardian-downloadable-preview'
-          if (Test-Path -LiteralPath $downloadRoot) {
-            throw 'download root must not already exist'
-          }
-          New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
-
-          $installer = Get-Item -LiteralPath $env:INSTALLER_PATH -ErrorAction Stop
-          $expectedInstallerSha256 = [string]$env:INSTALLER_SHA256
-          if ($expectedInstallerSha256 -cnotmatch '^[0-9a-fA-F]{64}$') {
-            throw 'lifecycle installer SHA-256 is invalid'
-          }
-          $expectedInstallerSha256 = $expectedInstallerSha256.ToLowerInvariant()
-          $versionedInstallerName = 'AgentGuardian-Setup-0.3.0-preview.1-x64.exe'
-          if ($installer.Name -cne $versionedInstallerName) {
-            throw 'versioned installer filename is invalid'
-          }
-          $versionedInstallerPath = Join-Path $downloadRoot $versionedInstallerName
-          if (Test-Path -LiteralPath $versionedInstallerPath) {
-            throw 'versioned installer must not already exist'
-          }
-          Copy-Item -LiteralPath $installer.FullName -Destination $versionedInstallerPath
-          $versionedInstaller = Get-Item -LiteralPath $versionedInstallerPath -ErrorAction Stop
-          if (-not $versionedInstaller.Exists -or $versionedInstaller.Length -le 0) {
-            throw 'versioned installer copy is empty'
-          }
-          $versionedInstallerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $versionedInstallerPath).Hash.ToLowerInvariant()
-          if ($versionedInstallerHash -cne $expectedInstallerSha256) {
-            throw 'staged versioned installer SHA-256 does not match lifecycle evidence'
-          }
-          $primaryInstallerName = 'AgentGuardian-Setup-Windows-x64.exe'
-          $primaryInstallerPath = Join-Path $downloadRoot $primaryInstallerName
-          $portableCandidates = @(Get-ChildItem -LiteralPath $env:PORTABLE_ONE -Filter 'AgentGuardian-0.3.0-preview.1-windows-x64.zip' -File -Force)
-          if ($portableCandidates.Count -ne 1) {
-            throw 'downloadable portable artifact count is invalid'
-          }
-          $skill = Get-Item -LiteralPath (Join-Path $env:SKILL_ONE 'AgentGuardian-Skill-0.2.0.zip') -ErrorAction Stop
-          $license = Get-Item -LiteralPath (Join-Path $pwd 'LICENSE') -ErrorAction Stop
-          $notices = Get-Item -LiteralPath (Join-Path $pwd 'THIRD_PARTY_NOTICES.md') -ErrorAction Stop
-          $payload = @($portableCandidates[0], $skill, $license, $notices)
-          foreach ($file in $payload) {
-            if (-not $file.Exists -or $file.Length -le 0) {
-              throw "downloadable file is empty: $($file.Name)"
+          function Assert-NativeSuccess {
+            param([int]$ExitCode, [string]$Command)
+            if ($ExitCode -ne 0) {
+              throw "$Command failed with exit code $ExitCode"
             }
-            Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $downloadRoot $file.Name)
+          }
+          if (Test-Path -LiteralPath $env:RELEASE_ROOT) {
+            throw 'release root must not already exist'
+          }
+          $portablePath = Join-Path $env:PORTABLE_ONE 'AgentGuardian-0.3.0-preview.1-windows-x64.zip'
+          $skillPath = Join-Path $env:SKILL_ONE 'AgentGuardian-Skill-0.2.0.zip'
+          $stageResultJson = python scripts/stage_public_preview_release.py `
+            --project-root $pwd `
+            --output-root $env:RELEASE_ROOT `
+            --installer-path $env:INSTALLER_PATH `
+            --portable-path $portablePath `
+            --skill-path $skillPath `
+            --source-commit $env:EXPECTED_SOURCE_COMMIT `
+            --built-at $env:COMMIT_UTC
+          Assert-NativeSuccess $LASTEXITCODE 'python scripts/stage_public_preview_release.py'
+
+          $profileDocument = Get-Content -Raw -LiteralPath (Join-Path $pwd 'release_profiles\integrations_preview.json') | ConvertFrom-Json
+          $profileAssetNames = @($profileDocument.release_assets | Sort-Object)
+          $expectedAssetNames = @(
+            'AgentGuardian-0.3.0-preview.1-windows-x64.zip'
+            'AgentGuardian-Setup-0.3.0-preview.1-x64.exe'
+            'AgentGuardian-Setup-Windows-x64.exe'
+            'AgentGuardian-Skill-0.2.0.zip'
+            'DOWNLOAD-METADATA.json'
+            'LICENSE'
+            'SHA256SUMS'
+            'THIRD_PARTY_NOTICES.md'
+          ) | Sort-Object
+          if (($profileAssetNames -join "`n") -cne ($expectedAssetNames -join "`n")) {
+            throw 'profile release_assets do not match the public preview bundle contract'
+          }
+          $stagedFiles = @(Get-ChildItem -LiteralPath $env:RELEASE_ROOT -File -Force | Sort-Object Name)
+          if ($stagedFiles.Count -ne $profileAssetNames.Count) {
+            throw 'staged public preview asset count is invalid'
+          }
+          if (($stagedFiles.Name -join "`n") -cne ($profileAssetNames -join "`n")) {
+            throw 'staged public preview asset names are invalid'
+          }
+          $finalEntries = @(Get-ChildItem -LiteralPath $env:RELEASE_ROOT -Force)
+          foreach ($entry in $finalEntries) {
+            if ($entry.PSIsContainer) {
+              throw 'staged public preview bundle contains a directory'
+            }
+            if (($entry.Attributes -band [IO.FileAttributes]::Hidden) -ne 0) {
+              throw 'staged public preview bundle contains a hidden entry'
+            }
+            if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw 'staged public preview bundle contains a reparse point'
+            }
+          }
+          if ($finalEntries.Count -ne $profileAssetNames.Count) {
+            throw 'staged public preview bundle contains an extra entry'
           }
 
-          if (Test-Path -LiteralPath $primaryInstallerPath) {
-            throw 'primary installer alias must not already exist'
+          $verificationJson = python scripts/stage_public_preview_release.py `
+            --project-root $pwd `
+            --output-root $env:RELEASE_ROOT `
+            --source-commit $env:EXPECTED_SOURCE_COMMIT `
+            --verify
+          Assert-NativeSuccess $LASTEXITCODE 'python scripts/stage_public_preview_release.py --verify'
+          $verification = $verificationJson | ConvertFrom-Json
+          if ($verification.status -cne 'pass') {
+            throw 'staged public preview verification did not pass'
           }
-          Copy-Item -LiteralPath $versionedInstallerPath -Destination $primaryInstallerPath
-          $primaryInstallerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $primaryInstallerPath).Hash.ToLowerInvariant()
-          if ($primaryInstallerHash -cne $expectedInstallerSha256) {
-            throw 'primary installer alias SHA-256 does not match lifecycle evidence'
+          if ($verification.source_commit -cne $env:EXPECTED_SOURCE_COMMIT) {
+            throw 'staged public preview source commit is invalid'
           }
-          if ($versionedInstallerHash -cne $primaryInstallerHash) {
-            throw 'primary installer alias SHA-256 mismatch'
+          $metadata = Get-Content -Raw -LiteralPath (Join-Path $env:RELEASE_ROOT 'DOWNLOAD-METADATA.json') | ConvertFrom-Json
+          if ($metadata.artifact_status -cne 'unsigned_public_preview') {
+            throw 'download metadata artifact status is invalid'
           }
-
-          $expectedPayloadNames = @(
+          if ($metadata.source_commit -cne $env:EXPECTED_SOURCE_COMMIT) {
+            throw 'download metadata source commit is invalid'
+          }
+          $metadataAssetNames = @($metadata.files | ForEach-Object { $_.name } | Sort-Object)
+          $expectedMetadataNames = @(
             'AgentGuardian-0.3.0-preview.1-windows-x64.zip'
             'AgentGuardian-Setup-0.3.0-preview.1-x64.exe'
             'AgentGuardian-Setup-Windows-x64.exe'
             'AgentGuardian-Skill-0.2.0.zip'
             'LICENSE'
             'THIRD_PARTY_NOTICES.md'
-          )
-          $payloadFiles = @(Get-ChildItem -LiteralPath $downloadRoot -File -Force | Sort-Object Name)
-          if ($payloadFiles.Count -ne 6) { throw 'downloadable payload file count is invalid' }
-          if (($payloadFiles.Name -join "`n") -cne ($expectedPayloadNames -join "`n")) {
-            throw 'downloadable payload file names are invalid'
-          }
-          $payloadMetadata = @($payloadFiles | ForEach-Object {
-            [ordered]@{
-              name = $_.Name
-              sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
-              size = $_.Length
-            }
-          })
-          $metadata = [ordered]@{
-            architecture = 'x64'
-            artifact_status = 'unsigned_development_only'
-            channel = 'integrations_preview'
-            checksum_file = 'SHA256SUMS'
-            files = $payloadMetadata
-            schema = 1
-            source_commit = $env:EXPECTED_SOURCE_COMMIT
-            version = '0.3.0-preview.1'
-          }
-          $metadataPath = Join-Path $downloadRoot 'DOWNLOAD-METADATA.json'
-          $metadata | ConvertTo-Json -Depth 5 -Compress | Set-Content -LiteralPath $metadataPath -Encoding ascii -NoNewline
-
-          $metadataDocument = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
-          $metadataFiles = @($metadataDocument.files)
-          if ($metadataFiles.Count -ne $payloadFiles.Count) {
-            throw 'download metadata payload count is invalid'
-          }
-          $metadataNames = @($metadataFiles | ForEach-Object { $_.name })
-          if (($metadataNames -join "`n") -cne ($payloadFiles.Name -join "`n")) {
-            throw 'download metadata payload names are invalid'
-          }
-          foreach ($metadataFile in $metadataFiles) {
-            $metadataFilePath = Join-Path $downloadRoot ([string]$metadataFile.name)
-            $actualFile = Get-Item -LiteralPath $metadataFilePath -ErrorAction Stop
-            $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $actualFile.FullName).Hash.ToLowerInvariant()
-            if ($actualHash -cne ([string]$metadataFile.sha256).ToLowerInvariant()) {
-              throw "download metadata SHA-256 mismatch: $($metadataFile.name)"
-            }
-            if ([int64]$metadataFile.size -ne $actualFile.Length) {
-              throw "download metadata size mismatch: $($metadataFile.name)"
-            }
+          ) | Sort-Object
+          if (($metadataAssetNames -join "`n") -cne ($expectedMetadataNames -join "`n")) {
+            throw 'download metadata assets do not match the release profile payload'
           }
 
-          $checksumTargets = @(Get-ChildItem -LiteralPath $downloadRoot -File -Force | Sort-Object Name)
-          $expectedChecksumNames = @($expectedPayloadNames + 'DOWNLOAD-METADATA.json' | Sort-Object)
-          if ($checksumTargets.Count -ne 7) { throw 'downloadable checksum target count is invalid' }
-          if (($checksumTargets.Name -join "`n") -cne ($expectedChecksumNames -join "`n")) {
-            throw 'downloadable checksum target names are invalid'
-          }
-          $checksumLines = @($checksumTargets | ForEach-Object {
-            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
-            "$hash *$($_.Name)"
-          })
-          $checksumPath = Join-Path $downloadRoot 'SHA256SUMS'
-          [IO.File]::WriteAllText($checksumPath, (($checksumLines -join "`n") + "`n"), [Text.Encoding]::ASCII)
-          foreach ($file in $checksumTargets) {
-            if (-not $file.Exists -or $file.Length -le 0) {
-              throw "downloadable checksum target is invalid: $($file.Name)"
-            }
-          }
-          if ((Get-Content -LiteralPath $checksumPath).Count -ne $checksumTargets.Count) {
-            throw 'downloadable checksum line count is invalid'
-          }
-
-          $expectedAssetNames = @($expectedChecksumNames + 'SHA256SUMS' | Sort-Object)
-          $finalDirectories = @(Get-ChildItem -LiteralPath $downloadRoot -Directory -Force)
-          if ($finalDirectories.Count -ne 0) { throw 'downloadable staging contains a directory' }
-          $finalEntries = @(Get-ChildItem -LiteralPath $downloadRoot -Force)
-          foreach ($entry in $finalEntries) {
-            if ($entry.PSIsContainer) {
-              throw 'downloadable staging contains a directory'
-            }
-            if (($entry.Attributes -band [IO.FileAttributes]::Hidden) -ne 0) {
-              throw 'downloadable staging contains a hidden entry'
-            }
-            if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-              throw 'downloadable staging contains a reparse point'
-            }
-          }
-          if ($finalEntries.Count -ne 8) { throw 'downloadable final asset count is invalid' }
-          $finalFiles = @($finalEntries | Where-Object { -not $_.PSIsContainer } | Sort-Object Name)
-          if ($finalFiles.Count -ne 8) { throw 'downloadable final asset count is invalid' }
-          if (($finalFiles.Name -join "`n") -cne ($expectedAssetNames -join "`n")) {
-            throw 'downloadable final asset names are invalid'
-          }
-
-      - name: Archive verified downloadable preview
+      - name: Archive verified public preview bundle
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: agentguardian-downloadable-preview-${{ env.EXPECTED_SOURCE_COMMIT }}
+          name: agentguardian-public-preview-bundle-${{ env.EXPECTED_SOURCE_COMMIT }}
           retention-days: 14
           if-no-files-found: error
-          path: |
-            ${{ runner.temp }}/agentguardian-downloadable-preview/*
+          path: ${{ runner.temp }}/agentguardian-public-preview-release
 
       - name: Write bounded exact-SHA workflow metadata
         shell: pwsh
