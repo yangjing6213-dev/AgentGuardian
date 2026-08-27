@@ -1931,6 +1931,267 @@ def test_handle_ledger_does_not_retry_without_stable_identity(
     assert ledger.owns(77)
 
 
+@pytest.mark.parametrize("failure_stage", ("close", "identity", "retry"))
+def test_handle_ledger_normalizes_arbitrary_close_failure(
+    monkeypatch: pytest.MonkeyPatch, failure_stage: str
+) -> None:
+    module = _module()
+    ledger = module._HandleOwnershipLedger()
+    ledger.register(77, resource_type="fd", identity=(1, 2))
+
+    close_calls: list[int] = []
+
+    def close(handle: int, **_kwargs: object) -> None:
+        close_calls.append(handle)
+        if failure_stage == "close" or (
+            failure_stage == "retry" and len(close_calls) == 2
+        ):
+            raise RuntimeError("close details must not escape")
+        if failure_stage in {"identity", "retry"} and len(close_calls) == 1:
+            raise OSError("close outcome is unknown")
+
+    monkeypatch.setattr(module, "_close_bound_handle", close)
+    monkeypatch.setattr(
+        module,
+        "_bound_handle_identity",
+        lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(RuntimeError("identity details must not escape"))
+            if failure_stage == "identity"
+            else (1, 2)
+        ),
+    )
+
+    assert module._close_ledger_handle(ledger, 77) is False
+    assert ledger.owns(77)
+    expected_calls = [77] if failure_stage == "identity" else [77, 77]
+    assert close_calls == expected_calls
+
+
+def test_open_verified_file_keeps_primary_code_when_close_raises_runtime_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"source")
+    snapshot = module._snapshot_file(
+        source, max_bytes=module.MAX_INPUT_BYTES, code="RELEASE_INPUT_PATH_INVALID"
+    )
+    monkeypatch.setattr(module, "_close_bound_handle", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("close details must not escape")))
+    monkeypatch.setattr(module.os, "open", lambda *_args, **_kwargs: 77)
+    monkeypatch.setattr(module, "_bound_handle_identity", lambda *_args, **_kwargs: snapshot.identity)
+
+    class FailingStream:
+        def close(self) -> None:
+            raise RuntimeError("stream close details must not escape")
+
+    monkeypatch.setattr(module.os, "fdopen", lambda *_args, **_kwargs: FailingStream())
+    with pytest.raises(module.ReleaseViolation) as caught:
+        with module._open_verified_file(
+            snapshot,
+            max_bytes=module.MAX_INPUT_BYTES,
+            code="RELEASE_INPUT_PATH_INVALID",
+        ):
+            raise module.ReleaseViolation("RELEASE_SOURCE_STATE_INVALID")
+    assert caught.value.code == "RELEASE_SOURCE_STATE_INVALID"
+    assert caught.value.cleanup_lease is not None
+
+
+def test_create_output_file_keeps_primary_code_when_close_raises_runtime_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    output = tmp_path / "output.bin"
+    monkeypatch.setattr(module, "_close_bound_handle", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("close details must not escape")))
+    monkeypatch.setattr(module.os, "open", lambda *_args, **_kwargs: 77)
+    monkeypatch.setattr(module, "_bound_handle_identity", lambda *_args, **_kwargs: (1, 2))
+
+    class FailingStream:
+        def close(self) -> None:
+            raise RuntimeError("stream close details must not escape")
+
+    monkeypatch.setattr(module.os, "fdopen", lambda *_args, **_kwargs: FailingStream())
+    with pytest.raises(module.ReleaseViolation) as caught:
+        with module._create_output_file(output):
+            raise module.ReleaseViolation("RELEASE_SOURCE_STATE_INVALID")
+    assert caught.value.code == "RELEASE_SOURCE_STATE_INVALID"
+    assert caught.value.cleanup_lease is not None
+
+
+def test_validated_staging_path_normalizes_arbitrary_error_and_keeps_cleanup_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    staged = tmp_path / ".release.staging-test"
+    staged.mkdir()
+    token = module._StagingDirectoryToken(
+        parent=tmp_path,
+        name=staged.name,
+        prefix=".release.staging-",
+        parent_identity=(1,),
+        identity=(2,),
+        is_reparse_point=False,
+        parent_handle=11,
+        directory_handle=22,
+    )
+    calls = 0
+
+    def open_directory(*_args: object) -> tuple[int, tuple[int, ...]]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return 77, (1,)
+        raise RuntimeError("directory details must not escape")
+
+    monkeypatch.setattr(module, "_open_bound_directory", open_directory)
+    monkeypatch.setattr(module, "_close_bound_handle", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("close details must not escape")))
+    monkeypatch.setattr(
+        module,
+        "_bound_handle_identity",
+        lambda handle, **_kwargs: (1,) if handle in (11, 77) else (2,),
+    )
+    with pytest.raises(module.ReleaseViolation) as caught:
+        module._validated_staging_path(
+            token, staged, "RELEASE_OUTPUT_PATH_INVALID"
+        )
+    assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
+    assert caught.value.cleanup_lease is not None
+    assert caught.value.cleanup_lease.owns(77)
+
+
+def test_validate_staging_contents_normalizes_path_iteration_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    staged = tmp_path / ".release.staging-test"
+    staged.mkdir()
+    child = module._StagedChildToken(
+        "asset.bin", module._FileSnapshot(staged, (1, 2, 3, 4), 0), "digest"
+    )
+    token = module._StagingDirectoryToken(
+        parent=tmp_path,
+        name=staged.name,
+        prefix=".release.staging-",
+        parent_identity=(1,),
+        identity=(2,),
+        is_reparse_point=False,
+        parent_handle=11,
+        directory_handle=22,
+        children=(child,),
+    )
+    monkeypatch.setattr(module, "_validated_staging_path", lambda *_args: staged)
+    monkeypatch.setattr(
+        Path,
+        "iterdir",
+        lambda _path: (_ for _ in ()).throw(
+            RuntimeError("iteration details must not escape")
+        ),
+    )
+    with pytest.raises(module.ReleaseViolation) as caught:
+        module._validate_staging_contents(token, staged)
+    assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
+    assert token.ledger.owns(11)
+    assert token.ledger.owns(22)
+
+
+def test_validate_staging_contents_normalizes_child_identity_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    staged = tmp_path / ".release.staging-test"
+    staged.mkdir()
+    child_path = staged / "asset.bin"
+    child_path.write_bytes(b"asset")
+    child = module._StagedChildToken(
+        "asset.bin",
+        module._snapshot_file(
+            child_path, max_bytes=module.MAX_INPUT_BYTES, code="RELEASE_ASSET_DIGEST_MISMATCH"
+        ),
+        "digest",
+        77,
+    )
+    token = module._StagingDirectoryToken(
+        parent=tmp_path,
+        name=staged.name,
+        prefix=".release.staging-",
+        parent_identity=(1,),
+        identity=(2,),
+        is_reparse_point=False,
+        parent_handle=11,
+        directory_handle=22,
+        children=(child,),
+    )
+    monkeypatch.setattr(module, "_validated_staging_path", lambda *_args: staged)
+    monkeypatch.setattr(module, "_bound_handle_identity", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("identity details must not escape")))
+    monkeypatch.setattr(module, "_staging_file_limit", lambda _name: (module.MAX_INPUT_BYTES, "RELEASE_ASSET_DIGEST_MISMATCH"))
+    with pytest.raises(module.ReleaseViolation) as caught:
+        module._validate_staging_contents(token, staged)
+    assert caught.value.code == "RELEASE_ASSET_DIGEST_MISMATCH"
+    assert token.ledger.owns(77)
+
+
+def test_validate_staging_contents_normalizes_snapshot_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    staged = tmp_path / ".release.staging-test"
+    staged.mkdir()
+    (staged / "asset.bin").write_bytes(b"asset")
+    child = module._StagedChildToken(
+        "asset.bin", module._FileSnapshot(staged, (1, 2, 3, 4), 0), "digest", 77
+    )
+    token = module._StagingDirectoryToken(
+        parent=tmp_path,
+        name=staged.name,
+        prefix=".release.staging-",
+        parent_identity=(1,),
+        identity=(2,),
+        is_reparse_point=False,
+        parent_handle=11,
+        directory_handle=22,
+        children=(child,),
+    )
+    monkeypatch.setattr(module, "_validated_staging_path", lambda *_args: staged)
+    monkeypatch.setattr(module, "_snapshot_file", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("snapshot details must not escape")))
+    monkeypatch.setattr(module, "_staging_file_limit", lambda _name: (module.MAX_INPUT_BYTES, "RELEASE_ASSET_DIGEST_MISMATCH"))
+    with pytest.raises(module.ReleaseViolation) as caught:
+        module._validate_staging_contents(token, staged)
+    assert caught.value.code == "RELEASE_ASSET_DIGEST_MISMATCH"
+    assert token.ledger.owns(77)
+
+
+def test_bind_directory_normalizes_arbitrary_path_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(
+        module,
+        "_has_reparse_component",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("path details must not escape")
+        ),
+    )
+    with pytest.raises(module.ReleaseViolation) as caught:
+        module._bind_directory(tmp_path, 0)
+    assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
+
+
+def test_bind_directory_preserves_nested_cleanup_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    lease = module._HandleOwnershipLedger()
+    lease.register(77, resource_type="directory", identity=(1,))
+    nested = module.ReleaseViolation(
+        "RELEASE_OUTPUT_PATH_INVALID", cleanup_lease=lease
+    )
+    monkeypatch.setattr(module, "_open_bound_directory", lambda *_args: (_ for _ in ()).throw(nested))
+    with pytest.raises(module.ReleaseViolation) as caught:
+        module._bind_directory(tmp_path, 0)
+    assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
+    assert caught.value.cleanup_lease is lease
+    assert lease.owns(77)
+
+
 def test_close_bound_handles_attempts_all_handles_after_one_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -421,7 +421,7 @@ def _close_ledger_handle(
         return True
     try:
         _close_bound_handle(handle, resource_type=record.resource_type)
-    except (OSError, ValueError):
+    except Exception:
         # A second close is safe only when the original resource has a stable
         # identity and the numeric handle still names that same resource.
         if not verify_identity or record.identity is None:
@@ -434,11 +434,11 @@ def _close_ledger_handle(
                 != record.identity
             ):
                 return False
-        except (OSError, ValueError, ReleaseViolation):
+        except Exception:
             return False
         try:
             _close_bound_handle(handle, resource_type=record.resource_type)
-        except (OSError, ValueError):
+        except Exception:
             return False
     ledger.release(handle)
     return True
@@ -699,7 +699,7 @@ def _open_verified_file(
             raise ReleaseViolation(
                 "RELEASE_RESOURCE_CLOSE_FAILED", cleanup_lease=lease
             )
-        if close_failed and primary_error is not None:
+        if close_failed and isinstance(primary_error, Exception):
             raise _error_with_cleanup(primary_error, lease, code) from primary_error
 
 
@@ -855,7 +855,7 @@ def _create_output_file(
             raise ReleaseViolation(
                 "RELEASE_RESOURCE_CLOSE_FAILED", cleanup_lease=lease
             )
-        if close_failed and primary_error is not None:
+        if close_failed and isinstance(primary_error, Exception):
             raise _error_with_cleanup(
                 primary_error, lease, "RELEASE_OUTPUT_PATH_INVALID"
             ) from primary_error
@@ -1096,19 +1096,21 @@ def _open_bound_directory(path: Path, access: int) -> tuple[int, tuple[int, ...]
 
 
 def _bind_directory(path: Path, access: int) -> _DirectoryBinding:
-    candidate = path.absolute()
     try:
+        candidate = path.absolute()
         if _has_reparse_component(candidate) or _is_reparse_point(candidate):
             _fail("RELEASE_OUTPUT_PATH_INVALID")
         resolved = candidate.resolve(strict=True)
         if not resolved.is_dir():
             _fail("RELEASE_OUTPUT_PATH_INVALID")
         handle, identity = _open_bound_directory(resolved, access)
-    except (FileNotFoundError, OSError, ProfileViolation):
-        _fail("RELEASE_OUTPUT_PATH_INVALID")
-    binding = _DirectoryBinding(resolved, identity, handle)
-    binding.ledger.set_identity(handle, identity)
-    return binding
+        binding = _DirectoryBinding(resolved, identity, handle)
+        binding.ledger.set_identity(handle, identity)
+        return binding
+    except ReleaseViolation:
+        raise
+    except Exception as error:
+        raise ReleaseViolation("RELEASE_OUTPUT_PATH_INVALID") from error
 
 
 def _ntdll_open_relative_directory(
@@ -1313,12 +1315,13 @@ def _snapshot_staging_directory(
 def _validated_staging_path(
     token: _StagingDirectoryToken, staged: Path, code: str
 ) -> Path:
-    candidate = staged.absolute()
     if token.parent_handle is None or token.directory_handle is None:
         _fail(code)
     current_handles: list[int] = []
-    primary_error: ReleaseViolation | None = None
+    candidate: Path | None = None
+    primary_error: BaseException | None = None
     try:
+        candidate = staged.absolute()
         parent = candidate.parent.resolve(strict=True)
         info = candidate.lstat()
         is_reparse = _is_reparse_point(candidate)
@@ -1358,8 +1361,11 @@ def _validated_staging_path(
             _fail(code)
     except ReleaseViolation as error:
         primary_error = error
-    except (FileNotFoundError, OSError, ProfileViolation):
+    except Exception as error:
         primary_error = ReleaseViolation(code)
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
         close_failed = False
         closed: set[int] = set()
@@ -1369,10 +1375,13 @@ def _validated_staging_path(
             closed.add(handle)
             if not _close_ledger_handle(token.ledger, handle):
                 close_failed = True
-        if primary_error is None and close_failed:
-            primary_error = ReleaseViolation(code)
+        if close_failed and primary_error is None:
+            primary_error = ReleaseViolation(code, cleanup_lease=token.ledger)
+        elif close_failed and isinstance(primary_error, Exception):
+            primary_error = _error_with_cleanup(primary_error, token.ledger, code)
     if primary_error is not None:
         raise primary_error
+    assert candidate is not None
     return candidate
 
 
@@ -1583,28 +1592,33 @@ def _validate_staging_contents(
         _fail("RELEASE_MANIFEST_INVALID")
     try:
         entries = tuple(path.iterdir())
-    except OSError:
-        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    except ReleaseViolation:
+        raise
+    except Exception as error:
+        raise ReleaseViolation("RELEASE_OUTPUT_PATH_INVALID") from error
     expected = tuple(child.name for child in token.children)
     if tuple(sorted(entry.name for entry in entries)) != expected:
         _fail("RELEASE_MANIFEST_INVALID")
     for child in token.children:
-        if child.handle is not None:
-            try:
+        try:
+            if child.handle is not None:
                 record = token.ledger.record(child.handle)
                 _bound_handle_identity(
                     child.handle,
                     resource_type=record.resource_type if record else "handle",
                 )
-            except (OSError, ValueError):
+            limit, code = _staging_file_limit(child.name)
+            snapshot = _snapshot_file(path / child.name, max_bytes=limit, code=code)
+            if snapshot.identity != child.snapshot.identity or snapshot.size != child.snapshot.size:
                 _fail("RELEASE_ASSET_DIGEST_MISMATCH")
-        limit, code = _staging_file_limit(child.name)
-        snapshot = _snapshot_file(path / child.name, max_bytes=limit, code=code)
-        if snapshot.identity != child.snapshot.identity or snapshot.size != child.snapshot.size:
-            _fail("RELEASE_ASSET_DIGEST_MISMATCH")
-        digest, _ = _digest_file(snapshot, max_bytes=limit, code=code)
-        if digest != child.digest:
-            _fail("RELEASE_ASSET_DIGEST_MISMATCH")
+            digest, _ = _digest_file(snapshot, max_bytes=limit, code=code)
+            if digest != child.digest:
+                _fail("RELEASE_ASSET_DIGEST_MISMATCH")
+        except ReleaseViolation:
+            raise
+        except Exception as error:
+            code = _staging_file_limit(child.name)[1]
+            raise ReleaseViolation(code) from error
 
 
 def _load_renameat2():
