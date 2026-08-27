@@ -1150,9 +1150,16 @@ def _bind_staging_contents(
                 _StagedChildToken(entry.name, snapshot, digest, child_handle)
             )
         except BaseException:
+            handles = [child.handle for child in children]
             if child_handle is not None:
+                handles.append(child_handle)
+            attempted: set[int] = set()
+            for handle in handles:
+                if handle is None or handle in attempted:
+                    continue
+                attempted.add(handle)
                 try:
-                    _close_bound_handle(child_handle)
+                    _close_bound_handle(handle)
                 except Exception:
                     pass
             raise

@@ -852,18 +852,120 @@ def test_bind_staging_contents_rejects_child_replacement_after_open(
         shutil.rmtree(parent, ignore_errors=True)
 
 
+def test_bind_staging_contents_closes_completed_children_on_later_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    _, output, _ = _stage(tmp_path, monkeypatch)
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    staging = parent / ".release.staging-test"
+    shutil.copytree(output, staging)
+    parent_binding = module._bind_directory(parent, 0x00000080 | 0x00000001)
+    token = module._snapshot_staging_directory(
+        staging, ".release.staging-", parent_binding
+    )
+    original_close = module._close_bound_handle
+    original_snapshot = module._snapshot_file
+    original_identity = module._bound_handle_identity
+    opened: list[int] = []
+    closed: list[int] = []
+    snapshots = 0
+
+    def open_all_children(
+        bound_token: object, name: str, code: str
+    ) -> int:
+        handle = 1001 + len(opened)
+        opened.append(handle)
+        return handle
+
+    def snapshot_then_fail(
+        path: Path, *, max_bytes: int, code: str
+    ) -> object:
+        nonlocal snapshots
+        snapshots += 1
+        if snapshots == 2:
+            raise module.ReleaseViolation("RELEASE_ASSET_DIGEST_MISMATCH")
+        return original_snapshot(path, max_bytes=max_bytes, code=code)
+
+    def close_and_report(handle: int) -> None:
+        closed.append(handle)
+        if handle in opened:
+            raise OSError("child close failed")
+        original_close(handle)
+
+    monkeypatch.setattr(module, "_open_bound_staged_child", open_all_children)
+    monkeypatch.setattr(module, "_snapshot_file", snapshot_then_fail)
+    monkeypatch.setattr(
+        module,
+        "_bound_handle_identity",
+        lambda handle: (0, 0, 0) if handle in opened else original_identity(handle),
+    )
+    monkeypatch.setattr(module, "_path_identity_matches_handle", lambda *_args: True)
+    monkeypatch.setattr(module, "_close_bound_handle", close_and_report)
+    try:
+        with pytest.raises(
+            module.ReleaseViolation,
+            match="^RELEASE_ASSET_DIGEST_MISMATCH$",
+        ):
+            module._bind_staging_contents(token, staging)
+        assert opened
+        assert len(opened) == 2
+        observed_child_closes = tuple(closed)
+        child_closes = tuple(handle for handle in observed_child_closes if handle in opened)
+        assert child_closes.count(opened[0]) == 1, (
+            f"opened={opened}, closed={observed_child_closes}"
+        )
+        assert child_closes.count(opened[1]) == 1, (
+            f"opened={opened}, closed={observed_child_closes}"
+        )
+    finally:
+        module._close_staging_token(token)
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(parent, ignore_errors=True)
+
+
 def test_stage_rejects_active_document_drift_before_publish(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = _module()
     monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    project = tmp_path / "project"
+    shutil.copytree(
+        ROOT,
+        project,
+        ignore=shutil.ignore_patterns(
+            ".analysis",
+            ".git",
+            ".local-audit",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".superpowers",
+            ".tmp",
+            "__pycache__",
+            "build",
+            "dist",
+            "venv",
+            ".venv",
+        ),
+    )
     installer, portable, skill = _inputs(tmp_path)
     output = tmp_path / "release"
     documents = (
-        ROOT / "docs/security/integrations-preview-status.json",
-        ROOT / "docs/security/integrations-preview.md",
+        project / "docs/security/integrations-preview-status.json",
+        project / "docs/security/integrations-preview.md",
     )
     originals = tuple(path.read_bytes() for path in documents)
+    original_stats = tuple(
+        (
+            path.stat().st_dev,
+            path.stat().st_ino,
+            path.stat().st_size,
+            path.stat().st_mtime_ns,
+        )
+        for path in documents
+    )
     original_publish = module._publish_staged_output
 
     def drift_then_publish(staged: Path, target: Path, *args: object, **kwargs: object) -> None:
@@ -871,13 +973,17 @@ def test_stage_rejects_active_document_drift_before_publish(
         try:
             original_publish(staged, target, *args, **kwargs)
         finally:
-            documents[0].write_bytes(originals[0])
-            documents[1].write_bytes(originals[1])
+            for path, data, stat_info in zip(documents, originals, original_stats):
+                path.write_bytes(data)
+                os.utime(
+                    path,
+                    ns=(stat_info[3], stat_info[3]),
+                )
 
     monkeypatch.setattr(module, "_publish_staged_output", drift_then_publish)
     with pytest.raises(module.ReleaseViolation, match="^RELEASE_SOURCE_STATE_INVALID$"):
         module.stage_public_preview_release(
-            ROOT,
+            project,
             output,
             installer_path=installer,
             portable_path=portable,
@@ -886,6 +992,16 @@ def test_stage_rejects_active_document_drift_before_publish(
             built_at=BUILT_AT,
         )
     assert not output.exists()
+    assert tuple(path.read_bytes() for path in documents) == originals
+    assert tuple(
+        (
+            path.stat().st_dev,
+            path.stat().st_ino,
+            path.stat().st_size,
+            path.stat().st_mtime_ns,
+        )
+        for path in documents
+    ) == original_stats
 
 
 def test_stage_rechecks_assets_after_child_handles_close(
