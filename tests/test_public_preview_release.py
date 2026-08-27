@@ -773,6 +773,7 @@ def test_bind_staging_contents_uses_non_writable_child_handles(
     token = module._snapshot_staging_directory(
         staging, ".release.staging-", parent_binding
     )
+    original_identity = module._bound_handle_identity
     calls: list[tuple[str, dict[str, object]]] = []
 
     def capture(_token: object, name: str, **kwargs: object) -> int:
@@ -781,6 +782,18 @@ def test_bind_staging_contents_uses_non_writable_child_handles(
 
     monkeypatch.setattr(module, "_ntdll_create_staging_file", capture)
     monkeypatch.setattr(module, "_close_bound_handle", lambda _handle: None)
+
+    def matching_identity(_handle: int) -> tuple[int, int, int]:
+        if not calls:
+            return original_identity(_handle)
+        info = (staging / calls[-1][0]).stat()
+        return (
+            info.st_dev & 0xFFFFFFFF,
+            (info.st_ino >> 32) & 0xFFFFFFFF,
+            info.st_ino & 0xFFFFFFFF,
+        )
+
+    monkeypatch.setattr(module, "_bound_handle_identity", matching_identity)
     try:
         bound = module._bind_staging_contents(token, staging)
         assert tuple(name for name, _kwargs in calls) == module.RELEASE_ASSET_NAMES
@@ -792,6 +805,47 @@ def test_bind_staging_contents_uses_non_writable_child_handles(
             for _, kwargs in calls
         )
         assert all(child.handle == 99 for child in bound.children)
+    finally:
+        module._close_staging_token(token)
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(parent, ignore_errors=True)
+
+
+def test_bind_staging_contents_rejects_child_replacement_after_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    _, output, _ = _stage(tmp_path, monkeypatch)
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    staging = parent / ".release.staging-test"
+    shutil.copytree(output, staging)
+    parent_binding = module._bind_directory(parent, 0x00000080 | 0x00000001)
+    token = module._snapshot_staging_directory(
+        staging, ".release.staging-", parent_binding
+    )
+    original_snapshot = module._snapshot_file
+    replaced = False
+
+    def replace_after_open(
+        path: Path, *, max_bytes: int, code: str
+    ) -> object:
+        nonlocal replaced
+        if not replaced and path.name == module.PORTABLE_NAME:
+            replacement = tmp_path / "replacement.zip"
+            replacement.write_bytes(b"replacement after child open")
+            path.unlink()
+            os.replace(replacement, path)
+            replaced = True
+        return original_snapshot(path, max_bytes=max_bytes, code=code)
+
+    monkeypatch.setattr(module, "_snapshot_file", replace_after_open)
+    try:
+        with pytest.raises(
+            module.ReleaseViolation,
+            match="^RELEASE_ASSET_DIGEST_MISMATCH$",
+        ):
+            module._bind_staging_contents(token, staging)
     finally:
         module._close_staging_token(token)
         shutil.rmtree(staging, ignore_errors=True)

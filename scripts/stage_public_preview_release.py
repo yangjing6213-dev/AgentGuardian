@@ -191,6 +191,22 @@ def _file_identity(info: os.stat_result) -> tuple[int, int, int, int]:
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
 
 
+def _path_identity_matches_handle(
+    snapshot: _FileSnapshot, handle_identity: tuple[int, ...]
+) -> bool:
+    if os.name == "nt":
+        if len(handle_identity) != 3:
+            return False
+        file_index = (int(handle_identity[1]) << 32) | int(handle_identity[2])
+        return (
+            int(snapshot.identity[0]) & 0xFFFFFFFF,
+            int(snapshot.identity[1]),
+        ) == (int(handle_identity[0]), file_index)
+    if os.name == "posix":
+        return snapshot.identity[:2] == handle_identity[:2]
+    return False
+
+
 def _directory_identity(info: os.stat_result) -> tuple[int, int]:
     return (info.st_dev, info.st_ino)
 
@@ -1123,6 +1139,12 @@ def _bind_staging_contents(
         try:
             child_handle = _open_bound_staged_child(token, entry.name, code)
             snapshot = _snapshot_file(entry, max_bytes=limit, code=code)
+            try:
+                handle_identity = _bound_handle_identity(child_handle)
+            except (OSError, ValueError):
+                _fail("RELEASE_ASSET_DIGEST_MISMATCH")
+            if not _path_identity_matches_handle(snapshot, handle_identity):
+                _fail("RELEASE_ASSET_DIGEST_MISMATCH")
             digest, _ = _digest_file(snapshot, max_bytes=limit, code=code)
             children.append(
                 _StagedChildToken(entry.name, snapshot, digest, child_handle)
