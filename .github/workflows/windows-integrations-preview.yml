@@ -124,8 +124,8 @@ jobs:
             --built-at $env:COMMIT_UTC `
             --artifact-status unsigned_development_only `
             --release-profile integrations_preview
-          $first = @(Get-ChildItem -LiteralPath $env:PORTABLE_ONE -Filter 'AgentGuardian-0.3.0-preview.1-windows-x64-*.zip' -File)
-          $second = @(Get-ChildItem -LiteralPath $env:PORTABLE_TWO -Filter 'AgentGuardian-0.3.0-preview.1-windows-x64-*.zip' -File)
+          $first = @(Get-ChildItem -LiteralPath $env:PORTABLE_ONE -Filter 'AgentGuardian-0.3.0-preview.1-windows-x64.zip' -File)
+          $second = @(Get-ChildItem -LiteralPath $env:PORTABLE_TWO -Filter 'AgentGuardian-0.3.0-preview.1-windows-x64.zip' -File)
           if (($first.Count -ne 1) -or ($second.Count -ne 1)) { throw 'portable output is invalid' }
           $firstHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $first[0].FullName).Hash
           $secondHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $second[0].FullName).Hash
@@ -202,7 +202,7 @@ jobs:
           New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
 
           $installer = Get-Item -LiteralPath $env:INSTALLER_PATH -ErrorAction Stop
-          $portableCandidates = @(Get-ChildItem -LiteralPath $env:PORTABLE_ONE -Filter 'AgentGuardian-0.3.0-preview.1-windows-x64-*.zip' -File)
+          $portableCandidates = @(Get-ChildItem -LiteralPath $env:PORTABLE_ONE -Filter 'AgentGuardian-0.3.0-preview.1-windows-x64.zip' -File)
           if ($portableCandidates.Count -ne 1) {
             throw 'downloadable portable artifact count is invalid'
           }

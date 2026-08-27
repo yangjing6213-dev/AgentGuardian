@@ -276,6 +276,82 @@ def test_portable_build_verifies_source_then_payload_and_records_profile_digest(
     assert events.index("snapshot_unchanged") < events.index("zip")
 
 
+def test_integrations_preview_portable_uses_profile_filename(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import scripts.build_windows_portable as build_module
+    import scripts.verify_integrations_preview_profile as preview_verifier
+
+    commit = "a" * 40
+    snapshot = preview_verifier.load_profile_snapshot(
+        PROJECT_ROOT, PROJECT_ROOT / "release_profiles/integrations_preview.json"
+    )
+    destinations: list[Path] = []
+
+    monkeypatch.setattr(build_module.sys, "platform", "win32")
+    monkeypatch.setattr(build_module.sys, "version_info", (3, 12))
+    monkeypatch.setattr(build_module, "_git", lambda _root, *args: commit if args == ("rev-parse", "HEAD") else "")
+    monkeypatch.setattr(build_module, "load_integrations_preview_profile_snapshot", lambda *args: snapshot)
+    monkeypatch.setattr(build_module, "_require_current_source_identity", lambda *args: None)
+    monkeypatch.setattr(build_module, "validate_build_dependency_snapshot", lambda: {})
+    monkeypatch.setattr(build_module, "build_integrations_preview_pyinstaller_command", lambda *args: ("fake",))
+    monkeypatch.setattr(build_module.subprocess, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(build_module, "_materialize_integrations_preview_skill", lambda *args: None)
+    monkeypatch.setattr(build_module, "validate_integrations_preview_layout", lambda *args: None)
+    monkeypatch.setattr(build_module, "_write_integrations_preview_profile_evidence", lambda *args: None)
+    monkeypatch.setattr(preview_verifier, "verify_profile", lambda *args: None)
+    monkeypatch.setattr(preview_verifier, "verify_payload", lambda *args: None)
+    monkeypatch.setattr(preview_verifier, "verify_profile_evidence", lambda *args: None)
+    monkeypatch.setattr(build_module, "runtime_library_versions", lambda: ("3.12.2", "3.0.13"))
+    monkeypatch.setattr(build_module, "_pe_version", lambda path: "14.0.0.0")
+    monkeypatch.setattr(build_module, "portable_component_specs", lambda **kwargs: ())
+    monkeypatch.setattr(build_module, "write_portable_evidence", lambda *args, **kwargs: None)
+    monkeypatch.setattr(build_module, "require_profile_snapshot_unchanged", lambda *args: None)
+    monkeypatch.setattr(
+        build_module,
+        "deterministic_zip",
+        lambda _bundle, destination: destinations.append(destination) or destination,
+    )
+
+    build_module.build_portable(
+        tmp_path,
+        tmp_path / "output",
+        source_commit=commit,
+        built_at="2026-08-25T00:00:00Z",
+        release_profile="integrations_preview",
+    )
+
+    assert destinations == [tmp_path / "output" / snapshot.profile["portable_filename"]]
+
+
+def test_private_beta_portable_keeps_sha_suffixed_filename(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import scripts.build_windows_portable as build_module
+
+    commit = "b" * 40
+    destinations: list[Path] = []
+    _prepare_portable_build(monkeypatch, commit=commit, events=[])
+    monkeypatch.setattr(
+        build_module,
+        "deterministic_zip",
+        lambda _bundle, destination: destinations.append(destination) or destination,
+    )
+
+    build_module.build_portable(
+        tmp_path,
+        tmp_path / "output",
+        source_commit=commit,
+        built_at="2026-08-25T00:00:00Z",
+    )
+
+    assert destinations == [
+        tmp_path / "output" / f"AgentGuardian-0.2.0-beta.1-windows-x64-{commit[:12]}.zip"
+    ]
+
+
 def test_personal_profile_evidence_is_canonical_and_digest_bound(tmp_path: Path) -> None:
     import scripts.build_windows_portable as build_module
 

@@ -611,8 +611,7 @@ def _build_integrations_preview_portable(
     )
     deterministic_zip(
         bundle_root,
-        output_root
-        / f"AgentGuardian-0.3.0-preview.1-windows-x64-{source_commit[:12]}.zip",
+        output_root / profile_snapshot.profile["portable_filename"],
     )
     return bundle_root
 

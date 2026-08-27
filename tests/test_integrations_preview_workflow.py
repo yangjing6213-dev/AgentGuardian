@@ -49,9 +49,10 @@ def test_integrations_preview_workflow_is_exact_sha_and_non_publishing() -> None
     ):
         assert required in workflow
     assert profile["installer_filename"] in workflow
+    assert f"-Filter '{profile['portable_filename']}'" in workflow
     assert (
         str(profile["portable_filename"]).removesuffix(".zip") + "-*.zip"
-    ) in workflow
+    ) not in workflow
     assert "pull_request_target" not in workflow
     assert "permissions: write" not in workflow.casefold()
     assert "secrets." not in workflow
