@@ -27,6 +27,11 @@ ASSET_NAMES = (
     "SHA256SUMS",
     "THIRD_PARTY_NOTICES.md",
 )
+DOWNLOAD_VERIFIER = ROOT / "scripts" / "verify_public_preview_download.ps1"
+PRIMARY_DOWNLOAD_URL = (
+    "https://github.com/yangjing6213-dev/AgentGuardian/releases/latest/download/"
+    "AgentGuardian-Setup-Windows-x64.exe"
+)
 
 
 def test_documented_download_route_matches_profile_and_is_not_temporary() -> None:
@@ -53,6 +58,117 @@ def test_documented_download_route_matches_profile_and_is_not_temporary() -> Non
         assert "hqwzhu" not in text.casefold()
         for forbidden in profile["forbidden_document_promises"]:
             assert str(forbidden).casefold() not in text.casefold()
+
+
+def test_public_download_verifier_has_fixed_bounded_request_contract() -> None:
+    script = DOWNLOAD_VERIFIER.read_text(encoding="ascii")
+
+    assert "Set-StrictMode -Version Latest" in script
+    assert f"$downloadUrl = '{PRIMARY_DOWNLOAD_URL}'" in script
+    assert script.count(PRIMARY_DOWNLOAD_URL) == 1
+    assert "[Parameter(Mandatory = $true)]" in script
+    assert "[string]$ExpectedSha256" in script
+    assert "-cnotmatch '^[0-9a-f]{64}$'" in script
+    assert script.count("curl.exe") == 1
+    for flag in (
+        "--fail",
+        "--location",
+        "--max-time 30",
+        "--proto '=https'",
+        "--tlsv1.2",
+        "--output",
+    ):
+        assert flag in script
+    assert "1>$null 2>$null" in script
+    for forbidden in (
+        "--retry",
+        "api.github.com",
+        "/api/",
+        "Authorization",
+        "Bearer ",
+        "token",
+        "hqwzhu",
+        "mirror",
+        "alternate",
+    ):
+        assert forbidden.casefold() not in script.casefold()
+
+
+def test_public_download_verifier_has_safe_digest_json_and_cleanup_contract() -> None:
+    script = DOWNLOAD_VERIFIER.read_text(encoding="ascii")
+
+    assert "Get-FileHash -Algorithm SHA256" in script
+    assert "-ine $normalizedExpected" in script
+    assert "ConvertTo-Json -Compress" in script
+    assert 'actual_sha256' in script
+    assert 'expected_sha256' in script
+    assert 'status' in script
+    assert 'error' in script
+    assert 'exit $exitCode' in script
+    assert 'finally' in script
+    assert 'Remove-Item -LiteralPath $tempPath' in script
+    assert '[Guid]::NewGuid()' in script
+    assert 'Start-Process' not in script
+    assert 'Invoke-Expression' not in script
+    assert '& $tempPath' not in script
+    assert 'DOWNLOAD_REQUEST_FAILED' in script
+    assert 'DOWNLOAD_FILE_MISSING' in script
+    assert 'DOWNLOAD_FILE_EMPTY' in script
+    assert 'DOWNLOAD_DIGEST_MISMATCH' in script
+    assert 'EXPECTED_SHA256_INVALID' in script
+
+
+def test_public_download_verifier_validates_digest_before_network_and_profile_lists_it() -> None:
+    script = DOWNLOAD_VERIFIER.read_text(encoding="ascii")
+    validation = script.index("EXPECTED_SHA256_INVALID")
+    request = script.index("curl.exe")
+    assert validation < request
+    assert "[ValidatePattern" not in script
+
+    profile = json.loads(
+        (ROOT / "release_profiles" / "integrations_preview.json").read_text(
+            encoding="ascii"
+        )
+    )
+    relative = "scripts/verify_public_preview_download.ps1"
+    assert relative in profile["package_input_paths"]
+    assert relative in profile["required_source_paths"]
+
+
+def test_invalid_expected_digest_emits_fixed_json_without_network() -> None:
+    powershell = shutil.which("pwsh") or shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("PowerShell is unavailable")
+
+    completed = subprocess.run(
+        [
+            powershell,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(DOWNLOAD_VERIFIER),
+            "-ExpectedSha256",
+            "not-a-sha256",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode != 0
+    assert completed.stderr == ""
+    payload = json.loads(completed.stdout)
+    assert payload == {
+        "actual_sha256": None,
+        "error": "EXPECTED_SHA256_INVALID",
+        "expected_sha256": None,
+        "status": "fail",
+    }
+    assert completed.stdout.strip() == json.dumps(payload, separators=(",", ":"))
+    assert str(ROOT) not in completed.stdout
 
 
 def _module():
