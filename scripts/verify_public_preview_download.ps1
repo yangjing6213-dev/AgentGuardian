@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
+    # Keep binding non-mandatory so missing input reaches the fixed JSON response path below.
+    [Parameter(Mandatory = $false)]
+    [AllowNull()]
     [AllowEmptyString()]
     [string]$ExpectedSha256
 )
@@ -23,7 +25,8 @@ $result = [ordered]@{
 
 try {
     if ([string]::IsNullOrEmpty($ExpectedSha256) -or
-        $ExpectedSha256 -cnotmatch '^[0-9a-f]{64}$') {
+        $ExpectedSha256.Length -ne 64 -or
+        $ExpectedSha256 -cnotmatch '\A[0-9a-f]{64}\z') {
         $failureCode = 'EXPECTED_SHA256_INVALID'
         throw 'DOWNLOAD_VERIFICATION_STOP'
     }

@@ -66,9 +66,12 @@ def test_public_download_verifier_has_fixed_bounded_request_contract() -> None:
     assert "Set-StrictMode -Version Latest" in script
     assert f"$downloadUrl = '{PRIMARY_DOWNLOAD_URL}'" in script
     assert script.count(PRIMARY_DOWNLOAD_URL) == 1
-    assert "[Parameter(Mandatory = $true)]" in script
+    assert "[Parameter(Mandatory = $false)]" in script
+    assert "Keep binding non-mandatory" in script
+    assert "[AllowNull()]" in script
     assert "[string]$ExpectedSha256" in script
-    assert "-cnotmatch '^[0-9a-f]{64}$'" in script
+    assert "$ExpectedSha256.Length -ne 64" in script
+    assert "-cnotmatch '\\A[0-9a-f]{64}\\z'" in script
     assert script.count("curl.exe") == 1
     for flag in (
         "--fail",
@@ -169,6 +172,99 @@ def test_invalid_expected_digest_emits_fixed_json_without_network() -> None:
     }
     assert completed.stdout.strip() == json.dumps(payload, separators=(",", ":"))
     assert str(ROOT) not in completed.stdout
+
+
+def _run_download_verifier_with_curl_sentinel(
+    tmp_path: Path, invocation: str
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    powershell = shutil.which("pwsh") or shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("PowerShell is unavailable")
+
+    marker = tmp_path / "curl-called.txt"
+    target = str(DOWNLOAD_VERIFIER).replace("'", "''")
+    marker_literal = str(marker).replace("'", "''")
+    harness = tmp_path / "invoke-download-verifier.ps1"
+    harness.write_text(
+        "\n".join(
+            (
+                "$ErrorActionPreference = 'Stop'",
+                f"$marker = '{marker_literal}'",
+                "function curl.exe {",
+                "    Set-Content -LiteralPath $marker -Value 'called' -Encoding ascii",
+                "    $global:LASTEXITCODE = 0",
+                "}",
+                # Keep the probe offline even if command resolution ignores the function.
+                "$env:PATH = $marker.DirectoryName",
+                f"& '{target}' {invocation}".rstrip(),
+                "exit 1",
+            )
+        )
+        + "\n",
+        encoding="utf-8-sig",
+    )
+    return (
+        subprocess.run(
+            [
+                powershell,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(harness),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        ),
+        marker,
+    )
+
+
+def test_missing_expected_digest_emits_fixed_json_without_curl(
+    tmp_path: Path,
+) -> None:
+    completed, marker = _run_download_verifier_with_curl_sentinel(tmp_path, "")
+
+    assert completed.returncode != 0
+    assert completed.stderr == ""
+    payload = json.loads(completed.stdout)
+    assert payload == {
+        "actual_sha256": None,
+        "error": "EXPECTED_SHA256_INVALID",
+        "expected_sha256": None,
+        "status": "fail",
+    }
+    assert completed.stdout.strip() == json.dumps(payload, separators=(",", ":"))
+    assert not marker.exists()
+    assert str(ROOT) not in completed.stdout + completed.stderr
+
+
+def test_expected_digest_with_trailing_newline_is_rejected_without_curl(
+    tmp_path: Path,
+) -> None:
+    completed, marker = _run_download_verifier_with_curl_sentinel(
+        tmp_path,
+        "-ExpectedSha256 (('a' * 64) + [char]10)",
+    )
+
+    assert completed.returncode != 0
+    assert completed.stderr == ""
+    payload = json.loads(completed.stdout)
+    assert payload == {
+        "actual_sha256": None,
+        "error": "EXPECTED_SHA256_INVALID",
+        "expected_sha256": None,
+        "status": "fail",
+    }
+    assert completed.stdout.strip() == json.dumps(payload, separators=(",", ":"))
+    assert not marker.exists()
+    assert str(ROOT) not in completed.stdout + completed.stderr
 
 
 def _module():
