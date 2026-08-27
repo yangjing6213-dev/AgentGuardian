@@ -95,8 +95,12 @@ jobs:
           python scripts/verify_integrations_preview_profile.py --project-root "$pwd" --profile "$pwd\release_profiles\integrations_preview.json"
           python -m compileall -q src scripts tests
           $secretMatches = @(git grep -n -I -E '(sk-[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY)' -- ':!.analysis')
-          if ($LASTEXITCODE -eq 0 -and $secretMatches.Count -gt 0) {
+          $secretScanExitCode = $LASTEXITCODE
+          if ($secretScanExitCode -eq 0) {
             throw 'candidate secret scan found a match'
+          }
+          if (($secretScanExitCode -ne 0) -and ($secretScanExitCode -ne 1)) {
+            throw "candidate secret scan failed with exit code $secretScanExitCode"
           }
           git diff --check
 
@@ -124,8 +128,8 @@ jobs:
             --built-at $env:COMMIT_UTC `
             --artifact-status unsigned_development_only `
             --release-profile integrations_preview
-          $first = @(Get-ChildItem -LiteralPath $env:PORTABLE_ONE -Filter 'AgentGuardian-0.3.0-preview.1-windows-x64.zip' -File)
-          $second = @(Get-ChildItem -LiteralPath $env:PORTABLE_TWO -Filter 'AgentGuardian-0.3.0-preview.1-windows-x64.zip' -File)
+          $first = @(Get-ChildItem -LiteralPath $env:PORTABLE_ONE -Filter 'AgentGuardian-0.3.0-preview.1-windows-x64.zip' -File -Force)
+          $second = @(Get-ChildItem -LiteralPath $env:PORTABLE_TWO -Filter 'AgentGuardian-0.3.0-preview.1-windows-x64.zip' -File -Force)
           if (($first.Count -ne 1) -or ($second.Count -ne 1)) { throw 'portable output is invalid' }
           $firstHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $first[0].FullName).Hash
           $secondHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $second[0].FullName).Hash
@@ -202,9 +206,18 @@ jobs:
           New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
 
           $installer = Get-Item -LiteralPath $env:INSTALLER_PATH -ErrorAction Stop
+          $expectedInstallerSha256 = [string]$env:INSTALLER_SHA256
+          if ($expectedInstallerSha256 -cnotmatch '^[0-9a-fA-F]{64}$') {
+            throw 'lifecycle installer SHA-256 is invalid'
+          }
+          $expectedInstallerSha256 = $expectedInstallerSha256.ToLowerInvariant()
+          $versionedInstallerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer.FullName).Hash.ToLowerInvariant()
+          if ($versionedInstallerHash -cne $expectedInstallerSha256) {
+            throw 'versioned installer SHA-256 does not match lifecycle evidence'
+          }
           $primaryInstallerName = 'AgentGuardian-Setup-Windows-x64.exe'
           $primaryInstallerPath = Join-Path $downloadRoot $primaryInstallerName
-          $portableCandidates = @(Get-ChildItem -LiteralPath $env:PORTABLE_ONE -Filter 'AgentGuardian-0.3.0-preview.1-windows-x64.zip' -File)
+          $portableCandidates = @(Get-ChildItem -LiteralPath $env:PORTABLE_ONE -Filter 'AgentGuardian-0.3.0-preview.1-windows-x64.zip' -File -Force)
           if ($portableCandidates.Count -ne 1) {
             throw 'downloadable portable artifact count is invalid'
           }
@@ -223,8 +236,10 @@ jobs:
             throw 'primary installer alias must not already exist'
           }
           Copy-Item -LiteralPath $installer.FullName -Destination $primaryInstallerPath
-          $versionedInstallerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer.FullName).Hash.ToLowerInvariant()
           $primaryInstallerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $primaryInstallerPath).Hash.ToLowerInvariant()
+          if ($primaryInstallerHash -cne $expectedInstallerSha256) {
+            throw 'primary installer alias SHA-256 does not match lifecycle evidence'
+          }
           if ($versionedInstallerHash -cne $primaryInstallerHash) {
             throw 'primary installer alias SHA-256 mismatch'
           }
@@ -237,7 +252,7 @@ jobs:
             'LICENSE'
             'THIRD_PARTY_NOTICES.md'
           )
-          $payloadFiles = @(Get-ChildItem -LiteralPath $downloadRoot -File | Sort-Object Name)
+          $payloadFiles = @(Get-ChildItem -LiteralPath $downloadRoot -File -Force | Sort-Object Name)
           if ($payloadFiles.Count -ne 6) { throw 'downloadable payload file count is invalid' }
           if (($payloadFiles.Name -join "`n") -cne ($expectedPayloadNames -join "`n")) {
             throw 'downloadable payload file names are invalid'
@@ -283,7 +298,7 @@ jobs:
             }
           }
 
-          $checksumTargets = @(Get-ChildItem -LiteralPath $downloadRoot -File | Sort-Object Name)
+          $checksumTargets = @(Get-ChildItem -LiteralPath $downloadRoot -File -Force | Sort-Object Name)
           $expectedChecksumNames = @($expectedPayloadNames + 'DOWNLOAD-METADATA.json' | Sort-Object)
           if ($checksumTargets.Count -ne 7) { throw 'downloadable checksum target count is invalid' }
           if (($checksumTargets.Name -join "`n") -cne ($expectedChecksumNames -join "`n")) {
@@ -305,9 +320,22 @@ jobs:
           }
 
           $expectedAssetNames = @($expectedChecksumNames + 'SHA256SUMS' | Sort-Object)
-          $finalDirectories = @(Get-ChildItem -LiteralPath $downloadRoot -Directory)
+          $finalDirectories = @(Get-ChildItem -LiteralPath $downloadRoot -Directory -Force)
           if ($finalDirectories.Count -ne 0) { throw 'downloadable staging contains a directory' }
-          $finalFiles = @(Get-ChildItem -LiteralPath $downloadRoot -File | Sort-Object Name)
+          $finalEntries = @(Get-ChildItem -LiteralPath $downloadRoot -Force)
+          foreach ($entry in $finalEntries) {
+            if ($entry.PSIsContainer) {
+              throw 'downloadable staging contains a directory'
+            }
+            if (($entry.Attributes -band [IO.FileAttributes]::Hidden) -ne 0) {
+              throw 'downloadable staging contains a hidden entry'
+            }
+            if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              throw 'downloadable staging contains a reparse point'
+            }
+          }
+          if ($finalEntries.Count -ne 8) { throw 'downloadable final asset count is invalid' }
+          $finalFiles = @($finalEntries | Where-Object { -not $_.PSIsContainer } | Sort-Object Name)
           if ($finalFiles.Count -ne 8) { throw 'downloadable final asset count is invalid' }
           if (($finalFiles.Name -join "`n") -cne ($expectedAssetNames -join "`n")) {
             throw 'downloadable final asset names are invalid'

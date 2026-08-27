@@ -102,6 +102,62 @@ def test_download_staging_materializes_primary_alias_and_exact_asset_contract() 
         assert str(asset) in workflow
 
 
+def test_download_staging_binds_installers_to_lifecycle_sha() -> None:
+    workflow = WORKFLOW.read_text(encoding="ascii")
+    staging = workflow.split(
+        "      - name: Prepare verified downloadable preview files", 1
+    )[1].split("      - name: Archive verified downloadable preview", 1)[0]
+
+    assert "$expectedInstallerSha256 = [string]$env:INSTALLER_SHA256" in staging
+    assert (
+        "$expectedInstallerSha256 -cnotmatch '^[0-9a-fA-F]{64}$'" in staging
+    )
+    assert (
+        "$versionedInstallerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer.FullName).Hash.ToLowerInvariant()"
+        in staging
+    )
+    assert (
+        "if ($versionedInstallerHash -cne $expectedInstallerSha256)" in staging
+    )
+    assert (
+        "$primaryInstallerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $primaryInstallerPath).Hash.ToLowerInvariant()"
+        in staging
+    )
+    assert "if ($primaryInstallerHash -cne $expectedInstallerSha256)" in staging
+    assert "if ($versionedInstallerHash -cne $primaryInstallerHash)" in staging
+
+
+def test_download_staging_enumerates_and_rejects_unsafe_entries() -> None:
+    workflow = WORKFLOW.read_text(encoding="ascii")
+    staging = workflow.split(
+        "      - name: Prepare verified downloadable preview files", 1
+    )[1].split("      - name: Archive verified downloadable preview", 1)[0]
+
+    for command in re.findall(r"Get-ChildItem[^\r\n]*", workflow):
+        assert re.search(r"\s-Force(?:\s|[)\r\n]|$)", command)
+    assert "$finalEntries = @(Get-ChildItem -LiteralPath $downloadRoot -Force)" in staging
+    assert "if ($entry.PSIsContainer)" in staging
+    assert "[IO.FileAttributes]::Hidden" in staging
+    assert "[IO.FileAttributes]::ReparsePoint" in staging
+    assert "$finalEntries.Count -ne 8" in staging
+    assert "$finalFiles.Count -ne 8" in staging
+
+
+def test_secret_scan_preserves_exit_code_and_fails_closed_without_output() -> None:
+    workflow = WORKFLOW.read_text(encoding="ascii")
+    scan = workflow.split("$secretMatches = @(git grep", 1)[1].split(
+        "git diff --check", 1
+    )[0]
+
+    assert "$secretScanExitCode = $LASTEXITCODE" in scan
+    assert "if ($secretScanExitCode -eq 0)" in scan
+    assert "if (($secretScanExitCode -ne 0) -and ($secretScanExitCode -ne 1))" in scan
+    assert "candidate secret scan found a match" in scan
+    assert "candidate secret scan failed with exit code $secretScanExitCode" in scan
+    assert "Write-Host $secretMatches" not in scan
+    assert "Write-Output $secretMatches" not in scan
+
+
 def test_integrations_preview_status_is_canonical_and_all_pending() -> None:
     raw = STATUS.read_bytes()
     value = json.loads(raw.decode("ascii"))
