@@ -456,6 +456,11 @@ def _error_with_cleanup(
     error: BaseException, ledger: _HandleOwnershipLedger, fallback_code: str
 ) -> ReleaseViolation:
     code = error.code if isinstance(error, ReleaseViolation) else fallback_code
+    existing_lease = getattr(error, "cleanup_lease", None)
+    if isinstance(existing_lease, _HandleOwnershipLedger):
+        if existing_lease is not ledger:
+            existing_lease.adopt(ledger)
+        return ReleaseViolation(code, cleanup_lease=existing_lease)
     return ReleaseViolation(code, cleanup_lease=ledger)
 
 
@@ -1072,7 +1077,7 @@ def _open_bound_directory(path: Path, access: int) -> tuple[int, tuple[int, ...]
             handle = os.open(path, flags)
             lease.register(handle, resource_type="directory")
             identity = _bound_handle_identity(handle, resource_type="directory")
-        except (OSError, ValueError):
+        except Exception:
             if handle is not None and not _close_ledger_handle(lease, handle):
                 raise ReleaseViolation(
                     "RELEASE_OUTPUT_PATH_INVALID", cleanup_lease=lease

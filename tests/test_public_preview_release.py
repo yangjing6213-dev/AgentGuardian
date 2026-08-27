@@ -1596,6 +1596,108 @@ def test_cleanup_path_adopts_open_directory_lease_on_failure(
     assert token.ledger.record(5678) == foreign_lease.record(5678)
 
 
+def test_open_bound_posix_directory_query_exception_keeps_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module.os, "name", "posix")
+    monkeypatch.setattr(module.os, "open", lambda *_args, **_kwargs: 88)
+    monkeypatch.setattr(
+        module,
+        "_bound_handle_identity",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("query failed")),
+    )
+    close_calls: list[int] = []
+
+    def close_fails(handle: int, **_kwargs: object) -> None:
+        close_calls.append(handle)
+        raise OSError("close failed")
+
+    monkeypatch.setattr(module, "_close_bound_handle", close_fails)
+    with pytest.raises(module.ReleaseViolation) as caught:
+        module._open_bound_directory(tmp_path, 0)
+    assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
+    assert caught.value.cleanup_lease is not None
+    assert caught.value.cleanup_lease.owns(88)
+    assert close_calls == [88]
+
+
+def test_error_with_cleanup_merges_existing_and_new_leases() -> None:
+    module = _module()
+    existing = module._HandleOwnershipLedger()
+    existing.register(11, resource_type="directory", identity=(1,))
+    new = module._HandleOwnershipLedger()
+    new.register(22, resource_type="fd", identity=(2,))
+    primary = module.ReleaseViolation("RELEASE_SOURCE_STATE_INVALID", cleanup_lease=existing)
+
+    updated = module._error_with_cleanup(
+        primary, new, "RELEASE_OUTPUT_PATH_INVALID"
+    )
+
+    assert updated.code == "RELEASE_SOURCE_STATE_INVALID"
+    assert updated.cleanup_lease is not None
+    assert updated.cleanup_lease.owns(11)
+    assert updated.cleanup_lease.owns(22)
+
+
+def test_final_cleanup_merges_primary_token_and_parent_leases() -> None:
+    module = _module()
+    primary_lease = module._HandleOwnershipLedger()
+    primary_lease.register(11, resource_type="fd", identity=(1,))
+    token_lease = module._HandleOwnershipLedger()
+    token_lease.register(22, resource_type="directory", identity=(2,))
+    parent_lease = module._HandleOwnershipLedger()
+    parent_lease.register(33, resource_type="directory", identity=(3,))
+    primary = module.ReleaseViolation(
+        "RELEASE_SOURCE_STATE_INVALID", cleanup_lease=primary_lease
+    )
+
+    merged = module._attach_cleanup_lease(
+        primary, token_lease, "RELEASE_RESOURCE_CLOSE_FAILED"
+    )
+    merged = module._attach_cleanup_lease(
+        merged, parent_lease, "RELEASE_RESOURCE_CLOSE_FAILED"
+    )
+
+    assert isinstance(merged, module.ReleaseViolation)
+    assert merged.code == "RELEASE_SOURCE_STATE_INVALID"
+    assert merged.cleanup_lease is primary_lease
+    assert merged.cleanup_lease.handles() == (11, 22, 33)
+
+
+def test_create_output_file_fdopen_failure_uses_os_close_without_kernel32(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module.os, "name", "nt")
+    monkeypatch.setattr(module.os, "open", lambda *_args, **_kwargs: 77)
+    monkeypatch.setattr(
+        module.os,
+        "fdopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(TypeError("fdopen failed")),
+    )
+    monkeypatch.setattr(module, "_bound_handle_identity", lambda *_args, **_kwargs: (1, 2))
+    close_calls: list[int] = []
+
+    def close_fails(handle: int) -> None:
+        close_calls.append(handle)
+        raise OSError("close failed")
+
+    monkeypatch.setattr(module.os, "close", close_fails)
+
+    def unexpected_kernel32(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("fd cleanup must not call CloseHandle")
+
+    monkeypatch.setattr(ctypes, "WinDLL", unexpected_kernel32)
+    with pytest.raises(module.ReleaseViolation) as caught:
+        with module._create_output_file(tmp_path / "output.bin"):
+            pass
+    assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
+    assert caught.value.cleanup_lease is not None
+    assert caught.value.cleanup_lease.owns(77)
+    assert close_calls == [77, 77]
+
+
 def test_bound_handle_identity_is_pure_query_on_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
