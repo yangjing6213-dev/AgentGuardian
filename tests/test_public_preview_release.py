@@ -2643,6 +2643,181 @@ def test_create_output_file_fdopen_type_error_keeps_fd_lease(
     assert close_calls == [77, 77]
 
 
+def test_open_verified_file_normalizes_unexpected_identity_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"source")
+    snapshot = module._snapshot_file(
+        source, max_bytes=module.MAX_INPUT_BYTES, code="RELEASE_INPUT_PATH_INVALID"
+    )
+    original_close = module._close_bound_handle
+    close_calls: list[tuple[int, str]] = []
+
+    def close_once(handle: int, *, resource_type: str = "handle") -> None:
+        close_calls.append((handle, resource_type))
+        original_close(handle, resource_type=resource_type)
+
+    monkeypatch.setattr(module, "_close_bound_handle", close_once)
+    monkeypatch.setattr(
+        module,
+        "_bound_handle_identity",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("identity details must not escape")
+        ),
+    )
+    with pytest.raises(
+        module.ReleaseViolation, match="^RELEASE_INPUT_PATH_INVALID$"
+    ):
+        with module._open_verified_file(
+            snapshot, max_bytes=module.MAX_INPUT_BYTES, code="RELEASE_INPUT_PATH_INVALID"
+        ):
+            pass
+    assert len(close_calls) == 1
+    assert close_calls[0][1] == "fd"
+
+
+def test_create_output_file_normalizes_unexpected_identity_error_and_closes_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    output = tmp_path / "output.bin"
+    monkeypatch.setattr(module.os, "open", lambda *_args, **_kwargs: 77)
+    monkeypatch.setattr(
+        module,
+        "_bound_handle_identity",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("identity details must not escape")
+        ),
+    )
+    close_calls: list[tuple[int, str]] = []
+
+    def close_once(handle: int, *, resource_type: str = "handle") -> None:
+        close_calls.append((handle, resource_type))
+
+    monkeypatch.setattr(module, "_close_bound_handle", close_once)
+    with pytest.raises(
+        module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"
+    ):
+        with module._create_output_file(output):
+            pass
+    assert close_calls == [(77, "fd")]
+
+
+def test_create_output_file_normalizes_unexpected_write_error(
+    tmp_path: Path,
+) -> None:
+    module = _module()
+    output = tmp_path / "output.bin"
+    with pytest.raises(
+        module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"
+    ):
+        with module._create_output_file(output) as stream:
+            stream.write(b"output")
+            raise RuntimeError("write details must not escape")
+
+
+def test_snapshot_staging_directory_normalizes_error_after_directory_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    staging = parent / ".release.staging-test"
+    staging.mkdir()
+    parent_binding = module._bind_directory(parent, 0)
+    original_file_identity = module._file_identity
+    identity_calls = 0
+    original_close = module._close_bound_handle
+    close_calls: list[int] = []
+
+    def fail_after_directory_open(value: object) -> tuple[int, ...]:
+        nonlocal identity_calls
+        identity_calls += 1
+        if identity_calls == 2:
+            raise RuntimeError("directory identity details must not escape")
+        return original_file_identity(value)
+
+    def close_once(handle: int, *, resource_type: str = "handle") -> None:
+        close_calls.append(handle)
+        original_close(handle, resource_type=resource_type)
+
+    monkeypatch.setattr(module, "_file_identity", fail_after_directory_open)
+    monkeypatch.setattr(module, "_close_bound_handle", close_once)
+    try:
+        with pytest.raises(
+            module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"
+        ):
+            module._snapshot_staging_directory(
+                staging, ".release.staging-", parent_binding
+            )
+        assert len(close_calls) == 1
+    finally:
+        module._close_directory_binding(parent_binding)
+
+
+@pytest.mark.parametrize("cleanup_fails", (False, True))
+def test_bind_staging_contents_normalizes_unexpected_child_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cleanup_fails: bool,
+) -> None:
+    module = _module()
+    _, output, _ = _stage(tmp_path, monkeypatch)
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    staging = parent / ".release.staging-test"
+    shutil.copytree(output, staging)
+    parent_binding = module._bind_directory(parent, 0)
+    token = module._snapshot_staging_directory(
+        staging, ".release.staging-", parent_binding
+    )
+    original_close = module._close_bound_handle
+    opened: list[int] = []
+    closed: list[int] = []
+
+    def open_child(_token: object, _name: str, _code: str) -> int:
+        opened.append(1001)
+        return 1001
+
+    def close_child(handle: int, **_kwargs: object) -> None:
+        closed.append(handle)
+        if cleanup_fails and handle == 1001:
+            raise OSError("child cleanup details must not escape")
+
+    monkeypatch.setattr(module, "_open_bound_staged_child", open_child)
+    monkeypatch.setattr(
+        module,
+        "_snapshot_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("child error details must not escape")
+        ),
+    )
+    monkeypatch.setattr(module, "_close_bound_handle", close_child)
+    first_name = sorted(module.RELEASE_ASSET_NAMES)[0]
+    expected_code = module._staging_file_limit(first_name)[1]
+    try:
+        with pytest.raises(module.ReleaseViolation) as caught:
+            module._bind_staging_contents(token, staging)
+        if cleanup_fails:
+            assert caught.value.code == expected_code
+            assert caught.value.cleanup_lease is not None
+            assert caught.value.cleanup_lease.owns(1001)
+        else:
+            assert caught.value.code == expected_code
+            assert caught.value.cleanup_lease is None
+        assert opened == [1001]
+        assert tuple(handle for handle in closed if handle in opened) == (1001,)
+    finally:
+        if token.ledger.owns(1001):
+            token.ledger.release(1001)
+        monkeypatch.setattr(module, "_close_bound_handle", original_close)
+        module._close_staging_token(token)
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(parent, ignore_errors=True)
+
+
 def test_stage_rejects_source_state_changed_before_publish(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

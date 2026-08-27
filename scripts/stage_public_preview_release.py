@@ -154,7 +154,7 @@ class _StagingBindingError(ReleaseViolation):
             if isinstance(primary_error, ReleaseViolation)
             else "RELEASE_RESOURCE_CLOSE_FAILED"
         )
-        super().__init__(code)
+        super().__init__(code, cleanup_lease=cleanup_token.ledger)
 
 
 @dataclass(frozen=True)
@@ -678,7 +678,7 @@ def _open_verified_file(
     except ReleaseViolation as error:
         primary_error = error
         raise
-    except (FileNotFoundError, OSError, ValueError) as error:
+    except Exception as error:
         primary_error = ReleaseViolation(code)
         raise primary_error from error
     except BaseException as error:
@@ -689,7 +689,7 @@ def _open_verified_file(
         if stream is not None:
             try:
                 stream.close()
-            except (OSError, ValueError):
+            except Exception:
                 close_failed = not _close_ledger_handle(lease, file_descriptor)
             else:
                 lease.release(file_descriptor)
@@ -823,7 +823,7 @@ def _create_output_file(
                 error, lease, "RELEASE_OUTPUT_PATH_INVALID"
             ) from error
         raise
-    except (FileExistsError, OSError, TypeError, ValueError) as error:
+    except Exception as error:
         if descriptor is not None and not _close_ledger_handle(lease, descriptor):
             raise _error_with_cleanup(
                 error, lease, "RELEASE_OUTPUT_PATH_INVALID"
@@ -834,13 +834,19 @@ def _create_output_file(
         if stream is None:
             _fail("RELEASE_OUTPUT_PATH_INVALID")
         yield stream
+    except ReleaseViolation as error:
+        primary_error = error
+        raise
+    except Exception as error:
+        primary_error = ReleaseViolation("RELEASE_OUTPUT_PATH_INVALID")
+        raise primary_error from error
     except BaseException as error:
         primary_error = error
         raise
     finally:
         try:
             stream.close()
-        except (OSError, ValueError):
+        except Exception:
             close_failed = not _close_ledger_handle(lease, descriptor)
         else:
             lease.release(descriptor)
@@ -1277,24 +1283,16 @@ def _snapshot_staging_directory(
         current_info = candidate.lstat()
         if _file_identity(current_info) != _file_identity(info):
             _fail("RELEASE_OUTPUT_PATH_INVALID")
-    except (
-        FileNotFoundError,
-        OSError,
-        ProfileViolation,
-        ReleaseViolation,
-    ) as error:
+    except Exception as error:
         if directory_handle is not None and not _close_ledger_handle(
             directory_lease, directory_handle
         ):
-            raise ReleaseViolation(
-                "RELEASE_OUTPUT_PATH_INVALID", cleanup_lease=directory_lease
-            )
-        cleanup_lease = getattr(error, "cleanup_lease", None)
-        if cleanup_lease is not None:
-            raise ReleaseViolation(
-                "RELEASE_OUTPUT_PATH_INVALID", cleanup_lease=cleanup_lease
-            )
-        _fail("RELEASE_OUTPUT_PATH_INVALID")
+            raise _error_with_cleanup(
+                error, directory_lease, "RELEASE_OUTPUT_PATH_INVALID"
+            ) from error
+        if isinstance(error, ReleaseViolation):
+            raise
+        raise ReleaseViolation("RELEASE_OUTPUT_PATH_INVALID") from error
     if directory_handle is not None:
         directory_lease.release(directory_handle)
         parent_binding.ledger.register(directory_handle)
@@ -1439,7 +1437,7 @@ def _bind_staging_contents(
     path = _validated_staging_path(token, staged, "RELEASE_OUTPUT_PATH_INVALID")
     try:
         entries = tuple(path.iterdir())
-    except OSError:
+    except Exception:
         _fail("RELEASE_MANIFEST_INVALID")
     if tuple(sorted(entry.name for entry in entries)) != tuple(
         sorted(RELEASE_ASSET_NAMES)
@@ -1459,7 +1457,7 @@ def _bind_staging_contents(
                     child_handle,
                     resource_type=record.resource_type if record else "handle",
                 )
-            except (OSError, ValueError):
+            except Exception:
                 _fail("RELEASE_ASSET_DIGEST_MISMATCH")
             token.ledger.set_identity(child_handle, handle_identity)
             if not _path_identity_matches_handle(
@@ -1473,6 +1471,12 @@ def _bind_staging_contents(
                 _StagedChildToken(entry.name, snapshot, digest, child_handle)
             )
         except BaseException as error:
+            if isinstance(error, ReleaseViolation):
+                primary_error = error
+            elif isinstance(error, Exception):
+                primary_error = ReleaseViolation(code)
+            else:
+                primary_error = error
             cleanup_children = list(children)
             if child_handle is not None and not any(
                 child.handle == child_handle for child in cleanup_children
@@ -1491,7 +1495,9 @@ def _bind_staging_contents(
             )
             detached, cleanup_code = _close_staging_child_handles(cleanup_token)
             if cleanup_code is not None:
-                raise _StagingBindingError(error, detached) from error
+                raise _StagingBindingError(primary_error, detached) from error
+            if primary_error is not error:
+                raise primary_error from error
             raise
     return replace(token, children=tuple(sorted(children, key=lambda item: item.name)))
 
