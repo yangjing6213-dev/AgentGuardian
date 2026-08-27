@@ -4,18 +4,17 @@ from __future__ import annotations
 
 import argparse
 import ast
-from dataclasses import dataclass
-from datetime import datetime
-from functools import lru_cache
-from fnmatch import fnmatchcase
 import hashlib
 import json
-from pathlib import Path
 import stat
 import sys
+from dataclasses import dataclass
+from datetime import datetime
+from fnmatch import fnmatchcase
+from functools import lru_cache
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Iterable, Iterator, Mapping
-
 
 MAX_PROFILE_BYTES = 64 * 1024
 MAX_RUNTIME_SOURCE_BYTES = 256 * 1024
@@ -33,14 +32,20 @@ _ROOT_PROJECT_EXCLUSIONS = frozenset(
     {
         ".analysis",
         ".git",
+        ".local-audit",
         ".mypy_cache",
         ".pytest_cache",
         ".ruff_cache",
+        ".superpowers",
+        ".tmp",
         ".tox",
         ".venv",
+        ".worktrees",
         "__pycache__",
         "build",
         "dist",
+        "node_modules",
+        "target",
         "venv",
     }
 )

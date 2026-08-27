@@ -4,17 +4,16 @@ import hashlib
 import importlib
 import json
 import os
-from pathlib import Path, PureWindowsPath
 import re
 import shutil
 import subprocess
 import sys
 import time
 import tomllib
+from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
-
 
 ROOT = Path(__file__).resolve().parents[1]
 PRIVATE_BETA_PROFILE_PATH = (
@@ -1307,7 +1306,18 @@ def test_root_operational_noise_remains_excluded(tmp_path: Path) -> None:
         [*profile["forbidden_source_globs"], "**/blocked.py"]
     )
     _write_profile(root, profile)
-    for noise in ("build", "dist", "__pycache__", ".pytest_cache"):
+    for noise in (
+        "build",
+        "dist",
+        "__pycache__",
+        ".pytest_cache",
+        ".local-audit",
+        ".superpowers",
+        ".tmp",
+        ".worktrees",
+        "node_modules",
+        "target",
+    ):
         blocked = root / noise / "blocked.py"
         blocked.parent.mkdir(parents=True)
         blocked.write_text("root noise", encoding="utf-8")
