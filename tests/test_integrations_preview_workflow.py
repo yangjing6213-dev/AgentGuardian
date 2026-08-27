@@ -18,6 +18,35 @@ def _release_profile() -> dict[str, object]:
     return json.loads(PROFILE.read_text(encoding="ascii"))
 
 
+def _named_run_block(workflow: str, step_name: str) -> str:
+    marker = f"      - name: {step_name}\n"
+    start = workflow.index(marker) + len(marker)
+    remainder = workflow[start:]
+    next_step = re.search(r"^      - (?:name|uses):", remainder, re.MULTILINE)
+    end = start + next_step.start() if next_step else len(workflow)
+    return workflow[start:end]
+
+
+def _assert_each_line_is_checked_immediately(
+    block: str, command_fragment: str, check_fragment: str
+) -> None:
+    lines = block.splitlines()
+    matches = [
+        index
+        for index, line in enumerate(lines)
+        if command_fragment in line and "Assert-NativeSuccess" not in line
+    ]
+    assert matches, f"missing native command: {command_fragment}"
+    for index in matches:
+        next_index = index + 1
+        while next_index < len(lines) and not lines[next_index].strip():
+            next_index += 1
+        assert next_index < len(lines), f"missing check after: {command_fragment}"
+        assert check_fragment in lines[next_index], (
+            f"native command is not checked immediately: {command_fragment}"
+        )
+
+
 def test_integrations_preview_workflow_is_exact_sha_and_non_publishing() -> None:
     workflow = WORKFLOW.read_text(encoding="ascii")
     profile = _release_profile()
@@ -56,6 +85,10 @@ def test_integrations_preview_workflow_is_exact_sha_and_non_publishing() -> None
     assert "pull_request_target" not in workflow
     assert "permissions: write" not in workflow.casefold()
     assert "secrets." not in workflow
+    assert "hqwzhu" not in workflow.casefold()
+    assert "actions/artifacts/" not in workflow
+    assert "releases/download/" not in workflow
+    assert "personal access token" not in workflow.casefold()
     for forbidden in (
         "softprops/action-gh-release",
         "gh release create",
@@ -66,6 +99,143 @@ def test_integrations_preview_workflow_is_exact_sha_and_non_publishing() -> None
         assert forbidden not in workflow.casefold()
     for match in re.finditer(r"uses:\s*([^\s]+)", workflow):
         assert re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", match.group(1))
+
+
+def test_critical_native_commands_use_fail_closed_checks_per_run_block() -> None:
+    workflow = WORKFLOW.read_text(encoding="ascii")
+    expected_blocks = (
+        "Verify exact clean checkout and derive bounded paths",
+        "Install hash-locked runtime and build dependencies",
+        "Run full local gates and secret scan",
+        "Build deterministic standalone Skills",
+        "Build deterministic preview portable payloads",
+        "Download and verify pinned Inno Setup compiler",
+        "Build exact preview installer",
+        "Run every bounded integration lifecycle mode",
+        "Verify final checkout remains clean",
+    )
+    for step_name in expected_blocks:
+        block = _named_run_block(workflow, step_name)
+        assert "function Assert-NativeSuccess" in block
+        assert 'throw "$Command failed with exit code $ExitCode"' in block
+
+    checkout = _named_run_block(
+        workflow, "Verify exact clean checkout and derive bounded paths"
+    )
+    _assert_each_line_is_checked_immediately(
+        checkout,
+        "$head = (git rev-parse HEAD).Trim()",
+        "Assert-NativeSuccess $LASTEXITCODE",
+    )
+    _assert_each_line_is_checked_immediately(
+        checkout,
+        "$status = git status --porcelain=v1 --untracked-files=all",
+        "Assert-NativeSuccess $LASTEXITCODE",
+    )
+    _assert_each_line_is_checked_immediately(
+        checkout,
+        "$commitEpoch = [int64](git show -s --format=%ct HEAD)",
+        "Assert-NativeSuccess $LASTEXITCODE",
+    )
+
+    dependencies = _named_run_block(
+        workflow, "Install hash-locked runtime and build dependencies"
+    )
+    for command in (
+        "python -m pip install --require-hashes -r requirements-dev.lock",
+        "python -m pip install --require-hashes -r requirements-build.lock",
+    ):
+        _assert_each_line_is_checked_immediately(
+            dependencies, command, "Assert-NativeSuccess $LASTEXITCODE"
+        )
+
+    full_gates = _named_run_block(workflow, "Run full local gates and secret scan")
+    for command in (
+        "python -m pytest -q -p no:cacheprovider --basetemp",
+        "python scripts/run_personal_privacy_acceptance.py",
+        "python scripts/check_brand_assets.py",
+        "python scripts/verify_integrations_preview_profile.py",
+        "python -m compileall -q src scripts tests",
+        "git diff --check",
+    ):
+        _assert_each_line_is_checked_immediately(
+            full_gates, command, "Assert-NativeSuccess $LASTEXITCODE"
+        )
+
+    skills = _named_run_block(workflow, "Build deterministic standalone Skills")
+    for command in (
+        "python scripts/build_agentguardian_skill.py --output-root $env:SKILL_ONE",
+        "python scripts/build_agentguardian_skill.py --output-root $env:SKILL_TWO",
+    ):
+        _assert_each_line_is_checked_immediately(
+            skills, command, "Assert-NativeSuccess $LASTEXITCODE"
+        )
+
+    portable = _named_run_block(
+        workflow, "Build deterministic preview portable payloads"
+    )
+    assert sum(
+        line.strip().startswith("python scripts/build_windows_portable.py")
+        for line in portable.splitlines()
+    ) == 2
+    assert portable.count("Assert-NativeSuccess $LASTEXITCODE") >= 2
+    _assert_each_line_is_checked_immediately(
+        portable,
+        "--release-profile integrations_preview",
+        "Assert-NativeSuccess $LASTEXITCODE",
+    )
+
+    gh_download = _named_run_block(
+        workflow, "Download and verify pinned Inno Setup compiler"
+    )
+    _assert_each_line_is_checked_immediately(
+        gh_download,
+        "gh release download $env:INNO_RELEASE_TAG",
+        "Assert-NativeSuccess $LASTEXITCODE",
+    )
+
+    installer = _named_run_block(workflow, "Build exact preview installer")
+    _assert_each_line_is_checked_immediately(
+        installer,
+        "--built-at $env:COMMIT_UTC",
+        "Assert-NativeSuccess $LASTEXITCODE",
+    )
+
+    lifecycle = _named_run_block(
+        workflow, "Run every bounded integration lifecycle mode"
+    )
+    _assert_each_line_is_checked_immediately(
+        lifecycle, "-TestMode", "Assert-NativeSuccess $LASTEXITCODE"
+    )
+
+    final_status = _named_run_block(workflow, "Verify final checkout remains clean")
+    _assert_each_line_is_checked_immediately(
+        final_status,
+        "$status = git status --porcelain=v1 --untracked-files=all",
+        "Assert-NativeSuccess $LASTEXITCODE",
+    )
+
+
+def test_full_gate_secret_scan_keeps_git_grep_exit_semantics_without_output() -> None:
+    workflow = WORKFLOW.read_text(encoding="ascii")
+    full_gates = _named_run_block(workflow, "Run full local gates and secret scan")
+    assert "function Assert-GitGrepNoMatches" in full_gates
+    assert "$secretScanExitCode = $LASTEXITCODE" in full_gates
+    assert "Assert-GitGrepNoMatches $secretScanExitCode" in full_gates
+    assert "if ($ExitCode -eq 0)" in full_gates
+    assert "if ($ExitCode -ne 1)" in full_gates
+    assert "candidate secret scan found a match" in full_gates
+    assert "candidate secret scan failed with exit code $ExitCode" in full_gates
+    assert "Write-Host $secretMatches" not in full_gates
+    assert "Write-Output $secretMatches" not in full_gates
+
+    grep_line = next(
+        line for line in full_gates.splitlines() if "$secretMatches = @(git grep" in line
+    )
+    lines = full_gates.splitlines()
+    grep_index = lines.index(grep_line)
+    assert "$secretScanExitCode = $LASTEXITCODE" in lines[grep_index + 1]
+    assert "Assert-GitGrepNoMatches" in lines[grep_index + 2]
 
 
 def test_download_staging_materializes_primary_alias_and_exact_asset_contract() -> None:
@@ -185,15 +355,15 @@ def test_download_staging_enumerates_and_rejects_unsafe_entries() -> None:
 
 def test_secret_scan_preserves_exit_code_and_fails_closed_without_output() -> None:
     workflow = WORKFLOW.read_text(encoding="ascii")
-    scan = workflow.split("$secretMatches = @(git grep", 1)[1].split(
-        "git diff --check", 1
-    )[0]
+    scan = _named_run_block(workflow, "Run full local gates and secret scan")
 
+    assert "function Assert-GitGrepNoMatches" in scan
     assert "$secretScanExitCode = $LASTEXITCODE" in scan
-    assert "if ($secretScanExitCode -eq 0)" in scan
-    assert "if (($secretScanExitCode -ne 0) -and ($secretScanExitCode -ne 1))" in scan
+    assert "Assert-GitGrepNoMatches $secretScanExitCode" in scan
+    assert "if ($ExitCode -eq 0)" in scan
+    assert "if ($ExitCode -ne 1)" in scan
     assert "candidate secret scan found a match" in scan
-    assert "candidate secret scan failed with exit code $secretScanExitCode" in scan
+    assert "candidate secret scan failed with exit code $ExitCode" in scan
     assert "Write-Host $secretMatches" not in scan
     assert "Write-Output $secretMatches" not in scan
 

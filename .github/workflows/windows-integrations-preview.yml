@@ -43,13 +43,22 @@ jobs:
       - name: Verify exact clean checkout and derive bounded paths
         shell: pwsh
         run: |
+          function Assert-NativeSuccess {
+            param([int]$ExitCode, [string]$Command)
+            if ($ExitCode -ne 0) {
+              throw "$Command failed with exit code $ExitCode"
+            }
+          }
           $head = (git rev-parse HEAD).Trim()
+          Assert-NativeSuccess $LASTEXITCODE 'git rev-parse HEAD'
           if ($head -cne $env:EXPECTED_SOURCE_COMMIT) {
             throw 'checked out HEAD does not match candidate_sha'
           }
           $status = git status --porcelain=v1 --untracked-files=all
+          Assert-NativeSuccess $LASTEXITCODE 'git status --porcelain=v1 --untracked-files=all'
           if ($status) { throw 'integrations preview checkout must be clean' }
           $commitEpoch = [int64](git show -s --format=%ct HEAD)
+          Assert-NativeSuccess $LASTEXITCODE 'git show -s --format=%ct HEAD'
           $commitUtc = [DateTimeOffset]::FromUnixTimeSeconds($commitEpoch).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
           "COMMIT_UTC=$commitUtc" >> $env:GITHUB_ENV
           "INNO_ASSET=$env:RUNNER_TEMP\agentguardian-inno-download\innosetup-7.0.2-x64.exe" >> $env:GITHUB_ENV
@@ -83,32 +92,64 @@ jobs:
       - name: Install hash-locked runtime and build dependencies
         shell: pwsh
         run: |
+          function Assert-NativeSuccess {
+            param([int]$ExitCode, [string]$Command)
+            if ($ExitCode -ne 0) {
+              throw "$Command failed with exit code $ExitCode"
+            }
+          }
           python -m pip install --require-hashes -r requirements-dev.lock
+          Assert-NativeSuccess $LASTEXITCODE 'python -m pip install --require-hashes -r requirements-dev.lock'
           python -m pip install --require-hashes -r requirements-build.lock
+          Assert-NativeSuccess $LASTEXITCODE 'python -m pip install --require-hashes -r requirements-build.lock'
 
       - name: Run full local gates and secret scan
         shell: pwsh
         run: |
+          function Assert-NativeSuccess {
+            param([int]$ExitCode, [string]$Command)
+            if ($ExitCode -ne 0) {
+              throw "$Command failed with exit code $ExitCode"
+            }
+          }
+          function Assert-GitGrepNoMatches {
+            param([int]$ExitCode)
+            if ($ExitCode -eq 0) {
+              throw 'candidate secret scan found a match'
+            }
+            if ($ExitCode -ne 1) {
+              throw "candidate secret scan failed with exit code $ExitCode"
+            }
+          }
           python -m pytest -q -p no:cacheprovider --basetemp "$env:RUNNER_TEMP\agentguardian-pytest"
+          Assert-NativeSuccess $LASTEXITCODE 'python -m pytest -q -p no:cacheprovider --basetemp'
           python scripts/run_personal_privacy_acceptance.py --evidence-path "$env:RUNNER_TEMP\integrations-preview-privacy.json"
+          Assert-NativeSuccess $LASTEXITCODE 'python scripts/run_personal_privacy_acceptance.py'
           python scripts/check_brand_assets.py
+          Assert-NativeSuccess $LASTEXITCODE 'python scripts/check_brand_assets.py'
           python scripts/verify_integrations_preview_profile.py --project-root "$pwd" --profile "$pwd\release_profiles\integrations_preview.json"
+          Assert-NativeSuccess $LASTEXITCODE 'python scripts/verify_integrations_preview_profile.py'
           python -m compileall -q src scripts tests
+          Assert-NativeSuccess $LASTEXITCODE 'python -m compileall -q src scripts tests'
           $secretMatches = @(git grep -n -I -E '(sk-[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY)' -- ':!.analysis')
           $secretScanExitCode = $LASTEXITCODE
-          if ($secretScanExitCode -eq 0) {
-            throw 'candidate secret scan found a match'
-          }
-          if (($secretScanExitCode -ne 0) -and ($secretScanExitCode -ne 1)) {
-            throw "candidate secret scan failed with exit code $secretScanExitCode"
-          }
+          Assert-GitGrepNoMatches $secretScanExitCode
           git diff --check
+          Assert-NativeSuccess $LASTEXITCODE 'git diff --check'
 
       - name: Build deterministic standalone Skills
         shell: pwsh
         run: |
+          function Assert-NativeSuccess {
+            param([int]$ExitCode, [string]$Command)
+            if ($ExitCode -ne 0) {
+              throw "$Command failed with exit code $ExitCode"
+            }
+          }
           python scripts/build_agentguardian_skill.py --output-root $env:SKILL_ONE
+          Assert-NativeSuccess $LASTEXITCODE 'python scripts/build_agentguardian_skill.py --output-root $env:SKILL_ONE'
           python scripts/build_agentguardian_skill.py --output-root $env:SKILL_TWO
+          Assert-NativeSuccess $LASTEXITCODE 'python scripts/build_agentguardian_skill.py --output-root $env:SKILL_TWO'
           $first = Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $env:SKILL_ONE 'AgentGuardian-Skill-0.2.0.zip')
           $second = Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $env:SKILL_TWO 'AgentGuardian-Skill-0.2.0.zip')
           if ($first.Hash -cne $second.Hash) { throw 'Skill ZIP is not deterministic' }
@@ -116,18 +157,26 @@ jobs:
       - name: Build deterministic preview portable payloads
         shell: pwsh
         run: |
+          function Assert-NativeSuccess {
+            param([int]$ExitCode, [string]$Command)
+            if ($ExitCode -ne 0) {
+              throw "$Command failed with exit code $ExitCode"
+            }
+          }
           python scripts/build_windows_portable.py `
             --output-root $env:PORTABLE_ONE `
             --source-commit $env:EXPECTED_SOURCE_COMMIT `
             --built-at $env:COMMIT_UTC `
             --artifact-status unsigned_development_only `
             --release-profile integrations_preview
+          Assert-NativeSuccess $LASTEXITCODE 'python scripts/build_windows_portable.py (portable one)'
           python scripts/build_windows_portable.py `
             --output-root $env:PORTABLE_TWO `
             --source-commit $env:EXPECTED_SOURCE_COMMIT `
             --built-at $env:COMMIT_UTC `
             --artifact-status unsigned_development_only `
             --release-profile integrations_preview
+          Assert-NativeSuccess $LASTEXITCODE 'python scripts/build_windows_portable.py (portable two)'
           $first = @(Get-ChildItem -LiteralPath $env:PORTABLE_ONE -Filter 'AgentGuardian-0.3.0-preview.1-windows-x64.zip' -File -Force)
           $second = @(Get-ChildItem -LiteralPath $env:PORTABLE_TWO -Filter 'AgentGuardian-0.3.0-preview.1-windows-x64.zip' -File -Force)
           if (($first.Count -ne 1) -or ($second.Count -ne 1)) { throw 'portable output is invalid' }
@@ -141,10 +190,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
+          function Assert-NativeSuccess {
+            param([int]$ExitCode, [string]$Command)
+            if ($ExitCode -ne 0) {
+              throw "$Command failed with exit code $ExitCode"
+            }
+          }
           $downloadRoot = Join-Path $env:RUNNER_TEMP 'agentguardian-inno-download'
           New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
           gh release download $env:INNO_RELEASE_TAG --repo $env:INNO_RELEASE_REPOSITORY --pattern $env:INNO_ASSET_NAME --dir $downloadRoot
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Assert-NativeSuccess $LASTEXITCODE 'gh release download'
           $assetHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $env:INNO_ASSET).Hash.ToLowerInvariant()
           if ($assetHash -cne $env:INNO_ASSET_SHA256) { throw 'Inno asset SHA-256 mismatch' }
           $signature = Get-AuthenticodeSignature -LiteralPath $env:INNO_ASSET
@@ -167,12 +222,19 @@ jobs:
       - name: Build exact preview installer
         shell: pwsh
         run: |
+          function Assert-NativeSuccess {
+            param([int]$ExitCode, [string]$Command)
+            if ($ExitCode -ne 0) {
+              throw "$Command failed with exit code $ExitCode"
+            }
+          }
           python scripts/build_windows_integrations_preview_installer.py `
             --bundle-root $env:PORTABLE_BUNDLE `
             --output-root $env:INSTALLER_OUTPUT `
             --iscc $env:ISCC `
             --source-commit $env:EXPECTED_SOURCE_COMMIT `
             --built-at $env:COMMIT_UTC
+          Assert-NativeSuccess $LASTEXITCODE 'python scripts/build_windows_integrations_preview_installer.py'
           $installer = Join-Path $env:INSTALLER_OUTPUT 'AgentGuardian-Setup-0.3.0-preview.1-x64.exe'
           if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw 'preview installer is missing' }
           $installerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToLowerInvariant()
@@ -182,6 +244,12 @@ jobs:
       - name: Run every bounded integration lifecycle mode
         shell: pwsh
         run: |
+          function Assert-NativeSuccess {
+            param([int]$ExitCode, [string]$Command)
+            if ($ExitCode -ne 0) {
+              throw "$Command failed with exit code $ExitCode"
+            }
+          }
           New-Item -ItemType Directory -Path $env:EVIDENCE_ROOT -Force | Out-Null
           foreach ($mode in @('skill', 'mcp', 'skill,mcp')) {
             $evidence = Join-Path $env:EVIDENCE_ROOT ("lifecycle-$($mode.Replace(',', '-')).json")
@@ -193,7 +261,7 @@ jobs:
               -Python_Path (Get-Command python.exe).Source `
               -Mode $mode `
               -TestMode
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Assert-NativeSuccess $LASTEXITCODE 'verify_windows_integrations_preview.ps1'
           }
 
       - name: Prepare verified downloadable preview files
@@ -381,7 +449,14 @@ jobs:
       - name: Verify final checkout remains clean
         shell: pwsh
         run: |
+          function Assert-NativeSuccess {
+            param([int]$ExitCode, [string]$Command)
+            if ($ExitCode -ne 0) {
+              throw "$Command failed with exit code $ExitCode"
+            }
+          }
           $status = git status --porcelain=v1 --untracked-files=all
+          Assert-NativeSuccess $LASTEXITCODE 'git status --porcelain=v1 --untracked-files=all'
           if ($status) { throw 'workflow changed the candidate checkout' }
 
       - name: Archive bounded exact-SHA evidence
