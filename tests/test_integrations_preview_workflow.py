@@ -113,3 +113,58 @@ def test_active_03_boundary_and_frozen_02_history_are_explicit() -> None:
         "docs/security/integrations-preview-status.json",
         "docs/security/integrations-preview.md",
     ]
+
+
+def test_active_docs_publish_the_profile_backed_download_contract() -> None:
+    document = ACTIVE_DOC.read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    profile = _release_profile()
+    release_url = str(profile["release_download_url"])
+    assets = tuple(profile["release_assets"])
+
+    for text in (readme, document):
+        assert release_url in text
+        assert "unsigned Public Preview" in text
+        assert "personal non-regulated" in text
+        assert "high-sensitivity real data" in text
+        assert "production-safety" in text
+        assert "enterprise control-plane" in text
+        for asset in assets:
+            assert asset in text
+
+    assert str(profile["primary_download_filename"]) in readme
+    assert "AgentGuardianMcp.exe" in readme
+    assert "Skill payload" in readme
+    assert "does not silently download or enable a Provider API" in readme
+    assert "SHA256SUMS" in readme
+    assert "INTEGRATIONS-PREVIEW-NOT-READY" in readme
+    assert "NO-GO" in readme
+    assert "releases/download/" not in readme
+    assert "actions/artifacts/" not in readme
+    assert "hqwzhu" not in readme.casefold()
+
+
+def test_active_doc_contains_authorized_manual_release_handoff() -> None:
+    document = ACTIVE_DOC.read_text(encoding="utf-8")
+    profile = _release_profile()
+
+    for marker in (
+        "exact source SHA",
+        "exact eight",
+        "DOWNLOAD-METADATA.json",
+        "SHA256SUMS",
+        "v0.3.0-preview.1",
+        "AgentGuardian 0.3.0 Public Preview (Unsigned)",
+        "non-draft",
+        "non-prerelease",
+        "fixed unauthenticated link",
+        "post-publish report",
+        "HTTP 503",
+        "alternate owner",
+        "alternate account",
+        "force push",
+        "token disclosure",
+    ):
+        assert marker in document
+    assert str(profile["release_title"]) in document
+    assert str(profile["release_tag"]) in document

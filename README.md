@@ -68,6 +68,44 @@ Developer verification:
 
 The self-audit reports the Python 版本 but does not expose the interpreter path.
 
+## Windows Public Preview download
+
+Primary download for the future public preview:
+
+https://github.com/yangjing6213-dev/AgentGuardian/releases/latest/download/AgentGuardian-Setup-Windows-x64.exe
+
+This link resolves only after a separately authorized GitHub Release has been
+published as neither draft nor prerelease. The first channel is AgentGuardian
+0.3.0 Public Preview (unsigned), an unsigned Public Preview. Windows may show
+Unknown Publisher or SmartScreen warnings. The current status remains
+`INTEGRATIONS-PREVIEW-NOT-READY` and `NO-GO`; this link is not current release
+evidence until that authorized handoff has happened.
+
+The main EXE installer is intended to contain the current GUI, the local
+STDIO MCP executable `AgentGuardianMcp.exe`, and the independent Skill payload.
+Codex and other hosts still require the user to explicitly select and configure
+their integration. The installer does not silently download or enable a Provider API.
+
+The exact Release asset allowlist is:
+
+- `AgentGuardian-0.3.0-preview.1-windows-x64.zip`
+- `AgentGuardian-Setup-0.3.0-preview.1-x64.exe`
+- `AgentGuardian-Setup-Windows-x64.exe`
+- `AgentGuardian-Skill-0.2.0.zip`
+- `DOWNLOAD-METADATA.json`
+- `LICENSE`
+- `SHA256SUMS`
+- `THIRD_PARTY_NOTICES.md`
+
+After publication, verify every downloaded file against `SHA256SUMS` before
+running the installer. This preview targets Windows 11 x64 and personal
+non-regulated use only. High-sensitivity real data is prohibited. Do not make
+a production-safety claim from this preview, and do not assume any
+enterprise control-plane guarantee.
+
+The historical 0.2 results and earlier CI reports remain historical evidence;
+they are distinct from current revalidation of the 0.3 release candidate.
+
 ## Active product documents
 
 - [Security policy](SECURITY.md)

@@ -11,6 +11,7 @@ financial, identity, biometric, customer, legally privileged, regulated, and
 other high-sensitivity real data are unsupported. This is a use restriction,
 not a production safety claim. The product is currently
 `INTEGRATIONS-PREVIEW-NOT-READY` and formal release is `NO-GO`.
+This is an unsigned Public Preview, not a production release.
 
 The runtime must not call OpenAI or another Provider API by default. Provider
 configuration is handled through local adaptation, static detection, and
@@ -51,3 +52,57 @@ uses an isolated synthetic profile and rejects evidence paths inside user
 ownership paths. Clean-machine lifecycle acceptance remains a separate pending
 gate and must use a dedicated Windows account or machine, not a normal user's
 profile.
+
+## Public Release handoff (future, authorization required)
+
+This is an operator runbook for a future, separately authorized handoff. It is
+not an instruction to publish the current candidate, whose status remains
+`INTEGRATIONS-PREVIEW-NOT-READY` and `NO-GO`.
+
+1. Run the read-only Windows workflow against the exact source SHA selected for
+   the candidate. Record the workflow result as current evidence; do not treat
+   an earlier run as a fresh verification.
+2. On the local Windows build machine, stage exactly the eight allowlisted
+   files. Review `DOWNLOAD-METADATA.json` for the source SHA, version, platform,
+   and file records, then recompute and review every entry in `SHA256SUMS`.
+3. After the source and staged files pass their gates, create tag
+   `v0.3.0-preview.1` and a Release titled
+   `AgentGuardian 0.3.0 Public Preview (Unsigned)`. This is an unsigned Public
+   Preview. The Release must be published, non-draft, and non-prerelease.
+4. Upload only the exact allowlist from the profile. Do not upload local
+   reports, caches, backups, credentials, tokens, or user data.
+5. Verify the fixed unauthenticated link, then compare the downloaded installer
+   and all other assets with `SHA256SUMS`.
+6. Write a local-only post-publish report containing the verified source SHA,
+   asset names and hashes, link result, and remaining evidence gaps. Do not
+   commit that report.
+
+The fixed primary link is:
+
+https://github.com/yangjing6213-dev/AgentGuardian/releases/latest/download/AgentGuardian-Setup-Windows-x64.exe
+
+GitHub API or credential outages, including HTTP 503, do not justify using an
+alternate owner or alternate account, force push, token disclosure, or bypassing
+repository protection. The operator may wait and retry only through the normal
+authorized GitHub path. Alternatively, after revalidating the exact source SHA
+and staged files, the operator may complete the already authorized Release
+manually in the normal browser or API route. No alternate publication route is
+part of this runbook.
+
+The handoff is for Windows 11 x64 and personal non-regulated use only. High-
+sensitivity real data is prohibited. It does not establish a production-safety
+claim or an enterprise control-plane guarantee. The installer contains the
+current GUI, local `AgentGuardianMcp.exe` STDIO MCP, and independent Skill
+payload, but Codex and other hosts require explicit user configuration; no
+Provider API is silently downloaded or enabled.
+
+The exact eight Release assets are:
+
+- `AgentGuardian-0.3.0-preview.1-windows-x64.zip`
+- `AgentGuardian-Setup-0.3.0-preview.1-x64.exe`
+- `AgentGuardian-Setup-Windows-x64.exe`
+- `AgentGuardian-Skill-0.2.0.zip`
+- `DOWNLOAD-METADATA.json`
+- `LICENSE`
+- `SHA256SUMS`
+- `THIRD_PARTY_NOTICES.md`

@@ -29,6 +29,28 @@ ASSET_NAMES = (
 )
 
 
+def test_documented_download_route_matches_profile_and_is_not_temporary() -> None:
+    profile = json.loads(
+        (ROOT / "release_profiles" / "integrations_preview.json").read_text(
+            encoding="ascii"
+        )
+    )
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    document = (ROOT / "docs" / "security" / "integrations-preview.md").read_text(
+        encoding="utf-8"
+    )
+    release_url = str(profile["release_download_url"])
+
+    assert release_url in readme
+    assert release_url in document
+    assert tuple(profile["release_assets"]) == ASSET_NAMES
+    for asset in profile["release_assets"]:
+        assert asset in readme
+        assert asset in document
+    assert "actions/artifacts/" not in readme
+    assert "hqwzhu" not in readme.casefold()
+
+
 def _module():
     return importlib.import_module("scripts.stage_public_preview_release")
 
