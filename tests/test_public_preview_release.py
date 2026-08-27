@@ -2017,6 +2017,240 @@ def test_create_output_file_keeps_primary_code_when_close_raises_runtime_error(
     assert caught.value.cleanup_lease is not None
 
 
+@pytest.mark.parametrize("failure_stage", ("identity", "fdopen"))
+@pytest.mark.parametrize("exception_type", (KeyboardInterrupt, SystemExit))
+def test_create_output_file_cleans_up_base_exception_during_setup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+    exception_type: type[BaseException],
+) -> None:
+    module = _module()
+    descriptor = 177
+    monkeypatch.setattr(module.os, "open", lambda *_args, **_kwargs: descriptor)
+    monkeypatch.setattr(
+        module,
+        "_bound_handle_identity",
+        (
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(exception_type())
+            if failure_stage == "identity"
+            else (1, 2)
+        ),
+    )
+    if failure_stage == "fdopen":
+        monkeypatch.setattr(
+            module.os,
+            "fdopen",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(exception_type()),
+        )
+    close_calls: list[int] = []
+    monkeypatch.setattr(
+        module,
+        "_close_bound_handle",
+        lambda handle, **_kwargs: close_calls.append(handle),
+    )
+
+    with pytest.raises(exception_type):
+        with module._create_output_file(tmp_path / "output.bin"):
+            pass
+    assert close_calls == [descriptor]
+
+
+def test_create_output_file_keeps_base_exception_lease_when_setup_cleanup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    descriptor = 177
+    monkeypatch.setattr(module.os, "open", lambda *_args, **_kwargs: descriptor)
+    monkeypatch.setattr(
+        module,
+        "_bound_handle_identity",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    close_calls: list[int] = []
+
+    def close_fails(handle: int, **_kwargs: object) -> None:
+        close_calls.append(handle)
+        raise OSError("close failed")
+
+    monkeypatch.setattr(module, "_close_bound_handle", close_fails)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        with module._create_output_file(tmp_path / "output.bin"):
+            pass
+    assert caught.value.cleanup_lease.owns(descriptor)
+    assert close_calls == [descriptor]
+
+
+@pytest.mark.parametrize("exception_type", (KeyboardInterrupt, SystemExit))
+def test_open_verified_file_preserves_base_exception_and_attaches_cleanup_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exception_type: type[BaseException],
+) -> None:
+    module = _module()
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"source")
+    snapshot = module._snapshot_file(
+        source, max_bytes=module.MAX_INPUT_BYTES, code="RELEASE_INPUT_PATH_INVALID"
+    )
+    descriptor = 177
+    monkeypatch.setattr(module.os, "open", lambda *_args, **_kwargs: descriptor)
+    monkeypatch.setattr(
+        module,
+        "_bound_handle_identity",
+        lambda *_args, **_kwargs: snapshot.identity,
+    )
+
+    class FailingStream:
+        def close(self) -> None:
+            raise RuntimeError("stream close failed")
+
+    monkeypatch.setattr(module.os, "fdopen", lambda *_args, **_kwargs: FailingStream())
+    close_calls: list[int] = []
+
+    def close_fails(handle: int, **_kwargs: object) -> None:
+        close_calls.append(handle)
+        raise OSError("close failed")
+
+    monkeypatch.setattr(module, "_close_bound_handle", close_fails)
+    with pytest.raises(exception_type) as caught:
+        with module._open_verified_file(
+            snapshot,
+            max_bytes=module.MAX_INPUT_BYTES,
+            code="RELEASE_INPUT_PATH_INVALID",
+        ):
+            raise exception_type()
+    assert caught.value.cleanup_lease.owns(descriptor)
+    assert close_calls == [descriptor, descriptor]
+
+
+def test_snapshot_staging_directory_cleans_up_base_exception_after_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    staged = tmp_path / ".release.staging-test"
+    staged.mkdir()
+    binding = module._DirectoryBinding(tmp_path, (1,), 11)
+    original_lstat = Path.lstat
+    opened = False
+
+    def lstat(path: Path) -> object:
+        if path == staged and opened:
+            raise KeyboardInterrupt()
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+    monkeypatch.setattr(module.os, "name", "posix")
+    monkeypatch.setattr(module.os, "O_DIRECTORY", 0x10000, raising=False)
+    monkeypatch.setattr(module.os, "O_NOFOLLOW", 0x20000, raising=False)
+    def open_directory(*_args: object, **_kwargs: object) -> int:
+        nonlocal opened
+        opened = True
+        return 177
+
+    monkeypatch.setattr(module.os, "open", open_directory)
+    monkeypatch.setattr(
+        module,
+        "_bound_handle_identity",
+        lambda handle, **_kwargs: (1,) if handle == 11 else (2,),
+    )
+    close_calls: list[int] = []
+    monkeypatch.setattr(
+        module,
+        "_close_bound_handle",
+        lambda handle, **_kwargs: close_calls.append(handle),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        module._snapshot_staging_directory(staged, ".release.staging-", binding)
+    assert close_calls == [177]
+
+
+def test_validated_staging_path_keeps_base_exception_lease_when_close_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    staged = tmp_path / ".release.staging-test"
+    staged.mkdir()
+    token = module._StagingDirectoryToken(
+        parent=tmp_path,
+        name=staged.name,
+        prefix=".release.staging-",
+        parent_identity=(1,),
+        identity=(2,),
+        is_reparse_point=False,
+        parent_handle=11,
+        directory_handle=22,
+    )
+    calls = 0
+
+    def open_directory(*_args: object) -> tuple[int, tuple[int, ...]]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return 177, (1,)
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(module, "_open_bound_directory", open_directory)
+    close_calls: list[int] = []
+
+    def close_fails(handle: int, **_kwargs: object) -> None:
+        close_calls.append(handle)
+        raise OSError("close failed")
+
+    monkeypatch.setattr(module, "_close_bound_handle", close_fails)
+    monkeypatch.setattr(
+        module,
+        "_bound_handle_identity",
+        lambda handle, **_kwargs: (1,)
+        if handle == 11
+        else (3,)
+        if handle == 177
+        else (2,),
+    )
+    with pytest.raises(KeyboardInterrupt) as caught:
+        module._validated_staging_path(token, staged, "RELEASE_OUTPUT_PATH_INVALID")
+    assert caught.value.cleanup_lease.owns(177)
+    assert close_calls == [177]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows open test requires Windows")
+@pytest.mark.parametrize("close_fails", (False, True))
+def test_ntdll_open_relative_directory_normalizes_base_exception(
+    monkeypatch: pytest.MonkeyPatch, close_fails: bool
+) -> None:
+    module = _module()
+
+    class NativeOpen:
+        argtypes = None
+        restype = None
+
+        def __call__(self, handle_pointer: object, *_args: object) -> int:
+            ctypes.cast(handle_pointer, ctypes.POINTER(ctypes.c_void_p)).contents.value = 177
+            raise RuntimeError("native open failed")
+
+    class FakeNtdll:
+        NtCreateFile = NativeOpen()
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeNtdll())
+    close_calls: list[int] = []
+
+    def close(handle: int, **_kwargs: object) -> None:
+        close_calls.append(handle)
+        if close_fails:
+            raise OSError("close failed")
+
+    monkeypatch.setattr(module, "_close_bound_handle", close)
+    with pytest.raises(module.ReleaseViolation) as caught:
+        module._ntdll_open_relative_directory(11, "staging")
+    assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
+    assert close_calls == [177]
+    if close_fails:
+        assert caught.value.cleanup_lease.owns(177)
+    else:
+        assert caught.value.cleanup_lease is None
+
+
 def test_validated_staging_path_normalizes_arbitrary_error_and_keeps_cleanup_lease(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

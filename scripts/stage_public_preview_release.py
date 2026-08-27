@@ -478,7 +478,18 @@ def _attach_cleanup_lease(
         elif error.cleanup_lease is not ledger:
             error.cleanup_lease.adopt(ledger)
         return error
-    return ReleaseViolation(fallback_code, cleanup_lease=ledger)
+    if isinstance(error, Exception):
+        return ReleaseViolation(fallback_code, cleanup_lease=ledger)
+    existing_lease = getattr(error, "cleanup_lease", None)
+    if isinstance(existing_lease, _HandleOwnershipLedger):
+        if existing_lease is not ledger:
+            existing_lease.adopt(ledger)
+        return error
+    try:
+        setattr(error, "cleanup_lease", ledger)
+    except Exception:
+        return ReleaseViolation(fallback_code, cleanup_lease=ledger)
+    return error
 
 
 def _bound_handle_identity(
@@ -701,6 +712,10 @@ def _open_verified_file(
             )
         if close_failed and isinstance(primary_error, Exception):
             raise _error_with_cleanup(primary_error, lease, code) from primary_error
+        if close_failed and primary_error is not None:
+            updated_error = _attach_cleanup_lease(primary_error, lease, code)
+            if updated_error is not primary_error:
+                raise updated_error from primary_error
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -829,6 +844,14 @@ def _create_output_file(
                 error, lease, "RELEASE_OUTPUT_PATH_INVALID"
             ) from error
         raise ReleaseViolation("RELEASE_OUTPUT_PATH_INVALID") from error
+    except BaseException as error:
+        if descriptor is not None and not _close_ledger_handle(lease, descriptor):
+            updated_error = _attach_cleanup_lease(
+                error, lease, "RELEASE_OUTPUT_PATH_INVALID"
+            )
+            if updated_error is not error:
+                raise updated_error from error
+        raise
     primary_error: BaseException | None = None
     try:
         if stream is None:
@@ -859,6 +882,12 @@ def _create_output_file(
             raise _error_with_cleanup(
                 primary_error, lease, "RELEASE_OUTPUT_PATH_INVALID"
             ) from primary_error
+        if close_failed and primary_error is not None:
+            updated_error = _attach_cleanup_lease(
+                primary_error, lease, "RELEASE_OUTPUT_PATH_INVALID"
+            )
+            if updated_error is not primary_error:
+                raise updated_error from primary_error
 
 
 def _copy_and_digest(
@@ -1212,11 +1241,28 @@ def _ntdll_open_relative_directory(
             None,
             0,
         )
-    except (OSError, TypeError, ValueError):
+    except BaseException as error:
         handle_value = native_handle.value
         if handle_value not in (None, wintypes.HANDLE(-1).value):
             native_lease.register(int(handle_value), resource_type="handle")
-        reject_native_handle()
+        if handle_value in (None, wintypes.HANDLE(-1).value):
+            if isinstance(error, Exception):
+                raise ReleaseViolation(
+                    "RELEASE_OUTPUT_PATH_INVALID"
+                ) from error
+            raise
+        if _close_ledger_handle(native_lease, int(handle_value)):
+            if isinstance(error, Exception):
+                raise ReleaseViolation(
+                    "RELEASE_OUTPUT_PATH_INVALID"
+                ) from error
+            raise
+        updated_error = _attach_cleanup_lease(
+            error, native_lease, "RELEASE_OUTPUT_PATH_INVALID"
+        )
+        if updated_error is not error:
+            raise updated_error from error
+        raise
     handle_value = native_handle.value
     if handle_value not in (None, wintypes.HANDLE(-1).value):
         native_lease.register(int(handle_value), resource_type="handle")
@@ -1295,6 +1341,16 @@ def _snapshot_staging_directory(
         if isinstance(error, ReleaseViolation):
             raise
         raise ReleaseViolation("RELEASE_OUTPUT_PATH_INVALID") from error
+    except BaseException as error:
+        if directory_handle is not None and not _close_ledger_handle(
+            directory_lease, directory_handle
+        ):
+            updated_error = _attach_cleanup_lease(
+                error, directory_lease, "RELEASE_OUTPUT_PATH_INVALID"
+            )
+            if updated_error is not error:
+                raise updated_error from error
+        raise
     if directory_handle is not None:
         directory_lease.release(directory_handle)
         parent_binding.ledger.register(directory_handle)
@@ -1379,6 +1435,10 @@ def _validated_staging_path(
             primary_error = ReleaseViolation(code, cleanup_lease=token.ledger)
         elif close_failed and isinstance(primary_error, Exception):
             primary_error = _error_with_cleanup(primary_error, token.ledger, code)
+        elif close_failed and primary_error is not None:
+            primary_error = _attach_cleanup_lease(
+                primary_error, token.ledger, code
+            )
     if primary_error is not None:
         raise primary_error
     assert candidate is not None
