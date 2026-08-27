@@ -256,6 +256,7 @@ def test_download_staging_delegates_to_unified_profile_backed_tool() -> None:
         "--output-root $env:RELEASE_ROOT `",
         "--installer-path $env:INSTALLER_PATH `",
         "--portable-path $portablePath `",
+        "--portable-bundle-root $env:PORTABLE_BUNDLE `",
         "--skill-path $skillPath `",
         "--installer-attestation-path $env:INSTALLER_ATTESTATION_PATH `",
         "--source-commit $env:EXPECTED_SOURCE_COMMIT `",

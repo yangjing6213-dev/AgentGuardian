@@ -961,6 +961,70 @@ def test_stage_rejects_arbitrary_regular_artifact_inputs(
         )
 
 
+def test_stage_rejects_self_consistent_portable_extra_against_bundle_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    bundle = portable.parent.parent / "portable-bundle"
+    builder = importlib.import_module("scripts.build_windows_portable")
+    modified_bundle = tmp_path / "modified-bundle"
+    shutil.copytree(bundle, modified_bundle)
+    (modified_bundle / "extra.txt").write_bytes(b"unexpected payload")
+    (modified_bundle / "PAYLOAD-MANIFEST.json").unlink()
+    (modified_bundle / "SHA256SUMS").unlink()
+    manifest = builder.artifact_manifest(modified_bundle)
+    (modified_bundle / "PAYLOAD-MANIFEST.json").write_bytes(
+        builder.canonical_json_bytes(manifest)
+    )
+    checksum_manifest = builder.artifact_manifest(modified_bundle)
+    (modified_bundle / "SHA256SUMS").write_bytes(
+        "".join(
+            f"{entry['sha256']} *{entry['path']}\n"
+            for entry in checksum_manifest["files"]
+        ).encode("ascii")
+    )
+    builder.deterministic_zip(modified_bundle, portable)
+
+    with pytest.raises(
+        module.ReleaseViolation,
+        match="^RELEASE_INPUT_PROVENANCE_INVALID$",
+    ):
+        module.stage_public_preview_release(
+            ROOT,
+            tmp_path / "release",
+            installer_path=installer,
+            portable_path=portable,
+            portable_bundle_root=bundle,
+            skill_path=skill,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
+
+
+def test_stage_accepts_portable_bundle_root_with_matching_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    bundle = portable.parent.parent / "portable-bundle"
+
+    result = module.stage_public_preview_release(
+        ROOT,
+        tmp_path / "release",
+        installer_path=installer,
+        portable_path=portable,
+        portable_bundle_root=bundle,
+        skill_path=skill,
+        source_commit=COMMIT,
+        built_at=BUILT_AT,
+    )
+
+    assert result["status"] == "pass"
+
+
 def test_stage_rejects_reused_artifact_file_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

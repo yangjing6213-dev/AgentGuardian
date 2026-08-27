@@ -836,6 +836,26 @@ def _resolve_input(path_value: str | Path) -> _FileSnapshot:
     )
 
 
+def _resolve_bundle_root(path_value: str | Path) -> Path:
+    _reject_windows_special_path(path_value, "RELEASE_INPUT_PROVENANCE_INVALID")
+    try:
+        candidate = Path(path_value)
+    except TypeError:
+        _fail("RELEASE_INPUT_PROVENANCE_INVALID")
+    if not candidate.is_absolute():
+        _fail("RELEASE_INPUT_PROVENANCE_INVALID")
+    candidate = candidate.absolute()
+    if _path_has_reparse(candidate, "RELEASE_INPUT_PROVENANCE_INVALID"):
+        _fail("RELEASE_INPUT_PROVENANCE_INVALID")
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError:
+        _fail("RELEASE_INPUT_PROVENANCE_INVALID")
+    if not resolved.is_dir() or _is_reparse_point(resolved):
+        _fail("RELEASE_INPUT_PROVENANCE_INVALID")
+    return resolved
+
+
 def _resolve_project_file(root: Path, relative: str) -> _FileSnapshot:
     snapshot = _snapshot_file(
         root / relative,
@@ -851,6 +871,7 @@ def _resolve_output(
     output_root: str | Path,
     project_root: Path,
     inputs: Iterable[_FileSnapshot],
+    protected_directories: Iterable[Path] = (),
 ) -> Path:
     _reject_windows_special_path(output_root, "RELEASE_OUTPUT_PATH_INVALID")
     candidate = Path(output_root).absolute()
@@ -861,6 +882,8 @@ def _resolve_output(
     except OSError:
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     if _inside(resolved, project_root):
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    if any(_inside(resolved, directory) for directory in protected_directories):
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     if any(_inside(resolved, snapshot.path.parent) for snapshot in inputs):
         _fail("RELEASE_OUTPUT_PATH_INVALID")
@@ -1556,6 +1579,66 @@ def _record_matches_file(
         _fail(_INPUT_TYPE_INVALID)
 
 
+def _bundle_file_snapshots(bundle_root: Path) -> dict[str, _FileSnapshot]:
+    snapshots: dict[str, _FileSnapshot] = {}
+    pending = [bundle_root]
+    total_size = 0
+    try:
+        while pending:
+            current = pending.pop()
+            children = sorted(
+                current.iterdir(),
+                key=lambda path: path.name.casefold(),
+                reverse=True,
+            )
+            for child in children:
+                if _has_reparse_component(child) or _is_reparse_point(child):
+                    _fail(_INPUT_PROVENANCE_INVALID)
+                relative = child.relative_to(bundle_root).as_posix()
+                if not _safe_zip_name(relative):
+                    _fail(_INPUT_PROVENANCE_INVALID)
+                if child.is_dir():
+                    pending.append(child)
+                    continue
+                if not child.is_file() or len(snapshots) >= MAX_ZIP_ENTRIES:
+                    _fail(_INPUT_PROVENANCE_INVALID)
+                snapshot = _snapshot_file(
+                    child,
+                    max_bytes=MAX_INPUT_BYTES,
+                    code=_INPUT_PROVENANCE_INVALID,
+                )
+                total_size += snapshot.size
+                if total_size > MAX_INPUT_BYTES:
+                    _fail(_INPUT_PROVENANCE_INVALID)
+                if relative in snapshots:
+                    _fail(_INPUT_PROVENANCE_INVALID)
+                snapshots[relative] = snapshot
+    except ReleaseViolation:
+        raise
+    except (OSError, ProfileViolation, RuntimeError):
+        _fail(_INPUT_PROVENANCE_INVALID)
+    return snapshots
+
+
+def _validate_portable_bundle_root(
+    records: dict[str, _ZipRecord], bundle_root: Path
+) -> None:
+    snapshots = _bundle_file_snapshots(_resolve_bundle_root(bundle_root))
+    if set(snapshots) != set(records):
+        _fail(_INPUT_PROVENANCE_INVALID)
+    for name, snapshot in snapshots.items():
+        record = records[name]
+        if snapshot.size != record.size:
+            _fail(_INPUT_PROVENANCE_INVALID)
+        digest, size = _digest_file(
+            snapshot,
+            max_bytes=MAX_INPUT_BYTES,
+            code=_INPUT_PROVENANCE_INVALID,
+        )
+        if (digest, size) != (record.digest, record.size):
+            _fail(_INPUT_PROVENANCE_INVALID)
+
+
 def _pe_header_valid(prefix: bytes, *, expected_subsystem: int) -> bool:
     if len(prefix) < 64 or prefix[:2] != b"MZ":
         return False
@@ -1585,6 +1668,7 @@ def _validate_portable_input(
     *,
     source_commit: str,
     built_at: str,
+    portable_bundle_root: Path | None = None,
 ) -> dict[str, str]:
     if snapshot.path.name != PORTABLE_NAME:
         _fail(_INPUT_TYPE_INVALID)
@@ -1592,6 +1676,8 @@ def _validate_portable_input(
         snapshot,
         workflow_markers=profile.profile["forbidden_workflow_tokens"],
     )
+    if portable_bundle_root is not None:
+        _validate_portable_bundle_root(records, portable_bundle_root)
     if not _PORTABLE_REQUIRED_NAMES.issubset(records):
         _fail(_INPUT_TYPE_INVALID)
     if any(
@@ -1838,6 +1924,7 @@ def _validate_artifact_inputs(
     *,
     source_commit: str,
     built_at: str,
+    portable_bundle_root: Path | None = None,
 ) -> None:
     _validate_artifact_input_identity(installer, portable, skill, attestation)
     portable_digests = _validate_portable_input(
@@ -1846,6 +1933,7 @@ def _validate_artifact_inputs(
         portable,
         source_commit=source_commit,
         built_at=built_at,
+        portable_bundle_root=portable_bundle_root,
     )
     _validate_skill_input(root, skill)
     _validate_installer_input(installer, source_commit)
@@ -3213,6 +3301,7 @@ def stage_public_preview_release(
     installer_path: str | Path,
     portable_path: str | Path,
     skill_path: str | Path,
+    portable_bundle_root: str | Path | None = None,
     installer_attestation_path: str | Path | None = None,
     source_commit: str,
     built_at: str,
@@ -3225,6 +3314,13 @@ def stage_public_preview_release(
     installer = _resolve_input(installer_path)
     portable = _resolve_input(portable_path)
     skill = _resolve_input(skill_path)
+    bundle_root = (
+        _resolve_bundle_root(portable_bundle_root)
+        if portable_bundle_root is not None
+        else None
+    )
+    if bundle_root is not None and _inside(bundle_root, root):
+        _fail("RELEASE_INPUT_PROVENANCE_INVALID")
     installer_attestation = _resolve_installer_attestation(
         installer, installer_attestation_path
     )
@@ -3289,8 +3385,14 @@ def stage_public_preview_release(
         installer_attestation,
         source_commit=source_commit,
         built_at=built_at,
+        portable_bundle_root=bundle_root,
     )
-    output = _resolve_output(output_root, root, inputs)
+    output = _resolve_output(
+        output_root,
+        root,
+        inputs,
+        protected_directories=(bundle_root,) if bundle_root is not None else (),
+    )
 
     temporary: Path | None = None
     temporary_token: _StagingDirectoryToken | None = None
@@ -3379,6 +3481,7 @@ def stage_public_preview_release(
             installer_attestation,
             source_commit=source_commit,
             built_at=built_at,
+            portable_bundle_root=bundle_root,
         )
         _verify_source_inputs(root, source_commit, contract, source_files)
         _publish_staged_output(
@@ -3762,6 +3865,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--installer-path", type=Path)
     parser.add_argument("--installer-attestation-path", type=Path)
     parser.add_argument("--portable-path", type=Path)
+    parser.add_argument("--portable-bundle-root", type=Path)
     parser.add_argument("--skill-path", type=Path)
     parser.add_argument("--verify", action="store_true")
     try:
@@ -3771,13 +3875,22 @@ def main(argv: list[str] | None = None) -> int:
                 args.output_root, args.project_root, source_commit=args.source_commit
             )
         else:
-            if not all((args.installer_path, args.portable_path, args.skill_path, args.built_at)):
+            if not all(
+                (
+                    args.installer_path,
+                    args.portable_path,
+                    args.portable_bundle_root,
+                    args.skill_path,
+                    args.built_at,
+                )
+            ):
                 _fail("RELEASE_MANIFEST_INVALID")
             result = stage_public_preview_release(
                 args.project_root,
                 args.output_root,
                 installer_path=args.installer_path,
                 portable_path=args.portable_path,
+                portable_bundle_root=args.portable_bundle_root,
                 skill_path=args.skill_path,
                 installer_attestation_path=args.installer_attestation_path,
                 source_commit=args.source_commit,
