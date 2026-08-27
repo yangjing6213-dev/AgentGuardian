@@ -362,7 +362,17 @@ def _win32_open_directory(path: Path, access: int) -> tuple[int, tuple[int, ...]
         ctypes.POINTER(_ByHandleFileInformation),
     ]
     kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
-    if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):
+    try:
+        query_succeeded = bool(
+            kernel32.GetFileInformationByHandle(handle, ctypes.byref(info))
+        )
+    except Exception as error:
+        if not _close_ledger_handle(lease, int(handle), verify_identity=False):
+            raise ReleaseViolation(
+                "RELEASE_OUTPUT_PATH_INVALID", cleanup_lease=lease
+            ) from error
+        raise
+    if not query_succeeded:
         error_code = ctypes.get_last_error()
         if not _close_ledger_handle(lease, int(handle), verify_identity=False):
             raise ReleaseViolation(
@@ -447,6 +457,23 @@ def _error_with_cleanup(
 ) -> ReleaseViolation:
     code = error.code if isinstance(error, ReleaseViolation) else fallback_code
     return ReleaseViolation(code, cleanup_lease=ledger)
+
+
+def _attach_cleanup_lease(
+    error: BaseException,
+    ledger: _HandleOwnershipLedger,
+    fallback_code: str,
+) -> BaseException:
+    """Keep unresolved ownership reachable without replacing the primary code."""
+    if not ledger.handles():
+        return error
+    if isinstance(error, ReleaseViolation):
+        if error.cleanup_lease is None:
+            error.cleanup_lease = ledger
+        elif error.cleanup_lease is not ledger:
+            error.cleanup_lease.adopt(ledger)
+        return error
+    return ReleaseViolation(fallback_code, cleanup_lease=ledger)
 
 
 def _bound_handle_identity(
@@ -791,7 +818,7 @@ def _create_output_file(
                 error, lease, "RELEASE_OUTPUT_PATH_INVALID"
             ) from error
         raise
-    except (FileExistsError, OSError, ValueError) as error:
+    except (FileExistsError, OSError, TypeError, ValueError) as error:
         if descriptor is not None and not _close_ledger_handle(lease, descriptor):
             raise _error_with_cleanup(
                 error, lease, "RELEASE_OUTPUT_PATH_INVALID"
@@ -2159,16 +2186,48 @@ def stage_public_preview_release(
             )
         unbound_close_code = None
         if temporary_token is None:
-            unbound_close_code = _close_directory_binding(parent_binding)
+            try:
+                unbound_close_code = _close_directory_binding(parent_binding)
+            except (OSError, ValueError, ReleaseViolation):
+                unbound_close_code = "RELEASE_RESOURCE_CLOSE_FAILED"
+
+        failed_ledgers: list[_HandleOwnershipLedger] = []
+        if close_code is not None and temporary_token is not None:
+            failed_ledgers.append(temporary_token.ledger)
+        if lease_close_code is not None and cleanup_lease is not None:
+            failed_ledgers.append(cleanup_lease)
+        if unbound_close_code is not None and parent_binding is not None:
+            failed_ledgers.append(parent_binding.ledger)
+
+        attached_lease: _HandleOwnershipLedger | None = None
+        for ledger in failed_ledgers:
+            if ledger.handles():
+                if attached_lease is None:
+                    attached_lease = ledger
+                elif attached_lease is not ledger:
+                    attached_lease.adopt(ledger)
+
         if primary_error is None:
             if cleanup_code is not None:
                 _fail(cleanup_code)
             if close_code is not None:
-                _fail(close_code)
+                if attached_lease is None:
+                    _fail(close_code)
+                _fail(close_code, cleanup_lease=attached_lease)
             if lease_close_code is not None:
-                _fail(lease_close_code)
+                if attached_lease is None:
+                    _fail(lease_close_code)
+                _fail(lease_close_code, cleanup_lease=attached_lease)
             if unbound_close_code is not None:
-                _fail(unbound_close_code)
+                if attached_lease is None:
+                    _fail(unbound_close_code)
+                _fail(unbound_close_code, cleanup_lease=attached_lease)
+        elif attached_lease is not None:
+            updated_error = _attach_cleanup_lease(
+                primary_error, attached_lease, "RELEASE_RESOURCE_CLOSE_FAILED"
+            )
+            if updated_error is not primary_error:
+                raise updated_error from primary_error
 
 
 def _load_metadata(output_root: Path) -> dict[str, object]:

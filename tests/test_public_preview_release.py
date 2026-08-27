@@ -1456,6 +1456,10 @@ def test_win32_open_directory_transfers_close_lease_after_identity_failure(
         CreateFileW = FakeCreateFileW()
         GetFileInformationByHandle = FakeGetFileInformationByHandle()
 
+        class CloseHandle:
+            argtypes = None
+            restype = None
+
     close_calls: list[int] = []
 
     def close_fails(handle: int, **_kwargs: object) -> None:
@@ -1475,6 +1479,90 @@ def test_win32_open_directory_transfers_close_lease_after_identity_failure(
     assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
     assert caught.value.cleanup_lease is not None
     assert caught.value.cleanup_lease.owns(77)
+    assert close_calls == [77]
+
+
+def test_win32_open_directory_query_exception_keeps_lease_when_close_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module.os, "name", "nt")
+
+    class FakeCreateFileW:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *_args: object) -> int:
+            return 77
+
+    class FakeGetFileInformationByHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *_args: object) -> int:
+            raise ctypes.ArgumentError("identity query failed")
+
+    class FakeKernel32:
+        CreateFileW = FakeCreateFileW()
+        GetFileInformationByHandle = FakeGetFileInformationByHandle()
+
+        class CloseHandle:
+            argtypes = None
+            restype = None
+
+    close_calls: list[int] = []
+
+    def close_fails(handle: int, **_kwargs: object) -> None:
+        close_calls.append(handle)
+        raise OSError("close failed")
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32())
+    monkeypatch.setattr(module, "_close_bound_handle", close_fails)
+    with pytest.raises(module.ReleaseViolation) as caught:
+        module._win32_open_directory(tmp_path, 0)
+    assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
+    assert caught.value.cleanup_lease is not None
+    assert caught.value.cleanup_lease.owns(77)
+    assert close_calls == [77]
+
+
+def test_win32_open_directory_query_exception_closes_once_when_close_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module.os, "name", "nt")
+
+    class FakeCreateFileW:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *_args: object) -> int:
+            return 77
+
+    class FakeGetFileInformationByHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *_args: object) -> int:
+            raise OSError("identity query failed")
+
+    class FakeKernel32:
+        CreateFileW = FakeCreateFileW()
+        GetFileInformationByHandle = FakeGetFileInformationByHandle()
+
+        class CloseHandle:
+            argtypes = None
+            restype = None
+
+    close_calls: list[int] = []
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32())
+    monkeypatch.setattr(
+        module,
+        "_close_bound_handle",
+        lambda handle, **_kwargs: close_calls.append(handle),
+    )
+    with pytest.raises(OSError):
+        module._win32_open_directory(tmp_path, 0)
     assert close_calls == [77]
 
 
@@ -2157,6 +2245,128 @@ def test_stage_reports_close_failure_after_success(
             built_at=BUILT_AT,
         )
     assert output.exists()
+
+
+def test_stage_preserves_primary_code_and_staging_cleanup_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    output = tmp_path / "release"
+    observed: dict[str, object] = {}
+    original_close = module._close_staging_token
+
+    def fail_source_verification(*_args: object, **_kwargs: object) -> None:
+        raise module.ReleaseViolation("RELEASE_SOURCE_STATE_INVALID")
+
+    def retain_staging_lease(
+        token: module._StagingDirectoryToken | None,
+    ) -> str:
+        assert token is not None
+        observed["token"] = token
+        return "RELEASE_RESOURCE_CLOSE_FAILED"
+
+    def discard_staging(path: Path | None, _token: object) -> None:
+        if path is not None:
+            shutil.rmtree(path, ignore_errors=True)
+
+    monkeypatch.setattr(module, "_verify_source_inputs", fail_source_verification)
+    monkeypatch.setattr(module, "_close_staging_token", retain_staging_lease)
+    monkeypatch.setattr(module, "_cleanup_temporary_output", discard_staging)
+    try:
+        with pytest.raises(module.ReleaseViolation) as caught:
+            module.stage_public_preview_release(
+                ROOT,
+                output,
+                installer_path=installer,
+                portable_path=portable,
+                skill_path=skill,
+                source_commit=COMMIT,
+                built_at=BUILT_AT,
+            )
+        token = observed["token"]
+        assert isinstance(token, module._StagingDirectoryToken)
+        assert caught.value.code == "RELEASE_SOURCE_STATE_INVALID"
+        assert caught.value.cleanup_lease is token.ledger
+        assert token.ledger.handles()
+    finally:
+        token = observed.get("token")
+        if isinstance(token, module._StagingDirectoryToken):
+            original_close(token)
+
+
+def test_stage_preserves_parent_binding_lease_before_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    output = tmp_path / "release"
+    observed: dict[str, object] = {}
+    original_close = module._close_directory_binding
+
+    def fail_mkdtemp(*_args: object, **_kwargs: object) -> Path:
+        raise OSError("temporary directory failed")
+
+    def retain_parent_lease(
+        binding: module._DirectoryBinding | None,
+    ) -> str:
+        assert binding is not None
+        observed["binding"] = binding
+        return "RELEASE_RESOURCE_CLOSE_FAILED"
+
+    monkeypatch.setattr(module.tempfile, "mkdtemp", fail_mkdtemp)
+    monkeypatch.setattr(module, "_close_directory_binding", retain_parent_lease)
+    try:
+        with pytest.raises(module.ReleaseViolation) as caught:
+            module.stage_public_preview_release(
+                ROOT,
+                output,
+                installer_path=installer,
+                portable_path=portable,
+                skill_path=skill,
+                source_commit=COMMIT,
+                built_at=BUILT_AT,
+            )
+        binding = observed["binding"]
+        assert isinstance(binding, module._DirectoryBinding)
+        assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
+        assert caught.value.cleanup_lease is binding.ledger
+        assert binding.ledger.owns(binding.handle)
+    finally:
+        binding = observed.get("binding")
+        if isinstance(binding, module._DirectoryBinding):
+            original_close(binding)
+
+
+def test_create_output_file_fdopen_type_error_keeps_fd_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    output = tmp_path / "output.bin"
+    monkeypatch.setattr(module.os, "open", lambda *_args, **_kwargs: 77)
+    monkeypatch.setattr(
+        module.os,
+        "fdopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(TypeError("fdopen failed")),
+    )
+    monkeypatch.setattr(module, "_bound_handle_identity", lambda *_args, **_kwargs: (1, 2))
+    close_calls: list[int] = []
+
+    def close_fails(handle: int, *, resource_type: str = "handle") -> None:
+        assert resource_type == "fd"
+        close_calls.append(handle)
+        raise OSError("close failed")
+
+    monkeypatch.setattr(module, "_close_bound_handle", close_fails)
+    with pytest.raises(module.ReleaseViolation) as caught:
+        with module._create_output_file(output):
+            pass
+    assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
+    assert caught.value.cleanup_lease is not None
+    assert caught.value.cleanup_lease.owns(77)
+    assert close_calls == [77, 77]
 
 
 def test_stage_rejects_source_state_changed_before_publish(
