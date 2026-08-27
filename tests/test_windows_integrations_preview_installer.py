@@ -104,6 +104,22 @@ def test_preview_inno_script_does_not_start_pascal_lines_with_preprocessor_marke
     assert invalid_lines == []
 
 
+def test_preview_selected_targets_ends_disclosure_before_next_assignment() -> None:
+    lines = ISS_PATH.read_text(encoding="ascii").splitlines()
+    disclosure_index = next(
+        index
+        for index, line in enumerate(lines)
+        if "Reports and redacted results may be visible to the configured host." in line
+    )
+    assert lines[disclosure_index].strip() == (
+        "'Reports and redacted results may be visible to the configured host.' + #13#10;"
+    )
+    assert lines[disclosure_index + 1].strip() == (
+        "Result := Result + #13#10 + 'Selected categories:'"
+        " + #13#10;"
+    )
+
+
 def test_preview_spec_has_one_shared_analysis_and_two_launchers() -> None:
     spec = SPEC_PATH.read_text(encoding="ascii")
     assert spec.count("Analysis(") == 1
