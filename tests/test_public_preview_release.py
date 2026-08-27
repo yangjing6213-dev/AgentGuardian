@@ -231,6 +231,187 @@ def _run_download_verifier_with_curl_sentinel(
     )
 
 
+def _run_download_verifier_with_mocked_commands(
+    tmp_path: Path,
+    invocation: str,
+    *,
+    fail_hash: bool = False,
+    fail_remove: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+    powershell = shutil.which("pwsh") or shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("PowerShell is unavailable")
+
+    temp_directory = tmp_path / "powershell-temp"
+    temp_directory.mkdir()
+    marker = tmp_path / "curl-called.txt"
+    target = str(DOWNLOAD_VERIFIER).replace("'", "''")
+    temp_literal = str(temp_directory).replace("'", "''")
+    marker_literal = str(marker).replace("'", "''")
+    harness = tmp_path / "invoke-download-verifier-mocks.ps1"
+    lines = [
+        "$ErrorActionPreference = 'Stop'",
+        f"$tempDirectory = '{temp_literal}'",
+        "$env:TEMP = $tempDirectory",
+        "$env:TMP = $tempDirectory",
+        f"$marker = '{marker_literal}'",
+        "$payload = [Text.Encoding]::ASCII.GetBytes('known-download')",
+        "function curl.exe {",
+        "    $outputIndex = -1",
+        "    for ($i = 0; $i -lt $args.Count; $i++) {",
+        "        if ([string]$args[$i] -ceq '--output') {",
+        "            $outputIndex = $i",
+        "            break",
+        "        }",
+        "    }",
+        "    if ($outputIndex -lt 0 -or $outputIndex + 1 -ge $args.Count) {",
+        "        $global:LASTEXITCODE = 2",
+        "        return",
+        "    }",
+        "    [IO.File]::WriteAllBytes([string]$args[$outputIndex + 1], $payload)",
+        "    [IO.File]::WriteAllText($marker, 'called')",
+        "    $global:LASTEXITCODE = 0",
+        "}",
+        # Keep the probe offline even if command resolution ignores the function.
+        "$env:PATH = $tempDirectory",
+    ]
+    if fail_hash:
+        lines.extend(
+            (
+                "function Get-FileHash {",
+                "    throw 'unexpected hash failure'",
+                "}",
+            )
+        )
+    if fail_remove:
+        lines.extend(
+            (
+                "function Remove-Item {",
+                "    param([string]$LiteralPath, [switch]$Force, [string]$ErrorAction)",
+                "    [IO.File]::WriteAllText($marker, 'remove-called')",
+                "    throw 'cleanup sentinel'",
+                "}",
+            )
+        )
+    lines.extend(
+        (
+            f"& '{target}' {invocation}".rstrip(),
+            "$scriptExitCode = [int]$LASTEXITCODE",
+            "exit $scriptExitCode",
+        )
+    )
+    harness.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
+    return (
+        subprocess.run(
+            [
+                powershell,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(harness),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        ),
+        temp_directory,
+        marker,
+    )
+
+
+def test_digest_mismatch_keeps_safe_actual_and_expected_hashes(
+    tmp_path: Path,
+) -> None:
+    expected = "a" * 64
+    actual = hashlib.sha256(b"known-download").hexdigest()
+    completed, temp_directory, marker = _run_download_verifier_with_mocked_commands(
+        tmp_path,
+        f"-ExpectedSha256 '{expected}'",
+    )
+
+    try:
+        assert completed.returncode == 1
+        assert completed.stderr == ""
+        payload = json.loads(completed.stdout)
+        assert payload == {
+            "actual_sha256": actual,
+            "error": "DOWNLOAD_DIGEST_MISMATCH",
+            "expected_sha256": expected,
+            "status": "fail",
+        }
+        assert completed.stdout.strip() == json.dumps(payload, separators=(",", ":"))
+        assert marker.read_text(encoding="utf-8") == "called"
+        assert not list(temp_directory.glob("AgentGuardian-public-preview-*.exe"))
+        assert str(ROOT) not in completed.stdout + completed.stderr
+    finally:
+        for path in temp_directory.glob("AgentGuardian-public-preview-*.exe"):
+            path.unlink(missing_ok=True)
+
+
+def test_unexpected_post_validation_error_uses_generic_failure_code(
+    tmp_path: Path,
+) -> None:
+    expected = hashlib.sha256(b"known-download").hexdigest()
+    completed, temp_directory, _marker = _run_download_verifier_with_mocked_commands(
+        tmp_path,
+        f"-ExpectedSha256 '{expected}'",
+        fail_hash=True,
+    )
+
+    try:
+        assert completed.returncode == 1
+        assert completed.stderr == ""
+        payload = json.loads(completed.stdout)
+        assert payload == {
+            "actual_sha256": None,
+            "error": "DOWNLOAD_VERIFICATION_FAILED",
+            "expected_sha256": expected,
+            "status": "fail",
+        }
+        assert completed.stdout.strip() == json.dumps(payload, separators=(",", ":"))
+        assert "EXPECTED_SHA256_INVALID" not in completed.stdout
+        assert str(ROOT) not in completed.stdout + completed.stderr
+        assert not list(temp_directory.glob("AgentGuardian-public-preview-*.exe"))
+    finally:
+        for path in temp_directory.glob("AgentGuardian-public-preview-*.exe"):
+            path.unlink(missing_ok=True)
+
+
+def test_cleanup_failure_overrides_success_and_leaves_observable_residue(
+    tmp_path: Path,
+) -> None:
+    expected = hashlib.sha256(b"known-download").hexdigest()
+    completed, temp_directory, marker = _run_download_verifier_with_mocked_commands(
+        tmp_path,
+        f"-ExpectedSha256 '{expected}'",
+        fail_remove=True,
+    )
+
+    try:
+        assert completed.returncode == 1
+        assert completed.stderr == ""
+        payload = json.loads(completed.stdout)
+        assert payload == {
+            "actual_sha256": expected,
+            "error": "DOWNLOAD_CLEANUP_FAILED",
+            "expected_sha256": expected,
+            "status": "fail",
+        }
+        assert completed.stdout.strip() == json.dumps(payload, separators=(",", ":"))
+        assert marker.read_text(encoding="utf-8") == "remove-called"
+        assert list(temp_directory.glob("AgentGuardian-public-preview-*.exe"))
+        assert str(ROOT) not in completed.stdout + completed.stderr
+    finally:
+        for path in temp_directory.glob("AgentGuardian-public-preview-*.exe"):
+            path.unlink(missing_ok=True)
+
+
 def test_missing_expected_digest_emits_fixed_json_without_curl(
     tmp_path: Path,
 ) -> None:
