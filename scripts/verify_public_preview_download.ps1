@@ -1,16 +1,8 @@
-[CmdletBinding()]
-param(
-    # Keep binding non-mandatory so missing input reaches the fixed JSON response path below.
-    [Parameter(Mandatory = $false)]
-    [AllowNull()]
-    [AllowEmptyString()]
-    [string]$ExpectedSha256
-)
-
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $downloadUrl = 'https://github.com/yangjing6213-dev/AgentGuardian/releases/latest/download/AgentGuardian-Setup-Windows-x64.exe'
+$ExpectedSha256 = $null
 $tempPath = $null
 $normalizedExpected = $null
 $actualSha256 = $null
@@ -24,10 +16,19 @@ $result = [ordered]@{
 }
 
 try {
+    # Use raw-argument parsing so a missing option value still receives fixed safety JSON.
+    $failureCode = 'EXPECTED_SHA256_INVALID'
+    $rawArguments = @($args)
+    if ($rawArguments.Count -ne 2) {
+        throw 'DOWNLOAD_VERIFICATION_STOP'
+    }
+    if ([string]$rawArguments[0] -cne '-ExpectedSha256') {
+        throw 'DOWNLOAD_VERIFICATION_STOP'
+    }
+    $ExpectedSha256 = [string]$rawArguments[1]
     if ([string]::IsNullOrEmpty($ExpectedSha256) -or
         $ExpectedSha256.Length -ne 64 -or
         $ExpectedSha256 -cnotmatch '\A[0-9a-f]{64}\z') {
-        $failureCode = 'EXPECTED_SHA256_INVALID'
         throw 'DOWNLOAD_VERIFICATION_STOP'
     }
 

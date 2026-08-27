@@ -66,10 +66,15 @@ def test_public_download_verifier_has_fixed_bounded_request_contract() -> None:
     assert "Set-StrictMode -Version Latest" in script
     assert f"$downloadUrl = '{PRIMARY_DOWNLOAD_URL}'" in script
     assert script.count(PRIMARY_DOWNLOAD_URL) == 1
-    assert "[Parameter(Mandatory = $false)]" in script
-    assert "Keep binding non-mandatory" in script
-    assert "[AllowNull()]" in script
-    assert "[string]$ExpectedSha256" in script
+    assert "raw-argument parsing" in script
+    assert "$rawArguments = @($args)" in script
+    assert "$rawArguments.Count -ne 2" in script
+    assert "[string]$rawArguments[0] -cne '-ExpectedSha256'" in script
+    assert "$ExpectedSha256 = [string]$rawArguments[1]" in script
+    assert "[Parameter(" not in script
+    assert "CmdletBinding" not in script
+    assert "param(" not in script
+    assert "-ExpectedSha256" in script
     assert "$ExpectedSha256.Length -ne 64" in script
     assert "-cnotmatch '\\A[0-9a-f]{64}\\z'" in script
     assert script.count("curl.exe") == 1
@@ -230,6 +235,72 @@ def test_missing_expected_digest_emits_fixed_json_without_curl(
     tmp_path: Path,
 ) -> None:
     completed, marker = _run_download_verifier_with_curl_sentinel(tmp_path, "")
+
+    assert completed.returncode != 0
+    assert completed.stderr == ""
+    payload = json.loads(completed.stdout)
+    assert payload == {
+        "actual_sha256": None,
+        "error": "EXPECTED_SHA256_INVALID",
+        "expected_sha256": None,
+        "status": "fail",
+    }
+    assert completed.stdout.strip() == json.dumps(payload, separators=(",", ":"))
+    assert not marker.exists()
+    assert str(ROOT) not in completed.stdout + completed.stderr
+
+
+def test_bare_expected_digest_switch_emits_fixed_json_without_curl(
+    tmp_path: Path,
+) -> None:
+    completed, marker = _run_download_verifier_with_curl_sentinel(
+        tmp_path,
+        "-ExpectedSha256",
+    )
+
+    assert completed.returncode != 0
+    assert completed.stderr == ""
+    payload = json.loads(completed.stdout)
+    assert payload == {
+        "actual_sha256": None,
+        "error": "EXPECTED_SHA256_INVALID",
+        "expected_sha256": None,
+        "status": "fail",
+    }
+    assert completed.stdout.strip() == json.dumps(payload, separators=(",", ":"))
+    assert not marker.exists()
+    assert str(ROOT) not in completed.stdout + completed.stderr
+
+
+def test_empty_expected_digest_emits_fixed_json_without_curl(
+    tmp_path: Path,
+) -> None:
+    completed, marker = _run_download_verifier_with_curl_sentinel(
+        tmp_path,
+        "-ExpectedSha256 ''",
+    )
+
+    assert completed.returncode != 0
+    assert completed.stderr == ""
+    payload = json.loads(completed.stdout)
+    assert payload == {
+        "actual_sha256": None,
+        "error": "EXPECTED_SHA256_INVALID",
+        "expected_sha256": None,
+        "status": "fail",
+    }
+    assert completed.stdout.strip() == json.dumps(payload, separators=(",", ":"))
+    assert not marker.exists()
+    assert str(ROOT) not in completed.stdout + completed.stderr
+
+
+def test_extra_download_verifier_argument_emits_fixed_json_without_curl(
+    tmp_path: Path,
+) -> None:
+    completed, marker = _run_download_verifier_with_curl_sentinel(
+        tmp_path,
+        "-ExpectedSha256 ('a' * 64) unexpected",
+    )
 
     assert completed.returncode != 0
     assert completed.stderr == ""
