@@ -1561,8 +1561,54 @@ def test_win32_open_directory_query_exception_closes_once_when_close_succeeds(
         "_close_bound_handle",
         lambda handle, **_kwargs: close_calls.append(handle),
     )
-    with pytest.raises(OSError):
+    with pytest.raises(module.ReleaseViolation) as caught:
         module._win32_open_directory(tmp_path, 0)
+    assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
+    assert caught.value.cleanup_lease is None
+    assert close_calls == [77]
+
+
+def test_win32_open_directory_normalizes_arbitrary_query_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module.os, "name", "nt")
+
+    class FakeCreateFileW:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *_args: object) -> int:
+            return 77
+
+    class FakeGetFileInformationByHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *_args: object) -> int:
+            raise RuntimeError("unexpected identity failure")
+
+    class FakeKernel32:
+        CreateFileW = FakeCreateFileW()
+        GetFileInformationByHandle = FakeGetFileInformationByHandle()
+
+        class CloseHandle:
+            argtypes = None
+            restype = None
+
+    close_calls: list[int] = []
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32())
+    monkeypatch.setattr(
+        module,
+        "_close_bound_handle",
+        lambda handle, **_kwargs: close_calls.append(handle),
+    )
+
+    with pytest.raises(module.ReleaseViolation) as caught:
+        module._win32_open_directory(tmp_path, 0)
+
+    assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
+    assert caught.value.cleanup_lease is None
     assert close_calls == [77]
 
 
@@ -1619,6 +1665,32 @@ def test_open_bound_posix_directory_query_exception_keeps_lease(
     assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
     assert caught.value.cleanup_lease is not None
     assert caught.value.cleanup_lease.owns(88)
+    assert close_calls == [88]
+
+
+def test_open_bound_posix_directory_normalizes_arbitrary_query_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module.os, "name", "posix")
+    monkeypatch.setattr(module.os, "open", lambda *_args, **_kwargs: 88)
+    monkeypatch.setattr(
+        module,
+        "_bound_handle_identity",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("query failed")),
+    )
+    close_calls: list[int] = []
+    monkeypatch.setattr(
+        module,
+        "_close_bound_handle",
+        lambda handle, **_kwargs: close_calls.append(handle),
+    )
+
+    with pytest.raises(module.ReleaseViolation) as caught:
+        module._open_bound_directory(tmp_path, 0)
+
+    assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
+    assert caught.value.cleanup_lease is None
     assert close_calls == [88]
 
 
@@ -2137,6 +2209,106 @@ def test_ntdll_identity_failure_closes_native_handle_once(
     monkeypatch.setattr(module, "_close_bound_handle", close)
     with pytest.raises(module.ReleaseViolation):
         module._ntdll_open_relative_directory(77, ".release.staging-test")
+    assert closed == [1234]
+
+
+def test_ntdll_arbitrary_identity_failure_normalizes_and_closes_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+
+    class FakeNtCreateFile:
+        argtypes = None
+        restype = None
+
+        def __call__(self, output_handle: object, *_args: object) -> int:
+            ctypes.cast(
+                output_handle, ctypes.POINTER(ctypes.wintypes.HANDLE)
+            ).contents.value = 1234
+            return 0
+
+    class FakeNtdll:
+        NtCreateFile = FakeNtCreateFile()
+
+    class FakeGetFileInformationByHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *_args: object) -> int:
+            raise RuntimeError("unexpected identity failure")
+
+    class FakeKernel32:
+        GetFileInformationByHandle = FakeGetFileInformationByHandle()
+
+    closed: list[int] = []
+
+    def close(handle: int, *, resource_type: str = "handle") -> None:
+        assert resource_type == "handle"
+        closed.append(handle)
+
+    def win_dll(name: str, **_kwargs: object) -> object:
+        return FakeNtdll() if name == "ntdll" else FakeKernel32()
+
+    monkeypatch.setattr(module.os, "name", "nt")
+    monkeypatch.setattr(ctypes, "WinDLL", win_dll)
+    monkeypatch.setattr(module, "_close_bound_handle", close)
+
+    with pytest.raises(module.ReleaseViolation) as caught:
+        module._ntdll_open_relative_directory(77, ".release.staging-test")
+
+    assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
+    assert caught.value.cleanup_lease is None
+    assert closed == [1234]
+
+
+def test_ntdll_arbitrary_identity_failure_keeps_lease_when_close_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+
+    class FakeNtCreateFile:
+        argtypes = None
+        restype = None
+
+        def __call__(self, output_handle: object, *_args: object) -> int:
+            ctypes.cast(
+                output_handle, ctypes.POINTER(ctypes.wintypes.HANDLE)
+            ).contents.value = 1234
+            return 0
+
+    class FakeNtdll:
+        NtCreateFile = FakeNtCreateFile()
+
+    class FakeGetFileInformationByHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *_args: object) -> int:
+            raise RuntimeError("unexpected identity failure")
+
+    class FakeKernel32:
+        GetFileInformationByHandle = FakeGetFileInformationByHandle()
+
+    closed: list[int] = []
+
+    def close(handle: int, *, resource_type: str = "handle") -> None:
+        assert resource_type == "handle"
+        closed.append(handle)
+        raise OSError("close failed")
+
+    def win_dll(name: str, **_kwargs: object) -> object:
+        return FakeNtdll() if name == "ntdll" else FakeKernel32()
+
+    monkeypatch.setattr(module.os, "name", "nt")
+    monkeypatch.setattr(ctypes, "WinDLL", win_dll)
+    monkeypatch.setattr(module, "_close_bound_handle", close)
+
+    with pytest.raises(module.ReleaseViolation) as caught:
+        module._ntdll_open_relative_directory(77, ".release.staging-test")
+
+    assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
+    assert caught.value.cleanup_lease is not None
+    assert caught.value.cleanup_lease.owns(1234)
     assert closed == [1234]
 
 

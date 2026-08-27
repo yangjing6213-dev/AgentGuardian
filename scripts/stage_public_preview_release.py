@@ -371,7 +371,7 @@ def _win32_open_directory(path: Path, access: int) -> tuple[int, tuple[int, ...]
             raise ReleaseViolation(
                 "RELEASE_OUTPUT_PATH_INVALID", cleanup_lease=lease
             ) from error
-        raise
+        raise ReleaseViolation("RELEASE_OUTPUT_PATH_INVALID") from error
     if not query_succeeded:
         error_code = ctypes.get_last_error()
         if not _close_ledger_handle(lease, int(handle), verify_identity=False):
@@ -1077,12 +1077,12 @@ def _open_bound_directory(path: Path, access: int) -> tuple[int, tuple[int, ...]
             handle = os.open(path, flags)
             lease.register(handle, resource_type="directory")
             identity = _bound_handle_identity(handle, resource_type="directory")
-        except Exception:
+        except Exception as error:
             if handle is not None and not _close_ledger_handle(lease, handle):
                 raise ReleaseViolation(
                     "RELEASE_OUTPUT_PATH_INVALID", cleanup_lease=lease
-                )
-            raise
+                ) from error
+            raise ReleaseViolation("RELEASE_OUTPUT_PATH_INVALID") from error
         lease.set_identity(handle, identity)
         lease.release(handle)
         return handle, identity
@@ -1223,7 +1223,7 @@ def _ntdll_open_relative_directory(
         identity = _bound_handle_identity(
             int(handle_value), resource_type="directory"
         )
-    except (OSError, ValueError):
+    except Exception:
         reject_native_handle()
     native_lease.set_identity(int(handle_value), identity)
     native_lease.release(int(handle_value))
