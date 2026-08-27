@@ -491,11 +491,72 @@ def _close_ledger_after_error(
         raise error from cleanup_error
 
 
+def _close_stream_with_fallback(
+    stream: BinaryIO,
+    ledger: _HandleOwnershipLedger,
+    handle: int | None,
+    primary_error: BaseException | None,
+    fallback_code: str,
+) -> None:
+    """Close a stream without hiding close or cleanup failures."""
+    try:
+        stream.close()
+    except BaseException as stream_error:
+        try:
+            close_confirmed = _close_ledger_handle(ledger, handle)
+        except BaseException as cleanup_error:
+            target = primary_error or cleanup_error
+            updated_error = _attach_cleanup_lease(
+                target, ledger, fallback_code
+            )
+            if primary_error is not None:
+                if updated_error is not primary_error:
+                    raise updated_error from cleanup_error
+                raise primary_error from cleanup_error
+            if updated_error is not cleanup_error:
+                raise updated_error from cleanup_error
+            raise
+        if not close_confirmed:
+            if primary_error is not None:
+                updated_error = _attach_cleanup_lease(
+                    primary_error, ledger, fallback_code
+                )
+                if updated_error is not primary_error:
+                    raise updated_error from stream_error
+                raise primary_error from stream_error
+            raise ReleaseViolation(
+                "RELEASE_RESOURCE_CLOSE_FAILED", cleanup_lease=ledger
+            ) from stream_error
+        if primary_error is not None:
+            raise primary_error from stream_error
+        if isinstance(stream_error, Exception):
+            raise ReleaseViolation(
+                "RELEASE_RESOURCE_CLOSE_FAILED"
+            ) from stream_error
+        raise
+    else:
+        ledger.release(handle) if handle is not None else None
+
+
 def _close_ledger_handles(ledger: _HandleOwnershipLedger) -> bool:
     unresolved = False
+    cleanup_error: BaseException | None = None
     for handle in ledger.handles():
-        if not _close_ledger_handle(ledger, handle):
+        try:
+            close_confirmed = _close_ledger_handle(ledger, handle)
+        except BaseException as error:
+            close_confirmed = False
+            if cleanup_error is None:
+                cleanup_error = error
+        if not close_confirmed:
             unresolved = True
+    if cleanup_error is not None:
+        updated_error = _attach_cleanup_lease(
+            cleanup_error, ledger, "RELEASE_RESOURCE_CLOSE_FAILED"
+        )
+        if updated_error is not cleanup_error:
+            raise updated_error from cleanup_error
+        raise cleanup_error
     return unresolved
 
 
@@ -745,35 +806,9 @@ def _open_verified_file(
     finally:
         close_failed = False
         if stream is not None:
-            try:
-                stream.close()
-            except Exception:
-                try:
-                    close_failed = not _close_ledger_handle(
-                        lease, file_descriptor
-                    )
-                except BaseException as cleanup_error:
-                    target = primary_error or cleanup_error
-                    updated_error = _attach_cleanup_lease(target, lease, code)
-                    raise updated_error from cleanup_error
-            except BaseException as stream_error:
-                try:
-                    close_failed = not _close_ledger_handle(
-                        lease, file_descriptor
-                    )
-                except BaseException as cleanup_error:
-                    target = primary_error or stream_error
-                    updated_error = _attach_cleanup_lease(target, lease, code)
-                    raise updated_error from cleanup_error
-                target = primary_error or stream_error
-                if close_failed:
-                    updated_error = _attach_cleanup_lease(target, lease, code)
-                    raise updated_error from stream_error
-                if primary_error is not None:
-                    raise primary_error from stream_error
-                raise stream_error
-            else:
-                lease.release(file_descriptor)
+            _close_stream_with_fallback(
+                stream, lease, file_descriptor, primary_error, code
+            )
         elif file_descriptor is not None:
             try:
                 close_failed = not _close_ledger_handle(lease, file_descriptor)
@@ -948,38 +983,14 @@ def _create_output_file(
         primary_error = error
         raise
     finally:
-        try:
-            stream.close()
-        except Exception:
-            try:
-                close_failed = not _close_ledger_handle(lease, descriptor)
-            except BaseException as cleanup_error:
-                target = primary_error or cleanup_error
-                updated_error = _attach_cleanup_lease(
-                    target, lease, "RELEASE_OUTPUT_PATH_INVALID"
-                )
-                raise updated_error from cleanup_error
-        except BaseException as stream_error:
-            try:
-                close_failed = not _close_ledger_handle(lease, descriptor)
-            except BaseException as cleanup_error:
-                target = primary_error or stream_error
-                updated_error = _attach_cleanup_lease(
-                    target, lease, "RELEASE_OUTPUT_PATH_INVALID"
-                )
-                raise updated_error from cleanup_error
-            target = primary_error or stream_error
-            if close_failed:
-                updated_error = _attach_cleanup_lease(
-                    target, lease, "RELEASE_OUTPUT_PATH_INVALID"
-                )
-                raise updated_error from stream_error
-            if primary_error is not None:
-                raise primary_error from stream_error
-            raise stream_error
-        else:
-            lease.release(descriptor)
-            close_failed = False
+        _close_stream_with_fallback(
+            stream,
+            lease,
+            descriptor,
+            primary_error,
+            "RELEASE_OUTPUT_PATH_INVALID",
+        )
+        close_failed = False
         if close_failed and primary_error is None:
             raise ReleaseViolation(
                 "RELEASE_RESOURCE_CLOSE_FAILED", cleanup_lease=lease
@@ -1616,6 +1627,7 @@ def _cleanup_path_still_bound(
     handle: int | None = None
     close_confirmed = True
     result = False
+    cleanup_error: BaseException | None = None
     try:
         if (
             candidate.parent.resolve(strict=True) != token.parent
@@ -1652,7 +1664,18 @@ def _cleanup_path_still_bound(
         return False
     finally:
         if handle is not None:
-            close_confirmed = _close_ledger_handle(token.ledger, handle)
+            try:
+                close_confirmed = _close_ledger_handle(token.ledger, handle)
+            except BaseException as error:
+                close_confirmed = False
+                cleanup_error = error
+    if cleanup_error is not None:
+        updated_error = _attach_cleanup_lease(
+            cleanup_error, token.ledger, "RELEASE_CLEANUP_FAILED"
+        )
+        if updated_error is not cleanup_error:
+            raise updated_error from cleanup_error
+        raise cleanup_error
     return result and close_confirmed
 
 
@@ -1726,7 +1749,13 @@ def _bind_staging_contents(
                 token,
                 children=tuple(cleanup_children),
             )
-            detached, cleanup_code = _close_staging_child_handles(cleanup_token)
+            try:
+                detached, cleanup_code = _close_staging_child_handles(cleanup_token)
+            except BaseException as cleanup_error:
+                detached = getattr(cleanup_error, "cleanup_token", cleanup_token)
+                if not isinstance(detached, _StagingDirectoryToken):
+                    detached = cleanup_token
+                raise _StagingBindingError(primary_error, detached) from cleanup_error
             if cleanup_code is not None:
                 raise _StagingBindingError(primary_error, detached) from error
             if primary_error is not error:
@@ -1739,6 +1768,7 @@ def _close_staging_child_handles(
     token: _StagingDirectoryToken,
 ) -> tuple[_StagingDirectoryToken, str | None]:
     failed = False
+    cleanup_error: BaseException | None = None
     attempted: set[int] = set()
     children: list[_StagedChildToken] = []
     for child in token.children:
@@ -1747,7 +1777,12 @@ def _close_staging_child_handles(
             children.append(replace(child, handle=None))
             continue
         attempted.add(handle)
-        close_confirmed = _close_ledger_handle(token.ledger, handle)
+        try:
+            close_confirmed = _close_ledger_handle(token.ledger, handle)
+        except BaseException as error:
+            close_confirmed = False
+            if cleanup_error is None:
+                cleanup_error = error
         if not close_confirmed:
             failed = True
         if close_confirmed:
@@ -1755,6 +1790,21 @@ def _close_staging_child_handles(
         else:
             children.append(child)
     detached = replace(token, children=tuple(children))
+    if cleanup_error is not None:
+        try:
+            setattr(cleanup_error, "cleanup_token", detached)
+        except Exception:
+            pass
+        updated_error = _attach_cleanup_lease(
+            cleanup_error, token.ledger, "RELEASE_RESOURCE_CLOSE_FAILED"
+        )
+        if updated_error is not cleanup_error:
+            try:
+                setattr(updated_error, "cleanup_token", detached)
+            except Exception:
+                pass
+            raise updated_error from cleanup_error
+        raise cleanup_error
     return detached, "RELEASE_RESOURCE_CLOSE_FAILED" if failed else None
 
 
@@ -2188,6 +2238,8 @@ def _win32_rename_staged(token: _StagingDirectoryToken, output: Path) -> None:
 def _cleanup_bound_staging(
     token: _StagingDirectoryToken, staged: Path
 ) -> bool:
+    cleanup_error: BaseException | None = None
+    cleanup_failed = False
     try:
         if os.name == "posix":
             if token.directory_handle is None or token.parent_handle is None:
@@ -2225,14 +2277,42 @@ def _cleanup_bound_staging(
                 try:
                     _win32_set_disposition(child_handle)
                 finally:
-                    if not _close_ledger_handle(token.ledger, child_handle):
+                    try:
+                        child_closed = _close_ledger_handle(
+                            token.ledger, child_handle
+                        )
+                    except BaseException as error:
+                        child_closed = False
+                        if cleanup_error is None:
+                            cleanup_error = error
+                    if not child_closed:
                         child_close_failed = True
                 if child_close_failed:
-                    return False
+                    cleanup_failed = True
             _win32_set_disposition(token.directory_handle)
-            return True
-    except (FileNotFoundError, OSError, ProfileViolation, ReleaseViolation):
+            if cleanup_error is not None:
+                updated_error = _attach_cleanup_lease(
+                    cleanup_error, token.ledger, "RELEASE_CLEANUP_FAILED"
+                )
+                if updated_error is not cleanup_error:
+                    raise updated_error from cleanup_error
+                raise cleanup_error
+            return not cleanup_failed
+    except (FileNotFoundError, OSError, ProfileViolation):
         return False
+    except ReleaseViolation as error:
+        if error.cleanup_lease is None:
+            return False
+        raise
+    except BaseException as error:
+        cleanup_error = cleanup_error or error
+    if cleanup_error is not None:
+        updated_error = _attach_cleanup_lease(
+            cleanup_error, token.ledger, "RELEASE_CLEANUP_FAILED"
+        )
+        if updated_error is not cleanup_error:
+            raise updated_error from cleanup_error
+        raise cleanup_error
     return False
 
 
@@ -2249,7 +2329,16 @@ def _cleanup_temporary_output(
 def _close_directory_binding(binding: _DirectoryBinding | None) -> str | None:
     if binding is None:
         return None
-    if not _close_ledger_handle(binding.ledger, binding.handle):
+    try:
+        close_confirmed = _close_ledger_handle(binding.ledger, binding.handle)
+    except BaseException as error:
+        updated_error = _attach_cleanup_lease(
+            error, binding.ledger, "RELEASE_RESOURCE_CLOSE_FAILED"
+        )
+        if updated_error is not error:
+            raise updated_error from error
+        raise
+    if not close_confirmed:
         return "RELEASE_RESOURCE_CLOSE_FAILED"
     return None
 
@@ -2262,12 +2351,26 @@ def _close_staging_token(token: _StagingDirectoryToken | None) -> str | None:
     handles.extend((token.directory_handle, token.parent_handle))
     handles.extend(token.ledger.handles())
     attempted: set[int] = set()
+    cleanup_error: BaseException | None = None
     for handle in handles:
         if handle is None or handle in attempted:
             continue
         attempted.add(handle)
-        if not _close_ledger_handle(token.ledger, handle):
+        try:
+            close_confirmed = _close_ledger_handle(token.ledger, handle)
+        except BaseException as error:
+            close_confirmed = False
+            if cleanup_error is None:
+                cleanup_error = error
+        if not close_confirmed:
             failed = True
+    if cleanup_error is not None:
+        updated_error = _attach_cleanup_lease(
+            cleanup_error, token.ledger, "RELEASE_RESOURCE_CLOSE_FAILED"
+        )
+        if updated_error is not cleanup_error:
+            raise updated_error from cleanup_error
+        raise cleanup_error
     return "RELEASE_RESOURCE_CLOSE_FAILED" if failed else None
 
 
@@ -2367,6 +2470,7 @@ def stage_public_preview_release(
     cleanup_lease: _HandleOwnershipLedger | None = None
     parent_binding: _DirectoryBinding | None = None
     primary_error: BaseException | None = None
+    cleanup_errors: list[BaseException] = []
     try:
         if os.name == "nt":
             parent_access = 0x00000080 | 0x00000001 | 0x00000004 | 0x00000020
@@ -2462,27 +2566,34 @@ def stage_public_preview_release(
     finally:
         try:
             cleanup_code = _cleanup_temporary_output(temporary, temporary_token)
-        except Exception:
+        except BaseException as error:
             cleanup_code = "RELEASE_CLEANUP_FAILED"
+            cleanup_errors.append(error)
         try:
             close_code = _close_staging_token(temporary_token)
-        except Exception:
+        except BaseException as error:
             close_code = "RELEASE_RESOURCE_CLOSE_FAILED"
+            cleanup_errors.append(error)
         lease_close_code = None
         if cleanup_lease is not None and (
             temporary_token is None or cleanup_lease is not temporary_token.ledger
         ):
-            lease_close_code = (
-                "RELEASE_RESOURCE_CLOSE_FAILED"
-                if _close_ledger_handles(cleanup_lease)
-                else None
-            )
+            try:
+                lease_close_code = (
+                    "RELEASE_RESOURCE_CLOSE_FAILED"
+                    if _close_ledger_handles(cleanup_lease)
+                    else None
+                )
+            except BaseException as error:
+                lease_close_code = "RELEASE_RESOURCE_CLOSE_FAILED"
+                cleanup_errors.append(error)
         unbound_close_code = None
         if temporary_token is None:
             try:
                 unbound_close_code = _close_directory_binding(parent_binding)
-            except (OSError, ValueError, ReleaseViolation):
+            except BaseException as error:
                 unbound_close_code = "RELEASE_RESOURCE_CLOSE_FAILED"
+                cleanup_errors.append(error)
 
         failed_ledgers: list[_HandleOwnershipLedger] = []
         if close_code is not None and temporary_token is not None:
@@ -2491,6 +2602,13 @@ def stage_public_preview_release(
             failed_ledgers.append(cleanup_lease)
         if unbound_close_code is not None and parent_binding is not None:
             failed_ledgers.append(parent_binding.ledger)
+        for error in cleanup_errors:
+            error_lease = getattr(error, "cleanup_lease", None)
+            if (
+                isinstance(error_lease, _HandleOwnershipLedger)
+                and error_lease not in failed_ledgers
+            ):
+                failed_ledgers.append(error_lease)
 
         attached_lease: _HandleOwnershipLedger | None = None
         for ledger in failed_ledgers:
@@ -2501,6 +2619,25 @@ def stage_public_preview_release(
                     attached_lease.adopt(ledger)
 
         if primary_error is None:
+            if cleanup_errors:
+                cleanup_error = cleanup_errors[0]
+                if attached_lease is not None:
+                    updated_error = _attach_cleanup_lease(
+                        cleanup_error,
+                        attached_lease,
+                        "RELEASE_RESOURCE_CLOSE_FAILED",
+                    )
+                    if updated_error is not cleanup_error:
+                        raise updated_error from cleanup_error
+                    cleanup_error = updated_error
+                if isinstance(cleanup_error, Exception) and not isinstance(
+                    cleanup_error, ReleaseViolation
+                ):
+                    raise ReleaseViolation(
+                        "RELEASE_RESOURCE_CLOSE_FAILED",
+                        cleanup_lease=attached_lease,
+                    ) from cleanup_error
+                raise cleanup_error
             if cleanup_code is not None:
                 _fail(cleanup_code)
             if close_code is not None:

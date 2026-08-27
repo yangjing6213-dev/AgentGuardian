@@ -3483,6 +3483,197 @@ def test_create_output_file_normalizes_unexpected_write_error(
             raise RuntimeError("write details must not escape")
 
 
+def test_open_verified_file_reports_stream_close_error_after_fallback_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"source")
+    snapshot = module._snapshot_file(
+        source, max_bytes=module.MAX_INPUT_BYTES, code="RELEASE_INPUT_PATH_INVALID"
+    )
+    close_calls: list[tuple[int, str]] = []
+
+    class FailingStream:
+        def close(self) -> None:
+            raise OSError("stream close failed")
+
+    monkeypatch.setattr(module.os, "open", lambda *_args, **_kwargs: 77)
+    monkeypatch.setattr(module.os, "fdopen", lambda *_args, **_kwargs: FailingStream())
+    monkeypatch.setattr(module, "_bound_handle_identity", lambda *_args, **_kwargs: (1, 2))
+    monkeypatch.setattr(module, "_path_identity_matches_handle", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        module,
+        "_close_bound_handle",
+        lambda handle, **kwargs: close_calls.append((handle, kwargs["resource_type"])),
+    )
+    with pytest.raises(
+        module.ReleaseViolation, match="^RELEASE_RESOURCE_CLOSE_FAILED$"
+    ):
+        with module._open_verified_file(
+            snapshot, max_bytes=module.MAX_INPUT_BYTES, code="RELEASE_INPUT_PATH_INVALID"
+        ):
+            pass
+    assert close_calls == [(77, "fd")]
+
+
+def test_create_output_file_reports_stream_close_error_after_fallback_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    output = tmp_path / "output.bin"
+    close_calls: list[tuple[int, str]] = []
+
+    class FailingStream:
+        def close(self) -> None:
+            raise RuntimeError("stream close failed")
+
+    monkeypatch.setattr(module.os, "open", lambda *_args, **_kwargs: 77)
+    monkeypatch.setattr(module.os, "fdopen", lambda *_args, **_kwargs: FailingStream())
+    monkeypatch.setattr(module, "_bound_handle_identity", lambda *_args, **_kwargs: (1, 2))
+    monkeypatch.setattr(
+        module,
+        "_close_bound_handle",
+        lambda handle, **kwargs: close_calls.append((handle, kwargs["resource_type"])),
+    )
+    with pytest.raises(
+        module.ReleaseViolation, match="^RELEASE_RESOURCE_CLOSE_FAILED$"
+    ):
+        with module._create_output_file(output):
+            pass
+    assert close_calls == [(77, "fd")]
+
+
+def test_close_staging_children_continues_after_base_exception_and_keeps_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    snapshot = module._FileSnapshot(tmp_path / "asset", (1, 2, 3, 4), 1)
+    token = module._StagingDirectoryToken(
+        parent=tmp_path,
+        name=".release.staging-test",
+        prefix=".release.staging-",
+        parent_identity=(1,),
+        identity=(2,),
+        is_reparse_point=False,
+        parent_handle=None,
+        directory_handle=None,
+        children=(
+            module._StagedChildToken("first", snapshot, "a" * 64, 77),
+            module._StagedChildToken("second", snapshot, "b" * 64, 88),
+        ),
+    )
+    calls: list[int] = []
+
+    def close(_ledger: object, handle: int, **_kwargs: object) -> bool:
+        calls.append(handle)
+        if handle == 77:
+            raise KeyboardInterrupt()
+        return True
+
+    monkeypatch.setattr(module, "_close_ledger_handle", close)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        module._close_staging_child_handles(token)
+    assert calls == [77, 88]
+    assert caught.value.cleanup_lease is token.ledger
+    assert token.ledger.owns(77)
+
+
+def test_close_staging_token_continues_after_base_exception_and_keeps_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    token = module._StagingDirectoryToken(
+        parent=tmp_path,
+        name=".release.staging-test",
+        prefix=".release.staging-",
+        parent_identity=(1,),
+        identity=(2,),
+        is_reparse_point=False,
+        parent_handle=77,
+        directory_handle=88,
+    )
+    calls: list[int] = []
+
+    def close(_ledger: object, handle: int, **_kwargs: object) -> bool:
+        calls.append(handle)
+        if handle == 88:
+            raise SystemExit()
+        return True
+
+    monkeypatch.setattr(module, "_close_ledger_handle", close)
+    with pytest.raises(SystemExit) as caught:
+        module._close_staging_token(token)
+    assert calls == [88, 77]
+    assert caught.value.cleanup_lease is token.ledger
+
+
+def test_stage_preserves_primary_code_when_cleanup_base_exception_has_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    observed: dict[str, object] = {}
+
+    def fail_source_verification(*_args: object, **_kwargs: object) -> None:
+        raise module.ReleaseViolation("RELEASE_SOURCE_STATE_INVALID")
+
+    def fail_cleanup(token: module._StagingDirectoryToken | None) -> str:
+        assert token is not None
+        observed["token"] = token
+        lease = module._HandleOwnershipLedger()
+        lease.register(909, resource_type="handle", identity=(9,))
+        error = KeyboardInterrupt()
+        error.cleanup_lease = lease  # type: ignore[attr-defined]
+        raise error
+
+    monkeypatch.setattr(module, "_verify_source_inputs", fail_source_verification)
+    monkeypatch.setattr(module, "_close_staging_token", fail_cleanup)
+    with pytest.raises(module.ReleaseViolation) as caught:
+        module.stage_public_preview_release(
+            ROOT,
+            tmp_path / "release",
+            installer_path=installer,
+            portable_path=portable,
+            skill_path=skill,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
+    assert caught.value.code == "RELEASE_SOURCE_STATE_INVALID"
+    assert caught.value.cleanup_lease is not None
+    assert caught.value.cleanup_lease.owns(909)
+
+
+def test_stage_preserves_cleanup_base_exception_without_primary_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    lease = module._HandleOwnershipLedger()
+    lease.register(910, resource_type="handle", identity=(10,))
+
+    def fail_cleanup(_token: object) -> str:
+        error = SystemExit("cleanup failed")
+        error.cleanup_lease = lease  # type: ignore[attr-defined]
+        raise error
+
+    monkeypatch.setattr(module, "_close_staging_token", fail_cleanup)
+    with pytest.raises(SystemExit) as caught:
+        module.stage_public_preview_release(
+            ROOT,
+            tmp_path / "release",
+            installer_path=installer,
+            portable_path=portable,
+            skill_path=skill,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
+    assert caught.value.cleanup_lease is lease
+    assert lease.owns(910)
+
+
 def test_snapshot_staging_directory_normalizes_error_after_directory_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
