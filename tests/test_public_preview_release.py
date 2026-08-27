@@ -932,9 +932,7 @@ def test_bind_staging_contents_retries_and_retains_child_ownership_on_failure(
                 child.handle for child in cleanup_token.children if child.handle
             ) == tuple(opened)
         else:
-            cleanup_token = getattr(caught.value, "cleanup_token", None)
-            assert cleanup_token is not None
-            assert not any(child.handle for child in cleanup_token.children)
+            assert not hasattr(caught.value, "cleanup_token")
     finally:
         module._close_staging_token(token)
         shutil.rmtree(staging, ignore_errors=True)
@@ -1482,10 +1480,61 @@ def test_close_staging_children_retains_failed_handle_for_cleanup_retry(
     monkeypatch.setattr(module, "_close_bound_handle", close_once)
     detached, code = module._close_staging_child_handles(token)
 
-    assert code == "RELEASE_RESOURCE_CLOSE_FAILED"
+    assert code is None
     assert detached.children[0].handle is None
     assert module._close_staging_token(detached) is None
     assert calls == [77, 77]
+
+
+def test_staging_token_retries_unconfirmed_handle_without_losing_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    token = module._StagingDirectoryToken(
+        parent=tmp_path,
+        name=".release.staging-test",
+        prefix=".release.staging-",
+        parent_identity=(1,),
+        identity=(2,),
+        is_reparse_point=False,
+        parent_handle=None,
+        directory_handle=77,
+    )
+    calls: list[int] = []
+
+    def close(handle: int) -> None:
+        calls.append(handle)
+        if len(calls) < 3:
+            raise OSError("close failed")
+
+    monkeypatch.setattr(module, "_close_bound_handle", close)
+    assert module._close_staging_token(token) == "RELEASE_RESOURCE_CLOSE_FAILED"
+    assert 77 in token.ledger.handles()
+    assert module._close_staging_token(token) is None
+    assert calls == [77, 77, 77]
+
+
+def test_staging_token_does_not_repeat_confirmed_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    token = module._StagingDirectoryToken(
+        parent=tmp_path,
+        name=".release.staging-test",
+        prefix=".release.staging-",
+        parent_identity=(1,),
+        identity=(2,),
+        is_reparse_point=False,
+        parent_handle=None,
+        directory_handle=77,
+    )
+    calls: list[int] = []
+    monkeypatch.setattr(
+        module, "_close_bound_handle", lambda handle: calls.append(handle)
+    )
+    assert module._close_staging_token(token) is None
+    assert module._close_staging_token(token) is None
+    assert calls == [77]
 
 
 def test_validated_staging_path_closes_both_current_handles_after_close_failure(
@@ -1528,6 +1577,47 @@ def test_validated_staging_path_closes_both_current_handles_after_close_failure(
     assert calls == [33, 33, 44]
 
 
+def test_validated_staging_path_accepts_retry_when_both_handles_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    staged = parent / ".release.staging-test"
+    staged.mkdir()
+    token = module._StagingDirectoryToken(
+        parent=parent,
+        name=staged.name,
+        prefix=".release.staging-",
+        parent_identity=(1,),
+        identity=(2,),
+        is_reparse_point=False,
+        parent_handle=11,
+        directory_handle=22,
+    )
+    monkeypatch.setattr(
+        module,
+        "_bound_handle_identity",
+        lambda handle: (1,) if handle == 11 else (2,),
+    )
+    opened = iter(((33, (1,)), (44, (2,))))
+    monkeypatch.setattr(module, "_open_bound_directory", lambda *_args: next(opened))
+    calls: list[int] = []
+    attempts: dict[int, int] = {}
+
+    def close(handle: int) -> None:
+        calls.append(handle)
+        attempts[handle] = attempts.get(handle, 0) + 1
+        if handle == 33 and attempts[handle] == 1:
+            raise OSError("close failed")
+
+    monkeypatch.setattr(module, "_close_bound_handle", close)
+    assert module._validated_staging_path(
+        token, staged, "RELEASE_OUTPUT_PATH_INVALID"
+    ) == staged
+    assert calls == [33, 33, 44]
+
+
 def test_ntdll_open_relative_directory_closes_failed_nonempty_handle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1560,7 +1650,7 @@ def test_ntdll_open_relative_directory_closes_failed_nonempty_handle(
     ("mode", "allow_missing", "returns_none"),
     (
         ("exception", False, False),
-        ("missing", True, True),
+        ("missing", True, False),
         ("failure", False, False),
     ),
 )
@@ -1609,6 +1699,8 @@ def test_ntdll_create_staging_file_bounded_cleanup_of_failed_handle(
         parent_handle=11,
         directory_handle=22,
     )
+    token.ledger.release(11)
+    token.ledger.release(22)
     monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeNtdll())
     monkeypatch.setattr(module, "_close_bound_handle", fail_close)
 
@@ -1618,13 +1710,74 @@ def test_ntdll_create_staging_file_bounded_cleanup_of_failed_handle(
         ) is None
     else:
         with pytest.raises(
-            module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"
+            module.ReleaseViolation,
+            match=(
+                "^RELEASE_RESOURCE_CLOSE_FAILED$"
+                if mode == "missing"
+                else "^RELEASE_OUTPUT_PATH_INVALID$"
+            ),
         ) as caught:
             module._ntdll_create_staging_file(
                 token, module.PORTABLE_NAME, allow_missing=allow_missing
             )
         assert sensitive not in str(caught.value)
     assert closed == [1234, 1234]
+
+
+def test_ntdll_create_missing_retains_lease_after_persistent_close_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows native create failure cleanup")
+    module = _module()
+
+    class FakeNtCreateFile:
+        argtypes = None
+        restype = None
+
+        def __call__(self, output_handle: object, *_args: object) -> int:
+            ctypes.cast(
+                output_handle, ctypes.POINTER(ctypes.wintypes.HANDLE)
+            ).contents.value = 1234
+            return -1073741772
+
+    class FakeNtdll:
+        NtCreateFile = FakeNtCreateFile()
+
+    calls: list[int] = []
+    close_attempts = 0
+
+    def close(handle: int) -> None:
+        nonlocal close_attempts
+        calls.append(handle)
+        close_attempts += 1
+        if close_attempts < 3:
+            raise OSError("close failed")
+
+    token = module._StagingDirectoryToken(
+        parent=tmp_path,
+        name=".release.staging-test",
+        prefix=".release.staging-",
+        parent_identity=(1,),
+        identity=(2,),
+        is_reparse_point=False,
+        parent_handle=11,
+        directory_handle=22,
+    )
+    token.ledger.release(11)
+    token.ledger.release(22)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeNtdll())
+    monkeypatch.setattr(module, "_close_bound_handle", close)
+    with pytest.raises(
+        module.ReleaseViolation, match="^RELEASE_RESOURCE_CLOSE_FAILED$"
+    ) as caught:
+        module._ntdll_create_staging_file(
+            token, module.PORTABLE_NAME, allow_missing=True
+        )
+    assert getattr(caught.value, "cleanup_lease", None) is token.ledger
+    assert calls == [1234, 1234]
+    assert module._close_staging_token(token) is None
+    assert calls == [1234, 1234, 1234]
 
 
 def test_stage_reports_close_failure_after_success(
