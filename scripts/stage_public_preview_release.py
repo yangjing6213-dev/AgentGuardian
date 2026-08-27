@@ -84,6 +84,17 @@ _PRIVATE_PATTERNS = (
 _PRIVATE_REMEDIATION = (
     "RELEASE_PRIVATE_DATA_DETECTED: remove credentials or private data from release inputs"
 )
+_WINDOWS_RESERVED_BASENAMES = frozenset(
+    {
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        *(f"com{index}" for index in range(1, 10)),
+        *(f"lpt{index}" for index in range(1, 10)),
+    }
+)
+_WINDOWS_FORBIDDEN_NAME_CHARS = frozenset('<>:"|?*')
 _RESOURCE_TYPE_AMBIGUOUS = "RELEASE_RESOURCE_TYPE_AMBIGUOUS"
 _INPUT_TYPE_INVALID = "RELEASE_INPUT_TYPE_INVALID"
 _INPUT_PROVENANCE_INVALID = "RELEASE_INPUT_PROVENANCE_INVALID"
@@ -1291,10 +1302,24 @@ def _json_object_bytes(raw: bytes, limit: int, code: str) -> dict[str, object]:
 def _safe_zip_name(name: object) -> bool:
     if type(name) is not str or not name or not name.isascii():
         return False
-    if "\\" in name or "\x00" in name or name.startswith("/") or name.endswith("/"):
+    if "\\" in name or name.startswith("/") or name.endswith("/"):
         return False
     parts = name.split("/")
-    return all(part not in {"", ".", ".."} and ":" not in part for part in parts)
+    for part in parts:
+        if (
+            part in {"", ".", ".."}
+            or len(part) > 255
+            or part.endswith((".", " "))
+            or any(
+                ord(character) < 32 or ord(character) == 127
+                for character in part
+            )
+            or any(character in _WINDOWS_FORBIDDEN_NAME_CHARS for character in part)
+        ):
+            return False
+        if part.split(".", 1)[0].casefold() in _WINDOWS_RESERVED_BASENAMES:
+            return False
+    return True
 
 
 def _zip_entry_record(
@@ -1302,9 +1327,11 @@ def _zip_entry_record(
     info: zipfile.ZipInfo,
     *,
     capture_limit: int = 0,
+    private_markers: tuple[bytes, ...] = (),
 ) -> _ZipRecord:
     digest = hashlib.sha256()
     captured = bytearray()
+    carry = b""
     size = 0
     try:
         with archive.open(info, "r") as stream:
@@ -1312,6 +1339,12 @@ def _zip_entry_record(
                 size += len(chunk)
                 if size > MAX_INPUT_BYTES:
                     _fail(_INPUT_TYPE_INVALID)
+                data = carry + chunk
+                if any(pattern.search(data) for pattern in _PRIVATE_PATTERNS) or any(
+                    marker in data.lower() for marker in private_markers
+                ):
+                    _fail("RELEASE_PRIVATE_DATA_DETECTED")
+                carry = data[-256:]
                 digest.update(chunk)
                 if capture_limit and len(captured) < capture_limit:
                     captured.extend(chunk[: capture_limit - len(captured)])
@@ -1338,10 +1371,17 @@ def _zip_entry_record(
     )
 
 
-def _zip_records(snapshot: _FileSnapshot) -> dict[str, _ZipRecord]:
+def _zip_records(
+    snapshot: _FileSnapshot,
+    *,
+    workflow_markers: Iterable[str] = (),
+) -> dict[str, _ZipRecord]:
     records: dict[str, _ZipRecord] = {}
     folded_names: set[str] = set()
     total_size = 0
+    private_markers = tuple(
+        marker.casefold().encode("ascii") for marker in workflow_markers
+    )
     try:
         with _open_verified_file(
             snapshot, max_bytes=MAX_INPUT_BYTES, code=_INPUT_TYPE_INVALID
@@ -1376,23 +1416,31 @@ def _zip_records(snapshot: _FileSnapshot) -> dict[str, _ZipRecord]:
                     if total_size > MAX_INPUT_BYTES:
                         _fail(_INPUT_TYPE_INVALID)
                     capture_limit = 0
+                    requires_full_capture = False
                     if name == "PAYLOAD-MANIFEST.json":
                         capture_limit = MAX_PAYLOAD_MANIFEST_BYTES
+                        requires_full_capture = True
                     elif name in {
                         "BUILD-METADATA.json",
                         "INTEGRATIONS-PREVIEW-PROFILE.json",
                     }:
                         capture_limit = MAX_METADATA_BYTES
+                        requires_full_capture = True
                     elif name == "SHA256SUMS":
                         capture_limit = MAX_CHECKSUM_BYTES
+                        requires_full_capture = True
                     elif name == "AgentGuardian.cdx.json":
                         capture_limit = MAX_SBOM_BYTES
+                        requires_full_capture = True
                     elif name in {"AgentGuardian.exe", "AgentGuardianMcp.exe"}:
                         capture_limit = 4096
                     record = _zip_entry_record(
-                        archive, info, capture_limit=capture_limit
+                        archive,
+                        info,
+                        capture_limit=capture_limit,
+                        private_markers=private_markers,
                     )
-                    if capture_limit and record.size > capture_limit:
+                    if requires_full_capture and record.size > capture_limit:
                         _fail(_INPUT_TYPE_INVALID)
                     records[name] = record
                     folded_names.add(name.casefold())
@@ -1516,6 +1564,9 @@ def _pe_header_valid(prefix: bytes, *, expected_subsystem: int) -> bool:
         return False
     if offset + 24 > len(prefix) or prefix[offset : offset + 4] != b"PE\0\0":
         return False
+    machine = int.from_bytes(prefix[offset + 4 : offset + 6], "little")
+    if machine != 0x8664:
+        return False
     sections = int.from_bytes(prefix[offset + 6 : offset + 8], "little")
     optional_size = int.from_bytes(prefix[offset + 20 : offset + 22], "little")
     optional = offset + 24
@@ -1537,7 +1588,10 @@ def _validate_portable_input(
 ) -> dict[str, str]:
     if snapshot.path.name != PORTABLE_NAME:
         _fail(_INPUT_TYPE_INVALID)
-    records = _zip_records(snapshot)
+    records = _zip_records(
+        snapshot,
+        workflow_markers=profile.profile["forbidden_workflow_tokens"],
+    )
     if not _PORTABLE_REQUIRED_NAMES.issubset(records):
         _fail(_INPUT_TYPE_INVALID)
     if any(

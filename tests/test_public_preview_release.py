@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -644,12 +645,62 @@ def _synthetic_pe(subsystem: int) -> bytes:
     header[:2] = b"MZ"
     header[0x3C:0x40] = offset.to_bytes(4, "little")
     header[offset : offset + 4] = b"PE\0\0"
+    header[offset + 4 : offset + 6] = (0x8664).to_bytes(2, "little")
     header[offset + 6 : offset + 8] = (1).to_bytes(2, "little")
     header[offset + 20 : offset + 22] = optional_size.to_bytes(2, "little")
     optional = offset + 24
     header[optional : optional + 2] = (0x20B).to_bytes(2, "little")
     header[optional + 68 : optional + 70] = subsystem.to_bytes(2, "little")
-    return bytes(header)
+    return bytes(header) + b"\0" * 8192
+
+
+def test_pe_header_rejects_non_x64_machine() -> None:
+    module = _module()
+    prefix = bytearray(_synthetic_pe(2))
+    offset = int.from_bytes(prefix[0x3C:0x40], "little")
+    prefix[offset + 4 : offset + 6] = (0x14C).to_bytes(2, "little")
+
+    assert not module._pe_header_valid(bytes(prefix[:4096]), expected_subsystem=2)
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "CON",
+        "con.txt",
+        "AUX.log",
+        "trailing-dot.",
+        "trailing-space ",
+        "control\x01",
+        "angle<name",
+        "pipe|name",
+        "wildcard*name",
+    ),
+)
+def test_safe_zip_name_rejects_windows_unsafe_components(name: str) -> None:
+    assert not _module()._safe_zip_name(name)
+
+
+def test_zip_records_scans_decompressed_private_data(tmp_path: Path) -> None:
+    module = _module()
+    archive_path = tmp_path / "compressed.zip"
+    marker = b"OPENAI_API_KEY=sk-proj-compressed-marker-123456"
+    with zipfile.ZipFile(
+        archive_path, "w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
+        archive.writestr("payload.txt", marker + b"\n" + b"x" * 4096)
+    assert marker not in archive_path.read_bytes()
+    snapshot = module._snapshot_file(
+        archive_path,
+        max_bytes=module.MAX_INPUT_BYTES,
+        code="RELEASE_INPUT_TYPE_INVALID",
+    )
+
+    with pytest.raises(
+        module.ReleaseViolation,
+        match="^RELEASE_PRIVATE_DATA_DETECTED: remove credentials or private data from release inputs$",
+    ):
+        module._zip_records(snapshot)
 
 
 def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
