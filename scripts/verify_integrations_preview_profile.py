@@ -674,10 +674,10 @@ def _verify_documents(root: Path, profile: Mapping[str, Any]) -> None:
         aggregate += len(raw)
         if aggregate > MAX_DOCUMENT_AGGREGATE_BYTES:
             _fail("PROFILE_DOCUMENT_INVALID")
-    try:
-        texts.append(raw.decode("utf-8").casefold())
-    except UnicodeError:
-        _fail("PROFILE_DOCUMENT_INVALID")
+        try:
+            texts.append(raw.decode("utf-8").casefold())
+        except UnicodeError:
+            _fail("PROFILE_DOCUMENT_INVALID")
     status_relative = "docs/security/integrations-preview-status.json"
     if status_relative in paths:
         try:

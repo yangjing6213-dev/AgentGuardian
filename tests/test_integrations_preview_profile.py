@@ -42,6 +42,57 @@ def _verifier():
         pytest.fail("integrations preview profile verifier is missing")
 
 
+def _marker_profile(required: list[str], forbidden: list[str]) -> dict[str, object]:
+    return {
+        "active_document_paths": ["first.md", "second.md"],
+        "required_document_markers": required,
+        "forbidden_document_promises": forbidden,
+    }
+
+
+def test_active_document_required_marker_checks_every_document(
+    tmp_path: Path,
+) -> None:
+    verifier = _verifier()
+    (tmp_path / "first.md").write_text("required marker", encoding="utf-8")
+    (tmp_path / "second.md").write_text("ordinary text", encoding="utf-8")
+
+    verifier._verify_documents(
+        tmp_path,
+        _marker_profile(["required marker"], []),
+    )
+
+
+def test_active_document_forbidden_marker_checks_every_document(
+    tmp_path: Path,
+) -> None:
+    verifier = _verifier()
+    (tmp_path / "first.md").write_text("forbidden promise", encoding="utf-8")
+    (tmp_path / "second.md").write_text("ordinary text", encoding="utf-8")
+
+    with pytest.raises(
+        verifier.ProfileViolation,
+        match="^PROFILE_DOCUMENT_FORBIDDEN$",
+    ):
+        verifier._verify_documents(
+            tmp_path,
+            _marker_profile([], ["forbidden promise"]),
+        )
+
+
+def test_active_document_markers_still_accept_clean_combined_documents(
+    tmp_path: Path,
+) -> None:
+    verifier = _verifier()
+    (tmp_path / "first.md").write_text("ordinary text", encoding="utf-8")
+    (tmp_path / "second.md").write_text("required marker", encoding="utf-8")
+
+    verifier._verify_documents(
+        tmp_path,
+        _marker_profile(["required marker"], ["forbidden promise"]),
+    )
+
+
 def test_integrations_preview_profile_has_exact_identity() -> None:
     profile = json.loads(PROFILE_PATH.read_text(encoding="ascii"))
     assert profile["schema"] == 2
