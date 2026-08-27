@@ -1913,6 +1913,53 @@ def test_handle_ledger_does_not_retry_reused_resource(
     assert ledger.owns(77)
 
 
+def test_handle_ledger_keeps_colliding_resource_namespaces_fail_closed() -> None:
+    module = _module()
+    ledger = module._HandleOwnershipLedger()
+    ledger.register(1234, resource_type="handle", identity=(1,))
+    ledger.register(1234, resource_type="fd", identity=(2,))
+
+    assert ledger.record(1234, resource_type="handle").identity == (1,)
+    assert ledger.record(1234, resource_type="fd").identity == (2,)
+    with pytest.raises(module.ReleaseViolation) as record_error:
+        ledger.record(1234)
+    assert record_error.value.code == "RELEASE_RESOURCE_TYPE_AMBIGUOUS"
+    assert record_error.value.cleanup_lease is ledger
+    with pytest.raises(module.ReleaseViolation) as owns_error:
+        ledger.owns(1234)
+    assert owns_error.value.code == "RELEASE_RESOURCE_TYPE_AMBIGUOUS"
+    assert owns_error.value.cleanup_lease is ledger
+    with pytest.raises(module.ReleaseViolation) as release_error:
+        ledger.release(1234)
+    assert release_error.value.code == "RELEASE_RESOURCE_TYPE_AMBIGUOUS"
+    assert release_error.value.cleanup_lease is ledger
+    with pytest.raises(module.ReleaseViolation) as identity_error:
+        ledger.set_identity(1234, (9,))
+    assert identity_error.value.code == "RELEASE_RESOURCE_TYPE_AMBIGUOUS"
+    assert identity_error.value.cleanup_lease is ledger
+    with pytest.raises(module.ReleaseViolation) as close_error:
+        module._close_ledger_handle(ledger, 1234)
+    assert close_error.value.code == "RELEASE_RESOURCE_TYPE_AMBIGUOUS"
+    assert close_error.value.cleanup_lease is ledger
+    assert ledger.owns(1234, resource_type="handle")
+    assert ledger.owns(1234, resource_type="fd")
+
+
+def test_fd_transfer_keeps_preexisting_handle_on_numeric_collision() -> None:
+    """Model open_osfhandle returning a value used by an existing HANDLE."""
+    module = _module()
+    ledger = module._HandleOwnershipLedger()
+    ledger.register(1234, resource_type="handle", identity=(1,))
+    ledger.register(5678, resource_type="handle", identity=(2,))
+
+    ledger.release(5678, resource_type="handle")
+    ledger.register(1234, resource_type="fd", identity=(3,))
+
+    assert ledger.record(1234, resource_type="handle").identity == (1,)
+    assert ledger.record(1234, resource_type="fd").identity == (3,)
+    assert ledger.record(5678, resource_type="handle") is None
+
+
 def test_handle_ledger_does_not_retry_without_stable_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
