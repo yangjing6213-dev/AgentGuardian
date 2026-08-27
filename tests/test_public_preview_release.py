@@ -1440,6 +1440,106 @@ def test_close_bound_handles_attempts_all_handles_after_one_failure(
     assert calls == [22, 11]
 
 
+def test_close_staging_children_retains_failed_handle_for_cleanup_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    snapshot = module._FileSnapshot(tmp_path / "asset", (1, 2, 3, 4), 1)
+    token = module._StagingDirectoryToken(
+        parent=tmp_path,
+        name=".release.staging-test",
+        prefix=".release.staging-",
+        parent_identity=(1,),
+        identity=(2,),
+        is_reparse_point=False,
+        parent_handle=None,
+        directory_handle=None,
+        children=(module._StagedChildToken("asset", snapshot, "a" * 64, 77),),
+    )
+    calls: list[int] = []
+
+    def close_once(handle: int) -> None:
+        calls.append(handle)
+        if len(calls) == 1:
+            raise OSError("close failed")
+
+    monkeypatch.setattr(module, "_close_bound_handle", close_once)
+    detached, code = module._close_staging_child_handles(token)
+
+    assert code == "RELEASE_RESOURCE_CLOSE_FAILED"
+    assert detached.children[0].handle == 77
+    assert module._close_staging_token(detached) is None
+    assert calls == [77, 77]
+
+
+def test_validated_staging_path_closes_both_current_handles_after_close_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    staged = parent / ".release.staging-test"
+    staged.mkdir()
+    token = module._StagingDirectoryToken(
+        parent=parent,
+        name=staged.name,
+        prefix=".release.staging-",
+        parent_identity=(1,),
+        identity=(2,),
+        is_reparse_point=False,
+        parent_handle=11,
+        directory_handle=22,
+    )
+    monkeypatch.setattr(
+        module,
+        "_bound_handle_identity",
+        lambda handle: (1,) if handle == 11 else (2,),
+    )
+    opened = iter(((33, (1,)), (44, (2,))))
+    monkeypatch.setattr(module, "_open_bound_directory", lambda *_args: next(opened))
+    calls: list[int] = []
+
+    def close(handle: int) -> None:
+        calls.append(handle)
+        if handle == 33:
+            raise OSError("close failed")
+
+    monkeypatch.setattr(module, "_close_bound_handle", close)
+    with pytest.raises(
+        module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"
+    ):
+        module._validated_staging_path(token, staged, "RELEASE_OUTPUT_PATH_INVALID")
+    assert calls == [33, 44]
+
+
+def test_ntdll_open_relative_directory_closes_failed_nonempty_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+
+    class FakeNtCreateFile:
+        argtypes = None
+        restype = None
+
+        def __call__(self, output_handle: object, *_args: object) -> int:
+            ctypes.cast(
+                output_handle, ctypes.POINTER(ctypes.wintypes.HANDLE)
+            ).contents.value = 1234
+            return ctypes.c_int32(0xC000000D).value
+
+    class FakeNtdll:
+        NtCreateFile = FakeNtCreateFile()
+
+    closed: list[int] = []
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeNtdll())
+    monkeypatch.setattr(module, "_close_bound_handle", lambda handle: closed.append(handle))
+    with pytest.raises(
+        module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"
+    ):
+        module._ntdll_open_relative_directory(77, ".release.staging-test")
+    assert closed == [1234]
+
+
 def test_stage_reports_close_failure_after_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1618,6 +1718,36 @@ def test_windows_rename_uses_bound_parent_and_target_basename(
         ctypes.addressof(buffer) + RenameInfo.file_name.offset,
         info.file_name_length,
     ).decode("utf-16-le") == "release"
+
+
+def test_windows_native_rename_rejects_existing_target_without_replacing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows native no-replace integration")
+    module = _module()
+    _result, staged_output, _inputs_used = _stage(tmp_path, monkeypatch)
+    parent = tmp_path / "native-parent"
+    parent.mkdir()
+    staging = parent / ".release.staging-test"
+    shutil.copytree(staged_output, staging)
+    target = parent / "release"
+    target.write_bytes(b"existing-target")
+    binding = module._bind_directory(parent, 0x00000080 | 0x00000001)
+    token = module._snapshot_staging_directory(
+        staging, ".release.staging-", binding
+    )
+    try:
+        with pytest.raises(
+            module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"
+        ):
+            module._ntdll_rename_staged(token, target)
+        assert target.read_bytes() == b"existing-target"
+        assert staging.is_dir()
+    finally:
+        module._close_staging_token(token)
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(parent, ignore_errors=True)
 
 
 @pytest.mark.parametrize("mode", ("missing", "unsupported"))

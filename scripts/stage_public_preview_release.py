@@ -961,6 +961,12 @@ def _ntdll_open_relative_directory(
             0,
         )
     except (OSError, TypeError, ValueError):
+        handle_value = native_handle.value
+        if handle_value not in (None, wintypes.HANDLE(-1).value):
+            try:
+                _close_bound_handle(int(handle_value))
+            except Exception:
+                pass
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     handle_value = native_handle.value
     if (
@@ -968,6 +974,11 @@ def _ntdll_open_relative_directory(
         or io_status.status < 0
         or handle_value in (None, wintypes.HANDLE(-1).value)
     ):
+        if handle_value not in (None, wintypes.HANDLE(-1).value):
+            try:
+                _close_bound_handle(int(handle_value))
+            except Exception:
+                pass
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     try:
         identity = _bound_handle_identity(int(handle_value))
@@ -1042,6 +1053,8 @@ def _validated_staging_path(
     candidate = staged.absolute()
     if token.parent_handle is None or token.directory_handle is None:
         _fail(code)
+    current_handles: list[int] = []
+    primary_error: ReleaseViolation | None = None
     try:
         parent = candidate.parent.resolve(strict=True)
         info = candidate.lstat()
@@ -1063,15 +1076,32 @@ def _validated_staging_path(
         current_parent_handle, current_parent_identity = _open_bound_directory(
             parent, 0
         )
-        _close_bound_handle(current_parent_handle)
+        current_handles.append(current_parent_handle)
         if current_parent_identity != token.parent_identity:
             _fail(code)
         current_handle, current_identity = _open_bound_directory(candidate, 0)
-        _close_bound_handle(current_handle)
+        current_handles.append(current_handle)
         if current_identity != token.identity:
             _fail(code)
+    except ReleaseViolation as error:
+        primary_error = error
     except (FileNotFoundError, OSError, ProfileViolation):
-        _fail(code)
+        primary_error = ReleaseViolation(code)
+    finally:
+        close_failed = False
+        closed: set[int] = set()
+        for handle in current_handles:
+            if handle in closed:
+                continue
+            closed.add(handle)
+            try:
+                _close_bound_handle(handle)
+            except Exception:
+                close_failed = True
+        if primary_error is None and close_failed:
+            primary_error = ReleaseViolation(code)
+    if primary_error is not None:
+        raise primary_error
     return candidate
 
 
@@ -1170,17 +1200,24 @@ def _close_staging_child_handles(
     token: _StagingDirectoryToken,
 ) -> tuple[_StagingDirectoryToken, str | None]:
     failed = False
-    closed: set[int] = set()
+    attempted: set[int] = set()
     children: list[_StagedChildToken] = []
     for child in token.children:
         handle = child.handle
-        if handle is not None and handle not in closed:
-            closed.add(handle)
-            try:
-                _close_bound_handle(handle)
-            except Exception:
-                failed = True
-        children.append(replace(child, handle=None))
+        if handle is None or handle in attempted:
+            children.append(replace(child, handle=None))
+            continue
+        attempted.add(handle)
+        close_confirmed = False
+        try:
+            _close_bound_handle(handle)
+            close_confirmed = True
+        except Exception:
+            failed = True
+        if close_confirmed:
+            children.append(replace(child, handle=None))
+        else:
+            children.append(child)
     detached = replace(token, children=tuple(children))
     return detached, "RELEASE_RESOURCE_CLOSE_FAILED" if failed else None
 
