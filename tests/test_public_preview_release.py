@@ -1,18 +1,17 @@
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import importlib
 import json
 import os
-import ctypes
-from contextlib import contextmanager
-from pathlib import Path
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
-
 
 ROOT = Path(__file__).resolve().parents[1]
 COMMIT = "a" * 40
@@ -638,15 +637,157 @@ def test_cli_maps_expected_platform_error_to_fixed_json(
     assert str(tmp_path) not in captured.err
 
 
+def _synthetic_pe(subsystem: int) -> bytes:
+    offset = 0x80
+    optional_size = 240
+    header = bytearray(offset + 24 + optional_size)
+    header[:2] = b"MZ"
+    header[0x3C:0x40] = offset.to_bytes(4, "little")
+    header[offset : offset + 4] = b"PE\0\0"
+    header[offset + 6 : offset + 8] = (1).to_bytes(2, "little")
+    header[offset + 20 : offset + 22] = optional_size.to_bytes(2, "little")
+    optional = offset + 24
+    header[optional : optional + 2] = (0x20B).to_bytes(2, "little")
+    header[optional + 68 : optional + 70] = subsystem.to_bytes(2, "little")
+    return bytes(header)
+
+
 def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
+    module = _module()
+    portable_builder = importlib.import_module("scripts.build_windows_portable")
+    skill_builder = importlib.import_module("scripts.build_agentguardian_skill")
+    verifier = importlib.import_module("scripts.verify_integrations_preview_profile")
+    profile = verifier.load_profile_snapshot(
+        ROOT, ROOT / "release_profiles" / "integrations_preview.json"
+    )
+
     inputs = tmp_path / "inputs"
-    inputs.mkdir()
-    installer = inputs / "built-installer.exe"
-    portable = inputs / "built-portable.zip"
-    skill = inputs / "built-skill.zip"
-    installer.write_bytes(b"installer-bytes\x00\x01")
-    portable.write_bytes(b"portable-bytes")
-    skill.write_bytes(b"skill-zip-bytes")
+    artifacts = inputs / "artifacts"
+    artifacts.mkdir(parents=True)
+    installer = artifacts / module.VERSIONED_INSTALLER_NAME
+    portable = artifacts / module.PORTABLE_NAME
+    skill = artifacts / module.SKILL_NAME
+
+    bundle = inputs / "portable-bundle"
+    package = bundle / "_internal" / "agentguardian"
+    package.mkdir(parents=True)
+    for source in sorted(
+        (ROOT / "src" / "agentguardian").glob("*.py"),
+        key=lambda path: path.name,
+    ):
+        shutil.copyfile(source, package / source.name)
+    shutil.copyfile(
+        ROOT / "src" / "agentguardian" / "source_policy.json",
+        package / "source_policy.json",
+    )
+    (package / "rules").mkdir()
+    shutil.copyfile(ROOT / "rules" / "default.json", package / "rules" / "default.json")
+    shutil.copyfile(ROOT / "LICENSE", bundle / "LICENSE")
+    shutil.copyfile(ROOT / "THIRD_PARTY_NOTICES.md", bundle / "THIRD_PARTY_NOTICES.md")
+    skill_payload = ROOT / "skills" / "agentguardian"
+    skill_target = bundle / "agentguardian_skill"
+    skill_target.mkdir()
+    for name in ("LICENSE", "README.md", "SKILL.md"):
+        shutil.copyfile(skill_payload / name, skill_target / name)
+    (bundle / "AgentGuardian.exe").write_bytes(_synthetic_pe(2))
+    (bundle / "AgentGuardianMcp.exe").write_bytes(_synthetic_pe(3))
+    (bundle / "AgentGuardian.cdx.json").write_bytes(
+        portable_builder.canonical_json_bytes(
+            {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1}
+        )
+    )
+    lock_digest = hashlib.sha256(
+        (ROOT / "requirements-build.lock").read_bytes()
+    ).hexdigest()
+    (bundle / "BUILD-METADATA.json").write_bytes(
+        portable_builder.canonical_json_bytes(
+            {
+                "artifact_status": "unsigned_development_only",
+                "build_dependencies": {
+                    "lock_sha256": lock_digest,
+                    "versions": {"synthetic-builder": "1"},
+                },
+                "build_mode": "pyinstaller_onedir",
+                "built_at": BUILT_AT,
+                "source_commit": COMMIT,
+            }
+        )
+    )
+    (bundle / "INTEGRATIONS-PREVIEW-PROFILE.json").write_bytes(
+        portable_builder.canonical_json_bytes(
+            {
+                "profile": "integrations_preview",
+                "profile_sha256": profile.sha256,
+                "schema": 1,
+                "source_sha": COMMIT,
+                "status": "pass",
+            }
+        )
+    )
+    manifest = portable_builder.artifact_manifest(bundle)
+    (bundle / "PAYLOAD-MANIFEST.json").write_bytes(
+        portable_builder.canonical_json_bytes(manifest)
+    )
+    checksum_manifest = portable_builder.artifact_manifest(bundle)
+    (bundle / "SHA256SUMS").write_bytes(
+        "".join(
+            f"{entry['sha256']} *{entry['path']}\n"
+            for entry in checksum_manifest["files"]
+        ).encode("ascii")
+    )
+    portable_builder.deterministic_zip(bundle, portable)
+
+    installer_data = bytearray(_synthetic_pe(2))
+    installer_data.extend(b"Inno Setup")
+    installer_data.extend("AgentGuardian integrations preview".encode("utf-16le"))
+    installer_data.extend("0.3.0-preview.1".encode("utf-16le"))
+    installer_data.extend(COMMIT[:24].encode("utf-16le"))
+    installer_data.extend(b"\0" * (1024 * 1024 - len(installer_data)))
+    installer.write_bytes(installer_data)
+
+    attestation = installer.parent.parent / f"{installer.name}.build.json"
+    bundle_digests = {
+        "build_metadata_sha256": hashlib.sha256(
+            (bundle / "BUILD-METADATA.json").read_bytes()
+        ).hexdigest(),
+        "checksums_sha256": hashlib.sha256(
+            (bundle / "SHA256SUMS").read_bytes()
+        ).hexdigest(),
+        "payload_manifest_sha256": hashlib.sha256(
+            (bundle / "PAYLOAD-MANIFEST.json").read_bytes()
+        ).hexdigest(),
+        "profile_evidence_sha256": hashlib.sha256(
+            (bundle / "INTEGRATIONS-PREVIEW-PROFILE.json").read_bytes()
+        ).hexdigest(),
+    }
+    script_bytes = (ROOT / "packaging/windows/AgentGuardianIntegrationsPreview.iss").read_bytes()
+    attestation.write_bytes(
+        portable_builder.canonical_json_bytes(
+            {
+                "artifact_name": module.VERSIONED_INSTALLER_NAME,
+                "artifact_sha256": hashlib.sha256(installer_data).hexdigest(),
+                "artifact_size": len(installer_data),
+                "artifact_status": "unsigned_public_preview",
+                "built_at": BUILT_AT,
+                "bundle": bundle_digests,
+                "compiler_sha256": profile.profile["inno_setup_iscc_sha256"],
+                "compiler_version": profile.profile["inno_setup_version"],
+                "installer_script_sha256": hashlib.sha256(
+                    script_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+                ).hexdigest(),
+                "profile": "integrations_preview",
+                "profile_sha256": profile.sha256,
+                "schema": 1,
+                "source_commit": COMMIT,
+                "version": "0.3.0-preview.1",
+            }
+        )
+    )
+    skill.write_bytes(
+        skill_builder._zip_bytes(
+            skill_builder._validated_source(ROOT / "skills" / "agentguardian")
+        )
+    )
     return installer, portable, skill
 
 
@@ -743,6 +884,51 @@ def test_stage_public_preview_release_writes_exact_contract(
         "status": "pass",
         "source_commit": COMMIT,
     }
+
+
+def test_stage_rejects_arbitrary_regular_artifact_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    installer.write_bytes(b"arbitrary-installer")
+    portable.write_bytes(b"arbitrary-portable")
+    skill.write_bytes(b"arbitrary-skill")
+
+    with pytest.raises(
+        module.ReleaseViolation, match="^RELEASE_INPUT_TYPE_INVALID$"
+    ):
+        module.stage_public_preview_release(
+            ROOT,
+            tmp_path / "release",
+            installer_path=installer,
+            portable_path=portable,
+            skill_path=skill,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
+
+
+def test_stage_rejects_reused_artifact_file_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, _skill = _inputs(tmp_path)
+
+    with pytest.raises(
+        module.ReleaseViolation, match="^RELEASE_INPUT_TYPE_INVALID$"
+    ):
+        module.stage_public_preview_release(
+            ROOT,
+            tmp_path / "release",
+            installer_path=installer,
+            portable_path=portable,
+            skill_path=installer,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
 
 
 def test_verify_rejects_changed_stable_alias(

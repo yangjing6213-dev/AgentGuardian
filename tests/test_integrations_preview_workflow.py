@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import re
+from pathlib import Path
 
 from scripts.verify_integrations_preview_profile import canonical_json_bytes
-
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "windows-integrations-preview.yml"
@@ -249,6 +248,7 @@ def test_download_staging_delegates_to_unified_profile_backed_tool() -> None:
     staging = _public_preview_staging_block(workflow)
 
     assert "RELEASE_ROOT=$env:RUNNER_TEMP\\agentguardian-public-preview-release" in workflow
+    assert "INSTALLER_ATTESTATION_PATH=$env:RUNNER_TEMP\\AgentGuardian-Setup-0.3.0-preview.1-x64.exe.build.json" in workflow
     assert "if (Test-Path -LiteralPath $env:RELEASE_ROOT)" in staging
     assert "python scripts/stage_public_preview_release.py `" in staging
     for argument in (
@@ -257,6 +257,7 @@ def test_download_staging_delegates_to_unified_profile_backed_tool() -> None:
         "--installer-path $env:INSTALLER_PATH `",
         "--portable-path $portablePath `",
         "--skill-path $skillPath `",
+        "--installer-attestation-path $env:INSTALLER_ATTESTATION_PATH `",
         "--source-commit $env:EXPECTED_SOURCE_COMMIT `",
         "--built-at $env:COMMIT_UTC",
     ):

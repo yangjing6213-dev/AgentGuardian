@@ -68,6 +68,7 @@ jobs:
           "PORTABLE_ONE=$env:RUNNER_TEMP\agentguardian-portable-one" >> $env:GITHUB_ENV
           "PORTABLE_TWO=$env:RUNNER_TEMP\agentguardian-portable-two" >> $env:GITHUB_ENV
           "INSTALLER_OUTPUT=$env:RUNNER_TEMP\agentguardian-integrations-installer" >> $env:GITHUB_ENV
+          "INSTALLER_ATTESTATION_PATH=$env:RUNNER_TEMP\AgentGuardian-Setup-0.3.0-preview.1-x64.exe.build.json" >> $env:GITHUB_ENV
           "RELEASE_ROOT=$env:RUNNER_TEMP\agentguardian-public-preview-release" >> $env:GITHUB_ENV
           "EVIDENCE_ROOT=$env:RUNNER_TEMP\agentguardian-integrations-preview-evidence" >> $env:GITHUB_ENV
 
@@ -233,11 +234,13 @@ jobs:
             --bundle-root $env:PORTABLE_BUNDLE `
             --output-root $env:INSTALLER_OUTPUT `
             --iscc $env:ISCC `
+            --attestation-path $env:INSTALLER_ATTESTATION_PATH `
             --source-commit $env:EXPECTED_SOURCE_COMMIT `
             --built-at $env:COMMIT_UTC
           Assert-NativeSuccess $LASTEXITCODE 'python scripts/build_windows_integrations_preview_installer.py'
           $installer = Join-Path $env:INSTALLER_OUTPUT 'AgentGuardian-Setup-0.3.0-preview.1-x64.exe'
           if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw 'preview installer is missing' }
+          if (-not (Test-Path -LiteralPath $env:INSTALLER_ATTESTATION_PATH -PathType Leaf)) { throw 'preview installer attestation is missing' }
           $installerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToLowerInvariant()
           "INSTALLER_PATH=$installer" >> $env:GITHUB_ENV
           "INSTALLER_SHA256=$installerHash" >> $env:GITHUB_ENV
@@ -285,6 +288,7 @@ jobs:
             --installer-path $env:INSTALLER_PATH `
             --portable-path $portablePath `
             --skill-path $skillPath `
+            --installer-attestation-path $env:INSTALLER_ATTESTATION_PATH `
             --source-commit $env:EXPECTED_SOURCE_COMMIT `
             --built-at $env:COMMIT_UTC
           Assert-NativeSuccess $LASTEXITCODE 'python scripts/stage_public_preview_release.py'

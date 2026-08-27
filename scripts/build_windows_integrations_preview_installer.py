@@ -5,13 +5,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
-from pathlib import Path
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from scripts.build_windows_installer import verify_payload_integrity
 from scripts.build_windows_portable import (
     _require_current_source_identity,
     canonical_json_bytes,
@@ -19,15 +21,13 @@ from scripts.build_windows_portable import (
     validate_build_time,
     validate_git_build_context,
 )
-from scripts.build_windows_installer import verify_payload_integrity
 from scripts.verify_integrations_preview_profile import (
     ProfileSnapshot,
     load_profile_snapshot,
-    verify_profile_evidence,
     verify_payload,
     verify_profile,
+    verify_profile_evidence,
 )
-
 
 DISPLAY_VERSION = "0.3.0-preview.1"
 FILE_VERSION = "0.3.0.1"
@@ -43,12 +43,156 @@ PROFILE_RELATIVE = Path("release_profiles/integrations_preview.json")
 SCRIPT_RELATIVE = Path("packaging/windows/AgentGuardianIntegrationsPreview.iss")
 INSTALLER_SCRIPT_SHA256 = "c8d523107e5cfc1f1f72d1e409a20bba4048a5eb2ec1381b5b827c341537c580"
 MAX_FILE_BYTES = 16 * 1024 * 1024
+MAX_INSTALLER_BYTES = 2 * 1024 * 1024 * 1024
+INSTALLER_ATTESTATION_SUFFIX = ".build.json"
 INSTALLER_DISCLOSURE_MARKERS = (
     b"AgentGuardian 0.3.0 Public Preview (unsigned).",
     b"Use only personal non-regulated configuration data.",
     b"Windows may show Unknown Publisher or SmartScreen warnings.",
     b"Reports and redacted results may be visible to the configured host.",
 )
+
+
+def installer_attestation_path(installer: Path) -> Path:
+    """Return the out-of-band provenance path for an installer artifact."""
+    resolved = Path(installer).absolute()
+    return resolved.parent.parent / f"{resolved.name}{INSTALLER_ATTESTATION_SUFFIX}"
+
+
+def _sha256_file_with_size(path: Path, limit: int) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                size += len(chunk)
+                if size > limit:
+                    raise ValueError("file exceeds verification limit")
+                digest.update(chunk)
+    except ValueError:
+        raise
+    except OSError:
+        raise ValueError("installer attestation input is invalid") from None
+    return digest.hexdigest(), size
+
+
+def _canonical_script_sha256(path: Path) -> str:
+    try:
+        contents = path.read_bytes()
+    except OSError:
+        raise ValueError("installer attestation input is invalid") from None
+    if len(contents) > MAX_FILE_BYTES:
+        raise ValueError("installer attestation input is invalid")
+    canonical = contents.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _write_attestation_bytes(target: Path, contents: bytes) -> None:
+    if not target.is_absolute() or target.exists() or not target.parent.is_dir():
+        message = (
+            "installer attestation already exists"
+            if target.exists()
+            else "installer attestation path is invalid"
+        )
+        raise ValueError(message)
+    temporary: Path | None = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{target.name}.", dir=target.parent
+        )
+        temporary = Path(temporary_name)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(contents)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if target.exists():
+            raise ValueError("installer attestation already exists")
+        os.replace(temporary, target)
+        temporary = None
+    except ValueError:
+        raise
+    except OSError:
+        raise ValueError("installer attestation write failed") from None
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+
+
+def write_installer_attestation(
+    installer: Path,
+    bundle_root: Path,
+    *,
+    project_root: Path,
+    profile_snapshot: ProfileSnapshot,
+    source_commit: str,
+    built_at: str,
+    attestation_path: Path | None = None,
+) -> Path:
+    """Write one canonical, out-of-band build provenance document."""
+    if not isinstance(profile_snapshot, ProfileSnapshot):
+        raise TypeError("installer attestation profile is invalid")
+    validate_build_time(built_at)
+    if len(source_commit) != 40 or any(
+        character not in "0123456789abcdef" for character in source_commit
+    ):
+        raise ValueError("source commit must be a full lowercase SHA-1")
+    installer = Path(installer).absolute()
+    bundle = Path(bundle_root).absolute()
+    project = Path(project_root).absolute()
+    target = (
+        Path(attestation_path).absolute()
+        if attestation_path
+        else installer_attestation_path(installer)
+    )
+    if not installer.is_file() or not bundle.is_dir() or not project.is_dir():
+        raise ValueError("installer attestation input is invalid")
+    if (
+        target.name != INSTALLER_NAME + INSTALLER_ATTESTATION_SUFFIX
+        or not target.is_absolute()
+        or target == installer.parent
+        or installer.parent in target.parents
+    ):
+        raise ValueError("installer attestation path is invalid")
+    installer_digest, installer_size = _sha256_file_with_size(
+        installer, MAX_INSTALLER_BYTES
+    )
+    profile = profile_snapshot.profile
+    script = project / str(profile["inno_setup_script"])
+    bundle_names = {
+        "build_metadata_sha256": "BUILD-METADATA.json",
+        "profile_evidence_sha256": "INTEGRATIONS-PREVIEW-PROFILE.json",
+        "payload_manifest_sha256": "PAYLOAD-MANIFEST.json",
+        "checksums_sha256": "SHA256SUMS",
+    }
+    bundle_digests: dict[str, str] = {}
+    for key, name in bundle_names.items():
+        path = bundle / name
+        if not path.is_file():
+            raise ValueError("installer attestation input is invalid")
+        bundle_digests[key], _ = _sha256_file_with_size(path, MAX_FILE_BYTES)
+    value = {
+        "artifact_name": INSTALLER_NAME,
+        "artifact_sha256": installer_digest,
+        "artifact_size": installer_size,
+        "artifact_status": profile["release_artifact_status"],
+        "built_at": built_at,
+        "bundle": bundle_digests,
+        "compiler_sha256": profile["inno_setup_iscc_sha256"],
+        "compiler_version": profile["inno_setup_version"],
+        "installer_script_sha256": _canonical_script_sha256(script),
+        "profile": PROFILE_NAME,
+        "profile_sha256": profile_snapshot.sha256,
+        "schema": 1,
+        "source_commit": source_commit,
+        "version": profile["product_version"],
+    }
+    _write_attestation_bytes(target, canonical_json_bytes(value))
+    return target
 
 
 def build_iscc_command(
@@ -117,6 +261,7 @@ def build_installer(
     iscc: Path,
     source_commit: str,
     built_at: str,
+    attestation_path: Path | None = None,
 ) -> Path:
     if sys.platform != "win32":
         raise RuntimeError("installer builds require Windows")
@@ -178,6 +323,15 @@ def build_installer(
     output_files = tuple(path for path in output.iterdir() if path.is_file())
     if output_files != (installer,) or installer.stat().st_size <= 0:
         raise ValueError("integrations preview installer output is invalid")
+    write_installer_attestation(
+        installer,
+        bundle,
+        project_root=project,
+        profile_snapshot=snapshot,
+        source_commit=source_commit,
+        built_at=built_at,
+        attestation_path=attestation_path,
+    )
     return installer
 
 
@@ -211,6 +365,7 @@ def main() -> int:
     parser.add_argument("--iscc", type=Path, required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--built-at", required=True)
+    parser.add_argument("--attestation-path", type=Path)
     args = parser.parse_args()
     build_installer(
         args.project_root,
@@ -219,6 +374,7 @@ def main() -> int:
         iscc=args.iscc,
         source_commit=args.source_commit,
         built_at=args.built_at,
+        attestation_path=args.attestation_path,
     )
     return 0
 

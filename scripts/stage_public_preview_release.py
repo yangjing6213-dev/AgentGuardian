@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import stat
 import subprocess
 import sys
 import tempfile
+import zipfile
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from typing import BinaryIO, Iterable, Iterator
+from datetime import datetime
+from pathlib import Path
+from typing import BinaryIO
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -26,11 +28,11 @@ from scripts.verify_integrations_preview_profile import (
     ProfileViolation,
     _has_reparse_component,
     _is_reparse_point,
+    _matches_any,
     canonical_json_bytes,
     load_profile_snapshot,
     verify_profile,
 )
-
 
 RELEASE_ASSET_NAMES = (
     "AgentGuardian-0.3.0-preview.1-windows-x64.zip",
@@ -49,6 +51,13 @@ SKILL_NAME = "AgentGuardian-Skill-0.2.0.zip"
 MAX_INPUT_BYTES = 2 * 1024 * 1024 * 1024
 MAX_METADATA_BYTES = 256 * 1024
 MAX_CHECKSUM_BYTES = 64 * 1024
+MAX_PAYLOAD_MANIFEST_BYTES = 8 * 1024 * 1024
+MAX_SBOM_BYTES = 2 * 1024 * 1024
+MAX_ZIP_ENTRIES = 20_000
+MAX_ZIP_COMPRESSION_RATIO = 100_000
+MAX_INSTALLER_INSPECTION_BYTES = 4 * 1024 * 1024
+MAX_SKILL_BYTES = MAX_METADATA_BYTES
+INSTALLER_ATTESTATION_SUFFIX = ".build.json"
 
 _PROFILE_RELATIVE_PATH = "release_profiles/integrations_preview.json"
 _METADATA_NAME = "DOWNLOAD-METADATA.json"
@@ -76,6 +85,48 @@ _PRIVATE_REMEDIATION = (
     "RELEASE_PRIVATE_DATA_DETECTED: remove credentials or private data from release inputs"
 )
 _RESOURCE_TYPE_AMBIGUOUS = "RELEASE_RESOURCE_TYPE_AMBIGUOUS"
+_INPUT_TYPE_INVALID = "RELEASE_INPUT_TYPE_INVALID"
+_INPUT_PROVENANCE_INVALID = "RELEASE_INPUT_PROVENANCE_INVALID"
+_INSTALLER_ATTESTATION_SCHEMA = 1
+_PORTABLE_METADATA_KEYS = frozenset(
+    {"artifact_status", "build_dependencies", "build_mode", "built_at", "source_commit"}
+)
+_INSTALLER_ATTESTATION_KEYS = frozenset(
+    {
+        "artifact_name",
+        "artifact_sha256",
+        "artifact_size",
+        "artifact_status",
+        "built_at",
+        "bundle",
+        "compiler_sha256",
+        "compiler_version",
+        "installer_script_sha256",
+        "profile",
+        "profile_sha256",
+        "schema",
+        "source_commit",
+        "version",
+    }
+)
+_PORTABLE_REQUIRED_NAMES = frozenset(
+    {
+        "AgentGuardian.exe",
+        "AgentGuardianMcp.exe",
+        "BUILD-METADATA.json",
+        "INTEGRATIONS-PREVIEW-PROFILE.json",
+        "PAYLOAD-MANIFEST.json",
+        "SHA256SUMS",
+        "AgentGuardian.cdx.json",
+        "LICENSE",
+        "THIRD_PARTY_NOTICES.md",
+        "agentguardian_skill/LICENSE",
+        "agentguardian_skill/README.md",
+        "agentguardian_skill/SKILL.md",
+        "_internal/agentguardian/source_policy.json",
+        "_internal/agentguardian/rules/default.json",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -197,6 +248,14 @@ class _FileSnapshot:
     path: Path
     identity: tuple[int, int, int, int]
     size: int
+
+
+@dataclass(frozen=True)
+class _ZipRecord:
+    size: int
+    digest: str
+    prefix: bytes = b""
+    data: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -1183,6 +1242,571 @@ def _release_contract(profile: ProfileSnapshot) -> dict[str, object]:
     }
 
 
+def _read_snapshot_bounded(
+    snapshot: _FileSnapshot, limit: int, code: str
+) -> bytes:
+    if snapshot.size > limit:
+        _fail(code)
+    try:
+        with _open_verified_file(snapshot, max_bytes=limit, code=code) as stream:
+            value = stream.read(limit + 1)
+    except (MemoryError, OverflowError):
+        _fail(code)
+    if len(value) > limit:
+        _fail(code)
+    return value
+
+
+def _read_snapshot_prefix(
+    snapshot: _FileSnapshot, limit: int, code: str
+) -> bytes:
+    try:
+        with _open_verified_file(
+            snapshot, max_bytes=MAX_INPUT_BYTES, code=code
+        ) as stream:
+            return stream.read(min(snapshot.size, limit))
+    except (MemoryError, OverflowError):
+        _fail(code)
+    return b""
+
+
+def _json_object_bytes(raw: bytes, limit: int, code: str) -> dict[str, object]:
+    if len(raw) > limit:
+        _fail(code)
+    try:
+        value = json.loads(
+            raw.decode("ascii"),
+            object_pairs_hook=_unique_object,
+            parse_constant=_reject_json_constant,
+        )
+    except ReleaseViolation:
+        raise
+    except (MemoryError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        _fail(code)
+    if not isinstance(value, dict) or raw != canonical_json_bytes(value):
+        _fail(code)
+    return value
+
+
+def _safe_zip_name(name: object) -> bool:
+    if type(name) is not str or not name or not name.isascii():
+        return False
+    if "\\" in name or "\x00" in name or name.startswith("/") or name.endswith("/"):
+        return False
+    parts = name.split("/")
+    return all(part not in {"", ".", ".."} and ":" not in part for part in parts)
+
+
+def _zip_entry_record(
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    *,
+    capture_limit: int = 0,
+) -> _ZipRecord:
+    digest = hashlib.sha256()
+    captured = bytearray()
+    size = 0
+    try:
+        with archive.open(info, "r") as stream:
+            while chunk := stream.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_INPUT_BYTES:
+                    _fail(_INPUT_TYPE_INVALID)
+                digest.update(chunk)
+                if capture_limit and len(captured) < capture_limit:
+                    captured.extend(chunk[: capture_limit - len(captured)])
+    except ReleaseViolation:
+        raise
+    except (
+        EOFError,
+        KeyError,
+        MemoryError,
+        OSError,
+        RuntimeError,
+        ValueError,
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+    ):
+        _fail(_INPUT_TYPE_INVALID)
+    if size != info.file_size:
+        _fail(_INPUT_TYPE_INVALID)
+    return _ZipRecord(
+        size=size,
+        digest=digest.hexdigest(),
+        prefix=bytes(captured),
+        data=bytes(captured) if capture_limit and size <= capture_limit else None,
+    )
+
+
+def _zip_records(snapshot: _FileSnapshot) -> dict[str, _ZipRecord]:
+    records: dict[str, _ZipRecord] = {}
+    folded_names: set[str] = set()
+    total_size = 0
+    try:
+        with _open_verified_file(
+            snapshot, max_bytes=MAX_INPUT_BYTES, code=_INPUT_TYPE_INVALID
+        ) as stream:
+            with zipfile.ZipFile(stream, "r") as archive:
+                infos = archive.infolist()
+                if not infos or len(infos) > MAX_ZIP_ENTRIES:
+                    _fail(_INPUT_TYPE_INVALID)
+                for info in infos:
+                    name = info.filename
+                    if not _safe_zip_name(name) or name.casefold() in folded_names:
+                        _fail(_INPUT_TYPE_INVALID)
+                    if info.is_dir() or info.flag_bits & 0x1:
+                        _fail(_INPUT_TYPE_INVALID)
+                    mode = (info.external_attr >> 16) & 0xFFFF
+                    if mode and stat.S_IFMT(mode) not in {0, stat.S_IFREG}:
+                        _fail(_INPUT_TYPE_INVALID)
+                    if info.compress_type not in {
+                        zipfile.ZIP_STORED,
+                        zipfile.ZIP_DEFLATED,
+                    }:
+                        _fail(_INPUT_TYPE_INVALID)
+                    if info.file_size < 0 or info.compress_size < 0:
+                        _fail(_INPUT_TYPE_INVALID)
+                    if info.file_size and (
+                        info.compress_size == 0
+                        or info.file_size
+                        > max(1, info.compress_size) * MAX_ZIP_COMPRESSION_RATIO
+                    ):
+                        _fail(_INPUT_TYPE_INVALID)
+                    total_size += info.file_size
+                    if total_size > MAX_INPUT_BYTES:
+                        _fail(_INPUT_TYPE_INVALID)
+                    capture_limit = 0
+                    if name == "PAYLOAD-MANIFEST.json":
+                        capture_limit = MAX_PAYLOAD_MANIFEST_BYTES
+                    elif name in {
+                        "BUILD-METADATA.json",
+                        "INTEGRATIONS-PREVIEW-PROFILE.json",
+                    }:
+                        capture_limit = MAX_METADATA_BYTES
+                    elif name == "SHA256SUMS":
+                        capture_limit = MAX_CHECKSUM_BYTES
+                    elif name == "AgentGuardian.cdx.json":
+                        capture_limit = MAX_SBOM_BYTES
+                    elif name in {"AgentGuardian.exe", "AgentGuardianMcp.exe"}:
+                        capture_limit = 4096
+                    record = _zip_entry_record(
+                        archive, info, capture_limit=capture_limit
+                    )
+                    if capture_limit and record.size > capture_limit:
+                        _fail(_INPUT_TYPE_INVALID)
+                    records[name] = record
+                    folded_names.add(name.casefold())
+    except ReleaseViolation:
+        raise
+    except (
+        EOFError,
+        KeyError,
+        MemoryError,
+        OSError,
+        RuntimeError,
+        ValueError,
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+    ):
+        _fail(_INPUT_TYPE_INVALID)
+    return records
+
+
+def _record_data(
+    records: dict[str, _ZipRecord], name: str, *, limit: int
+) -> bytes:
+    record = records.get(name)
+    if record is None or record.data is None or record.size > limit:
+        _fail(_INPUT_TYPE_INVALID)
+    return record.data
+
+
+def _validate_zip_payload_manifest(records: dict[str, _ZipRecord]) -> None:
+    manifest = _json_object_bytes(
+        _record_data(records, "PAYLOAD-MANIFEST.json", limit=MAX_PAYLOAD_MANIFEST_BYTES),
+        MAX_PAYLOAD_MANIFEST_BYTES,
+        _INPUT_TYPE_INVALID,
+    )
+    if set(manifest) != {"algorithm", "files", "schema"}:
+        _fail(_INPUT_TYPE_INVALID)
+    if (
+        manifest["algorithm"] != "sha256"
+        or manifest["schema"] != 1
+        or not isinstance(manifest["files"], list)
+        or len(manifest["files"]) > MAX_ZIP_ENTRIES
+    ):
+        _fail(_INPUT_TYPE_INVALID)
+    expected_names = set(records) - {"PAYLOAD-MANIFEST.json", "SHA256SUMS"}
+    declared: dict[str, tuple[str, int]] = {}
+    for item in manifest["files"]:
+        if not isinstance(item, dict) or set(item) != {"path", "sha256", "size"}:
+            _fail(_INPUT_TYPE_INVALID)
+        name = item["path"]
+        digest = item["sha256"]
+        size = item["size"]
+        if (
+            not _safe_zip_name(name)
+            or type(digest) is not str
+            or not _SHA256.fullmatch(digest)
+            or type(size) is not int
+            or size < 0
+            or name in declared
+        ):
+            _fail(_INPUT_TYPE_INVALID)
+        declared[name] = (digest, size)
+    if tuple(declared) != tuple(sorted(declared)) or set(declared) != expected_names:
+        _fail(_INPUT_TYPE_INVALID)
+    for name, (digest, size) in declared.items():
+        record = records.get(name)
+        if record is None or (record.digest, record.size) != (digest, size):
+            _fail(_INPUT_TYPE_INVALID)
+    checksum = _record_data(records, "SHA256SUMS", limit=MAX_CHECKSUM_BYTES)
+    expected_checksum = "".join(
+        f"{records[name].digest} *{name}\n" for name in sorted(records) if name != "SHA256SUMS"
+    ).encode("ascii")
+    if checksum != expected_checksum:
+        _fail(_INPUT_TYPE_INVALID)
+
+
+def _valid_dependency_snapshot(value: object, lock_digest: str) -> bool:
+    if not isinstance(value, dict) or set(value) != {"lock_sha256", "versions"}:
+        return False
+    lock_value = value["lock_sha256"]
+    versions = value["versions"]
+    if (
+        type(lock_value) is not str
+        or lock_value != lock_digest
+        or not _SHA256.fullmatch(lock_value)
+        or not isinstance(versions, dict)
+        or not versions
+    ):
+        return False
+    return all(
+        type(name) is str
+        and type(version) is str
+        and name.isascii()
+        and version.isascii()
+        and 0 < len(name) <= 256
+        and 0 < len(version) <= 256
+        and not any(char.isspace() or ord(char) < 32 for char in name + version)
+        and not any(char in name + version for char in ("/", "\\", ":"))
+        for name, version in versions.items()
+    )
+
+
+def _record_matches_file(
+    records: dict[str, _ZipRecord], name: str, path: Path, *, max_bytes: int
+) -> None:
+    record = records.get(name)
+    if record is None:
+        _fail(_INPUT_TYPE_INVALID)
+    try:
+        digest, size = _digest_file(path, max_bytes=max_bytes, code=_INPUT_TYPE_INVALID)
+    except ReleaseViolation:
+        _fail(_INPUT_TYPE_INVALID)
+    if (digest, size) != (record.digest, record.size):
+        _fail(_INPUT_TYPE_INVALID)
+
+
+def _pe_header_valid(prefix: bytes, *, expected_subsystem: int) -> bool:
+    if len(prefix) < 64 or prefix[:2] != b"MZ":
+        return False
+    offset = int.from_bytes(prefix[0x3C:0x40], "little")
+    if offset < 64 or offset > MAX_INSTALLER_INSPECTION_BYTES:
+        return False
+    if offset + 24 > len(prefix) or prefix[offset : offset + 4] != b"PE\0\0":
+        return False
+    sections = int.from_bytes(prefix[offset + 6 : offset + 8], "little")
+    optional_size = int.from_bytes(prefix[offset + 20 : offset + 22], "little")
+    optional = offset + 24
+    if not 1 <= sections <= 96 or optional_size < 70 or optional + optional_size > len(prefix):
+        return False
+    if int.from_bytes(prefix[optional : optional + 2], "little") != 0x20B:
+        return False
+    subsystem = int.from_bytes(prefix[optional + 68 : optional + 70], "little")
+    return subsystem == expected_subsystem
+
+
+def _validate_portable_input(
+    root: Path,
+    profile: ProfileSnapshot,
+    snapshot: _FileSnapshot,
+    *,
+    source_commit: str,
+    built_at: str,
+) -> dict[str, str]:
+    if snapshot.path.name != PORTABLE_NAME:
+        _fail(_INPUT_TYPE_INVALID)
+    records = _zip_records(snapshot)
+    if not _PORTABLE_REQUIRED_NAMES.issubset(records):
+        _fail(_INPUT_TYPE_INVALID)
+    if any(
+        _matches_any(name, profile.profile["forbidden_payload_globs"])
+        for name in records
+    ):
+        _fail(_INPUT_TYPE_INVALID)
+    _validate_zip_payload_manifest(records)
+
+    metadata = _json_object_bytes(
+        _record_data(records, "BUILD-METADATA.json", limit=MAX_METADATA_BYTES),
+        MAX_METADATA_BYTES,
+        _INPUT_TYPE_INVALID,
+    )
+    if set(metadata) != _PORTABLE_METADATA_KEYS or (
+        metadata["artifact_status"] != "unsigned_development_only"
+        or metadata["build_mode"] != "pyinstaller_onedir"
+        or metadata["built_at"] != built_at
+        or metadata["source_commit"] != source_commit
+        or not isinstance(metadata["build_dependencies"], dict)
+    ):
+        _fail(_INPUT_TYPE_INVALID)
+    _require_built_at(built_at)
+    lock_path = root / "requirements-build.lock"
+    lock_digest, _ = _digest_file(
+        lock_path, max_bytes=MAX_METADATA_BYTES, code="RELEASE_SOURCE_STATE_INVALID"
+    )
+    if not _valid_dependency_snapshot(metadata["build_dependencies"], lock_digest):
+        _fail(_INPUT_TYPE_INVALID)
+
+    expected_profile_evidence = {
+        "profile": "integrations_preview",
+        "profile_sha256": profile.sha256,
+        "schema": 1,
+        "source_sha": source_commit,
+        "status": "pass",
+    }
+    evidence = _json_object_bytes(
+        _record_data(
+            records, "INTEGRATIONS-PREVIEW-PROFILE.json", limit=MAX_METADATA_BYTES
+        ),
+        MAX_METADATA_BYTES,
+        _INPUT_TYPE_INVALID,
+    )
+    if evidence != expected_profile_evidence:
+        _fail(_INPUT_TYPE_INVALID)
+
+    for relative in ("LICENSE", "THIRD_PARTY_NOTICES.md"):
+        _record_matches_file(records, relative, root / relative, max_bytes=MAX_INPUT_BYTES)
+    for name in ("LICENSE", "README.md", "SKILL.md"):
+        _record_matches_file(
+            records,
+            f"agentguardian_skill/{name}",
+            root / "skills" / "agentguardian" / name,
+            max_bytes=MAX_METADATA_BYTES,
+        )
+
+    package = root / "src" / "agentguardian"
+    source_paths = tuple(sorted(package.glob("*.py"), key=lambda path: path.name))
+    source_names = {path.name for path in source_paths}
+    frozen_names = {
+        name.removeprefix("_internal/agentguardian/")
+        for name in records
+        if name.startswith("_internal/agentguardian/")
+        and name.count("/") == 2
+        and name.endswith(".py")
+    }
+    if frozen_names != source_names:
+        _fail(_INPUT_TYPE_INVALID)
+    for path in source_paths:
+        _record_matches_file(
+            records,
+            f"_internal/agentguardian/{path.name}",
+            path,
+            max_bytes=MAX_METADATA_BYTES,
+        )
+    _record_matches_file(
+        records,
+        "_internal/agentguardian/source_policy.json",
+        package / "source_policy.json",
+        max_bytes=MAX_METADATA_BYTES,
+    )
+    _record_matches_file(
+        records,
+        "_internal/agentguardian/rules/default.json",
+        root / "rules" / "default.json",
+        max_bytes=MAX_METADATA_BYTES,
+    )
+
+    if not _pe_header_valid(
+        records["AgentGuardian.exe"].prefix, expected_subsystem=2
+    ) or not _pe_header_valid(
+        records["AgentGuardianMcp.exe"].prefix, expected_subsystem=3
+    ):
+        _fail(_INPUT_TYPE_INVALID)
+    sbom = _json_object_bytes(
+        _record_data(records, "AgentGuardian.cdx.json", limit=MAX_SBOM_BYTES),
+        MAX_SBOM_BYTES,
+        _INPUT_TYPE_INVALID,
+    )
+    if sbom.get("bomFormat") != "CycloneDX":
+        _fail(_INPUT_TYPE_INVALID)
+    return {
+        "build_metadata_sha256": records["BUILD-METADATA.json"].digest,
+        "profile_evidence_sha256": records[
+            "INTEGRATIONS-PREVIEW-PROFILE.json"
+        ].digest,
+        "payload_manifest_sha256": records["PAYLOAD-MANIFEST.json"].digest,
+        "checksums_sha256": records["SHA256SUMS"].digest,
+    }
+
+
+def _validate_skill_input(root: Path, snapshot: _FileSnapshot) -> None:
+    if snapshot.path.name != SKILL_NAME or snapshot.size > MAX_SKILL_BYTES:
+        _fail(_INPUT_TYPE_INVALID)
+    try:
+        from scripts.build_agentguardian_skill import _validated_source, _zip_bytes
+
+        expected = _zip_bytes(
+            _validated_source(root / "skills" / "agentguardian")
+        )
+    except ReleaseViolation:
+        raise
+    except Exception:
+        _fail(_INPUT_TYPE_INVALID)
+    if _read_snapshot_bounded(snapshot, MAX_SKILL_BYTES, _INPUT_TYPE_INVALID) != expected:
+        _fail(_INPUT_TYPE_INVALID)
+
+
+def _validate_installer_input(snapshot: _FileSnapshot, source_commit: str) -> None:
+    if snapshot.path.name != VERSIONED_INSTALLER_NAME or snapshot.size < 1024 * 1024:
+        _fail(_INPUT_TYPE_INVALID)
+    prefix = _read_snapshot_prefix(
+        snapshot, MAX_INSTALLER_INSPECTION_BYTES, _INPUT_TYPE_INVALID
+    )
+    if not _pe_header_valid(prefix, expected_subsystem=2):
+        _fail(_INPUT_TYPE_INVALID)
+    required_markers = (
+        b"Inno Setup",
+        "AgentGuardian integrations preview".encode("utf-16le"),
+        "0.3.0-preview.1".encode("utf-16le"),
+        source_commit[:24].encode("utf-16le"),
+    )
+    if any(marker not in prefix for marker in required_markers):
+        _fail(_INPUT_TYPE_INVALID)
+
+
+def _canonical_file_digest(snapshot: _FileSnapshot) -> str:
+    raw = _read_snapshot_bounded(snapshot, MAX_METADATA_BYTES, _INPUT_TYPE_INVALID)
+    return hashlib.sha256(raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")).hexdigest()
+
+
+def _validate_installer_attestation(
+    root: Path,
+    profile: ProfileSnapshot,
+    contract: dict[str, object],
+    installer: _FileSnapshot,
+    attestation: _FileSnapshot,
+    portable_digests: dict[str, str],
+    *,
+    source_commit: str,
+    built_at: str,
+) -> None:
+    if attestation.path.name != VERSIONED_INSTALLER_NAME + INSTALLER_ATTESTATION_SUFFIX:
+        _fail(_INPUT_PROVENANCE_INVALID)
+    value = _json_object_bytes(
+        _read_snapshot_bounded(attestation, MAX_METADATA_BYTES, _INPUT_PROVENANCE_INVALID),
+        MAX_METADATA_BYTES,
+        _INPUT_PROVENANCE_INVALID,
+    )
+    if set(value) != _INSTALLER_ATTESTATION_KEYS:
+        _fail(_INPUT_PROVENANCE_INVALID)
+    installer_digest, installer_size = _digest_file(
+        installer, max_bytes=MAX_INPUT_BYTES, code=_INPUT_PROVENANCE_INVALID
+    )
+    script = _resolve_project_file(root, str(profile.profile["inno_setup_script"]))
+    expected = {
+        "artifact_name": VERSIONED_INSTALLER_NAME,
+        "artifact_sha256": installer_digest,
+        "artifact_size": installer_size,
+        "artifact_status": contract["artifact_status"],
+        "built_at": built_at,
+        "compiler_sha256": profile.profile["inno_setup_iscc_sha256"],
+        "compiler_version": profile.profile["inno_setup_version"],
+        "installer_script_sha256": _canonical_file_digest(script),
+        "profile": "integrations_preview",
+        "profile_sha256": profile.sha256,
+        "schema": _INSTALLER_ATTESTATION_SCHEMA,
+        "source_commit": source_commit,
+        "version": contract["version"],
+    }
+    if any(value.get(key) != expected[key] for key in expected):
+        _fail(_INPUT_PROVENANCE_INVALID)
+    bundle = value.get("bundle")
+    if not isinstance(bundle, dict) or set(bundle) != set(portable_digests):
+        _fail(_INPUT_PROVENANCE_INVALID)
+    if bundle != portable_digests:
+        _fail(_INPUT_PROVENANCE_INVALID)
+
+
+def _resolve_installer_attestation(
+    installer: _FileSnapshot, path_value: str | Path | None
+) -> _FileSnapshot:
+    candidate = (
+        Path(path_value)
+        if path_value is not None
+        else installer.path.parent.parent
+        / f"{installer.path.name}{INSTALLER_ATTESTATION_SUFFIX}"
+    )
+    _reject_windows_special_path(candidate, "RELEASE_INPUT_PATH_INVALID")
+    try:
+        return _snapshot_file(
+            candidate,
+            max_bytes=MAX_METADATA_BYTES,
+            code=_INPUT_PROVENANCE_INVALID,
+        )
+    except ReleaseViolation:
+        _fail(_INPUT_PROVENANCE_INVALID)
+    raise AssertionError("unreachable")
+
+
+def _validate_artifact_input_identity(
+    installer: _FileSnapshot,
+    portable: _FileSnapshot,
+    skill: _FileSnapshot,
+    attestation: _FileSnapshot,
+) -> None:
+    identities = {
+        (snapshot.identity[0], snapshot.identity[1])
+        for snapshot in (installer, portable, skill, attestation)
+    }
+    if len(identities) != 4:
+        _fail(_INPUT_TYPE_INVALID)
+
+
+def _validate_artifact_inputs(
+    root: Path,
+    profile: ProfileSnapshot,
+    contract: dict[str, object],
+    installer: _FileSnapshot,
+    portable: _FileSnapshot,
+    skill: _FileSnapshot,
+    attestation: _FileSnapshot,
+    *,
+    source_commit: str,
+    built_at: str,
+) -> None:
+    _validate_artifact_input_identity(installer, portable, skill, attestation)
+    portable_digests = _validate_portable_input(
+        root,
+        profile,
+        portable,
+        source_commit=source_commit,
+        built_at=built_at,
+    )
+    _validate_skill_input(root, skill)
+    _validate_installer_input(installer, source_commit)
+    _validate_installer_attestation(
+        root,
+        profile,
+        contract,
+        installer,
+        attestation,
+        portable_digests,
+        source_commit=source_commit,
+        built_at=built_at,
+    )
+
+
 def _capture_source_file(path: _FileSnapshot, *, max_bytes: int, code: str) -> _SourceFileToken:
     digest, size = _digest_file(path, max_bytes=max_bytes, code=code)
     if size != path.size:
@@ -1658,7 +2282,7 @@ def _validated_staging_path(
             _fail(code)
     except ReleaseViolation as error:
         primary_error = error
-    except Exception as error:
+    except Exception:
         primary_error = ReleaseViolation(code)
     except BaseException as error:
         primary_error = error
@@ -2535,6 +3159,7 @@ def stage_public_preview_release(
     installer_path: str | Path,
     portable_path: str | Path,
     skill_path: str | Path,
+    installer_attestation_path: str | Path | None = None,
     source_commit: str,
     built_at: str,
 ) -> dict[str, object]:
@@ -2546,6 +3171,9 @@ def stage_public_preview_release(
     installer = _resolve_input(installer_path)
     portable = _resolve_input(portable_path)
     skill = _resolve_input(skill_path)
+    installer_attestation = _resolve_installer_attestation(
+        installer, installer_attestation_path
+    )
     profile_path = _resolve_project_file(root, _PROFILE_RELATIVE_PATH)
     license_path = _resolve_project_file(root, "LICENSE")
     notices_path = _resolve_project_file(root, "THIRD_PARTY_NOTICES.md")
@@ -2580,10 +3208,34 @@ def stage_public_preview_release(
         )
         captured_paths.add(document.path)
     source_files = tuple(source_files_list)
-    inputs = (installer, portable, skill, license_path, notices_path)
+    inputs = (
+        installer,
+        portable,
+        skill,
+        installer_attestation,
+        license_path,
+        notices_path,
+    )
     workflow_markers = profile.profile["forbidden_workflow_tokens"]
     if any(_path_has_private_marker(snapshot.path, workflow_markers) for snapshot in inputs):
         _fail("RELEASE_PRIVATE_DATA_DETECTED")
+    _reject_private_data(
+        inputs,
+        workflow_markers,
+        max_bytes=MAX_INPUT_BYTES,
+        code=_INPUT_TYPE_INVALID,
+    )
+    _validate_artifact_inputs(
+        root,
+        profile,
+        contract,
+        installer,
+        portable,
+        skill,
+        installer_attestation,
+        source_commit=source_commit,
+        built_at=built_at,
+    )
     output = _resolve_output(output_root, root, inputs)
 
     temporary: Path | None = None
@@ -2662,6 +3314,17 @@ def stage_public_preview_release(
             _fail(child_close_code)
         result = verify_staged_release(
             temporary, root, source_commit=source_commit
+        )
+        _validate_artifact_inputs(
+            root,
+            profile,
+            contract,
+            installer,
+            portable,
+            skill,
+            installer_attestation,
+            source_commit=source_commit,
+            built_at=built_at,
         )
         _verify_source_inputs(root, source_commit, contract, source_files)
         _publish_staged_output(
@@ -3043,6 +3706,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--built-at")
     parser.add_argument("--installer-path", type=Path)
+    parser.add_argument("--installer-attestation-path", type=Path)
     parser.add_argument("--portable-path", type=Path)
     parser.add_argument("--skill-path", type=Path)
     parser.add_argument("--verify", action="store_true")
@@ -3061,6 +3725,7 @@ def main(argv: list[str] | None = None) -> int:
                 installer_path=args.installer_path,
                 portable_path=args.portable_path,
                 skill_path=args.skill_path,
+                installer_attestation_path=args.installer_attestation_path,
                 source_commit=args.source_commit,
                 built_at=args.built_at,
             )
