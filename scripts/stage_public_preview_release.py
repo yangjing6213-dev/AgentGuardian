@@ -90,6 +90,19 @@ class _ReleaseArgumentParser(argparse.ArgumentParser):
         raise ReleaseViolation("RELEASE_CLI_ARGUMENT_INVALID")
 
 
+class _StagingBindingError(ReleaseViolation):
+    def __init__(
+        self, primary_error: BaseException, cleanup_token: _StagingDirectoryToken
+    ) -> None:
+        self.cleanup_token = cleanup_token
+        code = (
+            primary_error.code
+            if isinstance(primary_error, ReleaseViolation)
+            else "RELEASE_RESOURCE_CLOSE_FAILED"
+        )
+        super().__init__(code)
+
+
 @dataclass(frozen=True)
 class _FileSnapshot:
     path: Path
@@ -294,6 +307,21 @@ def _close_bound_handle(handle: int | None) -> None:
             raise OSError(ctypes.get_last_error(), "CloseHandle")
     else:
         os.close(handle)
+
+
+def _close_with_one_retry(handle: int | None) -> tuple[bool, bool]:
+    """Close an unconfirmed handle at most twice and report confirmation."""
+    if handle is None:
+        return True, False
+    had_error = False
+    for _attempt in range(2):
+        try:
+            _close_bound_handle(handle)
+        except Exception:
+            had_error = True
+            continue
+        return True, had_error
+    return False, had_error
 
 
 def _bound_handle_identity(handle: int) -> tuple[int, ...]:
@@ -1094,9 +1122,8 @@ def _validated_staging_path(
             if handle in closed:
                 continue
             closed.add(handle)
-            try:
-                _close_bound_handle(handle)
-            except Exception:
+            _confirmed, had_error = _close_with_one_retry(handle)
+            if had_error:
                 close_failed = True
         if primary_error is None and close_failed:
             primary_error = ReleaseViolation(code)
@@ -1179,19 +1206,26 @@ def _bind_staging_contents(
             children.append(
                 _StagedChildToken(entry.name, snapshot, digest, child_handle)
             )
-        except BaseException:
-            handles = [child.handle for child in children]
-            if child_handle is not None:
-                handles.append(child_handle)
-            attempted: set[int] = set()
-            for handle in handles:
-                if handle is None or handle in attempted:
-                    continue
-                attempted.add(handle)
-                try:
-                    _close_bound_handle(handle)
-                except Exception:
-                    pass
+        except BaseException as error:
+            cleanup_children = list(children)
+            if child_handle is not None and not any(
+                child.handle == child_handle for child in cleanup_children
+            ):
+                cleanup_children.append(
+                    _StagedChildToken(
+                        entry.name,
+                        _FileSnapshot(entry, (0, 0, 0, 0), 0),
+                        "",
+                        child_handle,
+                    )
+                )
+            cleanup_token = replace(
+                token,
+                children=tuple(cleanup_children),
+            )
+            detached, cleanup_code = _close_staging_child_handles(cleanup_token)
+            if cleanup_code is not None:
+                raise _StagingBindingError(error, detached) from error
             raise
     return replace(token, children=tuple(sorted(children, key=lambda item: item.name)))
 
@@ -1208,11 +1242,8 @@ def _close_staging_child_handles(
             children.append(replace(child, handle=None))
             continue
         attempted.add(handle)
-        close_confirmed = False
-        try:
-            _close_bound_handle(handle)
-            close_confirmed = True
-        except Exception:
+        close_confirmed, close_had_error = _close_with_one_retry(handle)
+        if close_had_error:
             failed = True
         if close_confirmed:
             children.append(replace(child, handle=None))
@@ -1450,6 +1481,13 @@ def _ntdll_create_staging_file(
     )
     io_status = _IoStatusBlock()
     native_handle = wintypes.HANDLE()
+
+    def close_failed_native_handle() -> None:
+        handle_value = native_handle.value
+        if handle_value in (None, wintypes.HANDLE(-1).value):
+            return
+        _close_with_one_retry(int(handle_value))
+
     try:
         status = native_create(
             ctypes.byref(native_handle),
@@ -1465,17 +1503,14 @@ def _ntdll_create_staging_file(
             0,
         )
     except (OSError, TypeError, ValueError):
+        close_failed_native_handle()
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     handle_value = native_handle.value
     status_value = int(status)
     if status_value < 0 or io_status.status < 0:
+        close_failed_native_handle()
         if allow_missing and status_value in (-1073741772, -1073741766):
             return None
-        if handle_value not in (None, wintypes.HANDLE(-1).value):
-            try:
-                _close_bound_handle(int(handle_value))
-            except Exception:
-                pass
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     if handle_value in (None, wintypes.HANDLE(-1).value):
         _fail("RELEASE_OUTPUT_PATH_INVALID")
@@ -1652,9 +1687,8 @@ def _close_staging_token(token: _StagingDirectoryToken | None) -> str | None:
         if handle is None or handle in closed:
             continue
         closed.add(handle)
-        try:
-            _close_bound_handle(handle)
-        except Exception:
+        _confirmed, had_error = _close_with_one_retry(handle)
+        if had_error:
             failed = True
     return "RELEASE_RESOURCE_CLOSE_FAILED" if failed else None
 
@@ -1838,6 +1872,9 @@ def stage_public_preview_release(
         temporary = None
         return result
     except BaseException as error:
+        cleanup_token = getattr(error, "cleanup_token", None)
+        if isinstance(cleanup_token, _StagingDirectoryToken):
+            temporary_token = cleanup_token
         primary_error = error
         raise
     finally:
