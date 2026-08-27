@@ -77,11 +77,13 @@ def test_download_staging_materializes_primary_alias_and_exact_asset_contract() 
     assert "$primaryInstallerPath = Join-Path $downloadRoot $primaryInstallerName" in workflow
     assert "if (Test-Path -LiteralPath $primaryInstallerPath)" in workflow
     assert (
-        "Copy-Item -LiteralPath $installer.FullName -Destination $primaryInstallerPath"
+        "Copy-Item -LiteralPath $versionedInstallerPath "
+        "-Destination $primaryInstallerPath"
         in workflow
     )
     assert (
-        "$versionedInstallerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer.FullName).Hash.ToLowerInvariant()"
+        "$versionedInstallerHash = (Get-FileHash -Algorithm SHA256 "
+        "-LiteralPath $versionedInstallerPath).Hash.ToLowerInvariant()"
         in workflow
     )
     assert (
@@ -113,7 +115,8 @@ def test_download_staging_binds_installers_to_lifecycle_sha() -> None:
         "$expectedInstallerSha256 -cnotmatch '^[0-9a-fA-F]{64}$'" in staging
     )
     assert (
-        "$versionedInstallerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer.FullName).Hash.ToLowerInvariant()"
+        "$versionedInstallerHash = (Get-FileHash -Algorithm SHA256 "
+        "-LiteralPath $versionedInstallerPath).Hash.ToLowerInvariant()"
         in staging
     )
     assert (
@@ -125,6 +128,43 @@ def test_download_staging_binds_installers_to_lifecycle_sha() -> None:
     )
     assert "if ($primaryInstallerHash -cne $expectedInstallerSha256)" in staging
     assert "if ($versionedInstallerHash -cne $primaryInstallerHash)" in staging
+
+
+def test_download_staging_verifies_versioned_copy_before_alias_copy() -> None:
+    workflow = WORKFLOW.read_text(encoding="ascii")
+    staging = workflow.split(
+        "      - name: Prepare verified downloadable preview files", 1
+    )[1].split("      - name: Archive verified downloadable preview", 1)[0]
+
+    versioned_copy = (
+        "Copy-Item -LiteralPath $installer.FullName "
+        "-Destination $versionedInstallerPath"
+    )
+    versioned_hash = (
+        "$versionedInstallerHash = (Get-FileHash -Algorithm SHA256 "
+        "-LiteralPath $versionedInstallerPath).Hash.ToLowerInvariant()"
+    )
+    lifecycle_check = "if ($versionedInstallerHash -cne $expectedInstallerSha256)"
+    alias_copy = (
+        "Copy-Item -LiteralPath $versionedInstallerPath "
+        "-Destination $primaryInstallerPath"
+    )
+
+    assert "$versionedInstallerPath = Join-Path $downloadRoot" in staging
+    assert versioned_copy in staging
+    assert versioned_hash in staging
+    assert lifecycle_check in staging
+    assert alias_copy in staging
+    assert (
+        staging.index(versioned_copy)
+        < staging.index(versioned_hash)
+        < staging.index(lifecycle_check)
+        < staging.index(alias_copy)
+    )
+    assert (
+        "Copy-Item -LiteralPath $installer.FullName "
+        "-Destination $primaryInstallerPath"
+    ) not in staging
 
 
 def test_download_staging_enumerates_and_rejects_unsafe_entries() -> None:

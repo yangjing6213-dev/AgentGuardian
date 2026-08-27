@@ -211,9 +211,22 @@ jobs:
             throw 'lifecycle installer SHA-256 is invalid'
           }
           $expectedInstallerSha256 = $expectedInstallerSha256.ToLowerInvariant()
-          $versionedInstallerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer.FullName).Hash.ToLowerInvariant()
+          $versionedInstallerName = 'AgentGuardian-Setup-0.3.0-preview.1-x64.exe'
+          if ($installer.Name -cne $versionedInstallerName) {
+            throw 'versioned installer filename is invalid'
+          }
+          $versionedInstallerPath = Join-Path $downloadRoot $versionedInstallerName
+          if (Test-Path -LiteralPath $versionedInstallerPath) {
+            throw 'versioned installer must not already exist'
+          }
+          Copy-Item -LiteralPath $installer.FullName -Destination $versionedInstallerPath
+          $versionedInstaller = Get-Item -LiteralPath $versionedInstallerPath -ErrorAction Stop
+          if (-not $versionedInstaller.Exists -or $versionedInstaller.Length -le 0) {
+            throw 'versioned installer copy is empty'
+          }
+          $versionedInstallerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $versionedInstallerPath).Hash.ToLowerInvariant()
           if ($versionedInstallerHash -cne $expectedInstallerSha256) {
-            throw 'versioned installer SHA-256 does not match lifecycle evidence'
+            throw 'staged versioned installer SHA-256 does not match lifecycle evidence'
           }
           $primaryInstallerName = 'AgentGuardian-Setup-Windows-x64.exe'
           $primaryInstallerPath = Join-Path $downloadRoot $primaryInstallerName
@@ -224,7 +237,7 @@ jobs:
           $skill = Get-Item -LiteralPath (Join-Path $env:SKILL_ONE 'AgentGuardian-Skill-0.2.0.zip') -ErrorAction Stop
           $license = Get-Item -LiteralPath (Join-Path $pwd 'LICENSE') -ErrorAction Stop
           $notices = Get-Item -LiteralPath (Join-Path $pwd 'THIRD_PARTY_NOTICES.md') -ErrorAction Stop
-          $payload = @($installer, $portableCandidates[0], $skill, $license, $notices)
+          $payload = @($portableCandidates[0], $skill, $license, $notices)
           foreach ($file in $payload) {
             if (-not $file.Exists -or $file.Length -le 0) {
               throw "downloadable file is empty: $($file.Name)"
@@ -235,7 +248,7 @@ jobs:
           if (Test-Path -LiteralPath $primaryInstallerPath) {
             throw 'primary installer alias must not already exist'
           }
-          Copy-Item -LiteralPath $installer.FullName -Destination $primaryInstallerPath
+          Copy-Item -LiteralPath $versionedInstallerPath -Destination $primaryInstallerPath
           $primaryInstallerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $primaryInstallerPath).Hash.ToLowerInvariant()
           if ($primaryInstallerHash -cne $expectedInstallerSha256) {
             throw 'primary installer alias SHA-256 does not match lifecycle evidence'
