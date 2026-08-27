@@ -223,6 +223,36 @@ def test_skill_reads_sources_without_path_read_bytes(
     assert target.is_file()
 
 
+def test_skill_read_close_failure_is_reported_after_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_close(_descriptor: int) -> None:
+        raise OSError("close failure")
+
+    monkeypatch.setattr(skill_builder.os, "close", fail_close)
+    with pytest.raises(ValueError, match="^skill resource close failed$"):
+        skill_builder._read_checked_file(SOURCE_ROOT / "README.md")
+
+
+def test_skill_read_primary_error_wins_over_close_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[int] = []
+
+    def fail_read(_descriptor: int, _size: int) -> bytes:
+        raise OSError("read failure")
+
+    def fail_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        raise OSError("close failure")
+
+    monkeypatch.setattr(skill_builder.os, "read", fail_read)
+    monkeypatch.setattr(skill_builder.os, "close", fail_close)
+    with pytest.raises(ValueError, match="^skill source entry is unreadable$"):
+        skill_builder._read_checked_file(SOURCE_ROOT / "README.md")
+    assert closed
+
+
 def test_skill_replaces_zip_and_checksum_atomically(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

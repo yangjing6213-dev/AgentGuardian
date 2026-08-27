@@ -653,11 +653,217 @@ def test_stage_rejects_asset_tampering_after_verifier(
     original_publish = module._publish_staged_output
 
     def tamper_asset(staged: Path, target: Path, *args: object, **kwargs: object) -> None:
-        (staged / module.PORTABLE_NAME).write_bytes(b"tampered-after-verifier")
+        replacement = tmp_path / "tampered-portable.zip"
+        replacement.write_bytes(b"tampered-after-verifier")
+        os.replace(replacement, staged / module.PORTABLE_NAME)
         original_publish(staged, target, *args, **kwargs)
 
     monkeypatch.setattr(module, "_publish_staged_output", tamper_asset)
     with pytest.raises(module.ReleaseViolation, match="^RELEASE_ASSET_DIGEST_MISMATCH$"):
+        module.stage_public_preview_release(
+            ROOT,
+            output,
+            installer_path=installer,
+            portable_path=portable,
+            skill_path=skill,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
+    assert not output.exists()
+
+
+def test_snapshot_staging_rejects_replacement_before_first_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "nt":
+        pytest.fail("Windows staging binding test requires Windows")
+    module = _module()
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    staging = parent / ".release.staging-test"
+    staging.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "keep.txt").write_text("keep", encoding="ascii")
+    parent_binding = module._bind_directory(parent, 0x00000080 | 0x00000001)
+    moved = tmp_path / "moved"
+    original_open = module._ntdll_open_relative_directory
+
+    def replace_before_staging_open(
+        parent_handle: int, name: str
+    ) -> tuple[int, tuple[int, ...]]:
+        staging.rename(moved)
+        external.rename(staging)
+        return original_open(parent_handle, name)
+
+    monkeypatch.setattr(
+        module, "_ntdll_open_relative_directory", replace_before_staging_open
+    )
+    try:
+        with pytest.raises(
+            module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"
+        ):
+            module._snapshot_staging_directory(
+                staging, ".release.staging-", parent_binding
+            )
+        assert (staging / "keep.txt").read_text(encoding="ascii") == "keep"
+    finally:
+        module._close_directory_binding(parent_binding)
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(moved, ignore_errors=True)
+        shutil.rmtree(parent, ignore_errors=True)
+
+
+def test_open_relative_directory_requests_delete_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "nt":
+        pytest.fail("Windows directory access test requires Windows")
+    module = _module()
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    staging = parent / ".release.staging-test"
+    staging.mkdir()
+    parent_binding = module._bind_directory(parent, 0x00000080 | 0x00000001)
+    original_win_dll = ctypes.WinDLL
+    real_create = original_win_dll("ntdll", use_last_error=True).NtCreateFile
+    desired_access: list[int] = []
+
+    class CapturedNtCreateFile:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *args: object) -> int:
+            desired_access.append(int(args[1]))
+            return real_create(*args)
+
+    class CapturedNtdll:
+        NtCreateFile = CapturedNtCreateFile()
+
+    def win_dll(name: str, *args: object, **kwargs: object) -> object:
+        if name == "ntdll":
+            return CapturedNtdll()
+        return original_win_dll(name, *args, **kwargs)
+
+    monkeypatch.setattr(ctypes, "WinDLL", win_dll)
+    directory_handle: int | None = None
+    try:
+        directory_handle, _identity = module._ntdll_open_relative_directory(
+            parent_binding.handle, staging.name
+        )
+        assert desired_access == [0x00110081]
+    finally:
+        if directory_handle is not None:
+            module._close_bound_handle(directory_handle)
+        module._close_directory_binding(parent_binding)
+
+
+def test_bind_staging_contents_uses_non_writable_child_handles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "nt":
+        pytest.fail("Windows child binding test requires Windows")
+    module = _module()
+    _, output, _ = _stage(tmp_path, monkeypatch)
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    staging = parent / ".release.staging-test"
+    shutil.copytree(output, staging)
+    parent_binding = module._bind_directory(parent, 0x00000080 | 0x00000001)
+    token = module._snapshot_staging_directory(
+        staging, ".release.staging-", parent_binding
+    )
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def capture(_token: object, name: str, **kwargs: object) -> int:
+        calls.append((name, kwargs))
+        return 99
+
+    monkeypatch.setattr(module, "_ntdll_create_staging_file", capture)
+    monkeypatch.setattr(module, "_close_bound_handle", lambda _handle: None)
+    try:
+        bound = module._bind_staging_contents(token, staging)
+        assert tuple(name for name, _kwargs in calls) == module.RELEASE_ASSET_NAMES
+        assert all(kwargs["return_native_handle"] is True for _, kwargs in calls)
+        assert all(kwargs["share_access"] == 0x00000005 for _, kwargs in calls)
+        assert all(kwargs["create_disposition"] == 0x00000001 for _, kwargs in calls)
+        assert all(
+            kwargs["desired_access"] & 0x00000002 == 0
+            for _, kwargs in calls
+        )
+        assert all(child.handle == 99 for child in bound.children)
+    finally:
+        module._close_staging_token(token)
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(parent, ignore_errors=True)
+
+
+def test_stage_rejects_active_document_drift_before_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    output = tmp_path / "release"
+    documents = (
+        ROOT / "docs/security/integrations-preview-status.json",
+        ROOT / "docs/security/integrations-preview.md",
+    )
+    originals = tuple(path.read_bytes() for path in documents)
+    original_publish = module._publish_staged_output
+
+    def drift_then_publish(staged: Path, target: Path, *args: object, **kwargs: object) -> None:
+        documents[1].write_bytes(originals[1] + b"\ntransient drift")
+        try:
+            original_publish(staged, target, *args, **kwargs)
+        finally:
+            documents[0].write_bytes(originals[0])
+            documents[1].write_bytes(originals[1])
+
+    monkeypatch.setattr(module, "_publish_staged_output", drift_then_publish)
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_SOURCE_STATE_INVALID$"):
+        module.stage_public_preview_release(
+            ROOT,
+            output,
+            installer_path=installer,
+            portable_path=portable,
+            skill_path=skill,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
+    assert not output.exists()
+
+
+def test_stage_rechecks_assets_after_child_handles_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "nt":
+        pytest.fail("Windows staging close-window test requires Windows")
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    output = tmp_path / "release"
+    original_close = getattr(module, "_close_staging_child_handles", None)
+
+    def close_then_replace(token: object) -> object:
+        assert original_close is not None
+        closed, close_code = original_close(token)
+        assert close_code is None
+        replacement = tmp_path / "replacement.zip"
+        replacement.write_bytes(b"changed after handle close")
+        os.replace(
+            replacement,
+            Path(closed.parent) / closed.name / module.PORTABLE_NAME,
+        )
+        return closed, None
+
+    monkeypatch.setattr(
+        module, "_close_staging_child_handles", close_then_replace, raising=False
+    )
+    monkeypatch.setattr(module, "_win32_rename_staged", lambda *_args: None)
+    with pytest.raises(
+        module.ReleaseViolation, match="^RELEASE_ASSET_DIGEST_MISMATCH$"
+    ):
         module.stage_public_preview_release(
             ROOT,
             output,

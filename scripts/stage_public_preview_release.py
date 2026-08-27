@@ -102,6 +102,7 @@ class _StagedChildToken:
     name: str
     snapshot: _FileSnapshot
     digest: str
+    handle: int | None = None
 
 
 @dataclass(frozen=True)
@@ -261,35 +262,6 @@ def _win32_open_directory(path: Path, access: int) -> tuple[int, tuple[int, ...]
             int(info.file_index_low),
         ),
     )
-
-
-def _win32_open_file(path: Path, access: int) -> int:
-    import ctypes
-    from ctypes import wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateFileW.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    ]
-    kernel32.CreateFileW.restype = wintypes.HANDLE
-    handle = kernel32.CreateFileW(
-        str(path),
-        access,
-        0x00000001 | 0x00000002 | 0x00000004,
-        None,
-        3,
-        0x00200000,
-        None,
-    )
-    if handle == wintypes.HANDLE(-1).value:
-        raise OSError(ctypes.get_last_error(), "CreateFileW")
-    return int(handle)
 
 
 def _close_bound_handle(handle: int | None) -> None:
@@ -886,6 +858,112 @@ def _bind_directory(path: Path, access: int) -> _DirectoryBinding:
     return _DirectoryBinding(resolved, identity, handle)
 
 
+def _ntdll_open_relative_directory(
+    parent_handle: int, name: str
+) -> tuple[int, tuple[int, ...]]:
+    if (
+        not name
+        or name in {".", ".."}
+        or any(separator in name for separator in ("\\", "/"))
+        or len(name) > 255
+    ):
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    import ctypes
+    from ctypes import wintypes
+
+    class _UnicodeString(ctypes.Structure):
+        _fields_ = [
+            ("length", wintypes.USHORT),
+            ("maximum_length", wintypes.USHORT),
+            ("buffer", wintypes.LPWSTR),
+        ]
+
+    class _ObjectAttributes(ctypes.Structure):
+        _fields_ = [
+            ("length", wintypes.ULONG),
+            ("root_directory", wintypes.HANDLE),
+            ("object_name", ctypes.POINTER(_UnicodeString)),
+            ("attributes", wintypes.ULONG),
+            ("security_descriptor", wintypes.LPVOID),
+            ("security_quality_of_service", wintypes.LPVOID),
+        ]
+
+    class _IoStatusBlock(ctypes.Structure):
+        _fields_ = [
+            ("status", ctypes.c_int32),
+            ("status_padding", wintypes.DWORD),
+            ("information", ctypes.c_size_t),
+        ]
+
+    try:
+        native_open = ctypes.WinDLL("ntdll", use_last_error=True).NtCreateFile
+    except (AttributeError, OSError):
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    native_open.argtypes = [
+        ctypes.POINTER(wintypes.HANDLE),
+        wintypes.DWORD,
+        ctypes.POINTER(_ObjectAttributes),
+        ctypes.POINTER(_IoStatusBlock),
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    native_open.restype = ctypes.c_int32
+    name_buffer = ctypes.create_unicode_buffer(name)
+    encoded_length = len(name.encode("utf-16-le"))
+    unicode_name = _UnicodeString(
+        encoded_length,
+        encoded_length + 2,
+        ctypes.cast(name_buffer, wintypes.LPWSTR),
+    )
+    attributes = _ObjectAttributes(
+        ctypes.sizeof(_ObjectAttributes),
+        wintypes.HANDLE(parent_handle),
+        ctypes.pointer(unicode_name),
+        0x00000040 | 0x00001000,
+        None,
+        None,
+    )
+    io_status = _IoStatusBlock()
+    native_handle = wintypes.HANDLE()
+    try:
+        status = native_open(
+            ctypes.byref(native_handle),
+            0x00000001 | 0x00000080 | 0x00010000 | 0x00100000,
+            ctypes.byref(attributes),
+            ctypes.byref(io_status),
+            None,
+            0,
+            0x00000007,
+            0x00000001,
+            0x00000001 | 0x00000020 | 0x00200000,
+            None,
+            0,
+        )
+    except (OSError, TypeError, ValueError):
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    handle_value = native_handle.value
+    if (
+        int(status) < 0
+        or io_status.status < 0
+        or handle_value in (None, wintypes.HANDLE(-1).value)
+    ):
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    try:
+        identity = _bound_handle_identity(int(handle_value))
+    except (OSError, ValueError):
+        try:
+            _close_bound_handle(int(handle_value))
+        except Exception:
+            pass
+        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    return int(handle_value), identity
+
+
 def _snapshot_staging_directory(
     path: Path, prefix: str, parent_binding: _DirectoryBinding
 ) -> _StagingDirectoryToken:
@@ -904,21 +982,31 @@ def _snapshot_staging_directory(
             _fail("RELEASE_OUTPUT_PATH_INVALID")
         if parent != parent_binding.path:
             _fail("RELEASE_OUTPUT_PATH_INVALID")
-        visible_parent_handle, visible_parent_identity = _open_bound_directory(
-            parent, 0
-        )
-        _close_bound_handle(visible_parent_handle)
-        if visible_parent_identity != parent_binding.identity:
+        if _bound_handle_identity(parent_binding.handle) != parent_binding.identity:
             _fail("RELEASE_OUTPUT_PATH_INVALID")
-        if os.name == "nt":
-            directory_access = 0x00010000 | 0x00000080 | 0x00000001
+        if os.name == "posix":
+            if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+                _fail("RELEASE_OUTPUT_PATH_INVALID")
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            directory_handle = os.open(
+                candidate.name, flags, dir_fd=parent_binding.handle
+            )
+            identity = _bound_handle_identity(directory_handle)
+        elif os.name == "nt":
+            directory_handle, identity = _ntdll_open_relative_directory(
+                parent_binding.handle, candidate.name
+            )
         else:
-            directory_access = 0
-        directory_handle, identity = _open_bound_directory(
-            candidate, directory_access
-        )
-    except (FileNotFoundError, OSError, ProfileViolation):
-        _close_bound_handle(directory_handle)
+            _fail("RELEASE_OUTPUT_PATH_INVALID")
+        current_info = candidate.lstat()
+        if _file_identity(current_info) != _file_identity(info):
+            _fail("RELEASE_OUTPUT_PATH_INVALID")
+    except (FileNotFoundError, OSError, ProfileViolation, ReleaseViolation):
+        if directory_handle is not None:
+            try:
+                _close_bound_handle(directory_handle)
+            except Exception:
+                pass
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     return _StagingDirectoryToken(
         parent=parent,
@@ -971,6 +1059,43 @@ def _validated_staging_path(
     return candidate
 
 
+def _cleanup_path_still_bound(
+    token: _StagingDirectoryToken, staged: Path
+) -> bool:
+    candidate = staged.absolute()
+    handle: int | None = None
+    try:
+        if (
+            candidate.parent.resolve(strict=True) != token.parent
+            or candidate.name != token.name
+            or not candidate.name.startswith(token.prefix)
+            or _has_reparse_component(candidate)
+            or _is_reparse_point(candidate)
+        ):
+            return False
+        if os.name == "nt":
+            handle, identity = _open_bound_directory(candidate, 0x00000080 | 0x00000001)
+        elif os.name == "posix":
+            if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+                return False
+            handle = os.open(
+                candidate,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            )
+            identity = _bound_handle_identity(handle)
+        else:
+            return False
+        return identity == token.identity
+    except (FileNotFoundError, OSError, ProfileViolation, ReleaseViolation):
+        return False
+    finally:
+        if handle is not None:
+            try:
+                _close_bound_handle(handle)
+            except Exception:
+                pass
+
+
 def _staging_file_limit(name: str) -> tuple[int, str]:
     if name == _METADATA_NAME:
         return MAX_METADATA_BYTES, "RELEASE_MANIFEST_TOO_LARGE"
@@ -994,10 +1119,86 @@ def _bind_staging_contents(
     children: list[_StagedChildToken] = []
     for entry in entries:
         limit, code = _staging_file_limit(entry.name)
-        snapshot = _snapshot_file(entry, max_bytes=limit, code=code)
-        digest, _ = _digest_file(snapshot, max_bytes=limit, code=code)
-        children.append(_StagedChildToken(entry.name, snapshot, digest))
+        child_handle: int | None = None
+        try:
+            child_handle = _open_bound_staged_child(token, entry.name, code)
+            snapshot = _snapshot_file(entry, max_bytes=limit, code=code)
+            digest, _ = _digest_file(snapshot, max_bytes=limit, code=code)
+            children.append(
+                _StagedChildToken(entry.name, snapshot, digest, child_handle)
+            )
+        except BaseException:
+            if child_handle is not None:
+                try:
+                    _close_bound_handle(child_handle)
+                except Exception:
+                    pass
+            raise
     return replace(token, children=tuple(sorted(children, key=lambda item: item.name)))
+
+
+def _close_staging_child_handles(
+    token: _StagingDirectoryToken,
+) -> tuple[_StagingDirectoryToken, str | None]:
+    failed = False
+    closed: set[int] = set()
+    children: list[_StagedChildToken] = []
+    for child in token.children:
+        handle = child.handle
+        if handle is not None and handle not in closed:
+            closed.add(handle)
+            try:
+                _close_bound_handle(handle)
+            except Exception:
+                failed = True
+        children.append(replace(child, handle=None))
+    detached = replace(token, children=tuple(children))
+    return detached, "RELEASE_RESOURCE_CLOSE_FAILED" if failed else None
+
+
+def _open_bound_staged_child(
+    token: _StagingDirectoryToken, name: str, code: str
+) -> int:
+    if (
+        token.directory_handle is None
+        or name not in RELEASE_ASSET_NAMES
+        or any(separator in name for separator in ("\\", "/"))
+    ):
+        _fail(code)
+    if os.name == "posix":
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        if not hasattr(os, "O_NOFOLLOW"):
+            _fail(code)
+        flags |= os.O_NOFOLLOW
+        handle: int | None = None
+        try:
+            handle = os.open(name, flags, dir_fd=token.directory_handle)
+            if not stat.S_ISREG(os.fstat(handle).st_mode):
+                _fail(code)
+            return handle
+        except (FileNotFoundError, OSError, ReleaseViolation):
+            if handle is not None:
+                try:
+                    _close_bound_handle(handle)
+                except Exception:
+                    pass
+            _fail(code)
+    if os.name == "nt":
+        handle = _ntdll_create_staging_file(
+            token,
+            name,
+            create_disposition=0x00000001,
+            desired_access=0x00000001 | 0x00000080 | 0x00100000,
+            share_access=0x00000005,
+            create_options=0x00000040
+            | 0x00000020
+            | 0x00200000,
+            return_native_handle=True,
+        )
+        if handle is None:
+            _fail(code)
+        return handle
+    _fail(code)
 
 
 def _validate_staging_contents(
@@ -1014,6 +1215,11 @@ def _validate_staging_contents(
     if tuple(sorted(entry.name for entry in entries)) != expected:
         _fail("RELEASE_MANIFEST_INVALID")
     for child in token.children:
+        if child.handle is not None:
+            try:
+                _bound_handle_identity(child.handle)
+            except (OSError, ValueError):
+                _fail("RELEASE_ASSET_DIGEST_MISMATCH")
         limit, code = _staging_file_limit(child.name)
         snapshot = _snapshot_file(path / child.name, max_bytes=limit, code=code)
         if snapshot.identity != child.snapshot.identity or snapshot.size != child.snapshot.size:
@@ -1098,6 +1304,7 @@ def _ntdll_create_staging_file(
     *,
     create_disposition: int = 0x00000002,
     desired_access: int = 0x00000002 | 0x00000100 | 0x00100000,
+    share_access: int = 0x00000007,
     create_options: int = 0x00000040 | 0x00000020,
     allow_missing: bool = False,
     return_native_handle: bool = False,
@@ -1185,7 +1392,7 @@ def _ntdll_create_staging_file(
             ctypes.byref(io_status),
             None,
             0x00000080,
-            0x00000007,
+            share_access,
             create_disposition,
             create_options,
             None,
@@ -1315,7 +1522,8 @@ def _cleanup_bound_staging(
             return True
         if os.name == "nt":
             _validated_staging_path(token, staged, "RELEASE_CLEANUP_FAILED")
-            _validated_staging_path(token, staged, "RELEASE_CLEANUP_FAILED")
+            if not _cleanup_path_still_bound(token, staged):
+                return False
             for name in RELEASE_ASSET_NAMES:
                 child_handle = _ntdll_create_staging_file(
                     token,
@@ -1371,7 +1579,13 @@ def _close_staging_token(token: _StagingDirectoryToken | None) -> str | None:
     if token is None:
         return None
     failed = False
-    for handle in (token.directory_handle, token.parent_handle):
+    handles = [child.handle for child in token.children]
+    handles.extend((token.directory_handle, token.parent_handle))
+    closed: set[int] = set()
+    for handle in handles:
+        if handle is None or handle in closed:
+            continue
+        closed.add(handle)
         try:
             _close_bound_handle(handle)
         except Exception:
@@ -1433,7 +1647,7 @@ def stage_public_preview_release(
     profile_path = _resolve_project_file(root, _PROFILE_RELATIVE_PATH)
     license_path = _resolve_project_file(root, "LICENSE")
     notices_path = _resolve_project_file(root, "THIRD_PARTY_NOTICES.md")
-    source_files = (
+    source_files_list = [
         _capture_source_file(
             profile_path,
             max_bytes=MAX_METADATA_BYTES,
@@ -1449,7 +1663,21 @@ def stage_public_preview_release(
             max_bytes=MAX_INPUT_BYTES,
             code="RELEASE_INPUT_PATH_INVALID",
         ),
-    )
+    ]
+    captured_paths = {source.snapshot.path for source in source_files_list}
+    for relative in profile.profile["active_document_paths"]:
+        document = _resolve_project_file(root, str(relative))
+        if document.path in captured_paths:
+            continue
+        source_files_list.append(
+            _capture_source_file(
+                document,
+                max_bytes=MAX_METADATA_BYTES,
+                code="RELEASE_SOURCE_STATE_INVALID",
+            )
+        )
+        captured_paths.add(document.path)
+    source_files = tuple(source_files_list)
     inputs = (installer, portable, skill, license_path, notices_path)
     workflow_markers = profile.profile["forbidden_workflow_tokens"]
     if any(_path_has_private_marker(snapshot.path, workflow_markers) for snapshot in inputs):
@@ -1522,15 +1750,20 @@ def stage_public_preview_release(
         except (OSError, MemoryError):
             _fail("RELEASE_MANIFEST_INVALID")
         _write_checksums(temporary, temporary_token)
+        temporary_token = _bind_staging_contents(temporary_token, temporary)
+        temporary_token, child_close_code = _close_staging_child_handles(
+            temporary_token
+        )
+        if child_close_code is not None:
+            _fail(child_close_code)
         result = verify_staged_release(
             temporary, root, source_commit=source_commit
         )
         _verify_source_inputs(root, source_commit, contract, source_files)
-        publish_token = _bind_staging_contents(temporary_token, temporary)
         _publish_staged_output(
             temporary,
             output,
-            publish_token,
+            temporary_token,
             project_root=root,
             source_commit=source_commit,
             source_files=source_files,

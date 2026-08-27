@@ -168,6 +168,7 @@ def _close_windows_handle(handle: object) -> None:
 
 def _read_checked_file(path: Path) -> bytes:
     descriptor: int | None = None
+    primary_error: BaseException | None = None
     try:
         before = os.lstat(path)
         if _is_reparse_or_link(path, before) or not stat.S_ISREG(before.st_mode):
@@ -188,16 +189,19 @@ def _read_checked_file(path: Path) -> bytes:
         if _is_reparse_or_link(path, after) or not _same_file_snapshot(opened, after):
             raise _fixed_error("skill source entry changed")
         return b"".join(chunks)
-    except ValueError:
+    except ValueError as error:
+        primary_error = error
         raise
     except OSError:
-        raise _fixed_error("skill source entry is unreadable") from None
+        primary_error = _fixed_error("skill source entry is unreadable")
+        raise primary_error from None
     finally:
         if descriptor is not None:
             try:
                 os.close(descriptor)
-            except OSError:
-                pass
+            except Exception:
+                if primary_error is None:
+                    raise _fixed_error("skill resource close failed")
 
 
 def _validate_directory_parents(path: Path) -> None:

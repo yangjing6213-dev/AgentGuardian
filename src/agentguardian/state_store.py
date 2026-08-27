@@ -54,13 +54,66 @@ def purge_protected_state() -> bool:
             raise StateStoreError("PROTECTED_STATE_PURGE_FAILED")
         if os.name == "nt":
             return _purge_windows_target(target, parent)
-        existed = target.exists()
-        target.unlink(missing_ok=True)
-        return existed
+        return _purge_posix_target(target, parent)
     except StateStoreError:
         raise StateStoreError("PROTECTED_STATE_PURGE_FAILED") from None
     except OSError:
         raise StateStoreError("PROTECTED_STATE_PURGE_FAILED") from None
+
+
+def _purge_posix_target(target: Path, parent: Path) -> bool:
+    parent_fd: int | None = None
+    primary_error: BaseException | None = None
+    result = False
+    try:
+        if (
+            target.name != STATE_FILENAME
+            or target.parent.absolute() != parent.absolute()
+            or not hasattr(os, "O_DIRECTORY")
+            or not hasattr(os, "O_NOFOLLOW")
+        ):
+            raise StateStoreError("PROTECTED_STATE_PURGE_FAILED")
+        parent_fd = os.open(
+            parent,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+        parent_info = os.fstat(parent_fd)
+        visible_parent = os.stat(parent, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(parent_info.st_mode)
+            or not stat.S_ISDIR(visible_parent.st_mode)
+            or _directory_identity(parent_info) != _directory_identity(visible_parent)
+        ):
+            raise StateStoreError("PROTECTED_STATE_PURGE_FAILED")
+        try:
+            target_info = os.stat(
+                STATE_FILENAME,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            result = False
+        else:
+            if not stat.S_ISREG(target_info.st_mode):
+                raise StateStoreError("PROTECTED_STATE_PURGE_FAILED")
+            os.unlink(STATE_FILENAME, dir_fd=parent_fd)
+            result = True
+    except StateStoreError as error:
+        primary_error = error
+    except OSError:
+        primary_error = StateStoreError("PROTECTED_STATE_PURGE_FAILED")
+    finally:
+        if parent_fd is not None:
+            try:
+                os.close(parent_fd)
+            except Exception:
+                if primary_error is None:
+                    primary_error = StateStoreError(
+                        "PROTECTED_STATE_PURGE_FAILED"
+                    )
+    if primary_error is not None:
+        raise primary_error
+    return result
 
 
 def _purge_windows_target(target: Path, parent: Path) -> bool:

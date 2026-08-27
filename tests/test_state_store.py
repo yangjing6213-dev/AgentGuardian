@@ -359,6 +359,45 @@ def test_purge_protected_state_is_idempotent(
     assert not (tmp_path / "AgentGuardian").exists()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX parent fd purge")
+def test_posix_purge_does_not_follow_parent_path_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import agentguardian.state_store as state_store
+
+    local_app_data = tmp_path / "local-app-data"
+    parent = local_app_data / "AgentGuardian"
+    parent.mkdir(parents=True)
+    target = parent / STATE_FILENAME
+    target.write_bytes(b"expected-state")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_target = outside / STATE_FILENAME
+    outside_target.write_bytes(b"outside-state")
+    held_parent = local_app_data / "AgentGuardian-held"
+    real_open = os.open
+    swapped = False
+
+    def open_and_swap(path: object, flags: int, mode: int = 0o777, **kwargs: object) -> int:
+        nonlocal swapped
+        descriptor = real_open(path, flags, mode, **kwargs)
+        if Path(path) == parent and not swapped:
+            parent.rename(held_parent)
+            outside.rename(parent)
+            swapped = True
+        return descriptor
+
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.setattr(state_store.os, "open", open_and_swap)
+
+    with pytest.raises(StateStoreError, match="^PROTECTED_STATE_PURGE_FAILED$"):
+        state_store.purge_protected_state()
+
+    assert (held_parent / STATE_FILENAME).read_bytes() == b"expected-state"
+    assert outside_target.read_bytes() == b"outside-state"
+
+
+
 @pytest.mark.parametrize("failure", ("target", "parent"))
 def test_windows_purge_close_failure_preserves_primary_state_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str

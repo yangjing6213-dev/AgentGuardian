@@ -17,6 +17,17 @@ configuration is handled through local adaptation, static detection, and
 manual guidance. The product has no telemetry, background listener, automatic
 update, arbitrary execution, or dynamic MCP loading.
 
+## Public preview staging boundary
+
+The Windows 11 x64 preview staging path binds the output parent and temporary
+directory handles, uses short-lived child-handle checks for identities and
+digests, closes those child handles before the directory rename, and performs
+one final content and source-state recheck before the no-replace atomic rename.
+This bounds the release workflow without claiming to remove all kernel-level
+TOCTOU behavior. A same-user process can still change content in the narrow
+close-to-rename window; such changes are rejected when observed, and
+unsupported handle or filesystem behavior fails closed with a fixed error.
+
 ## Operation and approval contract
 
 The supported operations are exactly `files`, `browser`, `clipboard`, and
