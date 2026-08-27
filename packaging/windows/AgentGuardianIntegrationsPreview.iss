@@ -105,7 +105,11 @@ end;
 
 function SelectedTargets(): String;
 begin
-  Result := 'Selected categories:' + #13#10;
+  Result := 'AgentGuardian 0.3.0 Public Preview (unsigned).' + #13#10 +
+    'Use only personal non-regulated configuration data.' + #13#10 +
+    'Windows may show Unknown Publisher or SmartScreen warnings.' + #13#10 +
+    'Reports and redacted results may be visible to the configured host.' + #13#10 +
+    #13#10 + 'Selected categories:' + #13#10;
   if WizardIsTaskSelected('codexskill') then
     Result := Result + '- Codex Skill' + #13#10;
   if WizardIsTaskSelected('codexmcp') then

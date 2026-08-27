@@ -10,6 +10,12 @@ ROOT = Path(__file__).resolve().parents[1]
 ISS_PATH = ROOT / "packaging" / "windows" / "AgentGuardianIntegrationsPreview.iss"
 SPEC_PATH = ROOT / "packaging" / "windows" / "AgentGuardianIntegrationsPreview.spec"
 LIFECYCLE_PATH = ROOT / "scripts" / "verify_windows_integrations_preview.ps1"
+DISCLOSURE_MARKERS = (
+    "AgentGuardian 0.3.0 Public Preview (unsigned).",
+    "Use only personal non-regulated configuration data.",
+    "Windows may show Unknown Publisher or SmartScreen warnings.",
+    "Reports and redacted results may be visible to the configured host.",
+)
 
 
 def _builder():
@@ -37,6 +43,8 @@ def test_preview_builder_exports_exact_identity() -> None:
 def test_preview_inno_script_is_current_user_and_tasks_are_opt_in() -> None:
     script = ISS_PATH.read_text(encoding="ascii")
     folded = script.casefold()
+    for marker in DISCLOSURE_MARKERS:
+        assert marker in script
     for required in (
         "AppId={{A64DBF23-FE14-4E04-89AE-0924666A03DE}",
         "DefaultDirName={localappdata}\\Programs\\AgentGuardian Integrations Preview",
@@ -67,6 +75,24 @@ def test_preview_inno_script_is_current_user_and_tasks_are_opt_in() -> None:
     assert "{userprofile}\\.codex\\config.toml" in folded
     assert "{localappdata}\\agentguardian" in folded
     assert "--remove-codex-integration" in script
+
+
+def test_preview_installer_script_verification_requires_all_disclosures() -> None:
+    builder = _builder()
+    script = ISS_PATH.read_bytes()
+    builder.verify_installer_script(script)
+    for marker in DISCLOSURE_MARKERS:
+        missing = script.replace(marker.encode("ascii"), b"", 1)
+        with pytest.raises(ValueError, match="installer script is not approved"):
+            builder.verify_installer_script(missing)
+
+
+def test_preview_installer_script_verification_rejects_tampering() -> None:
+    builder = _builder()
+    script = bytearray(ISS_PATH.read_bytes())
+    script[script.index(b"SelectedTargets")] = ord("X")
+    with pytest.raises(ValueError, match="installer script is not approved"):
+        builder.verify_installer_script(bytes(script))
 
 
 def test_preview_spec_has_one_shared_analysis_and_two_launchers() -> None:

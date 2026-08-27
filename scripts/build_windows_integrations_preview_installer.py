@@ -41,8 +41,14 @@ COMPILER_SHA256 = "0ff6140d641f84b64204a2c4d52207c6fc437c9f4db8779c83083d84f7e3d
 PROFILE_NAME = "integrations_preview"
 PROFILE_RELATIVE = Path("release_profiles/integrations_preview.json")
 SCRIPT_RELATIVE = Path("packaging/windows/AgentGuardianIntegrationsPreview.iss")
-INSTALLER_SCRIPT_SHA256 = "ca616949f3e81cf9267b1a2879d31d213f0728716328ab28660768f52d2d03af"
+INSTALLER_SCRIPT_SHA256 = "4fff13aa2753ec53722e5012663a6c48405cffb74bd563c1b2e9a2d17e03cd82"
 MAX_FILE_BYTES = 16 * 1024 * 1024
+INSTALLER_DISCLOSURE_MARKERS = (
+    b"AgentGuardian 0.3.0 Public Preview (unsigned).",
+    b"Use only personal non-regulated configuration data.",
+    b"Windows may show Unknown Publisher or SmartScreen warnings.",
+    b"Reports and redacted results may be visible to the configured host.",
+)
 
 
 def build_iscc_command(
@@ -79,7 +85,11 @@ def compiler_sha256(path: Path) -> str:
 
 def verify_installer_script(contents: bytes) -> None:
     canonical = contents.replace(b"\r\n", b"\n")
-    if b"\r" in canonical or INSTALLER_SCRIPT_SHA256 == "__SCRIPT_SHA256__":
+    if (
+        b"\r" in canonical
+        or INSTALLER_SCRIPT_SHA256 == "__SCRIPT_SHA256__"
+        or any(marker not in canonical for marker in INSTALLER_DISCLOSURE_MARKERS)
+    ):
         raise ValueError("installer script is not approved")
     if hashlib.sha256(canonical).hexdigest() != INSTALLER_SCRIPT_SHA256:
         raise ValueError("installer script is not approved")
