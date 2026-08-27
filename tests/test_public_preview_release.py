@@ -1913,6 +1913,56 @@ def test_handle_ledger_does_not_retry_reused_resource(
     assert ledger.owns(77)
 
 
+def test_handle_ledger_tracks_and_closes_each_resource_namespace_exactly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    ledger = module._HandleOwnershipLedger()
+    handle = 1234
+    resource_types = ("handle", "fd", "directory", "file")
+    initial_identities = {
+        resource_type: (index,)
+        for index, resource_type in enumerate(resource_types, start=1)
+    }
+    updated_identities = {
+        resource_type: (index + 10,)
+        for index, resource_type in enumerate(resource_types, start=1)
+    }
+
+    for resource_type in resource_types:
+        ledger.register(
+            handle,
+            resource_type=resource_type,
+            identity=initial_identities[resource_type],
+        )
+
+    close_calls: list[tuple[int, str]] = []
+
+    def close_bound_handle(value: int, *, resource_type: str) -> None:
+        close_calls.append((value, resource_type))
+
+    monkeypatch.setattr(module, "_close_bound_handle", close_bound_handle)
+
+    for resource_type in resource_types:
+        assert ledger.record(handle, resource_type=resource_type).identity == (
+            initial_identities[resource_type]
+        )
+        ledger.set_identity(
+            handle,
+            updated_identities[resource_type],
+            resource_type=resource_type,
+        )
+        assert ledger.record(handle, resource_type=resource_type).identity == (
+            updated_identities[resource_type]
+        )
+        assert module._close_ledger_handle(
+            ledger, handle, resource_type=resource_type
+        ) is True
+        assert not ledger.owns(handle, resource_type=resource_type)
+
+    assert close_calls == [(handle, resource_type) for resource_type in resource_types]
+
+
 def test_handle_ledger_keeps_colliding_resource_namespaces_fail_closed() -> None:
     module = _module()
     ledger = module._HandleOwnershipLedger()
