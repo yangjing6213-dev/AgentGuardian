@@ -68,6 +68,40 @@ def test_integrations_preview_workflow_is_exact_sha_and_non_publishing() -> None
         assert re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", match.group(1))
 
 
+def test_download_staging_materializes_primary_alias_and_exact_asset_contract() -> None:
+    workflow = WORKFLOW.read_text(encoding="ascii")
+    profile = _release_profile()
+    primary_name = str(profile["primary_download_filename"])
+
+    assert f"$primaryInstallerName = '{primary_name}'" in workflow
+    assert "$primaryInstallerPath = Join-Path $downloadRoot $primaryInstallerName" in workflow
+    assert "if (Test-Path -LiteralPath $primaryInstallerPath)" in workflow
+    assert (
+        "Copy-Item -LiteralPath $installer.FullName -Destination $primaryInstallerPath"
+        in workflow
+    )
+    assert (
+        "$versionedInstallerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer.FullName).Hash.ToLowerInvariant()"
+        in workflow
+    )
+    assert (
+        "$primaryInstallerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $primaryInstallerPath).Hash.ToLowerInvariant()"
+        in workflow
+    )
+    assert "if ($versionedInstallerHash -cne $primaryInstallerHash)" in workflow
+    assert "$payloadFiles.Count -ne 6" in workflow
+    assert "$metadataDocument = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json" in workflow
+    assert "$metadataFiles.Count -ne $payloadFiles.Count" in workflow
+    assert "$actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $actualFile.FullName).Hash.ToLowerInvariant()" in workflow
+    assert "if ($actualHash -cne ([string]$metadataFile.sha256).ToLowerInvariant())" in workflow
+    assert "if ([int64]$metadataFile.size -ne $actualFile.Length)" in workflow
+    assert "$checksumTargets.Count -ne 7" in workflow
+    assert "Get-ChildItem -LiteralPath $downloadRoot -Directory" in workflow
+    assert "$finalFiles.Count -ne 8" in workflow
+    for asset in profile["release_assets"]:
+        assert str(asset) in workflow
+
+
 def test_integrations_preview_status_is_canonical_and_all_pending() -> None:
     raw = STATUS.read_bytes()
     value = json.loads(raw.decode("ascii"))
@@ -131,6 +165,11 @@ def test_active_docs_publish_the_profile_backed_download_contract() -> None:
         assert "enterprise control-plane" in text
         for asset in assets:
             assert asset in text
+        assert "releases/download/" not in text
+        assert "actions/artifacts/" not in text
+        assert "hqwzhu" not in text.casefold()
+        for forbidden in profile["forbidden_document_promises"]:
+            assert str(forbidden).casefold() not in text.casefold()
 
     assert str(profile["primary_download_filename"]) in readme
     assert "AgentGuardianMcp.exe" in readme
@@ -139,9 +178,6 @@ def test_active_docs_publish_the_profile_backed_download_contract() -> None:
     assert "SHA256SUMS" in readme
     assert "INTEGRATIONS-PREVIEW-NOT-READY" in readme
     assert "NO-GO" in readme
-    assert "releases/download/" not in readme
-    assert "actions/artifacts/" not in readme
-    assert "hqwzhu" not in readme.casefold()
 
 
 def test_active_doc_contains_authorized_manual_release_handoff() -> None:

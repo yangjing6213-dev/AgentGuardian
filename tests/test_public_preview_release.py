@@ -47,8 +47,12 @@ def test_documented_download_route_matches_profile_and_is_not_temporary() -> Non
     for asset in profile["release_assets"]:
         assert asset in readme
         assert asset in document
-    assert "actions/artifacts/" not in readme
-    assert "hqwzhu" not in readme.casefold()
+    for text in (readme, document):
+        assert "releases/download/" not in text
+        assert "actions/artifacts/" not in text
+        assert "hqwzhu" not in text.casefold()
+        for forbidden in profile["forbidden_document_promises"]:
+            assert str(forbidden).casefold() not in text.casefold()
 
 
 def _module():

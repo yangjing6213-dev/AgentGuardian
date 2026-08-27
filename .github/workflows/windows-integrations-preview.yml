@@ -202,6 +202,8 @@ jobs:
           New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
 
           $installer = Get-Item -LiteralPath $env:INSTALLER_PATH -ErrorAction Stop
+          $primaryInstallerName = 'AgentGuardian-Setup-Windows-x64.exe'
+          $primaryInstallerPath = Join-Path $downloadRoot $primaryInstallerName
           $portableCandidates = @(Get-ChildItem -LiteralPath $env:PORTABLE_ONE -Filter 'AgentGuardian-0.3.0-preview.1-windows-x64.zip' -File)
           if ($portableCandidates.Count -ne 1) {
             throw 'downloadable portable artifact count is invalid'
@@ -217,8 +219,29 @@ jobs:
             Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $downloadRoot $file.Name)
           }
 
+          if (Test-Path -LiteralPath $primaryInstallerPath) {
+            throw 'primary installer alias must not already exist'
+          }
+          Copy-Item -LiteralPath $installer.FullName -Destination $primaryInstallerPath
+          $versionedInstallerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer.FullName).Hash.ToLowerInvariant()
+          $primaryInstallerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $primaryInstallerPath).Hash.ToLowerInvariant()
+          if ($versionedInstallerHash -cne $primaryInstallerHash) {
+            throw 'primary installer alias SHA-256 mismatch'
+          }
+
+          $expectedPayloadNames = @(
+            'AgentGuardian-0.3.0-preview.1-windows-x64.zip'
+            'AgentGuardian-Setup-0.3.0-preview.1-x64.exe'
+            'AgentGuardian-Setup-Windows-x64.exe'
+            'AgentGuardian-Skill-0.2.0.zip'
+            'LICENSE'
+            'THIRD_PARTY_NOTICES.md'
+          )
           $payloadFiles = @(Get-ChildItem -LiteralPath $downloadRoot -File | Sort-Object Name)
-          if ($payloadFiles.Count -ne 5) { throw 'downloadable payload file count is invalid' }
+          if ($payloadFiles.Count -ne 6) { throw 'downloadable payload file count is invalid' }
+          if (($payloadFiles.Name -join "`n") -cne ($expectedPayloadNames -join "`n")) {
+            throw 'downloadable payload file names are invalid'
+          }
           $payloadMetadata = @($payloadFiles | ForEach-Object {
             [ordered]@{
               name = $_.Name
@@ -239,7 +262,33 @@ jobs:
           $metadataPath = Join-Path $downloadRoot 'DOWNLOAD-METADATA.json'
           $metadata | ConvertTo-Json -Depth 5 -Compress | Set-Content -LiteralPath $metadataPath -Encoding ascii -NoNewline
 
+          $metadataDocument = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
+          $metadataFiles = @($metadataDocument.files)
+          if ($metadataFiles.Count -ne $payloadFiles.Count) {
+            throw 'download metadata payload count is invalid'
+          }
+          $metadataNames = @($metadataFiles | ForEach-Object { $_.name })
+          if (($metadataNames -join "`n") -cne ($payloadFiles.Name -join "`n")) {
+            throw 'download metadata payload names are invalid'
+          }
+          foreach ($metadataFile in $metadataFiles) {
+            $metadataFilePath = Join-Path $downloadRoot ([string]$metadataFile.name)
+            $actualFile = Get-Item -LiteralPath $metadataFilePath -ErrorAction Stop
+            $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $actualFile.FullName).Hash.ToLowerInvariant()
+            if ($actualHash -cne ([string]$metadataFile.sha256).ToLowerInvariant()) {
+              throw "download metadata SHA-256 mismatch: $($metadataFile.name)"
+            }
+            if ([int64]$metadataFile.size -ne $actualFile.Length) {
+              throw "download metadata size mismatch: $($metadataFile.name)"
+            }
+          }
+
           $checksumTargets = @(Get-ChildItem -LiteralPath $downloadRoot -File | Sort-Object Name)
+          $expectedChecksumNames = @($expectedPayloadNames + 'DOWNLOAD-METADATA.json' | Sort-Object)
+          if ($checksumTargets.Count -ne 7) { throw 'downloadable checksum target count is invalid' }
+          if (($checksumTargets.Name -join "`n") -cne ($expectedChecksumNames -join "`n")) {
+            throw 'downloadable checksum target names are invalid'
+          }
           $checksumLines = @($checksumTargets | ForEach-Object {
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
             "$hash *$($_.Name)"
@@ -253,6 +302,15 @@ jobs:
           }
           if ((Get-Content -LiteralPath $checksumPath).Count -ne $checksumTargets.Count) {
             throw 'downloadable checksum line count is invalid'
+          }
+
+          $expectedAssetNames = @($expectedChecksumNames + 'SHA256SUMS' | Sort-Object)
+          $finalDirectories = @(Get-ChildItem -LiteralPath $downloadRoot -Directory)
+          if ($finalDirectories.Count -ne 0) { throw 'downloadable staging contains a directory' }
+          $finalFiles = @(Get-ChildItem -LiteralPath $downloadRoot -File | Sort-Object Name)
+          if ($finalFiles.Count -ne 8) { throw 'downloadable final asset count is invalid' }
+          if (($finalFiles.Name -join "`n") -cne ($expectedAssetNames -join "`n")) {
+            throw 'downloadable final asset names are invalid'
           }
 
       - name: Archive verified downloadable preview
