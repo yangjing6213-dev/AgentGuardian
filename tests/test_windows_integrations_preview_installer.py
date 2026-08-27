@@ -337,6 +337,19 @@ def test_preview_lifecycle_script_is_bounded_and_native() -> None:
         assert forbidden not in folded
 
 
+def test_preview_lifecycle_compares_installed_payload_to_portable_manifest() -> None:
+    script = LIFECYCLE_PATH.read_text(encoding="ascii").casefold()
+    for required in (
+        "portable_bundle_root",
+        "payload-manifest.json",
+        "assert-installed-payload-matches-bundle",
+        "payload_tree_match",
+        "installed_payload_file_count",
+        "portable_payload_file_count",
+    ):
+        assert required in script
+
+
 def test_preview_lifecycle_retries_bounded_inno_self_delete_cleanup() -> None:
     script = LIFECYCLE_PATH.read_text(encoding="ascii").casefold()
     for required in (

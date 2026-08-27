@@ -241,6 +241,23 @@ def test_full_gate_secret_scan_keeps_git_grep_exit_semantics_without_output() ->
     assert "github[_]pat_[A-Za-z0-9_]{20,}" in full_gates
 
 
+def test_workflow_adds_pinned_gitleaks_history_and_asset_scans() -> None:
+    workflow = WORKFLOW.read_text(encoding="ascii")
+    assert "fetch-depth: 0" in workflow
+    assert "GITLEAKS_RELEASE_TAG: v8.30.1" in workflow
+    assert "GITLEAKS_ASSET_NAME: gitleaks_8.30.1_windows_x64.zip" in workflow
+    assert (
+        "GITLEAKS_ASSET_SHA256: "
+        "d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e"
+    ) in workflow
+    assert "$env:GITLEAKS_EXE git" in workflow
+    assert "$env:GITLEAKS_EXE dir $env:RELEASE_ROOT" in workflow
+    assert "--redact" in workflow
+    assert "--log-opts='--all -m'" in workflow
+    assert "GITLEAKS_EXE" in workflow
+    assert "gitleaks scan failed" in workflow
+
+
 def _public_preview_staging_block(workflow: str) -> str:
     marker = "      - name: Stage verified public preview release bundle\n"
     assert marker in workflow
@@ -277,6 +294,14 @@ def test_download_staging_delegates_to_unified_profile_backed_tool() -> None:
     assert "ConvertTo-Json" not in staging
     assert "WriteAllText" not in staging
     assert "$downloadRoot" not in staging
+
+
+def test_lifecycle_binds_installed_payload_to_portable_bundle() -> None:
+    workflow = WORKFLOW.read_text(encoding="ascii")
+    lifecycle = _named_run_block(
+        workflow, "Run every bounded integration lifecycle mode"
+    )
+    assert "-Portable_Bundle_Root $env:PORTABLE_BUNDLE `" in lifecycle
 
 
 def test_download_staging_checks_exact_profile_assets_and_unsigned_metadata() -> None:

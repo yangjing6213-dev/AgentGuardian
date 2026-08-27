@@ -31,6 +31,11 @@ unsupported handle or filesystem behavior fails closed with a fixed error.
 The source and decompressed-archive checks include high-confidence modern
 OpenAI key formats and GitHub token formats; they are leakage gates, not a
 complete secret scanner or cryptographic build provenance.
+The candidate Windows workflow additionally fetches full Git history and runs
+the pinned official Gitleaks 8.30.1 Windows scanner with redacted, suppressed
+output against repository history and the final staged asset directory. A
+scanner failure or finding stops the workflow. This improves release screening
+but does not prove that arbitrary personal data is absent from every binary.
 
 ## Operation and approval contract
 
@@ -55,6 +60,12 @@ uses an isolated synthetic profile and rejects evidence paths inside user
 ownership paths. Clean-machine lifecycle acceptance remains a separate pending
 gate and must use a dedicated Windows account or machine, not a normal user's
 profile.
+For the current candidate it also requires `-Portable_Bundle_Root`: after each
+test installation it validates `PAYLOAD-MANIFEST.json`, hashes every installed
+payload file, compares the complete installed file set with the portable bundle,
+and permits only Inno Setup's `unins000.exe` and `unins000.dat` as installer-
+generated files. The evidence records `payload_tree_match` and both payload file
+counts. This is local package-integrity evidence, not publisher authenticity.
 
 ## Public Release handoff (future, authorization required)
 

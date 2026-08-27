@@ -6,6 +6,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Installer_Path,
     [Parameter(Mandatory = $true)]
+    [string]$Portable_Bundle_Root,
+    [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-f]{64}$')]
     [string]$Installer_Sha256,
     [Parameter(Mandatory = $true)]
@@ -44,6 +46,10 @@ $mcpExit = 1
 $uninstallExit = 1
 $cleanResidue = $false
 $frozenUnchanged = $true
+$payloadTreeMatch = $false
+$installedPayloadFileCount = 0
+$portablePayloadFileCount = 0
+$payloadManifestSha256 = ''
 
 function Get-Sha256([string]$Path) {
     $sha = [Security.Cryptography.SHA256]::Create()
@@ -95,6 +101,154 @@ function Get-TreeDigest([string]$Root) {
     $sha = [Security.Cryptography.SHA256]::Create()
     try { return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant() }
     finally { $sha.Dispose() }
+}
+
+function Assert-LocalDirectory([string]$Path) {
+    if (-not [IO.Path]::IsPathRooted($Path)) { throw 'LOCAL_PATH_REQUIRED' }
+    $item = Get-Item -LiteralPath $Path -Force
+    if (-not $item.PSIsContainer -or $item.LinkType -or
+        (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+        throw 'LOCAL_DIRECTORY_REQUIRED'
+    }
+    $reparse = @(
+        Get-ChildItem -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop |
+            Where-Object {
+                $_.LinkType -or
+                (($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+            }
+    )
+    if ($reparse.Count -gt 0) { throw 'LOCAL_DIRECTORY_REPARSE_POINT' }
+}
+
+function Test-SafePayloadPath([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path) -or $Path.StartsWith('/') -or
+        $Path.Contains('\') -or $Path.Contains(':')) {
+        return $false
+    }
+    $parts = $Path.Split('/')
+    if ($parts.Count -eq 0 -or ($parts | Where-Object { $_ -eq '' -or $_ -eq '.' -or $_ -eq '..' })) {
+        return $false
+    }
+    return $true
+}
+
+function Get-PayloadManifestRecords([string]$Root) {
+    Assert-LocalDirectory $Root
+    $manifestPath = Join-Path $Root 'PAYLOAD-MANIFEST.json'
+    try {
+        Assert-LocalFile $manifestPath
+        $raw = [IO.File]::ReadAllBytes($manifestPath)
+        if ($raw.Length -gt 2MB) { throw 'PAYLOAD_MANIFEST_INVALID' }
+        $manifest = [Text.Encoding]::ASCII.GetString($raw) | ConvertFrom-Json
+        if ($manifest.algorithm -cne 'sha256' -or $null -eq $manifest.files) {
+            throw 'PAYLOAD_MANIFEST_INVALID'
+        }
+        $records = @{}
+        foreach ($record in @($manifest.files)) {
+            $properties = @($record.PSObject.Properties.Name | Sort-Object)
+            if (($properties -join ',') -cne 'path,sha256,size' -or
+                -not (Test-SafePayloadPath $record.path) -or
+                $record.sha256 -cnotmatch '^[0-9a-f]{64}$') {
+                throw 'PAYLOAD_MANIFEST_INVALID'
+            }
+            try { $size = [int64]$record.size } catch { throw 'PAYLOAD_MANIFEST_INVALID' }
+            if ($size -lt 0 -or $records.ContainsKey($record.path)) {
+                throw 'PAYLOAD_MANIFEST_INVALID'
+            }
+            $records[$record.path] = [ordered]@{
+                sha256 = $record.sha256
+                size = $size
+            }
+        }
+        if ($records.Count -eq 0) { throw 'PAYLOAD_MANIFEST_INVALID' }
+        return $records
+    }
+    catch {
+        if ($_.Exception.Message -eq 'PAYLOAD_MANIFEST_INVALID') { throw }
+        throw 'PAYLOAD_MANIFEST_INVALID'
+    }
+}
+
+function Get-PayloadFileRecords([string]$Root) {
+    Assert-LocalDirectory $Root
+    $resolved = (Resolve-Path -LiteralPath $Root).Path
+    $prefix = $resolved.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    $records = @{}
+    foreach ($file in @(Get-ChildItem -LiteralPath $resolved -File -Recurse -Force -ErrorAction Stop)) {
+        if ($file.LinkType -or (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            throw 'LOCAL_DIRECTORY_REPARSE_POINT'
+        }
+        $relative = $file.FullName.Substring($prefix.Length).Replace('\', '/')
+        if (-not (Test-SafePayloadPath $relative) -or $records.ContainsKey($relative)) {
+            throw 'PAYLOAD_TREE_INVALID'
+        }
+        $records[$relative] = [ordered]@{
+            sha256 = Get-Sha256 $file.FullName
+            size = [int64]$file.Length
+        }
+    }
+    return $records
+}
+
+function Get-PayloadDirectoryNames([string]$Root) {
+    Assert-LocalDirectory $Root
+    $resolved = (Resolve-Path -LiteralPath $Root).Path
+    $prefix = $resolved.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    $names = @{}
+    foreach ($directory in @(Get-ChildItem -LiteralPath $resolved -Directory -Recurse -Force -ErrorAction Stop)) {
+        if ($directory.LinkType -or (($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            throw 'LOCAL_DIRECTORY_REPARSE_POINT'
+        }
+        $relative = $directory.FullName.Substring($prefix.Length).Replace('\', '/')
+        if (-not (Test-SafePayloadPath $relative) -or $names.ContainsKey($relative)) {
+            throw 'PAYLOAD_TREE_INVALID'
+        }
+        $names[$relative] = $true
+    }
+    return $names
+}
+
+function Assert-Installed-Payload-Matches-Bundle([string]$InstalledRoot, [string]$BundleRoot) {
+    $manifest = Get-PayloadManifestRecords $BundleRoot
+    $bundleFiles = Get-PayloadFileRecords $BundleRoot
+    $bundleDirectories = Get-PayloadDirectoryNames $BundleRoot
+    $manifestPath = Join-Path $BundleRoot 'PAYLOAD-MANIFEST.json'
+    $script:payloadManifestSha256 = Get-Sha256 $manifestPath
+    foreach ($name in $manifest.Keys) {
+        if (-not $bundleFiles.ContainsKey($name) -or
+            $bundleFiles[$name].sha256 -cne $manifest[$name].sha256 -or
+            $bundleFiles[$name].size -ne $manifest[$name].size) {
+            throw 'PAYLOAD_MANIFEST_MISMATCH'
+        }
+    }
+    $expectedNames = @($manifest.Keys + 'PAYLOAD-MANIFEST.json' + 'SHA256SUMS' | Sort-Object -Unique)
+    if ((@($bundleFiles.Keys | Sort-Object) -join "`n") -cne ($expectedNames -join "`n")) {
+        throw 'PAYLOAD_MANIFEST_MISMATCH'
+    }
+    $installedFiles = Get-PayloadFileRecords $InstalledRoot
+    $generated = @('unins000.exe', 'unins000.dat')
+    foreach ($name in @($installedFiles.Keys)) {
+        if ($generated -contains $name) { continue }
+        if (-not $bundleFiles.ContainsKey($name)) { throw 'INSTALLED_PAYLOAD_EXTRA' }
+    }
+    $installedPayload = @($installedFiles.Keys | Where-Object { $generated -notcontains $_ })
+    if ((@($installedPayload | Sort-Object) -join "`n") -cne ($expectedNames -join "`n")) {
+        throw 'INSTALLED_PAYLOAD_MISMATCH'
+    }
+    foreach ($name in $expectedNames) {
+        if ($installedFiles[$name].sha256 -cne $bundleFiles[$name].sha256 -or
+            $installedFiles[$name].size -ne $bundleFiles[$name].size) {
+            throw 'INSTALLED_PAYLOAD_MISMATCH'
+        }
+    }
+    $installedDirectories = Get-PayloadDirectoryNames $InstalledRoot
+    if ((@($installedDirectories.Keys | Sort-Object) -join "`n") -cne
+        (@($bundleDirectories.Keys | Sort-Object) -join "`n")) {
+        throw 'INSTALLED_PAYLOAD_MISMATCH'
+    }
+    $script:portablePayloadFileCount = $expectedNames.Count
+    $script:installedPayloadFileCount = $installedPayload.Count
+    $script:payloadTreeMatch = $true
 }
 
 function Assert-EvidencePathSafe([string]$Path) {
@@ -425,9 +579,13 @@ function Write-Evidence([string]$Status) {
         artifact_sha256 = $Installer_Sha256.ToLowerInvariant()
         clean_residue = [bool]$cleanResidue
         frozen_02_unchanged = [bool]$frozenUnchanged
+        installed_payload_file_count = [int]$installedPayloadFileCount
         install_exit = [int]$installExit
         mcp_exit = [int]$mcpExit
         mode = $Mode
+        payload_manifest_sha256 = $payloadManifestSha256
+        payload_tree_match = [bool]$payloadTreeMatch
+        portable_payload_file_count = [int]$portablePayloadFileCount
         residue = $sortedResidue
         schema = 1
         source_sha = $Candidate_Sha
@@ -447,6 +605,7 @@ try {
     Assert-EvidencePathSafe $Evidence_Path
     if (-not $TestMode) { throw 'TEST_MODE_REQUIRED' }
     Assert-LocalFile $Installer_Path
+    Assert-LocalDirectory $Portable_Bundle_Root
     if ((Get-Sha256 $Installer_Path) -ne $Installer_Sha256.ToLowerInvariant()) { throw 'INSTALLER_HASH_MISMATCH' }
     foreach ($name in @('USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP', 'AGENTGUARDIAN_INNO_TEST_MODE', 'AGENTGUARDIAN_INNO_TEST_INSTALL_ROOT')) {
         $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
@@ -522,6 +681,7 @@ try {
     Assert-LocalFile (Join-Path $installRoot 'AgentGuardian.exe')
     Assert-LocalFile (Join-Path $installRoot 'AgentGuardianMcp.exe')
     Assert-IntegrationState
+    Assert-Installed-Payload-Matches-Bundle $installRoot $Portable_Bundle_Root
     if ($Mode -in @('mcp', 'skill,mcp')) {
         Invoke-McpSdkClient (Join-Path $installRoot 'AgentGuardianMcp.exe')
     }

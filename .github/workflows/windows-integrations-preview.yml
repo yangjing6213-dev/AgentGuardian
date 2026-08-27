@@ -25,6 +25,10 @@ jobs:
       INNO_ASSET_NAME: innosetup-7.0.2-x64.exe
       INNO_ASSET_SHA256: 5ad54ca3def786f8f4212552e54cc6d8d61329e2d24a1cfee0571d42c2684ff1
       INNO_ISCC_SHA256: 0ff6140d641f84b64204a2c4d52207c6fc437c9f4db8779c83083d84f7e3d70d
+      GITLEAKS_REPOSITORY: gitleaks/gitleaks
+      GITLEAKS_RELEASE_TAG: v8.30.1
+      GITLEAKS_ASSET_NAME: gitleaks_8.30.1_windows_x64.zip
+      GITLEAKS_ASSET_SHA256: d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e
 
     steps:
       - name: Validate exact candidate SHA
@@ -37,7 +41,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ env.EXPECTED_SOURCE_COMMIT }}
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Verify exact clean checkout and derive bounded paths
@@ -71,6 +75,7 @@ jobs:
           "INSTALLER_ATTESTATION_PATH=$env:RUNNER_TEMP\AgentGuardian-Setup-0.3.0-preview.1-x64.exe.build.json" >> $env:GITHUB_ENV
           "RELEASE_ROOT=$env:RUNNER_TEMP\agentguardian-public-preview-release" >> $env:GITHUB_ENV
           "EVIDENCE_ROOT=$env:RUNNER_TEMP\agentguardian-integrations-preview-evidence" >> $env:GITHUB_ENV
+          "GITLEAKS_EXE=$env:RUNNER_TEMP\agentguardian-gitleaks\gitleaks.exe" >> $env:GITHUB_ENV
 
       - name: Require Windows x64 and local fixed paths
         shell: pwsh
@@ -104,6 +109,59 @@ jobs:
           Assert-NativeSuccess $LASTEXITCODE 'python -m pip install --require-hashes -r requirements-dev.lock'
           python -m pip install --require-hashes -r requirements-build.lock
           Assert-NativeSuccess $LASTEXITCODE 'python -m pip install --require-hashes -r requirements-build.lock'
+
+      - name: Download and verify pinned Gitleaks scanner
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          function Assert-NativeSuccess {
+            param([int]$ExitCode, [string]$Command)
+            if ($ExitCode -ne 0) {
+              throw "$Command failed with exit code $ExitCode"
+            }
+          }
+          $downloadRoot = Join-Path $env:RUNNER_TEMP 'agentguardian-gitleaks-download'
+          $extractRoot = Join-Path $env:RUNNER_TEMP 'agentguardian-gitleaks'
+          if ((Test-Path -LiteralPath $downloadRoot) -or (Test-Path -LiteralPath $extractRoot)) {
+            throw 'Gitleaks temporary paths must not already exist'
+          }
+          New-Item -ItemType Directory -Path $downloadRoot | Out-Null
+          gh release download $env:GITLEAKS_RELEASE_TAG `
+            --repo $env:GITLEAKS_REPOSITORY `
+            --pattern $env:GITLEAKS_ASSET_NAME `
+            --dir $downloadRoot
+          Assert-NativeSuccess $LASTEXITCODE 'gh release download Gitleaks'
+          $archive = Join-Path $downloadRoot $env:GITLEAKS_ASSET_NAME
+          if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+            throw 'Gitleaks archive is missing'
+          }
+          $archiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          if ($archiveHash -cne $env:GITLEAKS_ASSET_SHA256) {
+            throw 'Gitleaks archive SHA-256 mismatch'
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $extractRoot
+          if (-not (Test-Path -LiteralPath $env:GITLEAKS_EXE -PathType Leaf)) {
+            throw 'Gitleaks executable is missing'
+          }
+
+      - name: Run Gitleaks history scan
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          & $env:GITLEAKS_EXE git `
+            --redact `
+            --no-banner `
+            --config "$pwd\.gitleaks.toml" `
+            --log-opts='--all -m' `
+            --exit-code 1 *> $null
+          $gitleaksExit = $LASTEXITCODE
+          if ($gitleaksExit -ne 0) {
+            throw 'gitleaks scan failed'
+          }
 
       - name: Run full local gates and secret scan
         shell: pwsh
@@ -260,6 +318,7 @@ jobs:
             & "$pwd\scripts\verify_windows_integrations_preview.ps1" `
               -Candidate_Sha $env:EXPECTED_SOURCE_COMMIT `
               -Installer_Path $env:INSTALLER_PATH `
+              -Portable_Bundle_Root $env:PORTABLE_BUNDLE `
               -Installer_Sha256 $env:INSTALLER_SHA256 `
               -Evidence_Path $evidence `
               -Python_Path (Get-Command python.exe).Source `
@@ -363,6 +422,22 @@ jobs:
           ) | Sort-Object
           if (($metadataAssetNames -join "`n") -cne ($expectedMetadataNames -join "`n")) {
             throw 'download metadata assets do not match the release profile payload'
+          }
+
+      - name: Run Gitleaks staged asset scan
+        if: success()
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          & $env:GITLEAKS_EXE dir $env:RELEASE_ROOT `
+            --redact `
+            --no-banner `
+            --config "$pwd\.gitleaks.toml" `
+            --exit-code 1 *> $null
+          $gitleaksExit = $LASTEXITCODE
+          if ($gitleaksExit -ne 0) {
+            throw 'gitleaks scan failed'
           }
 
       - name: Archive verified public preview bundle

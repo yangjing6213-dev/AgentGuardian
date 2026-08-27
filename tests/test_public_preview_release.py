@@ -61,6 +61,7 @@ def test_documented_download_route_matches_profile_and_is_not_temporary() -> Non
     assert "--portable-bundle-root" in document
     assert "structural validation" in document
     assert "not public-release evidence" in document
+    assert "payload_tree_match" in document
 
 
 def test_public_download_verifier_has_fixed_bounded_request_contract() -> None:
