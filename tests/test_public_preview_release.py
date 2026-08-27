@@ -781,14 +781,18 @@ def test_bind_staging_contents_uses_non_writable_child_handles(
         return 99
 
     monkeypatch.setattr(module, "_ntdll_create_staging_file", capture)
-    monkeypatch.setattr(module, "_close_bound_handle", lambda _handle: None)
+    monkeypatch.setattr(
+        module, "_close_bound_handle", lambda _handle, **_kwargs: None
+    )
 
     def matching_identity(
         _handle: int, **_kwargs: object
-    ) -> tuple[int, int, int]:
+    ) -> tuple[int, ...]:
         if not calls:
             return original_identity(_handle)
         info = (staging / calls[-1][0]).stat()
+        if _kwargs.get("resource_type") == "fd":
+            return info.st_dev, info.st_ino
         return (
             info.st_dev & 0xFFFFFFFF,
             (info.st_ino >> 32) & 0xFFFFFFFF,
@@ -894,7 +898,7 @@ def test_bind_staging_contents_retries_and_retains_child_ownership_on_failure(
 
     attempts: dict[int, int] = {}
 
-    def close_and_report(handle: int) -> None:
+    def close_and_report(handle: int, **_kwargs: object) -> None:
         closed.append(handle)
         attempts[handle] = attempts.get(handle, 0) + 1
         if handle in opened and (
@@ -904,14 +908,16 @@ def test_bind_staging_contents_retries_and_retains_child_ownership_on_failure(
 
     monkeypatch.setattr(module, "_open_bound_staged_child", open_all_children)
     monkeypatch.setattr(module, "_snapshot_file", snapshot_then_fail)
+    def identity(handle: int, **kwargs: object) -> tuple[int, ...]:
+        if kwargs.get("resource_type") == "fd":
+            info = os.fstat(handle)
+            return info.st_dev, info.st_ino
+        return (0, 0, 0) if handle in opened else original_identity(handle)
+
+    monkeypatch.setattr(module, "_bound_handle_identity", identity)
     monkeypatch.setattr(
-        module,
-        "_bound_handle_identity",
-            lambda handle, **_kwargs: (
-                (0, 0, 0) if handle in opened else original_identity(handle)
-            ),
+        module, "_path_identity_matches_handle", lambda *_args, **_kwargs: True
     )
-    monkeypatch.setattr(module, "_path_identity_matches_handle", lambda *_args: True)
     monkeypatch.setattr(module, "_close_bound_handle", close_and_report)
     try:
         with pytest.raises(
@@ -1416,7 +1422,11 @@ def test_open_bound_directory_closes_after_identity_failure(
             restype = None
 
     monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32())
-    monkeypatch.setattr(module, "_close_bound_handle", lambda handle: closed.append(handle))
+    monkeypatch.setattr(
+        module,
+        "_close_bound_handle",
+        lambda handle, **_kwargs: closed.append(handle),
+    )
     with pytest.raises(OSError):
         module._win32_open_directory(tmp_path, 0)
     assert closed == [77]
@@ -1448,7 +1458,7 @@ def test_win32_open_directory_transfers_close_lease_after_identity_failure(
 
     close_calls: list[int] = []
 
-    def close_fails(handle: int) -> None:
+    def close_fails(handle: int, **_kwargs: object) -> None:
         close_calls.append(handle)
         raise OSError("close failed")
 
@@ -1498,7 +1508,7 @@ def test_cleanup_path_adopts_open_directory_lease_on_failure(
     assert token.ledger.record(5678) == foreign_lease.record(5678)
 
 
-def test_bound_handle_identity_keeps_lease_when_query_and_close_fail(
+def test_bound_handle_identity_is_pure_query_on_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     if os.name != "nt":
@@ -1515,21 +1525,9 @@ def test_bound_handle_identity_keeps_lease_when_query_and_close_fail(
     class FakeKernel32:
         GetFileInformationByHandle = FakeGetFileInformationByHandle()
 
-    close_calls: list[int] = []
-
-    def close_fails(handle: int) -> None:
-        close_calls.append(handle)
-        raise OSError("close failed")
-
     monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32())
-    monkeypatch.setattr(module, "_close_bound_handle", close_fails)
-    with pytest.raises(module.ReleaseViolation) as caught:
+    with pytest.raises(OSError):
         module._bound_handle_identity(77)
-
-    assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
-    assert caught.value.cleanup_lease is not None
-    assert caught.value.cleanup_lease.owns(77)
-    assert close_calls == [77]
 
 
 def test_open_bound_posix_child_keeps_lease_when_identity_and_close_fail(
@@ -1556,7 +1554,7 @@ def test_open_bound_posix_child_keeps_lease_when_identity_and_close_fail(
     )
     original_close = module._close_bound_handle
 
-    def close_fails(_handle: int) -> None:
+    def close_fails(_handle: int, **_kwargs: object) -> None:
         raise OSError("close failed")
 
     monkeypatch.setattr(module, "_close_bound_handle", close_fails)
@@ -1598,7 +1596,7 @@ def test_cleanup_child_failure_keeps_lease_for_bounded_retry(
     calls: list[int] = []
     attempts: dict[int, int] = {}
 
-    def close_once(handle: int) -> None:
+    def close_once(handle: int, **_kwargs: object) -> None:
         calls.append(handle)
         attempts[handle] = attempts.get(handle, 0) + 1
         if handle == child_handle and attempts[handle] == 1:
@@ -1637,7 +1635,7 @@ def test_handle_ledger_does_not_retry_reused_resource(
     ledger.register(77, resource_type="fd", identity=(1, 2))
     calls: list[int] = []
 
-    def close_once_then_reused(handle: int) -> None:
+    def close_once_then_reused(handle: int, **_kwargs: object) -> None:
         calls.append(handle)
         raise OSError("close outcome unknown")
 
@@ -1661,7 +1659,7 @@ def test_handle_ledger_does_not_retry_without_stable_identity(
     ledger.register(77, resource_type="fd")
     calls: list[int] = []
 
-    def close_fails(handle: int) -> None:
+    def close_fails(handle: int, **_kwargs: object) -> None:
         calls.append(handle)
         raise OSError("close outcome unknown")
 
@@ -1692,7 +1690,7 @@ def test_close_bound_handles_attempts_all_handles_after_one_failure(
     )
     calls: list[int] = []
 
-    def close(handle: int) -> None:
+    def close(handle: int, **_kwargs: object) -> None:
         calls.append(handle)
         if handle == 22:
             raise OSError("close failed")
@@ -1720,7 +1718,7 @@ def test_close_staging_children_retains_failed_handle_for_cleanup_retry(
     )
     calls: list[int] = []
 
-    def close_once(handle: int) -> None:
+    def close_once(handle: int, **_kwargs: object) -> None:
         calls.append(handle)
         if len(calls) == 1:
             raise OSError("close failed")
@@ -1753,7 +1751,7 @@ def test_staging_token_retries_with_stable_identity_without_losing_ownership(
     )
     calls: list[int] = []
 
-    def close(handle: int) -> None:
+    def close(handle: int, **_kwargs: object) -> None:
         calls.append(handle)
         if len(calls) < 3:
             raise OSError("close failed")
@@ -1781,7 +1779,9 @@ def test_staging_token_does_not_repeat_confirmed_close(
     )
     calls: list[int] = []
     monkeypatch.setattr(
-        module, "_close_bound_handle", lambda handle: calls.append(handle)
+        module,
+        "_close_bound_handle",
+        lambda handle, **_kwargs: calls.append(handle),
     )
     assert module._close_staging_token(token) is None
     assert module._close_staging_token(token) is None
@@ -1817,7 +1817,7 @@ def test_validated_staging_path_closes_both_current_handles_after_close_failure(
     monkeypatch.setattr(module, "_open_bound_directory", lambda *_args: next(opened))
     calls: list[int] = []
 
-    def close(handle: int) -> None:
+    def close(handle: int, **_kwargs: object) -> None:
         calls.append(handle)
         if handle == 33:
             raise OSError("close failed")
@@ -1860,7 +1860,7 @@ def test_validated_staging_path_accepts_retry_when_both_handles_close(
     calls: list[int] = []
     attempts: dict[int, int] = {}
 
-    def close(handle: int) -> None:
+    def close(handle: int, **_kwargs: object) -> None:
         calls.append(handle)
         attempts[handle] = attempts.get(handle, 0) + 1
         if handle == 33 and attempts[handle] == 1:
@@ -1893,12 +1893,111 @@ def test_ntdll_open_relative_directory_closes_failed_nonempty_handle(
 
     closed: list[int] = []
     monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeNtdll())
-    monkeypatch.setattr(module, "_close_bound_handle", lambda handle: closed.append(handle))
+    monkeypatch.setattr(
+        module,
+        "_close_bound_handle",
+        lambda handle, **_kwargs: closed.append(handle),
+    )
     with pytest.raises(
         module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"
     ):
         module._ntdll_open_relative_directory(77, ".release.staging-test")
     assert closed == [1234]
+
+
+def test_ntdll_identity_failure_closes_native_handle_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+
+    class FakeNtCreateFile:
+        argtypes = None
+        restype = None
+
+        def __call__(self, output_handle: object, *_args: object) -> int:
+            ctypes.cast(
+                output_handle, ctypes.POINTER(ctypes.wintypes.HANDLE)
+            ).contents.value = 1234
+            return 0
+
+    class FakeNtdll:
+        NtCreateFile = FakeNtCreateFile()
+
+    class FakeGetFileInformationByHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *_args: object) -> int:
+            return 0
+
+    class FakeKernel32:
+        GetFileInformationByHandle = FakeGetFileInformationByHandle()
+
+    closed: list[int] = []
+
+    def close(handle: int, *, resource_type: str = "handle") -> None:
+        assert resource_type == "handle"
+        closed.append(handle)
+
+    def win_dll(name: str, **_kwargs: object) -> object:
+        return FakeNtdll() if name == "ntdll" else FakeKernel32()
+
+    monkeypatch.setattr(module.os, "name", "nt")
+    monkeypatch.setattr(ctypes, "WinDLL", win_dll)
+    monkeypatch.setattr(module, "_close_bound_handle", close)
+    with pytest.raises(module.ReleaseViolation):
+        module._ntdll_open_relative_directory(77, ".release.staging-test")
+    assert closed == [1234]
+
+
+def test_open_verified_file_keeps_persistent_fd_close_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"source")
+    snapshot = module._snapshot_file(
+        source, max_bytes=module.MAX_INPUT_BYTES, code="RELEASE_INPUT_PATH_INVALID"
+    )
+    monkeypatch.setattr(module.os, "open", lambda *_args, **_kwargs: 77)
+    monkeypatch.setattr(module.os, "fdopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("fdopen failed")))
+    monkeypatch.setattr(module, "_bound_handle_identity", lambda *_args, **_kwargs: snapshot.identity)
+
+    def close_fails(handle: int, *, resource_type: str = "handle") -> None:
+        assert resource_type == "fd"
+        assert handle == 77
+        raise OSError("close failed")
+
+    monkeypatch.setattr(module, "_close_bound_handle", close_fails)
+    with pytest.raises(module.ReleaseViolation) as caught:
+        with module._open_verified_file(
+            snapshot,
+            max_bytes=module.MAX_INPUT_BYTES,
+            code="RELEASE_INPUT_PATH_INVALID",
+        ):
+            pass
+    assert caught.value.code == "RELEASE_INPUT_PATH_INVALID"
+    assert caught.value.cleanup_lease is not None
+    assert caught.value.cleanup_lease.owns(77)
+
+
+def test_fd_ledger_uses_os_close_even_when_platform_is_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    ledger = module._HandleOwnershipLedger()
+    ledger.register(77, resource_type="fd", identity=(1, 2))
+    closed: list[int] = []
+    monkeypatch.setattr(module.os, "name", "nt")
+    monkeypatch.setattr(module.os, "close", closed.append)
+
+    def unexpected_kernel32(*_args: object, **_kwargs: object) -> object:
+        pytest.fail("CRT fd cleanup must not call CloseHandle")
+
+    monkeypatch.setattr(ctypes, "WinDLL", unexpected_kernel32)
+    assert module._close_ledger_handle(ledger, 77)
+    assert closed == [77]
+    assert not ledger.owns(77)
 
 
 @pytest.mark.parametrize(
@@ -1940,7 +2039,7 @@ def test_ntdll_create_staging_file_bounded_cleanup_of_failed_handle(
 
     closed: list[int] = []
 
-    def fail_close(handle: int) -> None:
+    def fail_close(handle: int, **_kwargs: object) -> None:
         closed.append(handle)
         raise OSError(sensitive)
 
@@ -2002,7 +2101,7 @@ def test_ntdll_create_missing_retains_lease_after_persistent_close_failure(
     calls: list[int] = []
     close_attempts = 0
 
-    def close(handle: int) -> None:
+    def close(handle: int, **_kwargs: object) -> None:
         nonlocal close_attempts
         calls.append(handle)
         close_attempts += 1
