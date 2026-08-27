@@ -81,6 +81,35 @@ _PRIVATE_PATTERNS = (
     re.compile(rb"\bgithub_pat_[A-Za-z0-9_]{20,}\b", re.I),
     re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
 )
+_PRIVATE_BINARY_API_KEY_PATTERN = re.compile(
+    rb"(?i)(?:(?:api[_-]?key|access[_-]?key|secret|token|password|authorization)"
+    rb"[^\r\n]{0,64}sk[-_](?:proj|live|test)?[-_]?[A-Za-z0-9_-]{24,}"
+    rb"|sk[-_](?:proj|live|test)?[-_]?[A-Za-z0-9_-]{24,}"
+    rb"[^\r\n]{0,64}(?:api[_-]?key|access[_-]?key|secret|token|password|authorization))"
+)
+_TEXT_PAYLOAD_SUFFIXES = frozenset(
+    {
+        ".bat",
+        ".cfg",
+        ".cmd",
+        ".csv",
+        ".html",
+        ".ini",
+        ".iss",
+        ".json",
+        ".md",
+        ".ps1",
+        ".py",
+        ".rst",
+        ".sh",
+        ".spec",
+        ".toml",
+        ".txt",
+        ".xml",
+        ".yaml",
+        ".yml",
+    }
+)
 _PRIVATE_REMEDIATION = (
     "RELEASE_PRIVATE_DATA_DETECTED: remove credentials or private data from release inputs"
 )
@@ -1345,6 +1374,22 @@ def _safe_zip_name(name: object) -> bool:
     return True
 
 
+def _private_patterns_for_zip_entry(name: str) -> tuple[re.Pattern[bytes], ...]:
+    path = Path(name)
+    if path.suffix.casefold() in _TEXT_PAYLOAD_SUFFIXES or path.name.casefold() in {
+        "license",
+        "metadata",
+        "record",
+    }:
+        return _PRIVATE_PATTERNS
+    return (
+        _PRIVATE_PATTERNS[1],
+        _PRIVATE_PATTERNS[2],
+        _PRIVATE_PATTERNS[3],
+        _PRIVATE_BINARY_API_KEY_PATTERN,
+    )
+
+
 def _zip_entry_record(
     archive: zipfile.ZipFile,
     info: zipfile.ZipInfo,
@@ -1355,6 +1400,7 @@ def _zip_entry_record(
     digest = hashlib.sha256()
     captured = bytearray()
     carry = b""
+    private_patterns = _private_patterns_for_zip_entry(info.filename)
     size = 0
     try:
         with archive.open(info, "r") as stream:
@@ -1363,7 +1409,7 @@ def _zip_entry_record(
                 if size > MAX_INPUT_BYTES:
                     _fail(_INPUT_TYPE_INVALID)
                 data = carry + chunk
-                if any(pattern.search(data) for pattern in _PRIVATE_PATTERNS) or any(
+                if any(pattern.search(data) for pattern in private_patterns) or any(
                     marker in data.lower() for marker in private_markers
                 ):
                     _fail("RELEASE_PRIVATE_DATA_DETECTED")

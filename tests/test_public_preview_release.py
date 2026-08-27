@@ -58,6 +58,9 @@ def test_documented_download_route_matches_profile_and_is_not_temporary() -> Non
         assert "hqwzhu" not in text.casefold()
         for forbidden in profile["forbidden_document_promises"]:
             assert str(forbidden).casefold() not in text.casefold()
+    assert "--portable-bundle-root" in document
+    assert "structural validation" in document
+    assert "not public-release evidence" in document
 
 
 def test_public_download_verifier_has_fixed_bounded_request_contract() -> None:
@@ -690,6 +693,45 @@ def test_zip_records_scans_decompressed_private_data(tmp_path: Path) -> None:
     ) as archive:
         archive.writestr("payload.txt", marker + b"\n" + b"x" * 4096)
     assert marker not in archive_path.read_bytes()
+    snapshot = module._snapshot_file(
+        archive_path,
+        max_bytes=module.MAX_INPUT_BYTES,
+        code="RELEASE_INPUT_TYPE_INVALID",
+    )
+
+    with pytest.raises(
+        module.ReleaseViolation,
+        match="^RELEASE_PRIVATE_DATA_DETECTED: remove credentials or private data from release inputs$",
+    ):
+        module._zip_records(snapshot)
+
+
+def test_zip_records_ignores_short_binary_key_like_fragment(tmp_path: Path) -> None:
+    module = _module()
+    archive_path = tmp_path / "binary-fragment.zip"
+    with zipfile.ZipFile(
+        archive_path, "w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
+        archive.writestr("payload.bin", b"\0" * 32 + b"sk-proj-abcdef\0" + b"\0" * 32)
+    snapshot = module._snapshot_file(
+        archive_path,
+        max_bytes=module.MAX_INPUT_BYTES,
+        code="RELEASE_INPUT_TYPE_INVALID",
+    )
+
+    assert "payload.bin" in module._zip_records(snapshot)
+
+
+def test_zip_records_detects_contextual_binary_api_key(tmp_path: Path) -> None:
+    module = _module()
+    archive_path = tmp_path / "binary-secret.zip"
+    with zipfile.ZipFile(
+        archive_path, "w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
+        archive.writestr(
+            "payload.bin",
+            b"OPENAI_API_KEY=sk-proj-" + b"a" * 40,
+        )
     snapshot = module._snapshot_file(
         archive_path,
         max_bytes=module.MAX_INPUT_BYTES,
