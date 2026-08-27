@@ -2991,6 +2991,276 @@ def test_ntdll_create_missing_retains_lease_after_persistent_close_failure(
     assert calls == [1234, 1234]
 
 
+@pytest.mark.parametrize("exception_type", (KeyboardInterrupt, SystemExit))
+def test_open_verified_file_stream_base_exception_uses_fd_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exception_type: type[BaseException],
+) -> None:
+    module = _module()
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"source")
+    snapshot = module._snapshot_file(
+        source, max_bytes=module.MAX_INPUT_BYTES, code="RELEASE_INPUT_PATH_INVALID"
+    )
+    descriptor = 177
+    monkeypatch.setattr(module.os, "open", lambda *_args, **_kwargs: descriptor)
+    monkeypatch.setattr(
+        module,
+        "_bound_handle_identity",
+        lambda *_args, **_kwargs: snapshot.identity,
+    )
+
+    class InterruptingStream:
+        def close(self) -> None:
+            raise exception_type()
+
+    monkeypatch.setattr(module.os, "fdopen", lambda *_args, **_kwargs: InterruptingStream())
+    close_calls: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        module,
+        "_close_bound_handle",
+        lambda handle, **kwargs: close_calls.append((handle, kwargs["resource_type"])),
+    )
+
+    with pytest.raises(exception_type):
+        with module._open_verified_file(
+            snapshot,
+            max_bytes=module.MAX_INPUT_BYTES,
+            code="RELEASE_INPUT_PATH_INVALID",
+        ):
+            pass
+    assert close_calls == [(descriptor, "fd")]
+
+
+@pytest.mark.parametrize("exception_type", (KeyboardInterrupt, SystemExit))
+def test_create_output_file_stream_base_exception_uses_fd_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exception_type: type[BaseException],
+) -> None:
+    module = _module()
+    descriptor = 177
+    monkeypatch.setattr(module.os, "open", lambda *_args, **_kwargs: descriptor)
+    monkeypatch.setattr(
+        module,
+        "_bound_handle_identity",
+        lambda *_args, **_kwargs: (1, 2),
+    )
+
+    class InterruptingStream:
+        def close(self) -> None:
+            raise exception_type()
+
+    monkeypatch.setattr(module.os, "fdopen", lambda *_args, **_kwargs: InterruptingStream())
+    close_calls: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        module,
+        "_close_bound_handle",
+        lambda handle, **kwargs: close_calls.append((handle, kwargs["resource_type"])),
+    )
+
+    with pytest.raises(exception_type):
+        with module._create_output_file(tmp_path / "output.bin"):
+            pass
+    assert close_calls == [(descriptor, "fd")]
+
+
+@pytest.mark.parametrize("exception_type", (KeyboardInterrupt, SystemExit))
+def test_open_bound_posix_directory_base_exception_uses_directory_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exception_type: type[BaseException],
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module.os, "name", "posix")
+    handle = 88
+    monkeypatch.setattr(module.os, "open", lambda *_args, **_kwargs: handle)
+    monkeypatch.setattr(
+        module,
+        "_bound_handle_identity",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(exception_type()),
+    )
+    close_calls: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        module,
+        "_close_bound_handle",
+        lambda value, **kwargs: close_calls.append((value, kwargs["resource_type"])),
+    )
+
+    with pytest.raises(exception_type):
+        module._open_bound_directory(tmp_path, 0)
+    assert close_calls == [(handle, "directory")]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows open test requires Windows")
+@pytest.mark.parametrize("exception_type", (KeyboardInterrupt, SystemExit))
+def test_ntdll_open_relative_directory_identity_base_exception_cleans_handle(
+    monkeypatch: pytest.MonkeyPatch,
+    exception_type: type[BaseException],
+) -> None:
+    module = _module()
+
+    class NativeOpen:
+        argtypes = None
+        restype = None
+
+        def __call__(self, output_handle: object, *_args: object) -> int:
+            ctypes.cast(
+                output_handle, ctypes.POINTER(ctypes.wintypes.HANDLE)
+            ).contents.value = 177
+            return 0
+
+    class FakeNtdll:
+        NtCreateFile = NativeOpen()
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeNtdll())
+    monkeypatch.setattr(
+        module,
+        "_bound_handle_identity",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(exception_type()),
+    )
+    close_calls: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        module,
+        "_close_bound_handle",
+        lambda handle, **kwargs: close_calls.append((handle, kwargs["resource_type"])),
+    )
+
+    with pytest.raises(exception_type):
+        module._ntdll_open_relative_directory(11, "staging")
+    assert close_calls == [(177, "handle")]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows create test requires Windows")
+@pytest.mark.parametrize("exception_type", (RuntimeError, KeyboardInterrupt, SystemExit))
+def test_ntdll_create_staging_file_registers_handle_after_native_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exception_type: type[BaseException],
+) -> None:
+    module = _module()
+
+    class NativeCreate:
+        argtypes = None
+        restype = None
+
+        def __call__(self, output_handle: object, *_args: object) -> int:
+            ctypes.cast(
+                output_handle, ctypes.POINTER(ctypes.wintypes.HANDLE)
+            ).contents.value = 1234
+            raise exception_type("native create failed")
+
+    class FakeNtdll:
+        NtCreateFile = NativeCreate()
+
+    token = module._StagingDirectoryToken(
+        parent=tmp_path,
+        name=".release.staging-test",
+        prefix=".release.staging-",
+        parent_identity=(1,),
+        identity=(2,),
+        is_reparse_point=False,
+        parent_handle=11,
+        directory_handle=22,
+    )
+    token.ledger.release(11)
+    token.ledger.release(22)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeNtdll())
+    close_calls: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        module,
+        "_close_bound_handle",
+        lambda handle, **kwargs: close_calls.append((handle, kwargs["resource_type"])),
+    )
+
+    if issubclass(exception_type, Exception):
+        with pytest.raises(module.ReleaseViolation) as caught:
+            module._ntdll_create_staging_file(token, module.PORTABLE_NAME)
+        assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
+    else:
+        with pytest.raises(exception_type):
+            module._ntdll_create_staging_file(token, module.PORTABLE_NAME)
+    assert close_calls == [(1234, "handle")]
+    assert not token.ledger.owns(1234)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows create test requires Windows")
+@pytest.mark.parametrize("exception_type", (RuntimeError, KeyboardInterrupt, SystemExit))
+def test_ntdll_create_staging_file_open_osfhandle_exception_keeps_handle_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exception_type: type[BaseException],
+) -> None:
+    module = _module()
+
+    class NativeCreate:
+        argtypes = None
+        restype = None
+
+        def __call__(self, output_handle: object, *_args: object) -> int:
+            ctypes.cast(
+                output_handle, ctypes.POINTER(ctypes.wintypes.HANDLE)
+            ).contents.value = 1234
+            return 0
+
+    class FakeNtdll:
+        NtCreateFile = NativeCreate()
+
+    token = module._StagingDirectoryToken(
+        parent=tmp_path,
+        name=".release.staging-test",
+        prefix=".release.staging-",
+        parent_identity=(1,),
+        identity=(2,),
+        is_reparse_point=False,
+        parent_handle=11,
+        directory_handle=22,
+    )
+    token.ledger.release(11)
+    token.ledger.release(22)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeNtdll())
+    import msvcrt
+
+    monkeypatch.setattr(
+        msvcrt,
+        "open_osfhandle",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(exception_type("fd transfer failed")),
+    )
+    close_calls: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        module,
+        "_close_bound_handle",
+        lambda handle, **kwargs: close_calls.append((handle, kwargs["resource_type"])),
+    )
+
+    if issubclass(exception_type, Exception):
+        with pytest.raises(module.ReleaseViolation) as caught:
+            module._ntdll_create_staging_file(token, module.PORTABLE_NAME)
+        assert caught.value.code == "RELEASE_OUTPUT_PATH_INVALID"
+    else:
+        with pytest.raises(exception_type):
+            module._ntdll_create_staging_file(token, module.PORTABLE_NAME)
+    assert close_calls == [(1234, "handle")]
+    assert not token.ledger.owns(1234)
+
+
+def test_close_ledger_handle_does_not_swallow_base_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    ledger = module._HandleOwnershipLedger()
+    ledger.register(77, resource_type="fd", identity=(1, 2))
+
+    def interrupting_close(*_args: object, **_kwargs: object) -> None:
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(module, "_close_bound_handle", interrupting_close)
+    with pytest.raises(KeyboardInterrupt):
+        module._close_ledger_handle(ledger, 77)
+    assert ledger.owns(77)
+
+
 def test_stage_reports_close_failure_after_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

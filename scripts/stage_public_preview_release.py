@@ -367,18 +367,45 @@ def _win32_open_directory(path: Path, access: int) -> tuple[int, tuple[int, ...]
             kernel32.GetFileInformationByHandle(handle, ctypes.byref(info))
         )
     except Exception as error:
-        if not _close_ledger_handle(lease, int(handle), verify_identity=False):
+        if not _close_ledger_after_error(
+            error,
+            lease,
+            int(handle),
+            "RELEASE_OUTPUT_PATH_INVALID",
+            verify_identity=False,
+        ):
             raise ReleaseViolation(
                 "RELEASE_OUTPUT_PATH_INVALID", cleanup_lease=lease
             ) from error
         raise ReleaseViolation("RELEASE_OUTPUT_PATH_INVALID") from error
+    except BaseException as error:
+        if not _close_ledger_after_error(
+            error,
+            lease,
+            int(handle),
+            "RELEASE_OUTPUT_PATH_INVALID",
+            verify_identity=False,
+        ):
+            updated_error = _attach_cleanup_lease(
+                error, lease, "RELEASE_OUTPUT_PATH_INVALID"
+            )
+            if updated_error is not error:
+                raise updated_error from error
+        raise
     if not query_succeeded:
         error_code = ctypes.get_last_error()
-        if not _close_ledger_handle(lease, int(handle), verify_identity=False):
+        failure = OSError(error_code, "GetFileInformationByHandle")
+        if not _close_ledger_after_error(
+            failure,
+            lease,
+            int(handle),
+            "RELEASE_OUTPUT_PATH_INVALID",
+            verify_identity=False,
+        ):
             raise ReleaseViolation(
                 "RELEASE_OUTPUT_PATH_INVALID", cleanup_lease=lease
             )
-        raise OSError(error_code, "GetFileInformationByHandle")
+        raise failure
     identity = (
         int(info.volume_serial),
         int(info.file_index_high),
@@ -442,6 +469,26 @@ def _close_ledger_handle(
             return False
     ledger.release(handle)
     return True
+
+
+def _close_ledger_after_error(
+    error: BaseException,
+    ledger: _HandleOwnershipLedger,
+    handle: int | None,
+    fallback_code: str,
+    *,
+    verify_identity: bool = True,
+) -> bool:
+    """Attempt cleanup without hiding an exception raised by the closer."""
+    try:
+        return _close_ledger_handle(
+            ledger, handle, verify_identity=verify_identity
+        )
+    except BaseException as cleanup_error:
+        updated_error = _attach_cleanup_lease(error, ledger, fallback_code)
+        if updated_error is not error:
+            raise updated_error from cleanup_error
+        raise error from cleanup_error
 
 
 def _close_ledger_handles(ledger: _HandleOwnershipLedger) -> bool:
@@ -701,11 +748,39 @@ def _open_verified_file(
             try:
                 stream.close()
             except Exception:
-                close_failed = not _close_ledger_handle(lease, file_descriptor)
+                try:
+                    close_failed = not _close_ledger_handle(
+                        lease, file_descriptor
+                    )
+                except BaseException as cleanup_error:
+                    target = primary_error or cleanup_error
+                    updated_error = _attach_cleanup_lease(target, lease, code)
+                    raise updated_error from cleanup_error
+            except BaseException as stream_error:
+                try:
+                    close_failed = not _close_ledger_handle(
+                        lease, file_descriptor
+                    )
+                except BaseException as cleanup_error:
+                    target = primary_error or stream_error
+                    updated_error = _attach_cleanup_lease(target, lease, code)
+                    raise updated_error from cleanup_error
+                target = primary_error or stream_error
+                if close_failed:
+                    updated_error = _attach_cleanup_lease(target, lease, code)
+                    raise updated_error from stream_error
+                if primary_error is not None:
+                    raise primary_error from stream_error
+                raise stream_error
             else:
                 lease.release(file_descriptor)
         elif file_descriptor is not None:
-            close_failed = not _close_ledger_handle(lease, file_descriptor)
+            try:
+                close_failed = not _close_ledger_handle(lease, file_descriptor)
+            except BaseException as cleanup_error:
+                target = primary_error or cleanup_error
+                updated_error = _attach_cleanup_lease(target, lease, code)
+                raise updated_error from cleanup_error
         if close_failed and primary_error is None:
             raise ReleaseViolation(
                 "RELEASE_RESOURCE_CLOSE_FAILED", cleanup_lease=lease
@@ -833,19 +908,25 @@ def _create_output_file(
         lease.set_identity(descriptor, descriptor_identity)
         stream = os.fdopen(descriptor, "wb", closefd=True)
     except ReleaseViolation as error:
-        if descriptor is not None and not _close_ledger_handle(lease, descriptor):
+        if descriptor is not None and not _close_ledger_after_error(
+            error, lease, descriptor, "RELEASE_OUTPUT_PATH_INVALID"
+        ):
             raise _error_with_cleanup(
                 error, lease, "RELEASE_OUTPUT_PATH_INVALID"
             ) from error
         raise
     except Exception as error:
-        if descriptor is not None and not _close_ledger_handle(lease, descriptor):
+        if descriptor is not None and not _close_ledger_after_error(
+            error, lease, descriptor, "RELEASE_OUTPUT_PATH_INVALID"
+        ):
             raise _error_with_cleanup(
                 error, lease, "RELEASE_OUTPUT_PATH_INVALID"
             ) from error
         raise ReleaseViolation("RELEASE_OUTPUT_PATH_INVALID") from error
     except BaseException as error:
-        if descriptor is not None and not _close_ledger_handle(lease, descriptor):
+        if descriptor is not None and not _close_ledger_after_error(
+            error, lease, descriptor, "RELEASE_OUTPUT_PATH_INVALID"
+        ):
             updated_error = _attach_cleanup_lease(
                 error, lease, "RELEASE_OUTPUT_PATH_INVALID"
             )
@@ -870,7 +951,32 @@ def _create_output_file(
         try:
             stream.close()
         except Exception:
-            close_failed = not _close_ledger_handle(lease, descriptor)
+            try:
+                close_failed = not _close_ledger_handle(lease, descriptor)
+            except BaseException as cleanup_error:
+                target = primary_error or cleanup_error
+                updated_error = _attach_cleanup_lease(
+                    target, lease, "RELEASE_OUTPUT_PATH_INVALID"
+                )
+                raise updated_error from cleanup_error
+        except BaseException as stream_error:
+            try:
+                close_failed = not _close_ledger_handle(lease, descriptor)
+            except BaseException as cleanup_error:
+                target = primary_error or stream_error
+                updated_error = _attach_cleanup_lease(
+                    target, lease, "RELEASE_OUTPUT_PATH_INVALID"
+                )
+                raise updated_error from cleanup_error
+            target = primary_error or stream_error
+            if close_failed:
+                updated_error = _attach_cleanup_lease(
+                    target, lease, "RELEASE_OUTPUT_PATH_INVALID"
+                )
+                raise updated_error from stream_error
+            if primary_error is not None:
+                raise primary_error from stream_error
+            raise stream_error
         else:
             lease.release(descriptor)
             close_failed = False
@@ -1113,11 +1219,23 @@ def _open_bound_directory(path: Path, access: int) -> tuple[int, tuple[int, ...]
             lease.register(handle, resource_type="directory")
             identity = _bound_handle_identity(handle, resource_type="directory")
         except Exception as error:
-            if handle is not None and not _close_ledger_handle(lease, handle):
+            if handle is not None and not _close_ledger_after_error(
+                error, lease, handle, "RELEASE_OUTPUT_PATH_INVALID"
+            ):
                 raise ReleaseViolation(
                     "RELEASE_OUTPUT_PATH_INVALID", cleanup_lease=lease
                 ) from error
             raise ReleaseViolation("RELEASE_OUTPUT_PATH_INVALID") from error
+        except BaseException as error:
+            if handle is not None and not _close_ledger_after_error(
+                error, lease, handle, "RELEASE_OUTPUT_PATH_INVALID"
+            ):
+                updated_error = _attach_cleanup_lease(
+                    error, lease, "RELEASE_OUTPUT_PATH_INVALID"
+                )
+                if updated_error is not error:
+                    raise updated_error from error
+            raise
         lease.set_identity(handle, identity)
         lease.release(handle)
         return handle, identity
@@ -1220,7 +1338,14 @@ def _ntdll_open_relative_directory(
         handle_value = native_handle.value
         if handle_value in (None, wintypes.HANDLE(-1).value):
             _fail("RELEASE_OUTPUT_PATH_INVALID")
-        if not _close_ledger_handle(native_lease, int(handle_value)):
+        failure = ReleaseViolation("RELEASE_OUTPUT_PATH_INVALID")
+        if not _close_ledger_after_error(
+            failure,
+            native_lease,
+            int(handle_value),
+            "RELEASE_OUTPUT_PATH_INVALID",
+            verify_identity=False,
+        ):
             raise ReleaseViolation(
                 "RELEASE_OUTPUT_PATH_INVALID", cleanup_lease=native_lease
             )
@@ -1251,7 +1376,13 @@ def _ntdll_open_relative_directory(
                     "RELEASE_OUTPUT_PATH_INVALID"
                 ) from error
             raise
-        if _close_ledger_handle(native_lease, int(handle_value)):
+        if _close_ledger_after_error(
+            error,
+            native_lease,
+            int(handle_value),
+            "RELEASE_OUTPUT_PATH_INVALID",
+            verify_identity=False,
+        ):
             if isinstance(error, Exception):
                 raise ReleaseViolation(
                     "RELEASE_OUTPUT_PATH_INVALID"
@@ -1277,8 +1408,23 @@ def _ntdll_open_relative_directory(
         identity = _bound_handle_identity(
             int(handle_value), resource_type="directory"
         )
-    except Exception:
-        reject_native_handle()
+    except BaseException as error:
+        handle = int(handle_value)
+        if not _close_ledger_after_error(
+            error,
+            native_lease,
+            handle,
+            "RELEASE_OUTPUT_PATH_INVALID",
+            verify_identity=False,
+        ):
+            updated_error = _attach_cleanup_lease(
+                error, native_lease, "RELEASE_OUTPUT_PATH_INVALID"
+            )
+            if updated_error is not error:
+                raise updated_error from error
+        if isinstance(error, Exception):
+            raise ReleaseViolation("RELEASE_OUTPUT_PATH_INVALID") from error
+        raise
     native_lease.set_identity(int(handle_value), identity)
     native_lease.release(int(handle_value))
     return int(handle_value), identity
@@ -1332,8 +1478,11 @@ def _snapshot_staging_directory(
         if _file_identity(current_info) != _file_identity(info):
             _fail("RELEASE_OUTPUT_PATH_INVALID")
     except Exception as error:
-        if directory_handle is not None and not _close_ledger_handle(
-            directory_lease, directory_handle
+        if directory_handle is not None and not _close_ledger_after_error(
+            error,
+            directory_lease,
+            directory_handle,
+            "RELEASE_OUTPUT_PATH_INVALID",
         ):
             raise _error_with_cleanup(
                 error, directory_lease, "RELEASE_OUTPUT_PATH_INVALID"
@@ -1342,8 +1491,11 @@ def _snapshot_staging_directory(
             raise
         raise ReleaseViolation("RELEASE_OUTPUT_PATH_INVALID") from error
     except BaseException as error:
-        if directory_handle is not None and not _close_ledger_handle(
-            directory_lease, directory_handle
+        if directory_handle is not None and not _close_ledger_after_error(
+            error,
+            directory_lease,
+            directory_handle,
+            "RELEASE_OUTPUT_PATH_INVALID",
         ):
             updated_error = _attach_cleanup_lease(
                 error, directory_lease, "RELEASE_OUTPUT_PATH_INVALID"
@@ -1425,12 +1577,22 @@ def _validated_staging_path(
     finally:
         close_failed = False
         closed: set[int] = set()
+        cleanup_error: BaseException | None = None
         for handle in current_handles:
             if handle in closed:
                 continue
             closed.add(handle)
-            if not _close_ledger_handle(token.ledger, handle):
+            try:
+                handle_closed = _close_ledger_handle(token.ledger, handle)
+            except BaseException as error:
+                handle_closed = False
+                if cleanup_error is None:
+                    cleanup_error = error
+            if not handle_closed:
                 close_failed = True
+        if cleanup_error is not None:
+            target = primary_error or cleanup_error
+            primary_error = _attach_cleanup_lease(target, token.ledger, code)
         if close_failed and primary_error is None:
             primary_error = ReleaseViolation(code, cleanup_lease=token.ledger)
         elif close_failed and isinstance(primary_error, Exception):
@@ -1440,6 +1602,8 @@ def _validated_staging_path(
                 primary_error, token.ledger, code
             )
     if primary_error is not None:
+        if cleanup_error is not None and primary_error is not cleanup_error:
+            raise primary_error from cleanup_error
         raise primary_error
     assert candidate is not None
     return candidate
@@ -1843,7 +2007,14 @@ def _ntdll_create_staging_file(
             return True
         handle = int(handle_value)
         token.ledger.register(handle, resource_type="handle")
-        return _close_ledger_handle(token.ledger, handle)
+        failure = ReleaseViolation("RELEASE_OUTPUT_PATH_INVALID")
+        return _close_ledger_after_error(
+            failure,
+            token.ledger,
+            handle,
+            "RELEASE_OUTPUT_PATH_INVALID",
+            verify_identity=False,
+        )
 
     try:
         status = native_create(
@@ -1859,14 +2030,31 @@ def _ntdll_create_staging_file(
             None,
             0,
         )
-    except (OSError, TypeError, ValueError):
-        if native_handle.value not in (None, wintypes.HANDLE(-1).value):
-            token.ledger.register(int(native_handle.value), resource_type="handle")
-        if not close_failed_native_handle():
-            _fail(
-                "RELEASE_OUTPUT_PATH_INVALID", cleanup_lease=token.ledger
-            )
-        _fail("RELEASE_OUTPUT_PATH_INVALID")
+    except BaseException as error:
+        handle_value = native_handle.value
+        if handle_value not in (None, wintypes.HANDLE(-1).value):
+            handle = int(handle_value)
+            token.ledger.register(handle, resource_type="handle")
+            if not _close_ledger_after_error(
+                error,
+                token.ledger,
+                handle,
+                "RELEASE_OUTPUT_PATH_INVALID",
+                verify_identity=False,
+            ):
+                updated_error = _attach_cleanup_lease(
+                    error, token.ledger, "RELEASE_OUTPUT_PATH_INVALID"
+                )
+                if updated_error is not error:
+                    raise updated_error from error
+            if isinstance(error, Exception):
+                raise ReleaseViolation(
+                    "RELEASE_OUTPUT_PATH_INVALID"
+                ) from error
+            raise
+        if isinstance(error, Exception):
+            raise ReleaseViolation("RELEASE_OUTPUT_PATH_INVALID") from error
+        raise
     handle_value = native_handle.value
     if handle_value not in (None, wintypes.HANDLE(-1).value):
         token.ledger.register(int(handle_value), resource_type="handle")
@@ -1893,19 +2081,39 @@ def _ntdll_create_staging_file(
         descriptor = msvcrt.open_osfhandle(
             int(handle_value), os.O_WRONLY | getattr(os, "O_BINARY", 0)
         )
-    except (OSError, ValueError):
-        if not _close_ledger_handle(token.ledger, int(handle_value)):
-            _fail(
-                "RELEASE_OUTPUT_PATH_INVALID", cleanup_lease=token.ledger
+    except BaseException as error:
+        if not _close_ledger_after_error(
+            error,
+            token.ledger,
+            int(handle_value),
+            "RELEASE_OUTPUT_PATH_INVALID",
+            verify_identity=False,
+        ):
+            updated_error = _attach_cleanup_lease(
+                error, token.ledger, "RELEASE_OUTPUT_PATH_INVALID"
             )
-        _fail("RELEASE_OUTPUT_PATH_INVALID")
+            if updated_error is not error:
+                raise updated_error from error
+        if isinstance(error, Exception):
+            raise ReleaseViolation(
+                "RELEASE_OUTPUT_PATH_INVALID"
+            ) from error
+        raise
     if descriptor < 0:
-        if not _close_ledger_handle(token.ledger, int(handle_value)):
+        failure = ReleaseViolation("RELEASE_OUTPUT_PATH_INVALID")
+        if not _close_ledger_after_error(
+            failure,
+            token.ledger,
+            int(handle_value),
+            "RELEASE_OUTPUT_PATH_INVALID",
+            verify_identity=False,
+        ):
             _fail(
                 "RELEASE_OUTPUT_PATH_INVALID", cleanup_lease=token.ledger
             )
         _fail("RELEASE_OUTPUT_PATH_INVALID")
     token.ledger.release(int(handle_value))
+    token.ledger.register(descriptor, resource_type="fd")
     return descriptor
 
 
