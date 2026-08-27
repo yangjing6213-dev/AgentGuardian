@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
+import re
 
 import pytest
 
@@ -93,6 +94,14 @@ def test_preview_installer_script_verification_rejects_tampering() -> None:
     script[script.index(b"SelectedTargets")] = ord("X")
     with pytest.raises(ValueError, match="installer script is not approved"):
         builder.verify_installer_script(bytes(script))
+
+
+def test_preview_inno_script_does_not_start_pascal_lines_with_preprocessor_marker() -> None:
+    script = ISS_PATH.read_text(encoding="ascii")
+    invalid_lines = [
+        line for line in script.splitlines() if re.match(r"^\s+#\d", line)
+    ]
+    assert invalid_lines == []
 
 
 def test_preview_spec_has_one_shared_analysis_and_two_launchers() -> None:

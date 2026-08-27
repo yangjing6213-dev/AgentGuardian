@@ -41,7 +41,7 @@ COMPILER_SHA256 = "0ff6140d641f84b64204a2c4d52207c6fc437c9f4db8779c83083d84f7e3d
 PROFILE_NAME = "integrations_preview"
 PROFILE_RELATIVE = Path("release_profiles/integrations_preview.json")
 SCRIPT_RELATIVE = Path("packaging/windows/AgentGuardianIntegrationsPreview.iss")
-INSTALLER_SCRIPT_SHA256 = "4fff13aa2753ec53722e5012663a6c48405cffb74bd563c1b2e9a2d17e03cd82"
+INSTALLER_SCRIPT_SHA256 = "66e34f02ffe4c3c84b3e3bfee3eb323e28f5541592944ed022529218a212bbf0"
 MAX_FILE_BYTES = 16 * 1024 * 1024
 INSTALLER_DISCLOSURE_MARKERS = (
     b"AgentGuardian 0.3.0 Public Preview (unsigned).",
