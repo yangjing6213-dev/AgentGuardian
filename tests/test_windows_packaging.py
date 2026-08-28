@@ -22,6 +22,7 @@ from scripts.build_windows_portable import (
     build_pyinstaller_command,
     build_integrations_preview_pyinstaller_command,
     canonical_json_bytes,
+    copy_third_party_license_packet,
     cyclonedx_bom_bytes,
     deterministic_zip,
     filter_qt_gui_binaries,
@@ -41,6 +42,7 @@ from scripts.build_windows_portable import (
 
 PROJECT_ROOT = Path(__file__).parents[1]
 PACKAGE_ROOT = PROJECT_ROOT / "src" / "agentguardian"
+THIRD_PARTY_LICENSE_ROOT = PROJECT_ROOT / "packaging" / "third_party_licenses"
 BUILD_PACKAGES = {
     "altgraph": "0.17.4",
     "annotated-types": "0.8.0",
@@ -796,18 +798,112 @@ def test_third_party_notices_keep_qt_and_signing_limits_explicit() -> None:
     notices = (PROJECT_ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
 
     for required in (
-        "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
-        "Qt commercial license has not been verified",
+        "LGPL-3.0-only",
+        "No Qt commercial license is claimed",
         "Bootloader-exception",
         "Microsoft Visual C++ Runtime",
         "NOASSERTION",
         "Inno Setup 7.0.2",
-        "unsigned development artifact",
+        "unsigned Public Preview",
+        "THIRD_PARTY_LICENSES/QT-LGPL-COMPLIANCE.md",
         "<!-- AGENTGUARDIAN_COMPONENT_INVENTORY_START -->",
         "<!-- AGENTGUARDIAN_COMPONENT_INVENTORY_END -->",
     ):
         assert required in notices
     assert "registers and starts only STDIO" in notices
+
+
+def test_third_party_license_packet_is_complete_and_pinned() -> None:
+    required = {
+        "INNO-SETUP-7.0.2.txt",
+        "MICROSOFT-RUNTIME-REDISTRIBUTION.md",
+        "OPENSSL-3.0.txt",
+        "PYINSTALLER-6.16.0.txt",
+        "PYTHON-3.12.txt",
+        "QT-LGPL-COMPLIANCE.md",
+        "QT-THIRD-PARTY-ATTRIBUTIONS.json",
+        "README.md",
+        "qt-licenses/Apache-2.0.txt",
+        "qt-licenses/GPL-3.0-only.txt",
+        "qt-licenses/LGPL-3.0-only.txt",
+        "qt-licenses/HPND-sell-variant.txt",
+    }
+    files = {
+        path.relative_to(THIRD_PARTY_LICENSE_ROOT).as_posix()
+        for path in THIRD_PARTY_LICENSE_ROOT.rglob("*")
+        if path.is_file()
+    }
+
+    assert required <= files
+    assert len({name for name in files if name.startswith("qt-licenses/")}) >= 20
+    assert all(not part.startswith(".") for name in files for part in Path(name).parts)
+    assert not any(path.is_symlink() for path in THIRD_PARTY_LICENSE_ROOT.rglob("*"))
+
+    compliance = (THIRD_PARTY_LICENSE_ROOT / "QT-LGPL-COMPLIANCE.md").read_text(
+        encoding="utf-8"
+    )
+    for expected in (
+        "LGPL-3.0-only",
+        "Qt6Core.dll",
+        "Qt6Gui.dll",
+        "Qt6Svg.dll",
+        "Qt6Widgets.dll",
+        "3529cc37297a5a7aae4486843b9fd41c30df1d79a770f85e240b537dcc327ca5",
+        "767730188d4610a89bf8da502f87acf1c8881a3ac54f1e0eb167ab1e08b03a75",
+        "d9f2e86726a1f6d756323be74a890786aa546d5e8fa457ced3117f4418a5388b",
+        "replace",
+    ):
+        assert expected in compliance
+
+    attributions = json.loads(
+        (THIRD_PARTY_LICENSE_ROOT / "QT-THIRD-PARTY-ATTRIBUTIONS.json").read_bytes()
+    )
+    assert attributions["schema"] == 1
+    assert attributions["qt_version"] == "6.11.1"
+    assert {source["sha256"] for source in attributions["sources"]} == {
+        "3529cc37297a5a7aae4486843b9fd41c30df1d79a770f85e240b537dcc327ca5",
+        "767730188d4610a89bf8da502f87acf1c8881a3ac54f1e0eb167ab1e08b03a75",
+        "d9f2e86726a1f6d756323be74a890786aa546d5e8fa457ced3117f4418a5388b",
+    }
+    assert {entry["module"] for entry in attributions["entries"]} == {
+        "QtForPython",
+        "qtcore",
+        "qtgui",
+        "qtsvg",
+    }
+    assert len(attributions["entries"]) >= 20
+    assert all(
+        set(entry) >= {"copyright", "id", "license", "license_id", "module", "name"}
+        for entry in attributions["entries"]
+    )
+
+
+def test_third_party_license_packet_rejects_incomplete_source(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    source_root = project_root / "packaging" / "third_party_licenses"
+    source_root.mkdir(parents=True)
+    (source_root / "README.md").write_text("incomplete", encoding="utf-8")
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+
+    with pytest.raises(ValueError, match="incomplete"):
+        copy_third_party_license_packet(project_root, bundle_root)
+
+    assert not (bundle_root / "THIRD_PARTY_LICENSES").exists()
+
+
+def test_third_party_license_packet_rejects_hidden_entry(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    source_root = project_root / "packaging" / "third_party_licenses"
+    source_root.mkdir(parents=True)
+    (source_root / ".hidden").write_text("unexpected", encoding="utf-8")
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+
+    with pytest.raises(ValueError, match="invalid"):
+        copy_third_party_license_packet(project_root, bundle_root)
+
+    assert not (bundle_root / "THIRD_PARTY_LICENSES").exists()
 
 
 def test_rendered_third_party_notices_match_artifact_component_versions() -> None:
@@ -941,6 +1037,9 @@ def test_portable_evidence_is_canonical_and_excludes_its_own_checksums(
         "AgentGuardian.exe",
         "BUILD-METADATA.json",
         "LICENSE",
+        "THIRD_PARTY_LICENSES/QT-LGPL-COMPLIANCE.md",
+        "THIRD_PARTY_LICENSES/QT-THIRD-PARTY-ATTRIBUTIONS.json",
+        "THIRD_PARTY_LICENSES/PYTHON-3.12.txt",
         "THIRD_PARTY_NOTICES.md",
     } <= manifest_paths
     checksum_paths = {

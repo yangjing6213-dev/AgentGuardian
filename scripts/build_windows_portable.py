@@ -58,6 +58,23 @@ _FORBIDDEN_QT_NETWORK_COMPONENTS = {
 }
 _NOTICE_INVENTORY_START = "<!-- AGENTGUARDIAN_COMPONENT_INVENTORY_START -->"
 _NOTICE_INVENTORY_END = "<!-- AGENTGUARDIAN_COMPONENT_INVENTORY_END -->"
+_THIRD_PARTY_LICENSE_SOURCE = Path("packaging") / "third_party_licenses"
+_REQUIRED_THIRD_PARTY_LICENSE_FILES = {
+    "INNO-SETUP-7.0.2.txt",
+    "MICROSOFT-RUNTIME-REDISTRIBUTION.md",
+    "OPENSSL-3.0.txt",
+    "PYINSTALLER-6.16.0.txt",
+    "PYTHON-3.12.txt",
+    "QT-LGPL-COMPLIANCE.md",
+    "QT-THIRD-PARTY-ATTRIBUTIONS.json",
+    "README.md",
+    "qt-licenses/Apache-2.0.txt",
+    "qt-licenses/GPL-3.0-only.txt",
+    "qt-licenses/HPND-sell-variant.txt",
+    "qt-licenses/LGPL-3.0-only.txt",
+}
+_MAX_THIRD_PARTY_LICENSE_FILE_BYTES = 2 * 1024 * 1024
+_MAX_THIRD_PARTY_LICENSE_TOTAL_BYTES = 8 * 1024 * 1024
 
 _RUNTIME_PACKAGE_LICENSES = (
     ("annotated-types", "MIT"),
@@ -290,6 +307,59 @@ def render_third_party_notices(
     return rendered.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
 
 
+def copy_third_party_license_packet(project_root: Path, bundle_root: Path) -> None:
+    source_root = project_root / _THIRD_PARTY_LICENSE_SOURCE
+    destination_root = bundle_root / "THIRD_PARTY_LICENSES"
+    try:
+        if (
+            not source_root.is_dir()
+            or source_root.is_symlink()
+            or destination_root.exists()
+        ):
+            raise ValueError("third-party license packet is invalid")
+        source_root = source_root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise ValueError("third-party license packet is invalid") from None
+
+    files: list[tuple[Path, PurePosixPath, bytes]] = []
+    total = 0
+    for path in sorted(source_root.rglob("*"), key=lambda item: item.as_posix()):
+        relative = PurePosixPath(path.relative_to(source_root).as_posix())
+        if any(not part or part.startswith(".") for part in relative.parts):
+            raise ValueError("third-party license packet is invalid")
+        try:
+            metadata = path.lstat()
+        except OSError:
+            raise ValueError("third-party license packet is invalid") from None
+        attributes = getattr(metadata, "st_file_attributes", 0)
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if path.is_symlink() or attributes & reparse_flag:
+            raise ValueError("third-party license packet is invalid")
+        if path.is_dir():
+            continue
+        if not path.is_file() or metadata.st_size > _MAX_THIRD_PARTY_LICENSE_FILE_BYTES:
+            raise ValueError("third-party license packet is invalid")
+        try:
+            data = path.read_bytes()
+        except OSError:
+            raise ValueError("third-party license packet is invalid") from None
+        if not data or len(data) != metadata.st_size:
+            raise ValueError("third-party license packet is invalid")
+        total += len(data)
+        if total > _MAX_THIRD_PARTY_LICENSE_TOTAL_BYTES:
+            raise ValueError("third-party license packet is invalid")
+        files.append((path, relative, data))
+
+    names = {relative.as_posix() for _, relative, _ in files}
+    if not _REQUIRED_THIRD_PARTY_LICENSE_FILES <= names:
+        raise ValueError("third-party license packet is incomplete")
+    destination_root.mkdir()
+    for _, relative, data in files:
+        destination = destination_root.joinpath(*relative.parts)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(data)
+
+
 def cyclonedx_bom_bytes(
     component_specs: tuple[dict[str, str], ...],
     *,
@@ -382,6 +452,7 @@ def write_portable_evidence(
             component_specs,
         )
     )
+    copy_third_party_license_packet(project_root, bundle_root)
     from datetime import datetime
 
     parsed_time = datetime.fromisoformat(built_at.replace("Z", "+00:00"))
