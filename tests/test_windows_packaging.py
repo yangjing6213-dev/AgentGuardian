@@ -796,19 +796,59 @@ def test_third_party_notices_keep_qt_and_signing_limits_explicit() -> None:
     notices = (PROJECT_ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
 
     for required in (
-        "PySide6 6.11.1",
         "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
         "Qt commercial license has not been verified",
-        "PyInstaller 6.16.0",
         "Bootloader-exception",
         "Microsoft Visual C++ Runtime",
         "NOASSERTION",
+        "Inno Setup 7.0.2",
         "unsigned development artifact",
+        "<!-- AGENTGUARDIAN_COMPONENT_INVENTORY_START -->",
+        "<!-- AGENTGUARDIAN_COMPONENT_INVENTORY_END -->",
     ):
         assert required in notices
-    for name in RUNTIME_PACKAGES:
-        assert f"`{name}`" in notices
     assert "registers and starts only STDIO" in notices
+
+
+def test_rendered_third_party_notices_match_artifact_component_versions() -> None:
+    builder = __import__(
+        "scripts.build_windows_portable", fromlist=["render_third_party_notices"]
+    )
+    components = portable_component_specs(
+        python_version="3.12.10",
+        openssl_version="3.0.16",
+        vc_runtime_version="14.42.34438.0",
+        ucrt_version="10.0.26100.1742",
+        product_version="0.3.0-preview.1",
+    )
+    template = (PROJECT_ROOT / "THIRD_PARTY_NOTICES.md").read_bytes()
+
+    first = builder.render_third_party_notices(template, components)
+    second = builder.render_third_party_notices(template, components)
+    rendered = first.decode("utf-8")
+
+    assert first == second
+    for expected in (
+        "AgentGuardian | 0.3.0-preview.1 | runtime | Apache-2.0",
+        "CPython | 3.12.10 | runtime | Python-2.0",
+        "OpenSSL | 3.0.16 | runtime | Apache-2.0",
+        "Microsoft Visual C++ Runtime | 14.42.34438.0 | runtime | NOASSERTION",
+        "Microsoft Universal C Runtime | 10.0.26100.1742 | runtime | NOASSERTION",
+        "PyInstaller | 6.16.0 | build-time | "
+        "GPL-2.0-or-later WITH Bootloader-exception",
+        "PySide6 | 6.11.1 | runtime | "
+        "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+    ):
+        assert f"| {expected} |" in rendered
+    for stale in ("3.12.2", "3.0.13", "14.38.33126.1", "10.0.19041.1"):
+        assert stale not in rendered
+    display_names = {
+        "pyside6": "PySide6",
+        "pyside6-addons": "PySide6_Addons",
+        "pyside6-essentials": "PySide6_Essentials",
+    }
+    for name in RUNTIME_PACKAGES:
+        assert f"| {display_names.get(name, name)} |" in rendered
 
 
 def test_cyclonedx_tracks_embedded_bootloader_as_runtime_dependency() -> None:

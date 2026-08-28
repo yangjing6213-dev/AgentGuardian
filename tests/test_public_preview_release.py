@@ -1091,6 +1091,59 @@ def test_stage_accepts_portable_bundle_root_with_matching_archive(
     assert result["status"] == "pass"
 
 
+def test_stage_uses_artifact_specific_notices_from_matching_bundle_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    bundle = portable.parent.parent / "portable-bundle"
+    builder = importlib.import_module("scripts.build_windows_portable")
+    artifact_notices = (
+        b"# Artifact-specific third-party notices\n\n"
+        b"This content is bound to the portable SBOM.\n"
+    )
+    (bundle / "THIRD_PARTY_NOTICES.md").write_bytes(artifact_notices)
+    (bundle / "PAYLOAD-MANIFEST.json").unlink()
+    (bundle / "SHA256SUMS").unlink()
+    manifest = builder.artifact_manifest(bundle)
+    (bundle / "PAYLOAD-MANIFEST.json").write_bytes(
+        builder.canonical_json_bytes(manifest)
+    )
+    checksum_manifest = builder.artifact_manifest(bundle)
+    (bundle / "SHA256SUMS").write_bytes(
+        "".join(
+            f"{entry['sha256']} *{entry['path']}\n"
+            for entry in checksum_manifest["files"]
+        ).encode("ascii")
+    )
+    builder.deterministic_zip(bundle, portable)
+    attestation_path = installer.parent.parent / f"{installer.name}.build.json"
+    attestation = json.loads(attestation_path.read_bytes())
+    attestation["bundle"]["payload_manifest_sha256"] = hashlib.sha256(
+        (bundle / "PAYLOAD-MANIFEST.json").read_bytes()
+    ).hexdigest()
+    attestation["bundle"]["checksums_sha256"] = hashlib.sha256(
+        (bundle / "SHA256SUMS").read_bytes()
+    ).hexdigest()
+    attestation_path.write_bytes(builder.canonical_json_bytes(attestation))
+    output = tmp_path / "release"
+
+    result = module.stage_public_preview_release(
+        ROOT,
+        output,
+        installer_path=installer,
+        portable_path=portable,
+        portable_bundle_root=bundle,
+        skill_path=skill,
+        source_commit=COMMIT,
+        built_at=BUILT_AT,
+    )
+
+    assert result["status"] == "pass"
+    assert (output / "THIRD_PARTY_NOTICES.md").read_bytes() == artifact_notices
+
+
 def test_stage_rejects_reused_artifact_file_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

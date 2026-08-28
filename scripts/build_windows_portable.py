@@ -56,6 +56,8 @@ _FORBIDDEN_QT_NETWORK_COMPONENTS = {
     "qt6network.dll",
     "qtnetwork.pyd",
 }
+_NOTICE_INVENTORY_START = "<!-- AGENTGUARDIAN_COMPONENT_INVENTORY_START -->"
+_NOTICE_INVENTORY_END = "<!-- AGENTGUARDIAN_COMPONENT_INVENTORY_END -->"
 
 _RUNTIME_PACKAGE_LICENSES = (
     ("annotated-types", "MIT"),
@@ -226,6 +228,68 @@ def portable_component_specs(
     return tuple(components)
 
 
+def render_third_party_notices(
+    template: bytes,
+    component_specs: tuple[dict[str, str], ...],
+) -> bytes:
+    try:
+        text = template.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("third-party notice template must be UTF-8") from None
+    if (
+        text.count(_NOTICE_INVENTORY_START) != 1
+        or text.count(_NOTICE_INVENTORY_END) != 1
+        or text.index(_NOTICE_INVENTORY_START) >= text.index(_NOTICE_INVENTORY_END)
+    ):
+        raise ValueError("third-party notice inventory markers are invalid")
+
+    rows: list[tuple[str, str, str, str]] = []
+    names: set[str] = set()
+    required = {"name", "version", "role", "license", "type"}
+    for spec in component_specs:
+        if set(spec) != required:
+            raise ValueError("third-party component specification is invalid")
+        values = tuple(
+            str(spec[key]) for key in ("name", "version", "role", "license")
+        )
+        if any(
+            not value or "\n" in value or "\r" in value or "|" in value
+            for value in values
+        ):
+            raise ValueError("third-party component value is invalid")
+        normalized_name = values[0].casefold()
+        if normalized_name in names:
+            raise ValueError("third-party component names must be unique")
+        names.add(normalized_name)
+        rows.append(values)
+    if not rows:
+        raise ValueError("third-party component inventory is empty")
+
+    inventory_lines = [
+        _NOTICE_INVENTORY_START,
+        "",
+        "## Artifact Component Inventory",
+        "",
+        "This table is generated from the same component specifications as "
+        "`AgentGuardian.cdx.json` for this artifact.",
+        "",
+        "| Component | Version | Role | License expression |",
+        "| --- | --- | --- | --- |",
+        *(
+            f"| {name} | {version} | {role} | {license_expression} |"
+            for name, version, role, license_expression in sorted(
+                rows, key=lambda row: row[0].casefold()
+            )
+        ),
+        "",
+        _NOTICE_INVENTORY_END,
+    ]
+    start = text.index(_NOTICE_INVENTORY_START)
+    end = text.index(_NOTICE_INVENTORY_END) + len(_NOTICE_INVENTORY_END)
+    rendered = text[:start] + "\n".join(inventory_lines) + text[end:]
+    return rendered.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+
+
 def cyclonedx_bom_bytes(
     component_specs: tuple[dict[str, str], ...],
     *,
@@ -312,9 +376,11 @@ def write_portable_evidence(
     if artifact_status != "unsigned_development_only":
         raise ValueError("artifact status is invalid")
     shutil.copyfile(project_root / "LICENSE", bundle_root / "LICENSE")
-    shutil.copyfile(
-        project_root / "THIRD_PARTY_NOTICES.md",
-        bundle_root / "THIRD_PARTY_NOTICES.md",
+    (bundle_root / "THIRD_PARTY_NOTICES.md").write_bytes(
+        render_third_party_notices(
+            (project_root / "THIRD_PARTY_NOTICES.md").read_bytes(),
+            component_specs,
+        )
     )
     from datetime import datetime
 

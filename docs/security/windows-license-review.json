@@ -11,81 +11,81 @@
       "version": null,
       "license_expression": "Python-2.0",
       "redistribution": "pending",
-      "evidence_url": null
+      "evidence_url": "https://docs.python.org/3.12/license.html"
     },
     {
       "name": "Microsoft Universal C Runtime",
       "version": null,
-      "license_expression": null,
+      "license_expression": "NOASSERTION",
       "redistribution": "pending",
-      "evidence_url": null
+      "evidence_url": "https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files?view=msvc-170"
     },
     {
       "name": "Microsoft Visual C++ Runtime",
       "version": null,
-      "license_expression": null,
+      "license_expression": "NOASSERTION",
       "redistribution": "pending",
-      "evidence_url": null
+      "evidence_url": "https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files?view=msvc-170"
     },
     {
       "name": "Inno Setup",
       "version": "7.0.2",
-      "license_expression": null,
+      "license_expression": "LicenseRef-Inno-Setup",
       "redistribution": "pending",
-      "evidence_url": null
+      "evidence_url": "https://jrsoftware.org/files/is/license.txt"
     },
     {
       "name": "OpenSSL",
       "version": null,
       "license_expression": "Apache-2.0",
       "redistribution": "pending",
-      "evidence_url": null
+      "evidence_url": "https://openssl-library.org/source/license/"
     },
     {
       "name": "PyInstaller",
-      "version": null,
+      "version": "6.16.0",
       "license_expression": "GPL-2.0-or-later WITH Bootloader-exception",
       "redistribution": "pending",
-      "evidence_url": null
+      "evidence_url": "https://pyinstaller.org/en/stable/license.html"
     },
     {
       "name": "PyInstaller Bootloader",
-      "version": null,
+      "version": "6.16.0",
       "license_expression": "GPL-2.0-or-later WITH Bootloader-exception",
       "redistribution": "pending",
-      "evidence_url": null
+      "evidence_url": "https://pyinstaller.org/en/stable/license.html"
     },
     {
       "name": "PySide6",
-      "version": null,
+      "version": "6.11.1",
       "license_expression": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
       "redistribution": "pending",
-      "evidence_url": null
+      "evidence_url": "https://doc.qt.io/qt-6/licensing.html"
     },
     {
       "name": "PySide6_Addons",
-      "version": null,
+      "version": "6.11.1",
       "license_expression": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
       "redistribution": "pending",
-      "evidence_url": null
+      "evidence_url": "https://doc.qt.io/qt-6/licensing.html"
     },
     {
       "name": "PySide6_Essentials",
-      "version": null,
+      "version": "6.11.1",
       "license_expression": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
       "redistribution": "pending",
-      "evidence_url": null
+      "evidence_url": "https://doc.qt.io/qt-6/licensing.html"
     },
     {
       "name": "shiboken6",
-      "version": null,
+      "version": "6.11.1",
       "license_expression": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
       "redistribution": "pending",
-      "evidence_url": null
+      "evidence_url": "https://doc.qt.io/qt-6/licensing.html"
     }
   ],
   "required_actions": [
-    "Verify every CycloneDX component against its authoritative license source.",
+    "Verify every generated CycloneDX component against its authoritative license source and retain the exact artifact inventory.",
     "Confirm Microsoft Visual C++ and Universal CRT redistribution rights for the actual build environment.",
     "Verify Inno Setup 7.0.2 redistribution terms against its authoritative license source.",
     "Confirm Qt/PySide redistribution terms and required license text for the actual package.",

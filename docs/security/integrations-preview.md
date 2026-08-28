@@ -80,10 +80,14 @@ not an instruction to publish the current candidate, whose status remains
    files. The staging CLI must receive `--portable-bundle-root` pointing to the
    exact `dist/AgentGuardian` directory used to create the portable ZIP; it
    compares every decompressed path, size, and SHA-256 before accepting the
-   archive. Review `DOWNLOAD-METADATA.json` for the source SHA, version,
-   platform, and file records, then recompute and review every entry in
-   `SHA256SUMS`. A Python API call without this binding is structural validation
-   only and is not public-release evidence.
+   archive. With that binding, the staged `THIRD_PARTY_NOTICES.md` is copied
+   from the verified portable bundle; its component inventory is generated from
+   the same specifications as `AgentGuardian.cdx.json`, so runtime patch
+   versions are not taken from a stale repository snapshot. Review
+   `DOWNLOAD-METADATA.json` for the source SHA, version, platform, and file
+   records, then recompute and review every entry in `SHA256SUMS`. A Python API
+   call without this binding is
+   structural validation only and is not public-release evidence.
 3. After the source and staged files pass their gates, create tag
    `v0.3.0-preview.1` and a Release titled
    `AgentGuardian 0.3.0 Public Preview (Unsigned)`. This is an unsigned Public

@@ -1799,8 +1799,16 @@ def _validate_portable_input(
     if evidence != expected_profile_evidence:
         _fail(_INPUT_TYPE_INVALID)
 
-    for relative in ("LICENSE", "THIRD_PARTY_NOTICES.md"):
-        _record_matches_file(records, relative, root / relative, max_bytes=MAX_INPUT_BYTES)
+    _record_matches_file(
+        records, "LICENSE", root / "LICENSE", max_bytes=MAX_INPUT_BYTES
+    )
+    if portable_bundle_root is None:
+        _record_matches_file(
+            records,
+            "THIRD_PARTY_NOTICES.md",
+            root / "THIRD_PARTY_NOTICES.md",
+            max_bytes=MAX_INPUT_BYTES,
+        )
     for name in ("LICENSE", "README.md", "SKILL.md"):
         _record_matches_file(
             records,
@@ -3410,7 +3418,12 @@ def stage_public_preview_release(
     )
     profile_path = _resolve_project_file(root, _PROFILE_RELATIVE_PATH)
     license_path = _resolve_project_file(root, "LICENSE")
-    notices_path = _resolve_project_file(root, "THIRD_PARTY_NOTICES.md")
+    notices_template_path = _resolve_project_file(root, "THIRD_PARTY_NOTICES.md")
+    notices_path = (
+        _resolve_input(bundle_root / "THIRD_PARTY_NOTICES.md")
+        if bundle_root is not None
+        else notices_template_path
+    )
     source_files_list = [
         _capture_source_file(
             profile_path,
@@ -3423,7 +3436,7 @@ def stage_public_preview_release(
             code="RELEASE_INPUT_PATH_INVALID",
         ),
         _capture_source_file(
-            notices_path,
+            notices_template_path,
             max_bytes=MAX_INPUT_BYTES,
             code="RELEASE_INPUT_PATH_INVALID",
         ),
@@ -3442,14 +3455,17 @@ def stage_public_preview_release(
         )
         captured_paths.add(document.path)
     source_files = tuple(source_files_list)
-    inputs = (
+    inputs_list = [
         installer,
         portable,
         skill,
         installer_attestation,
         license_path,
-        notices_path,
-    )
+        notices_template_path,
+    ]
+    if notices_path.path != notices_template_path.path:
+        inputs_list.append(notices_path)
+    inputs = tuple(inputs_list)
     workflow_markers = profile.profile["forbidden_workflow_tokens"]
     if any(_path_has_private_marker(snapshot.path, workflow_markers) for snapshot in inputs):
         _fail("RELEASE_PRIVATE_DATA_DETECTED")
