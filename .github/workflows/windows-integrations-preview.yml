@@ -45,6 +45,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify exact clean checkout and derive bounded paths
+        id: derive_paths
         shell: pwsh
         run: |
           function Assert-NativeSuccess {
@@ -66,6 +67,7 @@ jobs:
           $commitUtc = [DateTimeOffset]::FromUnixTimeSeconds($commitEpoch).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
           $workspaceParent = Split-Path -Parent $pwd.Path
           $releaseRoot = Join-Path $workspaceParent ("agentguardian-public-preview-release-" + $env:EXPECTED_SOURCE_COMMIT)
+          "release_root=$releaseRoot" >> $env:GITHUB_OUTPUT
           "COMMIT_UTC=$commitUtc" >> $env:GITHUB_ENV
           "INNO_ASSET=$env:RUNNER_TEMP\agentguardian-inno-download\innosetup-7.0.2-x64.exe" >> $env:GITHUB_ENV
           "ISCC=$env:RUNNER_TEMP\agentguardian-inno-7.0.2\ISCC.exe" >> $env:GITHUB_ENV
@@ -449,7 +451,7 @@ jobs:
           name: agentguardian-public-preview-bundle-${{ env.EXPECTED_SOURCE_COMMIT }}
           retention-days: 14
           if-no-files-found: error
-          path: ${{ github.workspace }}/../agentguardian-public-preview-release-${{ env.EXPECTED_SOURCE_COMMIT }}
+          path: ${{ steps.derive_paths.outputs.release_root }}
 
       - name: Write bounded exact-SHA workflow metadata
         shell: pwsh
