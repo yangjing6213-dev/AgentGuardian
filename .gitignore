@@ -2,6 +2,8 @@
 .analysis/
 .superpowers/
 .worktrees/
+.local-audit/
+.tmp/
 
 # Local secrets, evidence, and generated artifacts
 .env
@@ -23,6 +25,11 @@ build/
 .venv/
 __pycache__/
 *.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
 
 # Editor and OS metadata
 .vscode/

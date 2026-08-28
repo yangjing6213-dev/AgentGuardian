@@ -1,0 +1,5 @@
+title = "AgentGuardian secret scan policy"
+
+[allowlist]
+description = "source_policy.json contains public SHA-256 module integrity digests, not credentials"
+paths = ['^src/agentguardian/source_policy\\.json$']

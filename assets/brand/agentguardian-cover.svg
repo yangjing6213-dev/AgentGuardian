@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+  <title id="title">AgentGuardian AI Agent 守护者</title>
+  <desc id="desc">Local-first AI agent data security audit cover using synthetic audit data.</desc>
+  <rect width="1280" height="640" fill="#0F1215"/>
+  <g transform="translate(0 27.43) scale(1.142857)">
+    <g fill="none" stroke-width="3" stroke-linecap="square">
+      <path d="M49 122V100h22 M99 100h22v22" stroke="#FFFFFF"/>
+      <path d="M49 150v22h22 M99 172h22v-22" stroke="#21C786"/>
+    </g>
+    <text x="85" y="145" text-anchor="middle" fill="#FFFFFF" font-family="Arial, 'Segoe UI', sans-serif" font-size="25" font-weight="700">AG</text>
+    <text x="143" y="148" fill="#FFFFFF" font-family="Arial, 'Segoe UI', sans-serif" font-size="33" font-weight="700">AgentGuardian</text>
+
+    <text x="49" y="257" fill="#FFFFFF" font-family="'Microsoft YaHei', 'Noto Sans SC', sans-serif" font-size="42" font-weight="700">AI Agent 守护者</text>
+    <text x="49" y="312" fill="#C9D0D5" font-family="'Microsoft YaHei', 'Noto Sans SC', sans-serif" font-size="24">让 AI Agent 的数据边界</text>
+    <text x="49" y="348" fill="#C9D0D5" font-family="'Microsoft YaHei', 'Noto Sans SC', sans-serif" font-size="24">可见、可控、可验证。</text>
+    <text x="49" y="414" fill="#21C786" font-family="Arial, 'Segoe UI', sans-serif" font-size="21.5">Local-first · Open-core · User-approved remediation</text>
+
+    <g>
+      <rect x="626" y="42" width="445" height="437" fill="#171C20" stroke="#394149"/>
+      <text x="652" y="92" fill="#FFFFFF" font-family="'Microsoft YaHei', 'Noto Sans SC', sans-serif" font-size="20">安全概览</text>
+      <circle cx="953" cy="84" r="5" fill="#21C786"/>
+      <text x="964" y="92" fill="#21C786" font-family="'Microsoft YaHei', 'Noto Sans SC', sans-serif" font-size="20">本地模式</text>
+      <line x1="652" y1="113" x2="1045" y2="113" stroke="#394149"/>
+
+      <text x="652" y="209" fill="#F0BD5C" font-family="Arial, 'Segoe UI', sans-serif" font-size="64" font-weight="700">72</text>
+      <text x="741" y="184" fill="#AAB4BB" font-family="Arial, 'Segoe UI', sans-serif" font-size="21">/ 100</text>
+      <text x="741" y="209" fill="#AAB4BB" font-family="'Microsoft YaHei', 'Noto Sans SC', sans-serif" font-size="21">覆盖率 86%</text>
+      <line x1="652" y1="260" x2="1045" y2="260" stroke="#394149"/>
+
+      <text x="652" y="299" fill="#E3E7EA" font-family="'Microsoft YaHei', 'Noto Sans SC', sans-serif" font-size="20">公开分享页包含有效凭据</text>
+      <text x="1045" y="299" text-anchor="end" fill="#EF7167" font-family="'Microsoft YaHei', 'Noto Sans SC', sans-serif" font-size="19">严重</text>
+      <line x1="652" y1="322" x2="1045" y2="322" stroke="#394149"/>
+
+      <text x="652" y="359" fill="#E3E7EA" font-family="'Microsoft YaHei', 'Noto Sans SC', sans-serif" font-size="20">MCP 组合权限过高</text>
+      <text x="1045" y="359" text-anchor="end" fill="#F0BD5C" font-family="'Microsoft YaHei', 'Noto Sans SC', sans-serif" font-size="19">高</text>
+
+      <rect x="652" y="398" width="393" height="56" fill="#21C786"/>
+      <text x="848.5" y="435" text-anchor="middle" fill="#07100C" font-family="'Microsoft YaHei', 'Noto Sans SC', sans-serif" font-size="20" font-weight="700">审阅修复方案</text>
+    </g>
+  </g>
+</svg>

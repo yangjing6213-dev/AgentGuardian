@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "status": "pending",
+  "source_commit": null,
+  "sbom_sha256": null,
+  "reviewed_at": null,
+  "reviewer": null,
+  "components": [
+    {
+      "name": "CPython",
+      "version": null,
+      "license_expression": "Python-2.0",
+      "redistribution": "pending",
+      "evidence_url": null
+    },
+    {
+      "name": "Microsoft Universal C Runtime",
+      "version": null,
+      "license_expression": null,
+      "redistribution": "pending",
+      "evidence_url": null
+    },
+    {
+      "name": "Microsoft Visual C++ Runtime",
+      "version": null,
+      "license_expression": null,
+      "redistribution": "pending",
+      "evidence_url": null
+    },
+    {
+      "name": "Inno Setup",
+      "version": "7.0.2",
+      "license_expression": null,
+      "redistribution": "pending",
+      "evidence_url": null
+    },
+    {
+      "name": "OpenSSL",
+      "version": null,
+      "license_expression": "Apache-2.0",
+      "redistribution": "pending",
+      "evidence_url": null
+    },
+    {
+      "name": "PyInstaller",
+      "version": null,
+      "license_expression": "GPL-2.0-or-later WITH Bootloader-exception",
+      "redistribution": "pending",
+      "evidence_url": null
+    },
+    {
+      "name": "PyInstaller Bootloader",
+      "version": null,
+      "license_expression": "GPL-2.0-or-later WITH Bootloader-exception",
+      "redistribution": "pending",
+      "evidence_url": null
+    },
+    {
+      "name": "PySide6",
+      "version": null,
+      "license_expression": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "redistribution": "pending",
+      "evidence_url": null
+    },
+    {
+      "name": "PySide6_Addons",
+      "version": null,
+      "license_expression": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "redistribution": "pending",
+      "evidence_url": null
+    },
+    {
+      "name": "PySide6_Essentials",
+      "version": null,
+      "license_expression": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "redistribution": "pending",
+      "evidence_url": null
+    },
+    {
+      "name": "shiboken6",
+      "version": null,
+      "license_expression": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "redistribution": "pending",
+      "evidence_url": null
+    }
+  ],
+  "required_actions": [
+    "Verify every CycloneDX component against its authoritative license source.",
+    "Confirm Microsoft Visual C++ and Universal CRT redistribution rights for the actual build environment.",
+    "Verify Inno Setup 7.0.2 redistribution terms against its authoritative license source.",
+    "Confirm Qt/PySide redistribution terms and required license text for the actual package.",
+    "Replace this worksheet with an approved record bound to the exact source commit and SBOM SHA-256."
+  ]
+}

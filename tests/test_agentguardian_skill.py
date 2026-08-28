@@ -1,0 +1,496 @@
+from __future__ import annotations
+
+import hashlib
+import ctypes
+import os
+import shutil
+import sys
+import types
+import zipfile
+from pathlib import Path
+
+import pytest
+
+import scripts.build_agentguardian_skill as skill_builder
+from scripts.build_agentguardian_skill import build_skill
+
+
+PROJECT_ROOT = Path(__file__).parents[1]
+SOURCE_ROOT = PROJECT_ROOT / "skills" / "agentguardian"
+EXPECTED_ENTRIES = (
+    "agentguardian/LICENSE",
+    "agentguardian/README.md",
+    "agentguardian/SKILL.md",
+)
+EXPECTED_SKILL_VERSION = "0.2.0"
+
+
+def _copy_source(tmp_path: Path) -> Path:
+    source = tmp_path / "source" / "agentguardian"
+    shutil.copytree(SOURCE_ROOT, source)
+    return source
+
+
+def _build(source: Path, tmp_path: Path) -> Path:
+    target, _digest = build_skill(source, tmp_path / "output")
+    return target
+
+
+def test_skill_zip_is_allowlisted_and_deterministic(tmp_path: Path) -> None:
+    first, first_digest = build_skill(SOURCE_ROOT, tmp_path / "one")
+    second, second_digest = build_skill(SOURCE_ROOT, tmp_path / "two")
+
+    assert first.read_bytes() == second.read_bytes()
+    assert first_digest == second_digest == hashlib.sha256(first.read_bytes()).hexdigest()
+    assert (first.parent / f"{first.name}.sha256").read_text(encoding="ascii") == (
+        f"{first_digest} *{first.name}\n"
+    )
+    with zipfile.ZipFile(first) as archive:
+        assert tuple(sorted(archive.namelist())) == EXPECTED_ENTRIES
+        assert all(info.date_time == (1980, 1, 1, 0, 0, 0) for info in archive.infolist())
+        assert all(info.filename.isascii() for info in archive.infolist())
+
+
+def test_skill_source_has_required_identity_and_license() -> None:
+    skill = (SOURCE_ROOT / "SKILL.md").read_text(encoding="utf-8")
+    assert skill.startswith(
+        "---\n"
+        "name: agentguardian\n"
+        "description: Use AgentGuardian to audit one bounded local AI configuration scope, browser history database aggregate, current clipboard value, or public share URL. Requires the local AgentGuardian MCP tools and must not be used for regulated or highly sensitive data.\n"
+        "metadata:\n"
+        f'  version: "{EXPECTED_SKILL_VERSION}"\n'
+        '  requires-agentguardian: ">=0.3.0a1,<0.4"\n'
+        "---\n"
+    )
+    assert (SOURCE_ROOT / "LICENSE").read_bytes() == (PROJECT_ROOT / "LICENSE").read_bytes()
+
+
+def test_skill_markdown_checkout_is_pinned_to_lf() -> None:
+    attributes = (PROJECT_ROOT / ".gitattributes").read_text(encoding="utf-8")
+
+    assert "skills/agentguardian/*.md text eol=lf" in attributes
+
+
+def test_skill_routes_setup_and_exposes_all_four_audits() -> None:
+    skill = (SOURCE_ROOT / "SKILL.md").read_text(encoding="utf-8")
+
+    for marker in (
+        "prepare_audit",
+        "run_prepared_audit",
+        "AgentGuardianMcp.exe --stdio-mcp",
+        "https://github.com/yangjing6213-dev/AgentGuardian",
+        "files",
+        "browser",
+        "clipboard",
+        "public_share",
+        "does not download, install, or edit host configuration",
+        "personal_non_regulated",
+    ):
+        assert marker in skill
+
+    assert "## Setup when the MCP tools are missing" in skill
+    assert "release asset" in skill
+    assert "Never guess an executable path" in skill
+
+
+@pytest.mark.parametrize(
+    "relative, content",
+    (
+        ("notes.txt", b"unexpected"),
+        (".hidden", b"unexpected"),
+        ("payload.exe", b"MZ"),
+        ("\u00e9.txt", b"unexpected"),
+    ),
+)
+def test_skill_rejects_unallowlisted_or_unsafe_entries(
+    tmp_path: Path,
+    relative: str,
+    content: bytes,
+) -> None:
+    source = _copy_source(tmp_path)
+    (source / relative).write_bytes(content)
+
+    with pytest.raises(ValueError):
+        _build(source, tmp_path)
+
+
+def test_skill_rejects_links(tmp_path: Path) -> None:
+    source = _copy_source(tmp_path)
+    try:
+        os.symlink(source / "README.md", source / "link.txt")
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"symlink unavailable: {error}")
+
+    with pytest.raises(ValueError):
+        _build(source, tmp_path)
+
+
+def test_skill_rejects_frontmatter_mismatch(tmp_path: Path) -> None:
+    source = _copy_source(tmp_path)
+    skill = source / "SKILL.md"
+    skill.write_text(
+        skill.read_text(encoding="utf-8").replace(
+            f'version: "{EXPECTED_SKILL_VERSION}"', 'version: "9.9.9"'
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    with pytest.raises(ValueError):
+        _build(source, tmp_path)
+
+
+def test_skill_rejects_missing_setup_contract(tmp_path: Path) -> None:
+    source = _copy_source(tmp_path)
+    skill = source / "SKILL.md"
+    skill.write_text(
+        skill.read_text(encoding="utf-8").replace(
+            "## Setup when the MCP tools are missing", "## Setup route removed"
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    with pytest.raises(ValueError):
+        _build(source, tmp_path)
+
+
+def test_skill_rejects_secret_patterns_and_executable_headers(tmp_path: Path) -> None:
+    source = _copy_source(tmp_path)
+    readme = source / "README.md"
+    readme.write_bytes(readme.read_bytes() + b"\nOPENAI_API_KEY=sk-proj-abcdefghijklmnop\n")
+
+    with pytest.raises(ValueError):
+        _build(source, tmp_path)
+
+    readme.write_bytes(b"MZ" + readme.read_bytes())
+    with pytest.raises(ValueError):
+        _build(source, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "marker",
+    (
+        "Start-BitsTransfer",
+        "python -m urllib.request",
+        "powershell -EncodedCommand ZQB2AGkAbA==",
+        "curl.exe https://example.invalid/a",
+        "wget.exe https://example.invalid/a",
+    ),
+)
+def test_skill_rejects_downloader_command_variants(
+    tmp_path: Path,
+    marker: str,
+) -> None:
+    source = _copy_source(tmp_path)
+    readme = source / "README.md"
+    readme.write_bytes(readme.read_bytes() + f"\n{marker}\n".encode("utf-8"))
+
+    with pytest.raises(ValueError):
+        _build(source, tmp_path)
+
+
+def test_skill_rejects_oversized_file_and_aggregate(tmp_path: Path) -> None:
+    source = _copy_source(tmp_path)
+    readme = source / "README.md"
+    readme.write_bytes(readme.read_bytes() + b"x" * (256 * 1024))
+
+    with pytest.raises(ValueError):
+        _build(source, tmp_path)
+
+
+def test_skill_rejects_license_mismatch(tmp_path: Path) -> None:
+    source = _copy_source(tmp_path)
+    license_path = source / "LICENSE"
+    license_path.write_bytes(license_path.read_bytes() + b"\nchanged\n")
+
+    with pytest.raises(ValueError):
+        _build(source, tmp_path)
+
+
+def test_skill_reads_sources_without_path_read_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _copy_source(tmp_path)
+
+    def fail_path_read_bytes(_path: Path) -> bytes:
+        raise AssertionError("source must be read through a checked handle")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_path_read_bytes)
+    target, _digest = build_skill(source, tmp_path / "output")
+
+    assert target.is_file()
+
+
+def test_skill_read_close_failure_is_reported_after_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_close(_descriptor: int) -> None:
+        raise OSError("close failure")
+
+    monkeypatch.setattr(skill_builder.os, "close", fail_close)
+    with pytest.raises(ValueError, match="^skill resource close failed$"):
+        skill_builder._read_checked_file(SOURCE_ROOT / "README.md")
+
+
+def test_skill_read_primary_error_wins_over_close_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[int] = []
+
+    def fail_read(_descriptor: int, _size: int) -> bytes:
+        raise OSError("read failure")
+
+    def fail_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        raise OSError("close failure")
+
+    monkeypatch.setattr(skill_builder.os, "read", fail_read)
+    monkeypatch.setattr(skill_builder.os, "close", fail_close)
+    with pytest.raises(ValueError, match="^skill source entry is unreadable$"):
+        skill_builder._read_checked_file(SOURCE_ROOT / "README.md")
+    assert closed
+
+
+def test_skill_replaces_zip_and_checksum_atomically(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replacements: list[tuple[str, str]] = []
+    real_replace = os.replace
+
+    def record_replace(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> None:
+        replacements.append((os.fspath(source), os.fspath(target)))
+        real_replace(source, target)
+
+    monkeypatch.setattr(skill_builder.os, "replace", record_replace)
+    target, _digest = build_skill(SOURCE_ROOT, tmp_path / "output")
+
+    assert target.is_file()
+    assert len(replacements) == 2
+    assert all(Path(source).parent == Path(destination).parent for source, destination in replacements)
+
+
+def test_skill_rejects_missing_output_parent(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="skill output is invalid"):
+        build_skill(SOURCE_ROOT, tmp_path / "missing" / "output")
+
+
+def test_skill_cleans_partial_outputs_when_checksum_replace_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "output"
+    real_replace = os.replace
+    calls = 0
+
+    def fail_checksum_replace(
+        source: str | os.PathLike[str],
+        target: str | os.PathLike[str],
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("synthetic replace failure")
+        real_replace(source, target)
+
+    monkeypatch.setattr(skill_builder.os, "replace", fail_checksum_replace)
+    with pytest.raises(ValueError, match="skill build failed"):
+        build_skill(SOURCE_ROOT, output)
+
+    assert not (output / f"AgentGuardian-Skill-{skill_builder.SKILL_VERSION}.zip").exists()
+    assert not (
+        output / f"AgentGuardian-Skill-{skill_builder.SKILL_VERSION}.zip.sha256"
+    ).exists()
+    assert not tuple(output.glob(".agentguardian-skill-*"))
+
+
+def test_skill_restores_existing_pair_when_upgrade_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "output"
+    build_skill(SOURCE_ROOT, output)
+    zip_path = output / f"AgentGuardian-Skill-{skill_builder.SKILL_VERSION}.zip"
+    checksum_path = output / f"AgentGuardian-Skill-{skill_builder.SKILL_VERSION}.zip.sha256"
+    old_zip = zip_path.read_bytes()
+    old_checksum = checksum_path.read_bytes()
+    real_replace = os.replace
+    calls = 0
+
+    def fail_new_checksum(
+        source: str | os.PathLike[str],
+        target: str | os.PathLike[str],
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 4:
+            raise OSError("synthetic upgrade failure")
+        real_replace(source, target)
+
+    monkeypatch.setattr(skill_builder.os, "replace", fail_new_checksum)
+    with pytest.raises(ValueError, match="skill build failed"):
+        build_skill(SOURCE_ROOT, output)
+
+    assert zip_path.read_bytes() == old_zip
+    assert checksum_path.read_bytes() == old_checksum
+    assert not tuple(output.glob(".agentguardian-skill-*"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory lock contract")
+def test_windows_directory_lock_blocks_rename(tmp_path: Path) -> None:
+    source = _copy_source(tmp_path)
+    handles = skill_builder._acquire_directory_locks(source)
+    try:
+        with pytest.raises(OSError):
+            os.replace(source, source.with_name("moved"))
+    finally:
+        skill_builder._release_directory_locks(handles)
+
+
+def test_windows_close_false_maps_to_resource_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(skill_builder.os, "name", "nt")
+    from ctypes import wintypes
+
+    class FakeCloseHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, _handle: int) -> int:
+            return 0
+
+    class FakeKernel32:
+        CloseHandle = FakeCloseHandle()
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32())
+    with pytest.raises(ValueError, match="^skill resource close failed$"):
+        skill_builder._close_windows_handle(99)
+    close_handle = FakeKernel32.CloseHandle
+    assert close_handle.argtypes == (wintypes.HANDLE,)
+    assert close_handle.restype is wintypes.BOOL
+
+
+def test_windows_read_descriptor_checks_close_after_conversion_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(skill_builder.os, "name", "nt")
+    import ctypes.wintypes as wintypes
+
+    closed: list[int] = []
+
+    class FakeCreateFile:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *_args: object) -> int:
+            return 77
+
+    class FakeCloseHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, handle: int) -> int:
+            closed.append(handle)
+            return 0
+
+    class FakeKernel32:
+        CreateFileW = FakeCreateFile()
+        CloseHandle = FakeCloseHandle()
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32())
+    monkeypatch.setitem(
+        sys.modules,
+        "msvcrt",
+        types.SimpleNamespace(
+            open_osfhandle=lambda *_args: (_ for _ in ()).throw(OSError)
+        ),
+    )
+    with pytest.raises(OSError):
+        skill_builder._open_read_descriptor(tmp_path / "input.txt")
+    assert closed == [77]
+    assert FakeKernel32.CloseHandle.argtypes == (wintypes.HANDLE,)
+    assert FakeKernel32.CloseHandle.restype is wintypes.BOOL
+
+
+def test_windows_release_directory_locks_reports_close_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(skill_builder.os, "name", "nt")
+    closed: list[int] = []
+
+    class FakeCloseHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, handle: int) -> int:
+            closed.append(handle)
+            return 0
+
+    class FakeKernel32:
+        CloseHandle = FakeCloseHandle()
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32())
+    assert not skill_builder._release_directory_locks([11, 22])
+    assert closed == [22, 11]
+
+
+def test_windows_lock_cleanup_preserves_primary_error_when_close_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(skill_builder.os, "name", "nt")
+    closed: list[int] = []
+
+    class FakeCreateFile:
+        argtypes = None
+        restype = None
+        calls = 0
+
+        def __call__(self, *_args: object) -> int:
+            self.calls += 1
+            return 101 if self.calls == 1 else 0
+
+    class FakeCloseHandle:
+        argtypes = None
+        restype = None
+
+        def __call__(self, handle: int) -> int:
+            closed.append(handle)
+            return 0
+
+    class FakeKernel32:
+        CreateFileW = FakeCreateFile()
+        CloseHandle = FakeCloseHandle()
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32())
+    with pytest.raises(ValueError, match="^skill path is busy or invalid$"):
+        skill_builder._acquire_directory_locks(tmp_path / "source")
+    assert closed == [101]
+
+
+def test_skill_reports_unconfirmed_state_when_rollback_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "output"
+    build_skill(SOURCE_ROOT, output)
+    real_replace = os.replace
+    calls = 0
+
+    def fail_install_and_restore(
+        source: str | os.PathLike[str],
+        target: str | os.PathLike[str],
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        if calls in {4, 5}:
+            raise OSError("synthetic rollback failure")
+        real_replace(source, target)
+
+    monkeypatch.setattr(skill_builder.os, "replace", fail_install_and_restore)
+    with pytest.raises(ValueError, match="output state is unconfirmed"):
+        build_skill(SOURCE_ROOT, output)
+
+    assert tuple(output.glob(".agentguardian-skill-*.backup"))

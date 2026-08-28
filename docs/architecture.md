@@ -1,64 +1,97 @@
-# AgentGuardian 系统架构与数据流
+# AgentGuardian Personal v1 Architecture
 
-本文档描述 Founder Alpha 的安全边界和组件契约。实现必须保持这些边界；后续扩展可以增加适配器，但不能把原始证据默认移出本机。
+This document defines the active architecture for version `0.2.0-beta.1`. The only active delivery and governance route is the unsigned `personal_exe_private_beta` track for known testers. Frozen candidate `8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6` has current local-gate, GitHub CI, native unsigned-installer lifecycle, and independent-review evidence. It remains `PRIVATE-BETA-NOT-READY` because external license and Qt approval, two-machine acceptance, and operations/security readiness are pending; formal public release is `NO-GO`. Historical specs, plans, and reports do not extend this contract.
 
-## 高层数据流
+## Product boundary
+
+Personal v1 supports Windows 11 x64 and the **personal non-regulated configuration** boundary. Users explicitly choose local directories and explicitly trigger each optional browser, clipboard, share-reachability, or fixed-remediation action.
+
+Personal v1 permanently excludes MCP runtime integration. Enterprise features, a high-sensitivity mode, and dynamic MCP execution are permanently excluded. There is no telemetry, cloud console, automatic arbitrary remediation, or plugin execution.
+
+OpenAI Provider support is limited to local adaptation, static detection, and manual guidance. The runtime must not call OpenAI or another provider API by default.
+
+An Actions artifact from the public repository is not an access-controlled private distribution channel. `Private beta` describes maturity and the known-tester scope, not confidentiality.
+
+## Current data flow
 
 ```mermaid
 flowchart LR
-    subgraph Device[用户 Windows 设备]
-        UI[本地 UI]
-        Coord[审计编排器\n普通用户权限]
-        Discover[资产发现器\n只读]
-        Runner[隔离扫描插件\n超时与权限边界]
-        Evidence[本地证据库\nDPAPI 加密]
-        Rules[规则与评分内核\n开源可重算]
-        Report[报告生成器]
-        Review[用户确认台]
-        Broker[限权修复代理\n预定义动作]
-        Verify[独立复审器]
-        UI --> Coord
-        Coord --> Discover
-        Discover --> Runner
-        Runner --> Evidence
-        Evidence --> Rules
-        Rules --> Report
-        Report --> Review
-        Review --> Broker
-        Broker --> Verify
-        Verify --> Evidence
-        Verify --> Report
-    end
-
-    Update[签名规则与版本更新]
-    Optional[用户选择的脱敏解释\n可关闭]
-    Coord -.默认关闭.-> Optional
-    Update -->|签名校验后| Rules
-    Optional -.仅结构化脱敏结果.-> Report
+    Scope[Explicit local scope] --> Discover[Bounded read-only discovery]
+    Discover --> Detect[Static detectors]
+    Detect --> Findings[Redacted findings]
+    Findings --> Score[Explainable scoring and dispositions]
+    Score --> Reports[Local JSON and HTML]
+    Findings --> Guidance[Manual guidance]
+    State[Current-user DPAPI state] --> Score
 ```
 
-## 权限边界
+The main path runs as an ordinary user. Discovery reads only the selected scope. Reports are created only at a destination selected by the user and do not overwrite an existing file.
 
-1. UI、编排器、规则引擎和报告生成器默认以普通用户权限运行。
-2. 扫描插件按数据源隔离，拥有明确范围、超时、资源上限和错误报告，不共享任意命令执行能力。
-3. 修复代理只接受签名动作目录中的声明式动作；每个动作必须有前置条件、影响预览、备份、回滚和验证器。
-4. 外发通道默认关闭。规则更新、匿名统计和脱敏解释分别设置开关，并记录出口清单。
-5. 动态 MCP 测试不进入 Founder Alpha；后续必须在隔离沙箱中执行。
+## Optional local reads
 
-## 组件契约
+- Browser audit: after explicit confirmation, approved SQLite databases and required sidecars are copied read-only to a bounded temporary workspace. Only fixed metadata counts are retained; temporary copies are cleaned on success and failure.
+- Clipboard audit: after explicit one-time confirmation, the current text is read in memory. Only redacted findings survive the call; source text is not written to reports or state.
+- Report comparison: the user explicitly selects bounded local AgentGuardian JSON reports. Comparison retains aggregate results in memory and does not create a stable cross-scan finding identifier.
 
-组件之间使用可版本化的结构化对象传递数据：
+## Network boundary
 
-- `Asset`：来源类型、产品标识、版本、路径、权限、发现时间和覆盖状态。
-- `Evidence`：证据位置、规则 ID、脱敏摘要、指纹、置信度、时间戳；不保存完整密钥和完整原文。
-- `Finding`：风险领域、严重程度、根因指纹、影响范围、修复建议和证据引用。
-- `Score`：领域分数、总分、覆盖率、置信度、封顶原因和限制项。
-- `RemediationPlan`：动作 ID、前置条件、预览、批准状态、回滚点和验证方式。
-- `VerificationResult`：复审时间、检查项、通过/失败、残留证据和下一步建议。
+Network access exists only in `share_verification.py` and only after the user explicitly supplies a public HTTP(S) URL. The action performs a bounded reachability read. It does not send scan files, findings, credentials, clipboard text, browser data, or reports. It does not classify the URL's contents, sharing permissions, or indexing safety.
 
-## 可信性要求
+No default path calls OpenAI or another provider API. The product has no telemetry, remote control plane, update service, or cloud synchronization.
 
-- 源代码、规则、评分和修复契约开放透明。
-- 发布物提供哈希、构建来源和 SBOM；正式发布前完成代码签名。
-- 内置自我审计检查安装目录、权限、网络出口、更新来源、日志和完整性。
-- 公开报告不得把“没有发现”表述为“绝对安全”；未授权或未扫描范围必须显式显示。
+## Static detection and remediation
+
+`detectors.py` treats MCP configuration as local static data. A server that combines shell, filesystem-write, and network capabilities produces `MCP_DANGEROUS_COMBINATION`. This detector does not download or execute a server and does not prove that a configuration or endpoint is malicious.
+
+`remediation.py` exposes one allowlisted repair for `OPENAI_BASE_URL_OVERRIDE`. It requires a redacted preview, explicit confirmation, target SHA-256 recheck, same-directory backup, atomic replacement, and conditional same-session rollback. It cannot run arbitrary commands, generate changes with an LLM, rotate credentials, or repair other findings automatically. Path checks and replacement still have a same-user race window.
+
+## Protected local state
+
+State is protected with current Windows user DPAPI and a SHA-256 integrity envelope. It contains fixed rule summaries, local references, dispositions, and bounded scan metadata. It does not contain raw matches, scan keys, full paths, or evidence source filenames. Only explicit save or disposition actions write state.
+
+DPAPI does not protect against software already controlling the same Windows user session and does not support cross-user or cross-device recovery. Invalid state fails closed as `PROTECTED_STATE_INVALID`.
+
+## Component contract
+
+The JSON below mirrors the current `domain.py` dataclass field order.
+
+<!-- domain-field-inventory -->
+```json
+{
+  "Asset": ["asset_id", "kind", "display_name"],
+  "Evidence": ["source", "fingerprint", "masked"],
+  "Finding": [
+    "rule_id",
+    "domain",
+    "severity",
+    "root_fingerprint",
+    "evidence",
+    "disposition_ref"
+  ],
+  "Score": [
+    "total",
+    "deductions",
+    "cap_reason",
+    "coverage",
+    "confidence",
+    "limits",
+    "incomplete"
+  ],
+  "RemediationPlan": [
+    "rule_id",
+    "asset_ref",
+    "mode",
+    "steps",
+    "verification_steps"
+  ],
+  "VerificationResult": ["status", "notes"]
+}
+```
+
+`Evidence.masked` is redacted display evidence. `Finding.disposition_ref` is a local protected-state reference and is not exported. `RemediationPlan` carries manual guidance; the fixed repair is a separate allowlisted workflow. `VerificationResult.status=not_performed` is not an acceptance result.
+
+## Unsupported data and assurance limits
+
+Medical, financial, identity or biometric, legally privileged, customer data, state-secret, other regulated, and other high-sensitivity real data are unsupported. This is a use boundary, not content-classification assurance.
+
+Static source checks, local tests, candidate tooling, and retirement of the historical Store route do not establish production safety. The frozen candidate now has external evidence for scope, the local gate, remote checks, its exact unsigned installer lifecycle, and independent review. External license and Qt review, two-machine install/run/uninstall acceptance, and operations/security readiness remain pending. The status ledger cannot evidence its own commit; evidence must bind the frozen target candidate SHA externally. Even `PRIVATE-BETA-READY` would authorize only bounded testing by known testers, while formal public release remains `NO-GO`.
