@@ -13,6 +13,21 @@ not a production safety claim. The product is currently
 `INTEGRATIONS-PREVIEW-NOT-READY` and formal release is `NO-GO`.
 This is an unsigned Public Preview, not a production release.
 
+## Workflow routing
+
+`Windows Integrations Preview` is the required Windows candidate gate for the
+0.3 Public Preview branch `codex/0.3-public-preview-release`. The older
+`codex/0.3-integrations-preview` branch remains an explicit 0.3 development
+route. The `Windows EXE private beta candidate` workflow is a separate 0.2
+channel: it remains bound to `agent/founder-alpha`,
+`personal_exe_private_beta`, and version `0.2.0-beta.1`.
+
+Selecting the private-beta workflow with any other ref causes its candidate job
+to be skipped before checkout and build. That run is **not applicable**, not a
+successful 0.3 gate. A 0.3 candidate must be verified by
+`Windows Integrations Preview`; changing the private-beta profile or lowering
+its identity assertion is not a valid migration path.
+
 The runtime must not call OpenAI or another Provider API by default. Provider
 configuration is handled through local adaptation, static detection, and
 manual guidance. The product has no telemetry, background listener, automatic

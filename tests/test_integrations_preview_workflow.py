@@ -51,6 +51,12 @@ def test_integrations_preview_workflow_is_exact_sha_and_non_publishing() -> None
     workflow = WORKFLOW.read_text(encoding="ascii")
     profile = _release_profile()
     assert "runs-on: windows-2025" in workflow
+    assert (
+        "push:\n"
+        "    branches:\n"
+        "      - codex/0.3-public-preview-release\n"
+        "      - codex/0.3-integrations-preview"
+    ) in workflow
     assert "permissions:\n  contents: read" in workflow
     assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in workflow
     assert "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97" in workflow

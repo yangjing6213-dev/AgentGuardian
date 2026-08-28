@@ -201,6 +201,15 @@ def test_private_beta_workflow_is_exact_sha_read_only_and_nonpublishing() -> Non
 
     assert "permissions:\n  contents: read" in workflow
     assert "push:\n    branches:\n      - agent/founder-alpha" in workflow
+    assert re.search(
+        r"jobs:\n  candidate:\n    if: github\.ref == 'refs/heads/agent/founder-alpha'\n"
+        r"    runs-on: windows-2025",
+        workflow,
+    )
+    assert (
+        "0.3 Public Preview uses windows-integrations-preview.yml" in workflow
+    )
+    assert "codex/0.3-public-preview-release" not in workflow
     assert "ref: ${{ env.EXPECTED_SOURCE_COMMIT }}" in workflow
     assert (
         "EXPECTED_SOURCE_COMMIT: ${{ github.event_name == 'workflow_dispatch' "

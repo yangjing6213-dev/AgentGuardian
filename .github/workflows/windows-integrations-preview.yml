@@ -3,6 +3,7 @@ name: Windows Integrations Preview
 on:
   push:
     branches:
+      - codex/0.3-public-preview-release
       - codex/0.3-integrations-preview
   workflow_dispatch:
     inputs:
