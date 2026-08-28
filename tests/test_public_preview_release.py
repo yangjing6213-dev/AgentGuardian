@@ -3347,6 +3347,40 @@ def test_validate_staging_contents_normalizes_snapshot_error(
     assert token.ledger.owns(77)
 
 
+def test_validate_staging_contents_classifies_reparse_as_output_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    staged = tmp_path / ".release.staging-test"
+    staged.mkdir()
+    asset = staged / "asset.bin"
+    asset.write_bytes(b"asset")
+    child = module._StagedChildToken(
+        "asset.bin", module._FileSnapshot(staged, (1, 2, 3, 4), 0), "digest"
+    )
+    token = module._StagingDirectoryToken(
+        parent=tmp_path,
+        name=staged.name,
+        prefix=".release.staging-",
+        parent_identity=(1,),
+        identity=(2,),
+        is_reparse_point=False,
+        parent_handle=None,
+        directory_handle=None,
+        children=(child,),
+    )
+    monkeypatch.setattr(module, "_validated_staging_path", lambda *_args: staged)
+    monkeypatch.setattr(
+        module,
+        "_has_reparse_component",
+        lambda path: path == asset,
+    )
+    with pytest.raises(
+        module.ReleaseViolation, match="^RELEASE_OUTPUT_PATH_INVALID$"
+    ):
+        module._validate_staging_contents(token, staged)
+
+
 def test_bind_directory_normalizes_arbitrary_path_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

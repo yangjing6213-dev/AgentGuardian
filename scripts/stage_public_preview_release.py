@@ -843,10 +843,17 @@ def _inside(path: Path, parent: Path) -> bool:
     return True
 
 
-def _snapshot_file(path: Path, *, max_bytes: int, code: str) -> _FileSnapshot:
+def _snapshot_file(
+    path: Path,
+    *,
+    max_bytes: int,
+    code: str,
+    reparse_code: str | None = None,
+) -> _FileSnapshot:
+    reparse_failure_code = reparse_code or code
     try:
         if _has_reparse_component(path) or _is_reparse_point(path):
-            _fail(code)
+            _fail(reparse_failure_code)
         resolved = path.resolve(strict=True)
         info = resolved.stat()
     except (FileNotFoundError, OSError, ProfileViolation):
@@ -933,9 +940,14 @@ def _resolve_output(
 
 @contextmanager
 def _open_verified_file(
-    snapshot: _FileSnapshot, *, max_bytes: int, code: str
+    snapshot: _FileSnapshot,
+    *,
+    max_bytes: int,
+    code: str,
+    reparse_code: str | None = None,
 ) -> Iterator[BinaryIO]:
     """Open one expected file and verify its path and handle identity."""
+    reparse_failure_code = reparse_code or code
     if snapshot.size > max_bytes:
         _fail(code)
     stream: BinaryIO | None = None
@@ -944,7 +956,7 @@ def _open_verified_file(
     primary_error: BaseException | None = None
     try:
         if _has_reparse_component(snapshot.path) or _is_reparse_point(snapshot.path):
-            _fail(code)
+            _fail(reparse_failure_code)
         if _file_identity(snapshot.path.stat()) != snapshot.identity:
             _fail(code)
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
@@ -967,7 +979,7 @@ def _open_verified_file(
         if _bound_handle_identity(file_descriptor, resource_type="fd") != handle_identity:
             _fail(code)
         if _has_reparse_component(snapshot.path) or _is_reparse_point(snapshot.path):
-            _fail(code)
+            _fail(reparse_failure_code)
         if _file_identity(snapshot.path.stat()) != snapshot.identity:
             _fail(code)
     except ReleaseViolation as error:
@@ -1237,16 +1249,27 @@ def _digest_file(
     *,
     max_bytes: int = MAX_INPUT_BYTES,
     code: str = "RELEASE_ASSET_DIGEST_MISMATCH",
+    reparse_code: str | None = None,
 ) -> tuple[str, int]:
     snapshot = (
         path
         if isinstance(path, _FileSnapshot)
-        else _snapshot_file(path, max_bytes=max_bytes, code=code)
+        else _snapshot_file(
+            path,
+            max_bytes=max_bytes,
+            code=code,
+            reparse_code=reparse_code,
+        )
     )
     digest = hashlib.sha256()
     size = 0
     try:
-        with _open_verified_file(snapshot, max_bytes=max_bytes, code=code) as stream:
+        with _open_verified_file(
+            snapshot,
+            max_bytes=max_bytes,
+            code=code,
+            reparse_code=reparse_code,
+        ) as stream:
             while True:
                 chunk = stream.read(1024 * 1024)
                 if not chunk:
@@ -2798,10 +2821,20 @@ def _validate_staging_contents(
                     resource_type=child_resource_type,
                 )
             limit, code = _staging_file_limit(child.name)
-            snapshot = _snapshot_file(path / child.name, max_bytes=limit, code=code)
+            snapshot = _snapshot_file(
+                path / child.name,
+                max_bytes=limit,
+                code=code,
+                reparse_code="RELEASE_OUTPUT_PATH_INVALID",
+            )
             if snapshot.identity != child.snapshot.identity or snapshot.size != child.snapshot.size:
                 _fail("RELEASE_ASSET_DIGEST_MISMATCH")
-            digest, _ = _digest_file(snapshot, max_bytes=limit, code=code)
+            digest, _ = _digest_file(
+                snapshot,
+                max_bytes=limit,
+                code=code,
+                reparse_code="RELEASE_OUTPUT_PATH_INVALID",
+            )
             if digest != child.digest:
                 _fail("RELEASE_ASSET_DIGEST_MISMATCH")
         except ReleaseViolation:
