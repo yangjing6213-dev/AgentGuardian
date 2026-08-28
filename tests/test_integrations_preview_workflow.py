@@ -268,7 +268,13 @@ def test_download_staging_delegates_to_unified_profile_backed_tool() -> None:
     workflow = WORKFLOW.read_text(encoding="ascii")
     staging = _public_preview_staging_block(workflow)
 
-    assert "RELEASE_ROOT=$env:RUNNER_TEMP\\agentguardian-public-preview-release" in workflow
+    assert "$workspaceParent = Split-Path -Parent $pwd.Path" in workflow
+    assert (
+        '$releaseRoot = Join-Path $workspaceParent '
+        '("agentguardian-public-preview-release-" + $env:EXPECTED_SOURCE_COMMIT)'
+    ) in workflow
+    assert '"RELEASE_ROOT=$releaseRoot" >> $env:GITHUB_ENV' in workflow
+    assert "RELEASE_ROOT=$env:RUNNER_TEMP\\agentguardian-public-preview-release" not in workflow
     assert "INSTALLER_ATTESTATION_PATH=$env:RUNNER_TEMP\\AgentGuardian-Setup-0.3.0-preview.1-x64.exe.build.json" in workflow
     assert "if (Test-Path -LiteralPath $env:RELEASE_ROOT)" in staging
     assert "python scripts/stage_public_preview_release.py `" in staging
@@ -330,7 +336,10 @@ def test_download_staging_archive_uses_only_the_public_preview_bundle_root() -> 
     assert "agentguardian-public-preview-bundle-${{ env.EXPECTED_SOURCE_COMMIT }}" in workflow
     assert "retention-days: 14" in archive
     assert "if-no-files-found: error" in archive
-    assert "${{ runner.temp }}/agentguardian-public-preview-release" in archive
+    assert (
+        "${{ github.workspace }}/../agentguardian-public-preview-release-"
+        "${{ env.EXPECTED_SOURCE_COMMIT }}"
+    ) in archive
     assert "agentguardian-downloadable-preview" not in workflow
 
 

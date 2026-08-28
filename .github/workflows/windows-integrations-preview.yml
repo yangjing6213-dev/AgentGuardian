@@ -64,6 +64,8 @@ jobs:
           $commitEpoch = [int64](git show -s --format=%ct HEAD)
           Assert-NativeSuccess $LASTEXITCODE 'git show -s --format=%ct HEAD'
           $commitUtc = [DateTimeOffset]::FromUnixTimeSeconds($commitEpoch).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
+          $workspaceParent = Split-Path -Parent $pwd.Path
+          $releaseRoot = Join-Path $workspaceParent ("agentguardian-public-preview-release-" + $env:EXPECTED_SOURCE_COMMIT)
           "COMMIT_UTC=$commitUtc" >> $env:GITHUB_ENV
           "INNO_ASSET=$env:RUNNER_TEMP\agentguardian-inno-download\innosetup-7.0.2-x64.exe" >> $env:GITHUB_ENV
           "ISCC=$env:RUNNER_TEMP\agentguardian-inno-7.0.2\ISCC.exe" >> $env:GITHUB_ENV
@@ -73,7 +75,7 @@ jobs:
           "PORTABLE_TWO=$env:RUNNER_TEMP\agentguardian-portable-two" >> $env:GITHUB_ENV
           "INSTALLER_OUTPUT=$env:RUNNER_TEMP\agentguardian-integrations-installer" >> $env:GITHUB_ENV
           "INSTALLER_ATTESTATION_PATH=$env:RUNNER_TEMP\AgentGuardian-Setup-0.3.0-preview.1-x64.exe.build.json" >> $env:GITHUB_ENV
-          "RELEASE_ROOT=$env:RUNNER_TEMP\agentguardian-public-preview-release" >> $env:GITHUB_ENV
+          "RELEASE_ROOT=$releaseRoot" >> $env:GITHUB_ENV
           "EVIDENCE_ROOT=$env:RUNNER_TEMP\agentguardian-integrations-preview-evidence" >> $env:GITHUB_ENV
           "GITLEAKS_EXE=$env:RUNNER_TEMP\agentguardian-gitleaks\gitleaks.exe" >> $env:GITHUB_ENV
 
@@ -447,7 +449,7 @@ jobs:
           name: agentguardian-public-preview-bundle-${{ env.EXPECTED_SOURCE_COMMIT }}
           retention-days: 14
           if-no-files-found: error
-          path: ${{ runner.temp }}/agentguardian-public-preview-release
+          path: ${{ github.workspace }}/../agentguardian-public-preview-release-${{ env.EXPECTED_SOURCE_COMMIT }}
 
       - name: Write bounded exact-SHA workflow metadata
         shell: pwsh
