@@ -1,69 +1,26 @@
-# Third-Party Notices For Windows Portable Development Artifacts
+# Third-Party Notices For AgentGuardian 0.3 Windows Public Preview
 
-This notice applies to the unsigned AgentGuardian Windows portable development artifact. It is an engineering inventory, not legal advice or proof that every redistribution obligation has been completed.
+This notice applies to the unsigned AgentGuardian 0.3 Windows Public Preview installer and portable artifact. It is an engineering inventory, not legal advice. Exact component versions are generated into the packaged copy from the same specifications used to produce `AgentGuardian.cdx.json`. Confirmed license materials for the packaged toolchain and Qt route, Qt attributions, source archive hashes, and LGPL replacement instructions are included in `THIRD_PARTY_LICENSES/` inside the installed payload. The packet is not a complete per-package copyright and notice bundle for every transitive Python runtime dependency; the generated component inventory and CycloneDX SBOM record those dependencies and their license expressions.
 
-## Runtime Components
+<!-- AGENTGUARDIAN_COMPONENT_INVENTORY_START -->
 
-- **CPython 3.12.2** - Python Software Foundation License Version 2.
-- **OpenSSL 3.0.13** - Apache License 2.0.
-- **PyInstaller Bootloader 6.16.0** - `GPL-2.0-or-later WITH Bootloader-exception`; the bootloader is embedded in `AgentGuardian.exe`, and the exception permits distributing generated executable bundles under the application's license when dependency licenses are also satisfied.
-- **PySide6 6.11.1**, **PySide6_Essentials 6.11.1**, **PySide6_Addons 6.11.1**, and **shiboken6 6.11.1** - wheel metadata declares `LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only`. Qt commercial license has not been verified for this project. Redistribution must satisfy the selected open-source terms or be backed by separately verified commercial rights.
-- **Microsoft Visual C++ Runtime 14.38.33126.1** and **Microsoft Universal C Runtime 10.0.19041.1** - license status is `NOASSERTION` pending a Windows redistribution review.
+The artifact-specific component inventory is generated during the Windows build.
 
-### Python Runtime Closure
+<!-- AGENTGUARDIAN_COMPONENT_INVENTORY_END -->
 
-The following 34 Python distributions are the reviewed runtime closure of
-`PySide6` plus `mcp==2.0.0` for the Windows 3.12 build lock. Versions are
-locked in `requirements-build.lock` and the names below follow the lock's
-distribution names.
+## License And Redistribution References
 
-| Distribution | Version | SPDX expression |
-| --- | --- | --- |
-| `annotated-types` | 0.8.0 | MIT |
-| `anyio` | 4.14.2 | MIT |
-| `attrs` | 26.1.0 | MIT |
-| `cffi` | 2.1.1 | MIT-0 |
-| `click` | 8.4.2 | BSD-3-Clause |
-| `colorama` | 0.4.6 | BSD-3-Clause |
-| `cryptography` | 50.0.0 | Apache-2.0 OR BSD-3-Clause |
-| `h11` | 0.16.0 | MIT |
-| `httpcore2` | 2.12.0 | BSD-3-Clause |
-| `httpx2` | 2.12.0 | BSD-3-Clause |
-| `idna` | 3.19 | BSD-3-Clause |
-| `jsonschema` | 4.26.0 | MIT |
-| `jsonschema-specifications` | 2025.9.1 | MIT |
-| `mcp` | 2.0.0 | MIT |
-| `mcp-types` | 2.0.0 | MIT |
-| `opentelemetry-api` | 1.44.0 | Apache-2.0 |
-| `pydantic` | 2.13.4 | MIT |
-| `pydantic-core` | 2.46.4 | MIT |
-| `pycparser` | 3.0 | BSD-3-Clause |
-| `pyjwt` | 2.13.0 | MIT |
-| `pyside6` | 6.11.1 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only |
-| `pyside6-addons` | 6.11.1 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only |
-| `pyside6-essentials` | 6.11.1 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only |
-| `python-multipart` | 0.0.32 | Apache-2.0 |
-| `pywin32` | 312 | PSF-2.0 |
-| `referencing` | 0.37.0 | MIT |
-| `rpds-py` | 2026.6.3 | MIT |
-| `shiboken6` | 6.11.1 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only |
-| `sse-starlette` | 3.4.8 | BSD-3-Clause |
-| `starlette` | 1.6.0 | BSD-3-Clause |
-| `truststore` | 0.10.4 | MIT |
-| `typing-extensions` | 4.16.0 | PSF-2.0 |
-| `typing-inspection` | 0.4.4 | MIT |
-| `uvicorn` | 0.52.4 | BSD-3-Clause |
+- **CPython** - Python Software Foundation License Version 2. Official terms: <https://docs.python.org/3.12/license.html>.
+- **OpenSSL 3.x** - Apache License 2.0. Official terms: <https://openssl-library.org/source/license/>.
+- **PyInstaller and its embedded bootloader** - `GPL-2.0-or-later WITH Bootloader-exception`. Official terms: <https://pyinstaller.org/en/stable/license.html>.
+- **PySide6, PySide6_Essentials, PySide6_Addons, shiboken6, and Qt libraries** - this preview selects the `LGPL-3.0-only` route for the dynamically linked Qt runtime. No Qt commercial license is claimed. See `THIRD_PARTY_LICENSES/QT-LGPL-COMPLIANCE.md`, the bundled GPL/LGPL texts, and the exact Qt 6.11.1 attribution inventory. Official overview: <https://doc.qt.io/qt-6/licensing.html>.
+- **Microsoft Visual C++ Runtime and Microsoft Universal C Runtime** - represented as `NOASSERTION` in the SBOM. The exact app-local DLLs are covered by the payload manifest. Public distribution still requires the publisher to satisfy Microsoft's licensed-user and unmodified-file terms described in `THIRD_PARTY_LICENSES/MICROSOFT-RUNTIME-REDISTRIBUTION.md`. Official guidance: <https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files?view=msvc-170>.
+- **Inno Setup 7.0.2** - build-time installer generator. The installer output identifies Inno Setup and this project records the upstream license without claiming ownership of Inno Setup. Official terms: <https://jrsoftware.org/files/is/license.txt>.
 
-The MCP Python SDK distribution contains optional HTTP transport modules in its
-dependency graph. AgentGuardian 0.3 registers and starts only STDIO; the
-presence of dependency code is not evidence that AgentGuardian exposes a
-listener. License and redistribution review remains a release gate.
+The complete Python runtime closure and its exact versions are listed in the generated inventory and CycloneDX SBOM. The MCP Python SDK distribution contains optional HTTP transport modules in its dependency graph. AgentGuardian 0.3 registers and starts only STDIO; the presence of dependency code is not evidence that AgentGuardian exposes a listener.
 
-## Build-Time Components
+The portable build's internal `BUILD-METADATA.json` intentionally uses `unsigned_development_only` to identify a build-stage artifact. Release staging separately uses `unsigned_public_preview` for the external delivery channel. These labels are deliberately different and do not imply signing, production safety, or complete legal clearance.
 
-- **PyInstaller 6.16.0** - the packaging tool is represented separately from its embedded runtime bootloader in the CycloneDX SBOM.
-- The complete build-tool set is listed in `requirements-build.lock`. The CycloneDX SBOM represents PyInstaller as the primary build-time component; other build-only packages are not represented as AgentGuardian runtime imports merely because they participate in the build.
+## Public Preview Boundary
 
-## Distribution Gate
-
-The current portable output is an unsigned development artifact. It is not a signed installer, Windows MVP release, production-safe build, or proof of clean-machine installation. Trusted code signing, native installation, complete license-text packaging, fresh-runner provenance, and uninstall-residue acceptance remain pending.
+The current output is an unsigned Public Preview. It is not a signed installer, a production-safety claim, or authorization to process high-sensitivity real data. Code signing remains deferred. Exact-SHA CI, clean-machine lifecycle evidence, integrity verification, and the publisher's Microsoft runtime license confirmation remain separate release gates.

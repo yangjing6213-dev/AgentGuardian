@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       candidate_sha:
-        description: Exact lowercase 40-character candidate commit
+        description: Exact lowercase 40-character candidate commit from agent/founder-alpha only; 0.3 Public Preview uses windows-integrations-preview.yml
         required: true
         type: string
 
@@ -16,6 +16,7 @@ permissions:
 
 jobs:
   candidate:
+    if: github.ref == 'refs/heads/agent/founder-alpha'
     runs-on: windows-2025
     timeout-minutes: 45
     env:

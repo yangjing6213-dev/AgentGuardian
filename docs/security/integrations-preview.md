@@ -13,6 +13,21 @@ not a production safety claim. The product is currently
 `INTEGRATIONS-PREVIEW-NOT-READY` and formal release is `NO-GO`.
 This is an unsigned Public Preview, not a production release.
 
+## Workflow routing
+
+`Windows Integrations Preview` is the required Windows candidate gate for the
+0.3 Public Preview branch `codex/0.3-public-preview-release`. The older
+`codex/0.3-integrations-preview` branch remains an explicit 0.3 development
+route. The `Windows EXE private beta candidate` workflow is a separate 0.2
+channel: it remains bound to `agent/founder-alpha`,
+`personal_exe_private_beta`, and version `0.2.0-beta.1`.
+
+Selecting the private-beta workflow with any other ref causes its candidate job
+to be skipped before checkout and build. That run is **not applicable**, not a
+successful 0.3 gate. A 0.3 candidate must be verified by
+`Windows Integrations Preview`; changing the private-beta profile or lowering
+its identity assertion is not a valid migration path.
+
 The runtime must not call OpenAI or another Provider API by default. Provider
 configuration is handled through local adaptation, static detection, and
 manual guidance. The product has no telemetry, background listener, automatic
@@ -80,10 +95,14 @@ not an instruction to publish the current candidate, whose status remains
    files. The staging CLI must receive `--portable-bundle-root` pointing to the
    exact `dist/AgentGuardian` directory used to create the portable ZIP; it
    compares every decompressed path, size, and SHA-256 before accepting the
-   archive. Review `DOWNLOAD-METADATA.json` for the source SHA, version,
-   platform, and file records, then recompute and review every entry in
-   `SHA256SUMS`. A Python API call without this binding is structural validation
-   only and is not public-release evidence.
+   archive. With that binding, the staged `THIRD_PARTY_NOTICES.md` is copied
+   from the verified portable bundle; its component inventory is generated from
+   the same specifications as `AgentGuardian.cdx.json`, so runtime patch
+   versions are not taken from a stale repository snapshot. Review
+   `DOWNLOAD-METADATA.json` for the source SHA, version, platform, and file
+   records, then recompute and review every entry in `SHA256SUMS`. A Python API
+   call without this binding is
+   structural validation only and is not public-release evidence.
 3. After the source and staged files pass their gates, create tag
    `v0.3.0-preview.1` and a Release titled
    `AgentGuardian 0.3.0 Public Preview (Unsigned)`. This is an unsigned Public

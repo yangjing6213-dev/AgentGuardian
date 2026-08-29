@@ -56,6 +56,63 @@ _FORBIDDEN_QT_NETWORK_COMPONENTS = {
     "qt6network.dll",
     "qtnetwork.pyd",
 }
+_NOTICE_INVENTORY_START = "<!-- AGENTGUARDIAN_COMPONENT_INVENTORY_START -->"
+_NOTICE_INVENTORY_END = "<!-- AGENTGUARDIAN_COMPONENT_INVENTORY_END -->"
+_THIRD_PARTY_LICENSE_SOURCE = Path("packaging") / "third_party_licenses"
+THIRD_PARTY_LICENSE_FILES = (
+    "INNO-SETUP-7.0.2.txt",
+    "MICROSOFT-RUNTIME-REDISTRIBUTION.md",
+    "OPENSSL-3.0.txt",
+    "PYINSTALLER-6.16.0.txt",
+    "PYTHON-3.12.txt",
+    "QT-LGPL-COMPLIANCE.md",
+    "QT-THIRD-PARTY-ATTRIBUTIONS.json",
+    "README.md",
+    "qt-licenses/AFL-2.1.txt",
+    "qt-licenses/Apache-2.0.txt",
+    "qt-licenses/Bitstream-Vera.txt",
+    "qt-licenses/BSD-2-Clause.txt",
+    "qt-licenses/BSD-3-Clause.txt",
+    "qt-licenses/BSD-4-Clause.txt",
+    "qt-licenses/BSL-1.0.txt",
+    "qt-licenses/CC0-1.0.txt",
+    "qt-licenses/FTL.txt",
+    "qt-licenses/GFDL-1.3-no-invariants-only.txt",
+    "qt-licenses/GPL-2.0-only.txt",
+    "qt-licenses/GPL-2.0-or-later.txt",
+    "qt-licenses/GPL-3.0-only.txt",
+    "qt-licenses/HPND-sell-variant.txt",
+    "qt-licenses/HPND.txt",
+    "qt-licenses/IJG.txt",
+    "qt-licenses/Imlib2.txt",
+    "qt-licenses/IPL-1.0.txt",
+    "qt-licenses/LGPL-2.1-or-later.txt",
+    "qt-licenses/LGPL-3.0-only.txt",
+    "qt-licenses/LicenseRef-BSD-3-Clause-with-PCRE2-Binary-Like-Packages-Exception.txt",
+    "qt-licenses/LicenseRef-ICC-License.txt",
+    "qt-licenses/LicenseRef-Lcs-Telegraphics.txt",
+    "qt-licenses/LicenseRef-SHA1-Public-Domain.txt",
+    "qt-licenses/Libpng.txt",
+    "qt-licenses/Linux-syscall-note.txt",
+    "qt-licenses/MIT-Khronos-old.txt",
+    "qt-licenses/MIT-open-group.txt",
+    "qt-licenses/MIT.txt",
+    "qt-licenses/MPL-2.0.txt",
+    "qt-licenses/Qt-GPL-exception-1.0.txt",
+    "qt-licenses/SPL-1.0.txt",
+    "qt-licenses/Unicode-3.0.txt",
+    "qt-licenses/X11.txt",
+    "qt-licenses/Xerox.txt",
+    "qt-licenses/Zlib.txt",
+    "qt-licenses/blessing.txt",
+    "qt-licenses/libpng-2.0.txt",
+    "qt-licenses/pyside-BSD-3-Clause.txt",
+)
+THIRD_PARTY_LICENSE_MANIFEST_NAME = "MANIFEST.json"
+_THIRD_PARTY_LICENSE_FILE_SET = frozenset(THIRD_PARTY_LICENSE_FILES)
+_THIRD_PARTY_LICENSE_DIRECTORIES = frozenset({"qt-licenses"})
+_MAX_THIRD_PARTY_LICENSE_FILE_BYTES = 2 * 1024 * 1024
+_MAX_THIRD_PARTY_LICENSE_TOTAL_BYTES = 8 * 1024 * 1024
 
 _RUNTIME_PACKAGE_LICENSES = (
     ("annotated-types", "MIT"),
@@ -226,6 +283,203 @@ def portable_component_specs(
     return tuple(components)
 
 
+def render_third_party_notices(
+    template: bytes,
+    component_specs: tuple[dict[str, str], ...],
+) -> bytes:
+    try:
+        text = template.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("third-party notice template must be UTF-8") from None
+    if (
+        text.count(_NOTICE_INVENTORY_START) != 1
+        or text.count(_NOTICE_INVENTORY_END) != 1
+        or text.index(_NOTICE_INVENTORY_START) >= text.index(_NOTICE_INVENTORY_END)
+    ):
+        raise ValueError("third-party notice inventory markers are invalid")
+
+    rows: list[tuple[str, str, str, str]] = []
+    names: set[str] = set()
+    required = {"name", "version", "role", "license", "type"}
+    for spec in component_specs:
+        if set(spec) != required:
+            raise ValueError("third-party component specification is invalid")
+        values = tuple(
+            str(spec[key]) for key in ("name", "version", "role", "license")
+        )
+        if any(
+            not value or "\n" in value or "\r" in value or "|" in value
+            for value in values
+        ):
+            raise ValueError("third-party component value is invalid")
+        normalized_name = values[0].casefold()
+        if normalized_name in names:
+            raise ValueError("third-party component names must be unique")
+        names.add(normalized_name)
+        rows.append(values)
+    if not rows:
+        raise ValueError("third-party component inventory is empty")
+
+    inventory_lines = [
+        _NOTICE_INVENTORY_START,
+        "",
+        "## Artifact Component Inventory",
+        "",
+        "This table is generated from the same component specifications as "
+        "`AgentGuardian.cdx.json` for this artifact.",
+        "",
+        "| Component | Version | Role | License expression |",
+        "| --- | --- | --- | --- |",
+        *(
+            f"| {name} | {version} | {role} | {license_expression} |"
+            for name, version, role, license_expression in sorted(
+                rows, key=lambda row: row[0].casefold()
+            )
+        ),
+        "",
+        _NOTICE_INVENTORY_END,
+    ]
+    start = text.index(_NOTICE_INVENTORY_START)
+    end = text.index(_NOTICE_INVENTORY_END) + len(_NOTICE_INVENTORY_END)
+    rendered = text[:start] + "\n".join(inventory_lines) + text[end:]
+    return rendered.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+
+
+def _read_third_party_license_packet(
+    project_root: Path,
+) -> tuple[tuple[PurePosixPath, bytes], ...]:
+    try:
+        project_root = project_root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise ValueError("third-party license packet is invalid") from None
+    source_root = project_root / _THIRD_PARTY_LICENSE_SOURCE
+    try:
+        metadata = source_root.lstat()
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if (
+            not source_root.is_dir()
+            or source_root.is_symlink()
+            or getattr(metadata, "st_file_attributes", 0) & reparse_flag
+        ):
+            raise ValueError("third-party license packet is invalid")
+        source_root = source_root.resolve(strict=True)
+        source_root.relative_to(project_root)
+    except (OSError, RuntimeError, ValueError):
+        raise ValueError("third-party license packet is invalid") from None
+
+    source_paths: list[tuple[PurePosixPath, Path, os.stat_result]] = []
+    pending = [source_root]
+    while pending:
+        directory = pending.pop()
+        try:
+            children = sorted(
+                directory.iterdir(),
+                key=lambda item: item.name,
+            )
+        except OSError:
+            raise ValueError("third-party license packet is invalid") from None
+        for path in children:
+            relative = PurePosixPath(path.relative_to(source_root).as_posix())
+            if any(not part or part.startswith(".") for part in relative.parts):
+                raise ValueError("third-party license packet is invalid")
+            try:
+                metadata = path.lstat()
+            except OSError:
+                raise ValueError("third-party license packet is invalid") from None
+            attributes = getattr(metadata, "st_file_attributes", 0)
+            reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            if path.is_symlink() or attributes & reparse_flag:
+                raise ValueError("third-party license packet is invalid")
+            if stat.S_ISDIR(metadata.st_mode):
+                if relative.as_posix() not in _THIRD_PARTY_LICENSE_DIRECTORIES:
+                    raise ValueError(
+                        "third-party license packet has an unreviewed directory"
+                    )
+                pending.append(path)
+                continue
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or relative.as_posix() not in _THIRD_PARTY_LICENSE_FILE_SET
+                or metadata.st_size > _MAX_THIRD_PARTY_LICENSE_FILE_BYTES
+            ):
+                raise ValueError(
+                    "third-party license packet is incomplete or contains unreviewed files"
+                )
+            source_paths.append((relative, path, metadata))
+            if len(source_paths) > len(_THIRD_PARTY_LICENSE_FILE_SET):
+                raise ValueError(
+                    "third-party license packet is incomplete or contains unreviewed files"
+                )
+
+    files: list[tuple[PurePosixPath, bytes]] = []
+    total = 0
+    for relative, path, metadata in sorted(
+        source_paths, key=lambda entry: entry[0].as_posix()
+    ):
+        try:
+            data = path.read_bytes()
+        except OSError:
+            raise ValueError("third-party license packet is invalid") from None
+        if not data or len(data) != metadata.st_size:
+            raise ValueError("third-party license packet is invalid")
+        total += len(data)
+        if total > _MAX_THIRD_PARTY_LICENSE_TOTAL_BYTES:
+            raise ValueError("third-party license packet is invalid")
+        files.append((relative, data))
+
+    names = {relative.as_posix() for relative, _ in files}
+    if names != _THIRD_PARTY_LICENSE_FILE_SET:
+        raise ValueError(
+            "third-party license packet is incomplete or contains unreviewed files"
+        )
+    return tuple(files)
+
+
+def _third_party_license_packet_manifest(
+    files: tuple[tuple[PurePosixPath, bytes], ...],
+) -> dict[str, object]:
+    entries = [
+        {
+            "path": relative.as_posix(),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "size": len(data),
+        }
+        for relative, data in files
+    ]
+    base = {"algorithm": "sha256", "files": entries, "schema": 1}
+    return {
+        **base,
+        "manifest_sha256": hashlib.sha256(canonical_json_bytes(base)).hexdigest(),
+        "total_bytes": sum(entry["size"] for entry in entries),
+    }
+
+
+def third_party_license_packet_manifest(project_root: Path) -> dict[str, object]:
+    """Return the exact, deterministic manifest for the reviewed source packet."""
+    return _third_party_license_packet_manifest(
+        _read_third_party_license_packet(project_root)
+    )
+
+
+def copy_third_party_license_packet(
+    project_root: Path, bundle_root: Path
+) -> dict[str, object]:
+    source_files = _read_third_party_license_packet(project_root)
+    destination_root = bundle_root / "THIRD_PARTY_LICENSES"
+    if destination_root.exists():
+        raise ValueError("third-party license packet is invalid")
+    destination_root.mkdir()
+    for relative, data in source_files:
+        destination = destination_root.joinpath(*relative.parts)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(data)
+    manifest = _third_party_license_packet_manifest(source_files)
+    (destination_root / THIRD_PARTY_LICENSE_MANIFEST_NAME).write_bytes(
+        canonical_json_bytes(manifest)
+    )
+    return manifest
+
+
 def cyclonedx_bom_bytes(
     component_specs: tuple[dict[str, str], ...],
     *,
@@ -304,6 +558,8 @@ def write_portable_evidence(
     build_dependencies: dict[str, object],
     forbidden_texts: tuple[str, ...],
     artifact_status: str = "unsigned_development_only",
+    bind_license_packet_metadata: bool = True,
+    notices_template_path: Path | None = None,
 ) -> None:
     if len(source_commit) != 40 or any(character not in "0123456789abcdef" for character in source_commit):
         raise ValueError("source commit must be a full lowercase SHA-1")
@@ -311,10 +567,30 @@ def write_portable_evidence(
         raise ValueError("build time must be canonical UTC")
     if artifact_status != "unsigned_development_only":
         raise ValueError("artifact status is invalid")
+    notices_template = (
+        project_root / "THIRD_PARTY_NOTICES.md"
+        if notices_template_path is None
+        else Path(notices_template_path)
+    )
+    try:
+        project_resolved = project_root.resolve(strict=True)
+        if notices_template.is_symlink():
+            raise ValueError
+        notices_template = notices_template.resolve(strict=True)
+        notices_template.relative_to(project_resolved)
+    except (OSError, RuntimeError, ValueError):
+        raise ValueError("third-party notice template is invalid") from None
+    if not notices_template.is_file():
+        raise ValueError("third-party notice template is invalid")
     shutil.copyfile(project_root / "LICENSE", bundle_root / "LICENSE")
-    shutil.copyfile(
-        project_root / "THIRD_PARTY_NOTICES.md",
-        bundle_root / "THIRD_PARTY_NOTICES.md",
+    (bundle_root / "THIRD_PARTY_NOTICES.md").write_bytes(
+        render_third_party_notices(
+            notices_template.read_bytes(),
+            component_specs,
+        )
+    )
+    third_party_license_packet = copy_third_party_license_packet(
+        project_root, bundle_root
     )
     from datetime import datetime
 
@@ -333,6 +609,8 @@ def write_portable_evidence(
         "built_at": built_at,
         "source_commit": source_commit,
     }
+    if bind_license_packet_metadata:
+        metadata["third_party_license_packet"] = third_party_license_packet
     (bundle_root / "BUILD-METADATA.json").write_bytes(canonical_json_bytes(metadata))
     payload_manifest = artifact_manifest(
         bundle_root,
@@ -528,6 +806,13 @@ def build_portable(
         build_dependencies=build_dependencies,
         forbidden_texts=(str(project_root), str(output_root)),
         artifact_status=artifact_status,
+        bind_license_packet_metadata=False,
+        notices_template_path=(
+            project_root
+            / "packaging"
+            / "windows"
+            / "THIRD_PARTY_NOTICES_PRIVATE_BETA.md"
+        ),
     )
     deterministic_zip(
         bundle_root,
@@ -608,6 +893,7 @@ def _build_integrations_preview_portable(
         build_dependencies=build_dependencies,
         forbidden_texts=(str(project_root), str(output_root)),
         artifact_status=artifact_status,
+        bind_license_packet_metadata=True,
     )
     deterministic_zip(
         bundle_root,

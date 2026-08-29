@@ -64,6 +64,21 @@ def test_documented_download_route_matches_profile_and_is_not_temporary() -> Non
     assert "payload_tree_match" in document
 
 
+def test_portable_contract_requires_the_reviewed_license_packet() -> None:
+    module = _module()
+    packet_root = ROOT / "packaging" / "third_party_licenses"
+    packet_names = {
+        path.relative_to(packet_root).as_posix()
+        for path in packet_root.rglob("*")
+        if path.is_file()
+    }
+
+    assert packet_names
+    assert {
+        f"THIRD_PARTY_LICENSES/{name}" for name in packet_names
+    } <= module._PORTABLE_REQUIRED_NAMES
+
+
 def test_public_download_verifier_has_fixed_bounded_request_contract() -> None:
     script = DOWNLOAD_VERIFIER.read_text(encoding="ascii")
 
@@ -801,6 +816,7 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
     shutil.copyfile(ROOT / "rules" / "default.json", package / "rules" / "default.json")
     shutil.copyfile(ROOT / "LICENSE", bundle / "LICENSE")
     shutil.copyfile(ROOT / "THIRD_PARTY_NOTICES.md", bundle / "THIRD_PARTY_NOTICES.md")
+    packet_manifest = portable_builder.copy_third_party_license_packet(ROOT, bundle)
     skill_payload = ROOT / "skills" / "agentguardian"
     skill_target = bundle / "agentguardian_skill"
     skill_target.mkdir()
@@ -827,6 +843,7 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
                 "build_mode": "pyinstaller_onedir",
                 "built_at": BUILT_AT,
                 "source_commit": COMMIT,
+                "third_party_license_packet": packet_manifest,
             }
         )
     )
@@ -1089,6 +1106,100 @@ def test_stage_accepts_portable_bundle_root_with_matching_archive(
     )
 
     assert result["status"] == "pass"
+
+
+def test_stage_rejects_portable_archive_without_license_packet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    _installer, portable, _skill = _inputs(tmp_path)
+    bundle = portable.parent.parent / "portable-bundle"
+    builder = importlib.import_module("scripts.build_windows_portable")
+    shutil.rmtree(bundle / "THIRD_PARTY_LICENSES")
+    (bundle / "PAYLOAD-MANIFEST.json").unlink()
+    (bundle / "SHA256SUMS").unlink()
+    (bundle / "PAYLOAD-MANIFEST.json").write_bytes(
+        builder.canonical_json_bytes(builder.artifact_manifest(bundle))
+    )
+    checksum_manifest = builder.artifact_manifest(bundle)
+    (bundle / "SHA256SUMS").write_bytes(
+        "".join(
+            f"{entry['sha256']} *{entry['path']}\n"
+            for entry in checksum_manifest["files"]
+        ).encode("ascii")
+    )
+    builder.deterministic_zip(bundle, portable)
+    profile = module._verified_profile(ROOT)
+    snapshot = module._snapshot_file(
+        portable,
+        max_bytes=module.MAX_INPUT_BYTES,
+        code="RELEASE_INPUT_TYPE_INVALID",
+    )
+
+    with pytest.raises(
+        module.ReleaseViolation, match="^RELEASE_INPUT_TYPE_INVALID$"
+    ):
+        module._validate_portable_input(
+            ROOT,
+            profile,
+            snapshot,
+            source_commit=COMMIT,
+            built_at=BUILT_AT,
+        )
+
+
+def test_stage_uses_artifact_specific_notices_from_matching_bundle_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_git_state", lambda _root: (COMMIT, ""))
+    installer, portable, skill = _inputs(tmp_path)
+    bundle = portable.parent.parent / "portable-bundle"
+    builder = importlib.import_module("scripts.build_windows_portable")
+    artifact_notices = (
+        b"# Artifact-specific third-party notices\n\n"
+        b"This content is bound to the portable SBOM.\n"
+    )
+    (bundle / "THIRD_PARTY_NOTICES.md").write_bytes(artifact_notices)
+    (bundle / "PAYLOAD-MANIFEST.json").unlink()
+    (bundle / "SHA256SUMS").unlink()
+    manifest = builder.artifact_manifest(bundle)
+    (bundle / "PAYLOAD-MANIFEST.json").write_bytes(
+        builder.canonical_json_bytes(manifest)
+    )
+    checksum_manifest = builder.artifact_manifest(bundle)
+    (bundle / "SHA256SUMS").write_bytes(
+        "".join(
+            f"{entry['sha256']} *{entry['path']}\n"
+            for entry in checksum_manifest["files"]
+        ).encode("ascii")
+    )
+    builder.deterministic_zip(bundle, portable)
+    attestation_path = installer.parent.parent / f"{installer.name}.build.json"
+    attestation = json.loads(attestation_path.read_bytes())
+    attestation["bundle"]["payload_manifest_sha256"] = hashlib.sha256(
+        (bundle / "PAYLOAD-MANIFEST.json").read_bytes()
+    ).hexdigest()
+    attestation["bundle"]["checksums_sha256"] = hashlib.sha256(
+        (bundle / "SHA256SUMS").read_bytes()
+    ).hexdigest()
+    attestation_path.write_bytes(builder.canonical_json_bytes(attestation))
+    output = tmp_path / "release"
+
+    result = module.stage_public_preview_release(
+        ROOT,
+        output,
+        installer_path=installer,
+        portable_path=portable,
+        portable_bundle_root=bundle,
+        skill_path=skill,
+        source_commit=COMMIT,
+        built_at=BUILT_AT,
+    )
+
+    assert result["status"] == "pass"
+    assert (output / "THIRD_PARTY_NOTICES.md").read_bytes() == artifact_notices
 
 
 def test_stage_rejects_reused_artifact_file_identity(
@@ -4820,6 +4931,104 @@ def test_source_input_snapshot_rejects_content_drift(
             COMMIT,
             {"same": True},
             (token,),
+        )
+
+
+def test_package_input_snapshot_expands_directories_and_excludes_build_noise(
+    tmp_path: Path,
+) -> None:
+    module = _module()
+    root = tmp_path / "repository"
+    source = root / "src" / "agentguardian"
+    source.mkdir(parents=True)
+    (source / "keep.py").write_text("value = 1\n", encoding="ascii")
+    (source / "__pycache__").mkdir()
+    (source / "__pycache__" / "ignored.pyc").write_bytes(b"ignored")
+    (source / ".analysis").mkdir()
+    (source / ".analysis" / "ignored.txt").write_text("ignored", encoding="ascii")
+
+    tokens = module._capture_package_input_files(
+        root, ("src/agentguardian",)
+    )
+
+    assert [token.snapshot.path.relative_to(root).as_posix() for token in tokens] == [
+        "src/agentguardian/keep.py"
+    ]
+
+
+def test_package_input_snapshot_detects_directory_membership_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    root = tmp_path / "repository"
+    package = root / "package"
+    package.mkdir(parents=True)
+    (package / "one.txt").write_text("one", encoding="ascii")
+    tokens = module._capture_package_input_files(root, ("package",))
+    (package / "two.txt").write_text("two", encoding="ascii")
+    monkeypatch.setattr(module, "_require_source_state", lambda *_args: None)
+    monkeypatch.setattr(module, "_verified_profile", lambda _root: object())
+    monkeypatch.setattr(module, "_release_contract", lambda _profile: {"same": True})
+
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_SOURCE_STATE_INVALID$"):
+        module._verify_source_inputs(
+            root,
+            COMMIT,
+            {"same": True},
+            tokens,
+            package_input_paths=("package",),
+            package_input_tokens=tokens,
+        )
+
+
+def test_package_input_snapshot_has_a_file_and_byte_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    root = tmp_path / "repository"
+    package = root / "package"
+    package.mkdir(parents=True)
+    (package / "one.txt").write_text("one", encoding="ascii")
+    (package / "two.txt").write_text("two", encoding="ascii")
+    monkeypatch.setattr(module, "MAX_PACKAGE_INPUT_FILES", 1)
+
+    with pytest.raises(
+        module.ReleaseViolation, match="^RELEASE_SOURCE_INPUT_LIMIT$"
+    ):
+        module._capture_package_input_files(root, ("package",))
+
+
+def test_package_input_snapshot_has_a_directory_entry_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    root = tmp_path / "repository"
+    package = root / "package"
+    package.mkdir(parents=True)
+    (package / "one.txt").write_text("one", encoding="ascii")
+    (package / "two.txt").write_text("two", encoding="ascii")
+    monkeypatch.setattr(module, "MAX_PACKAGE_INPUT_ENTRIES", 1)
+
+    with pytest.raises(
+        module.ReleaseViolation, match="^RELEASE_SOURCE_TRAVERSAL_LIMIT$"
+    ):
+        module._capture_package_input_files(root, ("package",))
+
+
+def test_package_input_snapshot_rejects_casefold_collisions() -> None:
+    module = _module()
+    root = Path("C:/synthetic/repository")
+    seen: dict[str, str] = {}
+
+    assert module._register_package_input_path(
+        seen, root / "package" / "A.txt", root
+    ) == ("package/A.txt", True)
+    with pytest.raises(module.ReleaseViolation, match="^RELEASE_SOURCE_STATE_INVALID$"):
+        module._register_package_input_path(
+            seen, root / "package" / "a.txt", root
         )
 
 

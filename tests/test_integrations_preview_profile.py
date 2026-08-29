@@ -129,6 +129,20 @@ def test_integrations_preview_profile_has_exact_identity() -> None:
         assert profile[field] == expected
 
 
+def test_integrations_preview_profile_binds_license_packet_inputs() -> None:
+    profile = json.loads(PROFILE_PATH.read_text(encoding="ascii"))
+    packet_root = ROOT / "packaging" / "third_party_licenses"
+    packet_paths = {
+        "packaging/third_party_licenses/"
+        + path.relative_to(packet_root).as_posix()
+        for path in packet_root.rglob("*")
+        if path.is_file()
+    }
+
+    for field in ("required_source_paths", "package_input_paths"):
+        assert packet_paths <= set(profile[field])
+
+
 @pytest.mark.parametrize(
     ("field", "mutated"),
     [

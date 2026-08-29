@@ -4,6 +4,7 @@ import inspect
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -22,12 +23,14 @@ from scripts.build_windows_portable import (
     build_pyinstaller_command,
     build_integrations_preview_pyinstaller_command,
     canonical_json_bytes,
+    copy_third_party_license_packet,
     cyclonedx_bom_bytes,
     deterministic_zip,
     filter_qt_gui_binaries,
     portable_component_specs,
     reviewed_source_paths,
     runtime_library_versions,
+    THIRD_PARTY_LICENSE_FILES,
     _locked_versions,
     validate_build_dependency_snapshot,
     validate_relative_paths,
@@ -41,6 +44,7 @@ from scripts.build_windows_portable import (
 
 PROJECT_ROOT = Path(__file__).parents[1]
 PACKAGE_ROOT = PROJECT_ROOT / "src" / "agentguardian"
+THIRD_PARTY_LICENSE_ROOT = PROJECT_ROOT / "packaging" / "third_party_licenses"
 BUILD_PACKAGES = {
     "altgraph": "0.17.4",
     "annotated-types": "0.8.0",
@@ -796,19 +800,223 @@ def test_third_party_notices_keep_qt_and_signing_limits_explicit() -> None:
     notices = (PROJECT_ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
 
     for required in (
-        "PySide6 6.11.1",
-        "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
-        "Qt commercial license has not been verified",
-        "PyInstaller 6.16.0",
+        "LGPL-3.0-only",
+        "No Qt commercial license is claimed",
         "Bootloader-exception",
         "Microsoft Visual C++ Runtime",
         "NOASSERTION",
-        "unsigned development artifact",
+        "Inno Setup 7.0.2",
+        "unsigned Public Preview",
+        "THIRD_PARTY_LICENSES/QT-LGPL-COMPLIANCE.md",
+        "<!-- AGENTGUARDIAN_COMPONENT_INVENTORY_START -->",
+        "<!-- AGENTGUARDIAN_COMPONENT_INVENTORY_END -->",
     ):
         assert required in notices
-    for name in RUNTIME_PACKAGES:
-        assert f"`{name}`" in notices
     assert "registers and starts only STDIO" in notices
+    assert "Full license texts" not in notices
+    assert "not a complete per-package copyright and notice bundle" in notices
+    assert "unsigned_development_only" in notices
+    assert "unsigned_public_preview" in notices
+    assert "build-stage" in notices
+
+
+def test_third_party_license_packet_is_complete_and_pinned() -> None:
+    required = {
+        "INNO-SETUP-7.0.2.txt",
+        "MICROSOFT-RUNTIME-REDISTRIBUTION.md",
+        "OPENSSL-3.0.txt",
+        "PYINSTALLER-6.16.0.txt",
+        "PYTHON-3.12.txt",
+        "QT-LGPL-COMPLIANCE.md",
+        "QT-THIRD-PARTY-ATTRIBUTIONS.json",
+        "README.md",
+        "qt-licenses/Apache-2.0.txt",
+        "qt-licenses/GPL-3.0-only.txt",
+        "qt-licenses/LGPL-3.0-only.txt",
+        "qt-licenses/HPND-sell-variant.txt",
+    }
+    files = {
+        path.relative_to(THIRD_PARTY_LICENSE_ROOT).as_posix()
+        for path in THIRD_PARTY_LICENSE_ROOT.rglob("*")
+        if path.is_file()
+    }
+
+    assert files == set(THIRD_PARTY_LICENSE_FILES)
+    assert required <= files
+    assert all(not part.startswith(".") for name in files for part in Path(name).parts)
+    assert not any(path.is_symlink() for path in THIRD_PARTY_LICENSE_ROOT.rglob("*"))
+
+    compliance = (THIRD_PARTY_LICENSE_ROOT / "QT-LGPL-COMPLIANCE.md").read_text(
+        encoding="utf-8"
+    )
+    for expected in (
+        "LGPL-3.0-only",
+        "Qt6Core.dll",
+        "Qt6Gui.dll",
+        "Qt6Svg.dll",
+        "Qt6Widgets.dll",
+        "3529cc37297a5a7aae4486843b9fd41c30df1d79a770f85e240b537dcc327ca5",
+        "767730188d4610a89bf8da502f87acf1c8881a3ac54f1e0eb167ab1e08b03a75",
+        "d9f2e86726a1f6d756323be74a890786aa546d5e8fa457ced3117f4418a5388b",
+        "replace",
+    ):
+        assert expected in compliance
+
+    attributions = json.loads(
+        (THIRD_PARTY_LICENSE_ROOT / "QT-THIRD-PARTY-ATTRIBUTIONS.json").read_bytes()
+    )
+    assert attributions["schema"] == 1
+    assert attributions["qt_version"] == "6.11.1"
+    assert {source["sha256"] for source in attributions["sources"]} == {
+        "3529cc37297a5a7aae4486843b9fd41c30df1d79a770f85e240b537dcc327ca5",
+        "767730188d4610a89bf8da502f87acf1c8881a3ac54f1e0eb167ab1e08b03a75",
+        "d9f2e86726a1f6d756323be74a890786aa546d5e8fa457ced3117f4418a5388b",
+    }
+    assert {entry["module"] for entry in attributions["entries"]} == {
+        "QtForPython",
+        "qtcore",
+        "qtgui",
+        "qtsvg",
+    }
+    assert len(attributions["entries"]) >= 20
+    assert all(
+        set(entry) >= {"copyright", "id", "license", "license_id", "module", "name"}
+        for entry in attributions["entries"]
+    )
+
+
+def test_third_party_license_packet_rejects_incomplete_source(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    source_root = project_root / "packaging" / "third_party_licenses"
+    source_root.mkdir(parents=True)
+    (source_root / "README.md").write_text("incomplete", encoding="utf-8")
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+
+    with pytest.raises(ValueError, match="incomplete"):
+        copy_third_party_license_packet(project_root, bundle_root)
+
+    assert not (bundle_root / "THIRD_PARTY_LICENSES").exists()
+
+
+def test_third_party_license_packet_rejects_hidden_entry(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    source_root = project_root / "packaging" / "third_party_licenses"
+    source_root.mkdir(parents=True)
+    (source_root / ".hidden").write_text("unexpected", encoding="utf-8")
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+
+    with pytest.raises(ValueError, match="invalid"):
+        copy_third_party_license_packet(project_root, bundle_root)
+
+    assert not (bundle_root / "THIRD_PARTY_LICENSES").exists()
+
+
+def test_third_party_license_packet_rejects_unreviewed_ignored_entry(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    source_root = project_root / "packaging" / "third_party_licenses"
+    source_root.parent.mkdir(parents=True)
+    shutil.copytree(THIRD_PARTY_LICENSE_ROOT, source_root)
+    (source_root / "ignored.pyc").write_bytes(b"unexpected local artifact")
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+
+    with pytest.raises(ValueError, match="unreviewed"):
+        copy_third_party_license_packet(project_root, bundle_root)
+
+    assert not (bundle_root / "THIRD_PARTY_LICENSES").exists()
+
+
+def test_third_party_license_packet_does_not_use_recursive_glob(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+
+    def recursive_glob_is_unexpected(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("license packet traversal must inspect directories before descent")
+
+    monkeypatch.setattr(Path, "rglob", recursive_glob_is_unexpected)
+
+    copy_third_party_license_packet(PROJECT_ROOT, bundle_root)
+
+    assert (bundle_root / "THIRD_PARTY_LICENSES" / "MANIFEST.json").is_file()
+
+
+def test_third_party_license_packet_writes_a_canonical_manifest(
+    tmp_path: Path,
+) -> None:
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+
+    copy_third_party_license_packet(PROJECT_ROOT, bundle_root)
+
+    manifest_path = bundle_root / "THIRD_PARTY_LICENSES" / "MANIFEST.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    assert set(manifest) == {"algorithm", "files", "manifest_sha256", "schema", "total_bytes"}
+    assert manifest["algorithm"] == "sha256"
+    assert manifest["schema"] == 1
+    entries = manifest["files"]
+    assert len(entries) == 47
+    assert [entry["path"] for entry in entries] == sorted(
+        entry["path"] for entry in entries
+    )
+    assert all(set(entry) == {"path", "sha256", "size"} for entry in entries)
+    base = {key: manifest[key] for key in ("algorithm", "files", "schema")}
+    assert manifest["manifest_sha256"] == hashlib.sha256(
+        canonical_json_bytes(base)
+    ).hexdigest()
+    assert manifest["total_bytes"] == sum(entry["size"] for entry in entries)
+    for entry in entries:
+        path = bundle_root / "THIRD_PARTY_LICENSES" / Path(entry["path"])
+        assert path.is_file()
+        assert entry["size"] == path.stat().st_size
+        assert entry["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_rendered_third_party_notices_match_artifact_component_versions() -> None:
+    builder = __import__(
+        "scripts.build_windows_portable", fromlist=["render_third_party_notices"]
+    )
+    components = portable_component_specs(
+        python_version="3.12.10",
+        openssl_version="3.0.16",
+        vc_runtime_version="14.42.34438.0",
+        ucrt_version="10.0.26100.1742",
+        product_version="0.3.0-preview.1",
+    )
+    template = (PROJECT_ROOT / "THIRD_PARTY_NOTICES.md").read_bytes()
+
+    first = builder.render_third_party_notices(template, components)
+    second = builder.render_third_party_notices(template, components)
+    rendered = first.decode("utf-8")
+
+    assert first == second
+    for expected in (
+        "AgentGuardian | 0.3.0-preview.1 | runtime | Apache-2.0",
+        "CPython | 3.12.10 | runtime | Python-2.0",
+        "OpenSSL | 3.0.16 | runtime | Apache-2.0",
+        "Microsoft Visual C++ Runtime | 14.42.34438.0 | runtime | NOASSERTION",
+        "Microsoft Universal C Runtime | 10.0.26100.1742 | runtime | NOASSERTION",
+        "PyInstaller | 6.16.0 | build-time | "
+        "GPL-2.0-or-later WITH Bootloader-exception",
+        "PySide6 | 6.11.1 | runtime | "
+        "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+    ):
+        assert f"| {expected} |" in rendered
+    for stale in ("3.12.2", "3.0.13", "14.38.33126.1", "10.0.19041.1"):
+        assert stale not in rendered
+    display_names = {
+        "pyside6": "PySide6",
+        "pyside6-addons": "PySide6_Addons",
+        "pyside6-essentials": "PySide6_Essentials",
+    }
+    for name in RUNTIME_PACKAGES:
+        assert f"| {display_names.get(name, name)} |" in rendered
 
 
 def test_cyclonedx_tracks_embedded_bootloader_as_runtime_dependency() -> None:
@@ -882,6 +1090,9 @@ def test_portable_evidence_is_canonical_and_excludes_its_own_checksums(
     )
 
     metadata = json.loads((bundle / "BUILD-METADATA.json").read_bytes())
+    packet_manifest = json.loads(
+        (bundle / "THIRD_PARTY_LICENSES" / "MANIFEST.json").read_bytes()
+    )
     assert metadata == {
         "artifact_status": "unsigned_development_only",
         "build_mode": "pyinstaller_onedir",
@@ -891,6 +1102,7 @@ def test_portable_evidence_is_canonical_and_excludes_its_own_checksums(
         },
         "built_at": "2026-08-14T00:00:00Z",
         "source_commit": "a" * 40,
+        "third_party_license_packet": packet_manifest,
     }
     manifest = json.loads((bundle / "PAYLOAD-MANIFEST.json").read_bytes())
     manifest_paths = {entry["path"] for entry in manifest["files"]}
@@ -901,6 +1113,9 @@ def test_portable_evidence_is_canonical_and_excludes_its_own_checksums(
         "AgentGuardian.exe",
         "BUILD-METADATA.json",
         "LICENSE",
+        "THIRD_PARTY_LICENSES/QT-LGPL-COMPLIANCE.md",
+        "THIRD_PARTY_LICENSES/QT-THIRD-PARTY-ATTRIBUTIONS.json",
+        "THIRD_PARTY_LICENSES/PYTHON-3.12.txt",
         "THIRD_PARTY_NOTICES.md",
     } <= manifest_paths
     checksum_paths = {
@@ -909,6 +1124,90 @@ def test_portable_evidence_is_canonical_and_excludes_its_own_checksums(
     }
     assert "PAYLOAD-MANIFEST.json" in checksum_paths
     assert "SHA256SUMS" not in checksum_paths
+
+
+def test_portable_evidence_can_keep_private_beta_metadata_legacy_shape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "AgentGuardian.exe").write_bytes(b"synthetic executable")
+    monkeypatch.setattr(
+        "scripts.build_windows_portable.cyclonedx_bom_bytes",
+        lambda *args, **kwargs: b'{"bomFormat":"CycloneDX","specVersion":"1.6"}\n',
+    )
+
+    write_portable_evidence(
+        bundle,
+        project_root=PROJECT_ROOT,
+        component_specs=portable_component_specs(
+            python_version="3.12.2",
+            openssl_version="3.0.13",
+            vc_runtime_version="14.38.33126.1",
+            ucrt_version="10.0.19041.1",
+        ),
+        source_commit="a" * 40,
+        built_at="2026-08-14T00:00:00Z",
+        build_dependencies={
+            "lock_sha256": "c" * 64,
+            "versions": BUILD_PACKAGES,
+        },
+        forbidden_texts=(str(PROJECT_ROOT),),
+        bind_license_packet_metadata=False,
+    )
+
+    metadata = json.loads((bundle / "BUILD-METADATA.json").read_bytes())
+    assert set(metadata) == {
+        "artifact_status",
+        "build_mode",
+        "build_dependencies",
+        "built_at",
+        "source_commit",
+    }
+    assert (bundle / "THIRD_PARTY_LICENSES" / "MANIFEST.json").is_file()
+
+
+def test_portable_evidence_accepts_a_channel_specific_notice_template(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "AgentGuardian.exe").write_bytes(b"synthetic executable")
+    monkeypatch.setattr(
+        "scripts.build_windows_portable.cyclonedx_bom_bytes",
+        lambda *args, **kwargs: b'{"bomFormat":"CycloneDX","specVersion":"1.6"}\n',
+    )
+
+    write_portable_evidence(
+        bundle,
+        project_root=PROJECT_ROOT,
+        component_specs=portable_component_specs(
+            python_version="3.12.2",
+            openssl_version="3.0.13",
+            vc_runtime_version="14.38.33126.1",
+            ucrt_version="10.0.19041.1",
+        ),
+        source_commit="a" * 40,
+        built_at="2026-08-14T00:00:00Z",
+        build_dependencies={
+            "lock_sha256": "c" * 64,
+            "versions": BUILD_PACKAGES,
+        },
+        forbidden_texts=(str(PROJECT_ROOT),),
+        notices_template_path=(
+            PROJECT_ROOT / "packaging" / "windows" / "THIRD_PARTY_NOTICES_PRIVATE_BETA.md"
+        ),
+    )
+
+    rendered = (bundle / "THIRD_PARTY_NOTICES.md").read_text(encoding="ascii")
+    assert rendered.startswith(
+        "# Third-Party Notices For AgentGuardian 0.2.0 Personal Private Beta"
+    )
+    assert "0.2.0-beta.1" in rendered
+    assert "0.3 Public Preview" not in rendered
+    assert "AgentGuardian" in rendered
 
 
 def test_portable_evidence_rejects_retired_release_artifact_status(
