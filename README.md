@@ -45,15 +45,17 @@ The intended delivery route is a traditional unsigned offline EXE installer sent
 
 An artifact uploaded by this public repository's GitHub Actions workflow is not an access-controlled private distribution channel. `Private beta` is a maturity label for the known-tester scope, not a claim that an artifact is confidential or access-restricted.
 
-Fresh local evidence for the current 0.3 candidate covers the source gates,
-deterministic build, exact staging, portable startup smoke, and isolated
-installer lifecycle for one exact SHA. It is retained outside Git and does not
-replace GitHub CI, clean-machine, Codex CLI/Desktop, license/marketplace, or
-operations/security evidence. Historical reports for earlier candidates must
-not be promoted to current release evidence. GitHub Issues is live for ordinary
-support. GitHub Private Vulnerability Reporting is disabled, so no current
-private vulnerability intake is claimed. These limits prohibit production-
-safety, license, or clean-machine claims.
+Local evidence is generated outside Git and is current only when its report and
+every artifact name the same clean source SHA. Earlier reports for another SHA,
+including reports made before the current release-hardening changes, are
+historical context and must not be promoted to current verification. A new
+clean candidate must be rebuilt and revalidated before its build, staging,
+installer, or CI results can be called current. Local evidence does not replace
+GitHub CI, clean-machine, Codex CLI/Desktop, license/marketplace, or
+operations/security evidence. GitHub Issues is live for ordinary support.
+GitHub Private Vulnerability Reporting is disabled, so no current private
+vulnerability intake is claimed. These limits prohibit production-safety,
+license, or clean-machine claims.
 
 The canonical partial status ledger is [personal-exe-private-beta-status.json](docs/security/personal-exe-private-beta-status.json). Private beta remains `PRIVATE-BETA-NOT-READY` and formal release remains `NO-GO`; exact-SHA evidence must be generated outside the candidate commit.
 

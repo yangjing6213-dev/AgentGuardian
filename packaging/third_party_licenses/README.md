@@ -2,7 +2,7 @@
 
 This directory is copied unchanged into every AgentGuardian Windows payload as
 `THIRD_PARTY_LICENSES/`. It records the license material used by the unsigned
-0.3 Public Preview build; it is not legal advice.
+Windows preview builds; it is not legal advice.
 
 - `QT-LGPL-COMPLIANCE.md` records the selected Qt LGPL route, exact source
   archives, dynamic-library layout, and replacement instructions.
@@ -18,3 +18,8 @@ This directory is copied unchanged into every AgentGuardian Windows payload as
 
 The generated `AgentGuardian.cdx.json`, `PAYLOAD-MANIFEST.json`, and
 `SHA256SUMS` bind this packet to the exact delivered payload.
+
+`MANIFEST.json` lists the reviewed source files and their SHA-256 digests. The
+packet is not a complete per-package copyright and notice bundle for every
+transitive Python runtime dependency; the generated component inventory and
+CycloneDX SBOM provide the current dependency and license-expression record.

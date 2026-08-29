@@ -181,6 +181,36 @@ def test_private_beta_identity_is_frozen() -> None:
     }
 
 
+def test_private_beta_profile_binds_license_packet_inputs() -> None:
+    profile = json.loads(PRIVATE_BETA_PROFILE_PATH.read_text(encoding="ascii"))
+    packet_root = ROOT / "packaging" / "third_party_licenses"
+    packet_paths = {
+        "packaging/third_party_licenses/"
+        + path.relative_to(packet_root).as_posix()
+        for path in packet_root.rglob("*")
+        if path.is_file()
+    }
+
+    for field in ("required_source_paths", "package_input_paths"):
+        assert packet_paths <= set(profile[field])
+
+
+def test_private_beta_uses_a_channel_specific_notice_template() -> None:
+    profile = json.loads(PRIVATE_BETA_PROFILE_PATH.read_text(encoding="ascii"))
+    relative = "packaging/windows/THIRD_PARTY_NOTICES_PRIVATE_BETA.md"
+    notice_path = ROOT / relative
+
+    assert notice_path.is_file()
+    assert relative in profile["required_source_paths"]
+    assert relative in profile["package_input_paths"]
+    notice = notice_path.read_text(encoding="utf-8")
+    assert "0.2.0-beta.1" in notice
+    assert "private beta" in notice.casefold()
+    assert "0.3 Public Preview" not in notice
+    assert "<!-- AGENTGUARDIAN_COMPONENT_INVENTORY_START -->" in notice
+    assert "<!-- AGENTGUARDIAN_COMPONENT_INVENTORY_END -->" in notice
+
+
 def test_private_beta_version_documents_remain_frozen() -> None:
     profile = json.loads(PRIVATE_BETA_PROFILE_PATH.read_text(encoding="ascii"))
     for relative in (
@@ -586,6 +616,7 @@ def _copy_fixture(tmp_path: Path) -> Path:
         "src/agentguardian",
         ".github/workflows",
         "docs/security",
+        "packaging/third_party_licenses",
         "packaging/windows",
         "rules",
     ):

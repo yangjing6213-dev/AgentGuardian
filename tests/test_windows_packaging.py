@@ -4,6 +4,7 @@ import inspect
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -29,6 +30,7 @@ from scripts.build_windows_portable import (
     portable_component_specs,
     reviewed_source_paths,
     runtime_library_versions,
+    THIRD_PARTY_LICENSE_FILES,
     _locked_versions,
     validate_build_dependency_snapshot,
     validate_relative_paths,
@@ -811,6 +813,11 @@ def test_third_party_notices_keep_qt_and_signing_limits_explicit() -> None:
     ):
         assert required in notices
     assert "registers and starts only STDIO" in notices
+    assert "Full license texts" not in notices
+    assert "not a complete per-package copyright and notice bundle" in notices
+    assert "unsigned_development_only" in notices
+    assert "unsigned_public_preview" in notices
+    assert "build-stage" in notices
 
 
 def test_third_party_license_packet_is_complete_and_pinned() -> None:
@@ -834,8 +841,8 @@ def test_third_party_license_packet_is_complete_and_pinned() -> None:
         if path.is_file()
     }
 
+    assert files == set(THIRD_PARTY_LICENSE_FILES)
     assert required <= files
-    assert len({name for name in files if name.startswith("qt-licenses/")}) >= 20
     assert all(not part.startswith(".") for name in files for part in Path(name).parts)
     assert not any(path.is_symlink() for path in THIRD_PARTY_LICENSE_ROOT.rglob("*"))
 
@@ -904,6 +911,71 @@ def test_third_party_license_packet_rejects_hidden_entry(tmp_path: Path) -> None
         copy_third_party_license_packet(project_root, bundle_root)
 
     assert not (bundle_root / "THIRD_PARTY_LICENSES").exists()
+
+
+def test_third_party_license_packet_rejects_unreviewed_ignored_entry(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    source_root = project_root / "packaging" / "third_party_licenses"
+    source_root.parent.mkdir(parents=True)
+    shutil.copytree(THIRD_PARTY_LICENSE_ROOT, source_root)
+    (source_root / "ignored.pyc").write_bytes(b"unexpected local artifact")
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+
+    with pytest.raises(ValueError, match="unreviewed"):
+        copy_third_party_license_packet(project_root, bundle_root)
+
+    assert not (bundle_root / "THIRD_PARTY_LICENSES").exists()
+
+
+def test_third_party_license_packet_does_not_use_recursive_glob(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+
+    def recursive_glob_is_unexpected(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("license packet traversal must inspect directories before descent")
+
+    monkeypatch.setattr(Path, "rglob", recursive_glob_is_unexpected)
+
+    copy_third_party_license_packet(PROJECT_ROOT, bundle_root)
+
+    assert (bundle_root / "THIRD_PARTY_LICENSES" / "MANIFEST.json").is_file()
+
+
+def test_third_party_license_packet_writes_a_canonical_manifest(
+    tmp_path: Path,
+) -> None:
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+
+    copy_third_party_license_packet(PROJECT_ROOT, bundle_root)
+
+    manifest_path = bundle_root / "THIRD_PARTY_LICENSES" / "MANIFEST.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    assert set(manifest) == {"algorithm", "files", "manifest_sha256", "schema", "total_bytes"}
+    assert manifest["algorithm"] == "sha256"
+    assert manifest["schema"] == 1
+    entries = manifest["files"]
+    assert len(entries) == 47
+    assert [entry["path"] for entry in entries] == sorted(
+        entry["path"] for entry in entries
+    )
+    assert all(set(entry) == {"path", "sha256", "size"} for entry in entries)
+    base = {key: manifest[key] for key in ("algorithm", "files", "schema")}
+    assert manifest["manifest_sha256"] == hashlib.sha256(
+        canonical_json_bytes(base)
+    ).hexdigest()
+    assert manifest["total_bytes"] == sum(entry["size"] for entry in entries)
+    for entry in entries:
+        path = bundle_root / "THIRD_PARTY_LICENSES" / Path(entry["path"])
+        assert path.is_file()
+        assert entry["size"] == path.stat().st_size
+        assert entry["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def test_rendered_third_party_notices_match_artifact_component_versions() -> None:
@@ -1018,6 +1090,9 @@ def test_portable_evidence_is_canonical_and_excludes_its_own_checksums(
     )
 
     metadata = json.loads((bundle / "BUILD-METADATA.json").read_bytes())
+    packet_manifest = json.loads(
+        (bundle / "THIRD_PARTY_LICENSES" / "MANIFEST.json").read_bytes()
+    )
     assert metadata == {
         "artifact_status": "unsigned_development_only",
         "build_mode": "pyinstaller_onedir",
@@ -1027,6 +1102,7 @@ def test_portable_evidence_is_canonical_and_excludes_its_own_checksums(
         },
         "built_at": "2026-08-14T00:00:00Z",
         "source_commit": "a" * 40,
+        "third_party_license_packet": packet_manifest,
     }
     manifest = json.loads((bundle / "PAYLOAD-MANIFEST.json").read_bytes())
     manifest_paths = {entry["path"] for entry in manifest["files"]}
@@ -1048,6 +1124,90 @@ def test_portable_evidence_is_canonical_and_excludes_its_own_checksums(
     }
     assert "PAYLOAD-MANIFEST.json" in checksum_paths
     assert "SHA256SUMS" not in checksum_paths
+
+
+def test_portable_evidence_can_keep_private_beta_metadata_legacy_shape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "AgentGuardian.exe").write_bytes(b"synthetic executable")
+    monkeypatch.setattr(
+        "scripts.build_windows_portable.cyclonedx_bom_bytes",
+        lambda *args, **kwargs: b'{"bomFormat":"CycloneDX","specVersion":"1.6"}\n',
+    )
+
+    write_portable_evidence(
+        bundle,
+        project_root=PROJECT_ROOT,
+        component_specs=portable_component_specs(
+            python_version="3.12.2",
+            openssl_version="3.0.13",
+            vc_runtime_version="14.38.33126.1",
+            ucrt_version="10.0.19041.1",
+        ),
+        source_commit="a" * 40,
+        built_at="2026-08-14T00:00:00Z",
+        build_dependencies={
+            "lock_sha256": "c" * 64,
+            "versions": BUILD_PACKAGES,
+        },
+        forbidden_texts=(str(PROJECT_ROOT),),
+        bind_license_packet_metadata=False,
+    )
+
+    metadata = json.loads((bundle / "BUILD-METADATA.json").read_bytes())
+    assert set(metadata) == {
+        "artifact_status",
+        "build_mode",
+        "build_dependencies",
+        "built_at",
+        "source_commit",
+    }
+    assert (bundle / "THIRD_PARTY_LICENSES" / "MANIFEST.json").is_file()
+
+
+def test_portable_evidence_accepts_a_channel_specific_notice_template(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "AgentGuardian.exe").write_bytes(b"synthetic executable")
+    monkeypatch.setattr(
+        "scripts.build_windows_portable.cyclonedx_bom_bytes",
+        lambda *args, **kwargs: b'{"bomFormat":"CycloneDX","specVersion":"1.6"}\n',
+    )
+
+    write_portable_evidence(
+        bundle,
+        project_root=PROJECT_ROOT,
+        component_specs=portable_component_specs(
+            python_version="3.12.2",
+            openssl_version="3.0.13",
+            vc_runtime_version="14.38.33126.1",
+            ucrt_version="10.0.19041.1",
+        ),
+        source_commit="a" * 40,
+        built_at="2026-08-14T00:00:00Z",
+        build_dependencies={
+            "lock_sha256": "c" * 64,
+            "versions": BUILD_PACKAGES,
+        },
+        forbidden_texts=(str(PROJECT_ROOT),),
+        notices_template_path=(
+            PROJECT_ROOT / "packaging" / "windows" / "THIRD_PARTY_NOTICES_PRIVATE_BETA.md"
+        ),
+    )
+
+    rendered = (bundle / "THIRD_PARTY_NOTICES.md").read_text(encoding="ascii")
+    assert rendered.startswith(
+        "# Third-Party Notices For AgentGuardian 0.2.0 Personal Private Beta"
+    )
+    assert "0.2.0-beta.1" in rendered
+    assert "0.3 Public Preview" not in rendered
+    assert "AgentGuardian" in rendered
 
 
 def test_portable_evidence_rejects_retired_release_artifact_status(

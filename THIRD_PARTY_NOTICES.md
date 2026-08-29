@@ -1,6 +1,6 @@
 # Third-Party Notices For AgentGuardian 0.3 Windows Public Preview
 
-This notice applies to the unsigned AgentGuardian 0.3 Windows Public Preview installer and portable artifact. It is an engineering inventory, not legal advice. Exact component versions are generated into the packaged copy from the same specifications used to produce `AgentGuardian.cdx.json`. Full license texts, Qt attributions, source archive hashes, and LGPL replacement instructions are included in `THIRD_PARTY_LICENSES/` inside the installed payload.
+This notice applies to the unsigned AgentGuardian 0.3 Windows Public Preview installer and portable artifact. It is an engineering inventory, not legal advice. Exact component versions are generated into the packaged copy from the same specifications used to produce `AgentGuardian.cdx.json`. Confirmed license materials for the packaged toolchain and Qt route, Qt attributions, source archive hashes, and LGPL replacement instructions are included in `THIRD_PARTY_LICENSES/` inside the installed payload. The packet is not a complete per-package copyright and notice bundle for every transitive Python runtime dependency; the generated component inventory and CycloneDX SBOM record those dependencies and their license expressions.
 
 <!-- AGENTGUARDIAN_COMPONENT_INVENTORY_START -->
 
@@ -18,6 +18,8 @@ The artifact-specific component inventory is generated during the Windows build.
 - **Inno Setup 7.0.2** - build-time installer generator. The installer output identifies Inno Setup and this project records the upstream license without claiming ownership of Inno Setup. Official terms: <https://jrsoftware.org/files/is/license.txt>.
 
 The complete Python runtime closure and its exact versions are listed in the generated inventory and CycloneDX SBOM. The MCP Python SDK distribution contains optional HTTP transport modules in its dependency graph. AgentGuardian 0.3 registers and starts only STDIO; the presence of dependency code is not evidence that AgentGuardian exposes a listener.
+
+The portable build's internal `BUILD-METADATA.json` intentionally uses `unsigned_development_only` to identify a build-stage artifact. Release staging separately uses `unsigned_public_preview` for the external delivery channel. These labels are deliberately different and do not imply signing, production safety, or complete legal clearance.
 
 ## Public Preview Boundary
 

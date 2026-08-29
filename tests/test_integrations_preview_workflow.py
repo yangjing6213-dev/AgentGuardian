@@ -460,6 +460,9 @@ def test_active_docs_publish_the_profile_backed_download_contract() -> None:
     assert "SHA256SUMS" in readme
     assert "INTEGRATIONS-PREVIEW-NOT-READY" in readme
     assert "NO-GO" in readme
+    assert "current only when its report and" in readme
+    assert "must not be promoted to current verification" in readme
+    assert "before the current release-hardening changes" in readme
 
 
 def test_active_doc_contains_authorized_manual_release_handoff() -> None:

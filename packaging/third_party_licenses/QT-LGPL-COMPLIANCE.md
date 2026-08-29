@@ -1,8 +1,8 @@
 # Qt 6.11.1 LGPL Compliance Record
 
-AgentGuardian 0.3 Public Preview uses the open-source `LGPL-3.0-only` option
-for PySide6, shiboken6, and the Qt libraries. No Qt commercial license is
-claimed.
+AgentGuardian Windows preview builds use the open-source `LGPL-3.0-only`
+option for PySide6, shiboken6, and the Qt libraries. No Qt commercial license
+is claimed.
 
 ## Dynamic Linking
 

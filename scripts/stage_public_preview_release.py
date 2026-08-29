@@ -23,6 +23,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts.build_windows_portable import (
+    THIRD_PARTY_LICENSE_FILES,
+    THIRD_PARTY_LICENSE_MANIFEST_NAME,
+    third_party_license_packet_manifest,
+)
 from scripts.verify_integrations_preview_profile import (
     ProfileSnapshot,
     ProfileViolation,
@@ -57,6 +62,10 @@ MAX_ZIP_ENTRIES = 20_000
 MAX_ZIP_COMPRESSION_RATIO = 100_000
 MAX_INSTALLER_INSPECTION_BYTES = 4 * 1024 * 1024
 MAX_SKILL_BYTES = MAX_METADATA_BYTES
+MAX_PACKAGE_INPUT_FILES = MAX_ZIP_ENTRIES
+MAX_PACKAGE_INPUT_BYTES = 256 * 1024 * 1024
+MAX_PACKAGE_INPUT_DEPTH = 32
+MAX_PACKAGE_INPUT_ENTRIES = MAX_ZIP_ENTRIES
 INSTALLER_ATTESTATION_SUFFIX = ".build.json"
 
 _PROFILE_RELATIVE_PATH = "release_profiles/integrations_preview.json"
@@ -73,6 +82,26 @@ _METADATA_FILE_NAMES = (
 _CHECKSUM_FILE_NAMES = tuple(
     name for name in RELEASE_ASSET_NAMES if name != _CHECKSUMS_NAME
 )
+_THIRD_PARTY_LICENSE_PREFIX = "THIRD_PARTY_LICENSES/"
+_PACKAGE_INPUT_EXCLUDED_DIRECTORIES = frozenset(
+    {
+        ".analysis",
+        ".git",
+        ".local-audit",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".superpowers",
+        ".tmp",
+        ".worktrees",
+        "build",
+        "dist",
+        "node_modules",
+        "target",
+        "__pycache__",
+    }
+)
+_PACKAGE_INPUT_IGNORED_SUFFIXES = frozenset({".pyc", ".pyo"})
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SOURCE_COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _PRIVATE_PATTERNS = (
@@ -133,7 +162,14 @@ _INPUT_TYPE_INVALID = "RELEASE_INPUT_TYPE_INVALID"
 _INPUT_PROVENANCE_INVALID = "RELEASE_INPUT_PROVENANCE_INVALID"
 _INSTALLER_ATTESTATION_SCHEMA = 1
 _PORTABLE_METADATA_KEYS = frozenset(
-    {"artifact_status", "build_dependencies", "build_mode", "built_at", "source_commit"}
+    {
+        "artifact_status",
+        "build_dependencies",
+        "build_mode",
+        "built_at",
+        "source_commit",
+        "third_party_license_packet",
+    }
 )
 _INSTALLER_ATTESTATION_KEYS = frozenset(
     {
@@ -170,7 +206,11 @@ _PORTABLE_REQUIRED_NAMES = frozenset(
         "_internal/agentguardian/source_policy.json",
         "_internal/agentguardian/rules/default.json",
     }
-)
+) | frozenset(
+    {
+        f"THIRD_PARTY_LICENSES/{name}" for name in THIRD_PARTY_LICENSE_FILES
+    }
+) | {f"THIRD_PARTY_LICENSES/{THIRD_PARTY_LICENSE_MANIFEST_NAME}"}
 
 
 @dataclass(frozen=True)
@@ -907,6 +947,202 @@ def _resolve_project_file(root: Path, relative: str) -> _FileSnapshot:
     return snapshot
 
 
+def _package_input_parts(relative: object) -> tuple[str, ...]:
+    if not isinstance(relative, str) or not relative or "\\" in relative:
+        _fail("RELEASE_SOURCE_STATE_INVALID")
+    parts = tuple(relative.split("/"))
+    if any(
+        not part
+        or part in {".", ".."}
+        or ":" in part
+        or "\x00" in part
+        or any(ord(character) < 32 for character in part)
+        for part in parts
+    ):
+        _fail("RELEASE_SOURCE_STATE_INVALID")
+    return parts
+
+
+def _resolve_package_input(root: Path, relative: object) -> Path:
+    parts = _package_input_parts(relative)
+    candidate = root.joinpath(*parts).absolute()
+    try:
+        if _has_reparse_component(candidate) or _is_reparse_point(candidate):
+            _fail("RELEASE_SOURCE_STATE_INVALID")
+        resolved = candidate.resolve(strict=True)
+    except ReleaseViolation:
+        raise
+    except (OSError, ProfileViolation, RuntimeError):
+        _fail("RELEASE_SOURCE_STATE_INVALID")
+    if not _inside(resolved, root):
+        _fail("RELEASE_SOURCE_STATE_INVALID")
+    return resolved
+
+
+def _count_package_input_entry(counter: list[int]) -> None:
+    counter[0] += 1
+    if counter[0] > MAX_PACKAGE_INPUT_ENTRIES:
+        _fail("RELEASE_SOURCE_TRAVERSAL_LIMIT")
+
+
+def _register_package_input_path(
+    seen: dict[str, str], path: Path, root: Path
+) -> tuple[str, bool]:
+    try:
+        relative = path.relative_to(root).as_posix()
+    except ValueError:
+        _fail("RELEASE_SOURCE_STATE_INVALID")
+    folded = relative.casefold()
+    previous = seen.get(folded)
+    if previous is not None:
+        if previous != relative:
+            _fail("RELEASE_SOURCE_STATE_INVALID")
+        return relative, False
+    seen[folded] = relative
+    return relative, True
+
+
+def _iter_package_input_files(
+    start: Path, root: Path, *, entry_counter: list[int]
+) -> Iterator[Path]:
+    stack: list[tuple[Path, int]] = [(start, 0)]
+    seen_directories: set[tuple[int, int]] = set()
+    while stack:
+        current, depth = stack.pop()
+        if depth > MAX_PACKAGE_INPUT_DEPTH:
+            _fail("RELEASE_SOURCE_TRAVERSAL_LIMIT")
+        try:
+            if _has_reparse_component(current) or _is_reparse_point(current):
+                _fail("RELEASE_SOURCE_STATE_INVALID")
+            resolved = current.resolve(strict=True)
+            if not _inside(resolved, root):
+                _fail("RELEASE_SOURCE_STATE_INVALID")
+            info = resolved.stat()
+        except ReleaseViolation:
+            raise
+        except (OSError, ProfileViolation, RuntimeError):
+            _fail("RELEASE_SOURCE_STATE_INVALID")
+        if not stat.S_ISDIR(info.st_mode):
+            _fail("RELEASE_SOURCE_STATE_INVALID")
+        identity = _directory_identity(info)
+        if identity in seen_directories:
+            _fail("RELEASE_SOURCE_STATE_INVALID")
+        seen_directories.add(identity)
+        try:
+            children = sorted(
+                current.iterdir(),
+                key=lambda path: (path.name.casefold(), path.name),
+            )
+        except OSError:
+            _fail("RELEASE_SOURCE_STATE_INVALID")
+        for child in children:
+            _count_package_input_entry(entry_counter)
+            try:
+                if _has_reparse_component(child) or _is_reparse_point(child):
+                    _fail("RELEASE_SOURCE_STATE_INVALID")
+                child_resolved = child.resolve(strict=True)
+                if not _inside(child_resolved, root):
+                    _fail("RELEASE_SOURCE_STATE_INVALID")
+                child_info = child_resolved.stat()
+            except ReleaseViolation:
+                raise
+            except (OSError, ProfileViolation, RuntimeError):
+                _fail("RELEASE_SOURCE_STATE_INVALID")
+            if stat.S_ISDIR(child_info.st_mode):
+                if child.name.casefold() in _PACKAGE_INPUT_EXCLUDED_DIRECTORIES:
+                    continue
+                stack.append((child_resolved, depth + 1))
+                continue
+            if stat.S_ISREG(child_info.st_mode):
+                if child_resolved.suffix.casefold() in _PACKAGE_INPUT_IGNORED_SUFFIXES:
+                    continue
+                yield child_resolved
+                continue
+            _fail("RELEASE_SOURCE_STATE_INVALID")
+
+
+def _capture_package_input_files(
+    root: Path, package_input_paths: Iterable[str]
+) -> tuple[_SourceFileToken, ...]:
+    root = _resolved_project_root(root)
+    tokens: dict[str, _SourceFileToken] = {}
+    seen_paths: dict[str, str] = {}
+    total_bytes = 0
+    entry_counter = [0]
+    for relative in package_input_paths:
+        resolved = _resolve_package_input(root, relative)
+        try:
+            info = resolved.stat()
+        except OSError:
+            _fail("RELEASE_SOURCE_STATE_INVALID")
+        if stat.S_ISREG(info.st_mode):
+            _count_package_input_entry(entry_counter)
+            candidates = (resolved,)
+        elif stat.S_ISDIR(info.st_mode):
+            candidates = _iter_package_input_files(
+                resolved, root, entry_counter=entry_counter
+            )
+        else:
+            _fail("RELEASE_SOURCE_STATE_INVALID")
+        for candidate in candidates:
+            key, is_new = _register_package_input_path(
+                seen_paths, candidate, root
+            )
+            if not is_new:
+                continue
+            if len(tokens) >= MAX_PACKAGE_INPUT_FILES:
+                _fail("RELEASE_SOURCE_INPUT_LIMIT")
+            snapshot = _snapshot_file(
+                candidate,
+                max_bytes=MAX_INPUT_BYTES,
+                code="RELEASE_SOURCE_STATE_INVALID",
+                reparse_code="RELEASE_SOURCE_STATE_INVALID",
+            )
+            total_bytes += snapshot.size
+            if total_bytes > MAX_PACKAGE_INPUT_BYTES:
+                _fail("RELEASE_SOURCE_INPUT_LIMIT")
+            tokens[key] = _capture_source_file(
+                snapshot,
+                max_bytes=MAX_INPUT_BYTES,
+                code="RELEASE_SOURCE_STATE_INVALID",
+            )
+    return tuple(
+        token
+        for _, token in sorted(
+            tokens.items(), key=lambda item: (item[0].casefold(), item[0])
+        )
+    )
+
+
+def _verify_package_input_snapshot(
+    root: Path,
+    package_input_paths: Iterable[str],
+    expected: tuple[_SourceFileToken, ...],
+) -> None:
+    try:
+        current = _capture_package_input_files(root, package_input_paths)
+    except (ReleaseViolation, MemoryError, OSError, RuntimeError):
+        _fail("RELEASE_SOURCE_STATE_INVALID")
+    expected_records = {
+        token.snapshot.path.relative_to(root).as_posix(): (
+            token.snapshot.identity,
+            token.snapshot.size,
+            token.digest,
+        )
+        for token in expected
+    }
+    current_records = {
+        token.snapshot.path.relative_to(root).as_posix(): (
+            token.snapshot.identity,
+            token.snapshot.size,
+            token.digest,
+        )
+        for token in current
+    }
+    if current_records != expected_records:
+        _fail("RELEASE_SOURCE_STATE_INVALID")
+
+
 def _resolve_output(
     output_root: str | Path,
     project_root: Path,
@@ -1520,6 +1756,7 @@ def _zip_records(
                     elif name in {
                         "BUILD-METADATA.json",
                         "INTEGRATIONS-PREVIEW-PROFILE.json",
+                        f"{_THIRD_PARTY_LICENSE_PREFIX}{THIRD_PARTY_LICENSE_MANIFEST_NAME}",
                     }:
                         capture_limit = MAX_METADATA_BYTES
                         requires_full_capture = True
@@ -1611,6 +1848,42 @@ def _validate_zip_payload_manifest(records: dict[str, _ZipRecord]) -> None:
     ).encode("ascii")
     if checksum != expected_checksum:
         _fail(_INPUT_TYPE_INVALID)
+
+
+def _validate_third_party_license_packet(
+    records: dict[str, _ZipRecord], root: Path
+) -> dict[str, object]:
+    expected_names = {
+        f"{_THIRD_PARTY_LICENSE_PREFIX}{name}" for name in THIRD_PARTY_LICENSE_FILES
+    }
+    manifest_name = (
+        f"{_THIRD_PARTY_LICENSE_PREFIX}{THIRD_PARTY_LICENSE_MANIFEST_NAME}"
+    )
+    expected_names.add(manifest_name)
+    actual_names = {
+        name for name in records if name.startswith(_THIRD_PARTY_LICENSE_PREFIX)
+    }
+    if actual_names != expected_names:
+        _fail(_INPUT_TYPE_INVALID)
+    try:
+        expected_manifest = third_party_license_packet_manifest(root)
+        manifest = _json_object_bytes(
+            _record_data(records, manifest_name, limit=MAX_METADATA_BYTES),
+            MAX_METADATA_BYTES,
+            _INPUT_TYPE_INVALID,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        _fail(_INPUT_TYPE_INVALID)
+    if manifest != expected_manifest:
+        _fail(_INPUT_TYPE_INVALID)
+    for entry in expected_manifest["files"]:
+        record = records.get(f"{_THIRD_PARTY_LICENSE_PREFIX}{entry['path']}")
+        if record is None or (record.digest, record.size) != (
+            entry["sha256"],
+            entry["size"],
+        ):
+            _fail(_INPUT_TYPE_INVALID)
+    return expected_manifest
 
 
 def _valid_dependency_snapshot(value: object, lock_digest: str) -> bool:
@@ -1760,6 +2033,7 @@ def _validate_portable_input(
     ):
         _fail(_INPUT_TYPE_INVALID)
     _validate_zip_payload_manifest(records)
+    packet_manifest = _validate_third_party_license_packet(records, root)
 
     metadata = _json_object_bytes(
         _record_data(records, "BUILD-METADATA.json", limit=MAX_METADATA_BYTES),
@@ -1772,6 +2046,7 @@ def _validate_portable_input(
         or metadata["built_at"] != built_at
         or metadata["source_commit"] != source_commit
         or not isinstance(metadata["build_dependencies"], dict)
+        or metadata["third_party_license_packet"] != packet_manifest
     ):
         _fail(_INPUT_TYPE_INVALID)
     _require_built_at(built_at)
@@ -2043,6 +2318,9 @@ def _verify_source_inputs(
     source_commit: str,
     initial_contract: dict[str, object],
     source_files: tuple[_SourceFileToken, ...],
+    *,
+    package_input_paths: Iterable[str] = (),
+    package_input_tokens: tuple[_SourceFileToken, ...] = (),
 ) -> None:
     _require_source_state(root, source_commit)
     try:
@@ -2051,6 +2329,9 @@ def _verify_source_inputs(
             _fail("RELEASE_SOURCE_STATE_INVALID")
     except ReleaseViolation:
         raise
+    package_paths = tuple(package_input_paths)
+    if package_paths:
+        _verify_package_input_snapshot(root, package_paths, package_input_tokens)
     for source in source_files:
         current = _snapshot_file(
             source.snapshot.path, max_bytes=source.max_bytes, code=source.code
@@ -3362,10 +3643,17 @@ def _publish_staged_output(
     source_commit: str | None = None,
     source_files: tuple[_SourceFileToken, ...] = (),
     contract: dict[str, object] | None = None,
+    package_input_paths: Iterable[str] = (),
+    package_input_tokens: tuple[_SourceFileToken, ...] = (),
 ) -> None:
     if project_root is not None and source_commit is not None and contract is not None:
         _verify_source_inputs(
-            project_root, source_commit, contract, source_files
+            project_root,
+            source_commit,
+            contract,
+            source_files,
+            package_input_paths=package_input_paths,
+            package_input_tokens=package_input_tokens,
         )
     _validated_staging_path(token, staged, "RELEASE_OUTPUT_PATH_INVALID")
     _validate_staging_contents(token, staged)
@@ -3424,6 +3712,10 @@ def stage_public_preview_release(
         if bundle_root is not None
         else notices_template_path
     )
+    package_input_paths = tuple(
+        str(relative) for relative in profile.profile["package_input_paths"]
+    )
+    package_source_files = _capture_package_input_files(root, package_input_paths)
     source_files_list = [
         _capture_source_file(
             profile_path,
@@ -3442,6 +3734,11 @@ def stage_public_preview_release(
         ),
     ]
     captured_paths = {source.snapshot.path for source in source_files_list}
+    for source in package_source_files:
+        if source.snapshot.path in captured_paths:
+            continue
+        source_files_list.append(source)
+        captured_paths.add(source.snapshot.path)
     for relative in profile.profile["active_document_paths"]:
         document = _resolve_project_file(root, str(relative))
         if document.path in captured_paths:
@@ -3583,7 +3880,14 @@ def stage_public_preview_release(
             built_at=built_at,
             portable_bundle_root=bundle_root,
         )
-        _verify_source_inputs(root, source_commit, contract, source_files)
+        _verify_source_inputs(
+            root,
+            source_commit,
+            contract,
+            source_files,
+            package_input_paths=package_input_paths,
+            package_input_tokens=package_source_files,
+        )
         _publish_staged_output(
             temporary,
             output,
@@ -3592,6 +3896,8 @@ def stage_public_preview_release(
             source_commit=source_commit,
             source_files=source_files,
             contract=contract,
+            package_input_paths=package_input_paths,
+            package_input_tokens=package_source_files,
         )
         temporary = None
         return result
