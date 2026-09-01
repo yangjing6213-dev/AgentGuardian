@@ -32,6 +32,13 @@ jobs:
       CANDIDATE_DISPLAY_VERSION: 0.2.0-beta.1
       CANDIDATE_FILE_VERSION: 0.2.0.1
     steps:
+      - name: Validate private beta source branch
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_NAME -cne 'agent/founder-alpha') {
+            throw 'private-beta workflow must run from agent/founder-alpha'
+          }
+
       - name: Validate exact lowercase candidate SHA
         shell: pwsh
         run: |
@@ -309,3 +316,4 @@ jobs:
             ${{ runner.temp }}/agentguardian-private-beta-evidence/PRIVATE-BETA-README.txt
             ${{ runner.temp }}/agentguardian-private-beta-evidence/SHA256SUMS
             ${{ runner.temp }}/agentguardian-private-beta-evidence/THIRD_PARTY_NOTICES.md
+
