@@ -237,6 +237,31 @@ def test_private_beta_workflow_is_exact_sha_read_only_and_nonpublishing() -> Non
         assert forbidden not in folded
 
 
+def test_private_beta_workflow_rejects_manual_dispatch_from_other_branch() -> None:
+    workflow = (
+        ROOT / ".github" / "workflows" / "windows-exe-private-beta.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "name: Validate private beta source branch" in workflow
+    assert "$env:GITHUB_REF_NAME -cne 'agent/founder-alpha'" in workflow
+    assert "private-beta workflow must run from agent/founder-alpha" in workflow
+
+
+def test_ci_verifies_setuptools_backend_after_installing_build_lock() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+
+    build_lock = "python -m pip install --require-hashes -r requirements-build.lock"
+    backend_check = 'python -c "import setuptools.build_meta; print(setuptools.__version__)"'
+    editable_install = "python -m pip install --no-build-isolation --no-deps -e ."
+
+    assert build_lock in workflow
+    assert backend_check in workflow
+    assert workflow.index(build_lock) < workflow.index(backend_check)
+    assert workflow.index(backend_check) < workflow.index(editable_install)
+
+
 def test_active_tree_has_only_exe_private_beta_delivery() -> None:
     for relative in (
         ".github/workflows/windows-mvp.yml",
@@ -2081,3 +2106,4 @@ def test_cli_emits_bounded_canonical_json_without_private_paths(tmp_path: Path) 
     assert failed.returncode != 0
     assert "PROFILE_SOURCE_FORBIDDEN" in combined
     assert str(root) not in combined
+
