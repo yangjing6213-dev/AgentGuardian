@@ -231,6 +231,36 @@ def test_private_beta_workflow_is_exact_sha_read_only_and_nonpublishing() -> Non
         assert forbidden not in folded
 
 
+def test_private_beta_workflow_rejects_manual_dispatch_from_other_branch() -> None:
+    workflow = (
+        ROOT / ".github" / "workflows" / "windows-exe-private-beta.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "name: Validate private beta source branch" in workflow
+    assert "$env:GITHUB_REF_NAME -cne 'agent/founder-alpha'" in workflow
+    assert "private-beta workflow must run from agent/founder-alpha" in workflow
+    assert workflow.index("Validate private beta source branch") < workflow.index(
+        "Validate exact lowercase candidate SHA"
+    )
+
+
+def test_ci_verifies_setuptools_backend_after_installing_build_lock() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "--require-hashes -r requirements-build.lock" in workflow
+    assert (
+        'python -c "import setuptools.build_meta; print(setuptools.__version__)"'
+        in workflow
+    )
+    assert workflow.index("requirements-build.lock") < workflow.index(
+        'python -c "import setuptools.build_meta; print(setuptools.__version__)"'
+    ) < workflow.index(
+        "python -m pip install --no-build-isolation --no-deps -e ."
+    ) < workflow.index("Full test suite")
+
+
 def test_active_tree_has_only_exe_private_beta_delivery() -> None:
     for relative in (
         ".github/workflows/windows-mvp.yml",
