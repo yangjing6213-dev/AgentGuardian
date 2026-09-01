@@ -1,0 +1,652 @@
+"""Build-contract helpers for the unsigned Windows portable package."""
+
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+from importlib import metadata
+import json
+import hashlib
+import os
+import platform
+from pathlib import Path
+from pathlib import PurePosixPath
+import shutil
+import stat
+import subprocess
+import sys
+import ssl
+from uuid import UUID, uuid5
+import zipfile
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
+
+from scripts.verify_personal_release_profile import (
+    ProfileSnapshot,
+    load_profile_snapshot,
+    require_profile_snapshot_unchanged,
+    verify_payload,
+    verify_profile,
+)
+
+_ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+_UNUSED_QT_GUI_PLUGINS = {
+    "qpdf.dll",
+    "qtuiotouchplugin.dll",
+    "qtvirtualkeyboardplugin.dll",
+}
+_SBOM_NAMESPACE = UUID("f2b2b988-15ce-5e1c-a6cb-08c2db8e6e7a")
+_PRIVATE_BETA_PROFILE = "personal_exe_private_beta"
+_RELEASE_PROFILES = {
+    _PRIVATE_BETA_PROFILE: ("personal_exe_private_beta.json", "0.2.0-beta.1"),
+}
+_FORBIDDEN_QT_NETWORK_COMPONENTS = {
+    "qnetworklistmanager.dll",
+    "qopensslbackend.dll",
+    "qschannelbackend.dll",
+    "qt6network.dll",
+    "qtnetwork.pyd",
+}
+def reviewed_source_paths(project_root: Path) -> tuple[Path, ...]:
+    package_root = project_root / "src" / "agentguardian"
+    policy_path = package_root / "source_policy.json"
+    try:
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        reviewed_names = tuple(sorted(policy["modules"]))
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError):
+        raise ValueError("invalid source policy") from None
+
+    reviewed = tuple(package_root / name for name in reviewed_names)
+    package_sources = set(package_root.glob("*.py"))
+    if any(not path.is_file() for path in reviewed) or set(reviewed) != package_sources:
+        raise ValueError("reviewed source set does not match package")
+    return reviewed
+
+
+def build_pyinstaller_command(
+    project_root: Path,
+    output_root: Path,
+    *,
+    python_executable: str = sys.executable,
+) -> tuple[str, ...]:
+    project_root = project_root.resolve()
+    package_root = project_root / "src" / "agentguardian"
+    data_specs = [
+        *(f"{path.resolve()}:agentguardian" for path in reviewed_source_paths(project_root)),
+        f"{(package_root / 'source_policy.json').resolve()}:agentguardian",
+        f"{(project_root / 'rules' / 'default.json').resolve()}:agentguardian/rules",
+    ]
+    command = [
+        python_executable,
+        "-m",
+        "PyInstaller",
+        "--clean",
+        "--noconfirm",
+        "--onedir",
+        "--windowed",
+        "--noupx",
+        "--exclude-module",
+        "PySide6.QtNetwork",
+        "--name",
+        "AgentGuardian",
+        "--paths",
+        str((project_root / "src").resolve()),
+        "--additional-hooks-dir",
+        str((project_root / "scripts" / "pyinstaller_hooks").resolve()),
+        "--distpath",
+        str(output_root / "dist"),
+        "--workpath",
+        str(output_root / "work"),
+        "--specpath",
+        str(output_root / "spec"),
+    ]
+    for data_spec in data_specs:
+        command.extend(("--add-data", data_spec))
+    command.append(str((package_root / "__main__.py").resolve()))
+    return tuple(command)
+
+
+def filter_qt_gui_binaries(
+    binaries: list[tuple[str, str]],
+) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        binary
+        for binary in binaries
+        if Path(binary[0]).name.casefold() not in _UNUSED_QT_GUI_PLUGINS
+    )
+
+
+def portable_component_specs(
+    *,
+    python_version: str,
+    openssl_version: str,
+    vc_runtime_version: str,
+    ucrt_version: str,
+    product_version: str = "0.2.0-beta.1",
+) -> tuple[dict[str, str], ...]:
+    versions = _locked_versions(Path(__file__).parents[1] / "requirements-build.lock")
+    qt_license = "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+    return (
+        _component(
+            "AgentGuardian", product_version, "Apache-2.0", "runtime", "application"
+        ),
+        _component("CPython", python_version, "Python-2.0", "runtime"),
+        _component("OpenSSL", openssl_version, "Apache-2.0", "runtime"),
+        _component("Microsoft Universal C Runtime", ucrt_version, "NOASSERTION", "runtime"),
+        _component("Microsoft Visual C++ Runtime", vc_runtime_version, "NOASSERTION", "runtime"),
+        _component("PyInstaller", versions["pyinstaller"], "GPL-2.0-or-later WITH Bootloader-exception", "build-time"),
+        _component("PyInstaller Bootloader", versions["pyinstaller"], "GPL-2.0-or-later WITH Bootloader-exception", "runtime"),
+        _component("PySide6", versions["pyside6"], qt_license, "runtime"),
+        _component("PySide6_Addons", versions["pyside6-addons"], qt_license, "runtime"),
+        _component("PySide6_Essentials", versions["pyside6-essentials"], qt_license, "runtime"),
+        _component("shiboken6", versions["shiboken6"], qt_license, "runtime"),
+    )
+
+
+def cyclonedx_bom_bytes(
+    component_specs: tuple[dict[str, str], ...],
+    *,
+    build_id: str,
+    built_at: object,
+) -> bytes:
+    from cyclonedx.model import Property
+    from cyclonedx.model.bom_ref import BomRef
+    from cyclonedx.model.bom import Bom, BomMetaData
+    from cyclonedx.model.component import Component, ComponentScope, ComponentType
+    from cyclonedx.model.dependency import Dependency
+    from cyclonedx.model.license import DisjunctiveLicense, LicenseExpression
+    from cyclonedx.output import OutputFormat, SchemaVersion, make_outputter
+
+    if not build_id or not hasattr(built_at, "tzinfo") or built_at.tzinfo is None:
+        raise ValueError("build identity and timezone-aware timestamp are required")
+    components = []
+    for spec in component_specs:
+        license_value = (
+            DisjunctiveLicense(name="NOASSERTION")
+            if spec["license"] == "NOASSERTION"
+            else LicenseExpression(spec["license"])
+        )
+        components.append(
+            Component(
+                name=spec["name"],
+                version=spec["version"],
+                bom_ref=f"pkg:generic/{_reference_name(spec['name'])}@{spec['version']}",
+                type=ComponentType.APPLICATION if spec["type"] == "application" else ComponentType.LIBRARY,
+                scope=(
+                    ComponentScope.REQUIRED
+                    if spec["role"] == "runtime"
+                    else ComponentScope.EXCLUDED
+                ),
+                licenses=(license_value,),
+                properties=(
+                    Property(name="agentguardian:component:role", value=spec["role"]),
+                ),
+            )
+        )
+    application = next(component for component in components if component.name == "AgentGuardian")
+    runtime_dependencies = tuple(
+        Dependency(BomRef(str(component.bom_ref)))
+        for component in components
+        if component is not application
+        and next(spec for spec in component_specs if spec["name"] == component.name)["role"] == "runtime"
+    )
+    dependencies = (
+        Dependency(BomRef(str(application.bom_ref)), dependencies=runtime_dependencies),
+        *runtime_dependencies,
+        *(
+            Dependency(BomRef(str(component.bom_ref)))
+            for component in components
+            if component is not application
+            and next(spec for spec in component_specs if spec["name"] == component.name)["role"] != "runtime"
+        ),
+    )
+    bom = Bom(
+        components=(component for component in components if component is not application),
+        dependencies=dependencies,
+        serial_number=uuid5(_SBOM_NAMESPACE, build_id),
+        metadata=BomMetaData(component=application, timestamp=built_at),
+        properties=(Property(name="agentguardian:build:id", value=build_id),),
+    )
+    outputter = make_outputter(bom, OutputFormat.JSON, SchemaVersion.V1_6)
+    return canonical_json_bytes(json.loads(outputter.output_as_string(indent=None)))
+
+
+def write_portable_evidence(
+    bundle_root: Path,
+    *,
+    project_root: Path,
+    component_specs: tuple[dict[str, str], ...],
+    source_commit: str,
+    built_at: str,
+    build_dependencies: dict[str, object],
+    forbidden_texts: tuple[str, ...],
+    artifact_status: str = "unsigned_development_only",
+) -> None:
+    if len(source_commit) != 40 or any(character not in "0123456789abcdef" for character in source_commit):
+        raise ValueError("source commit must be a full lowercase SHA-1")
+    if not built_at.endswith("Z"):
+        raise ValueError("build time must be canonical UTC")
+    if artifact_status != "unsigned_development_only":
+        raise ValueError("artifact status is invalid")
+    shutil.copyfile(project_root / "LICENSE", bundle_root / "LICENSE")
+    shutil.copyfile(
+        project_root / "THIRD_PARTY_NOTICES.md",
+        bundle_root / "THIRD_PARTY_NOTICES.md",
+    )
+    from datetime import datetime
+
+    parsed_time = datetime.fromisoformat(built_at.replace("Z", "+00:00"))
+    (bundle_root / "AgentGuardian.cdx.json").write_bytes(
+        cyclonedx_bom_bytes(
+            component_specs,
+            build_id=source_commit,
+            built_at=parsed_time,
+        )
+    )
+    metadata = {
+        "artifact_status": artifact_status,
+        "build_mode": "pyinstaller_onedir",
+        "build_dependencies": build_dependencies,
+        "built_at": built_at,
+        "source_commit": source_commit,
+    }
+    (bundle_root / "BUILD-METADATA.json").write_bytes(canonical_json_bytes(metadata))
+    payload_manifest = artifact_manifest(
+        bundle_root,
+        forbidden_texts=forbidden_texts,
+    )
+    (bundle_root / "PAYLOAD-MANIFEST.json").write_bytes(
+        canonical_json_bytes(payload_manifest)
+    )
+    checksum_manifest = artifact_manifest(
+        bundle_root,
+        forbidden_texts=forbidden_texts,
+    )
+    checksums = "".join(
+        f"{entry['sha256']} *{entry['path']}\n"
+        for entry in checksum_manifest["files"]
+    ).encode("ascii")
+    (bundle_root / "SHA256SUMS").write_bytes(checksums)
+
+
+def validate_frozen_layout(bundle_root: Path, project_root: Path) -> None:
+    executable = bundle_root / "AgentGuardian.exe"
+    package = bundle_root / "_internal" / "agentguardian"
+    if not executable.is_file() or not package.is_dir():
+        raise ValueError("frozen executable or package layout is missing")
+    expected_sources = reviewed_source_paths(project_root)
+    frozen_sources = tuple(sorted(package.glob("*.py"), key=lambda path: path.name))
+    if tuple(path.name for path in frozen_sources) != tuple(
+        path.name for path in expected_sources
+    ):
+        raise ValueError("reviewed source layout does not match")
+    for source, frozen in zip(expected_sources, frozen_sources, strict=True):
+        if source.read_bytes() != frozen.read_bytes():
+            raise ValueError("reviewed source layout does not match")
+    required_resources = (
+        (
+            project_root / "src" / "agentguardian" / "source_policy.json",
+            package / "source_policy.json",
+        ),
+        (
+            project_root / "rules" / "default.json",
+            package / "rules" / "default.json",
+        ),
+    )
+    if any(
+        not frozen.is_file() or source.read_bytes() != frozen.read_bytes()
+        for source, frozen in required_resources
+    ):
+        raise ValueError("frozen policy or rules do not match")
+    forbidden = sorted(
+        path.relative_to(bundle_root).as_posix()
+        for path in bundle_root.rglob("*")
+        if path.is_file() and path.name.casefold() in _FORBIDDEN_QT_NETWORK_COMPONENTS
+    )
+    if forbidden:
+        raise ValueError(f"frozen layout contains network-capable component: {forbidden[0]}")
+
+
+def validate_git_build_context(head: str, status: str, source_commit: str) -> None:
+    if len(source_commit) != 40 or any(
+        character not in "0123456789abcdef" for character in source_commit
+    ):
+        raise ValueError("source commit must be a full lowercase SHA-1")
+    if head != source_commit:
+        raise ValueError("source commit does not match HEAD")
+    if status.strip():
+        raise ValueError("worktree must be clean")
+
+
+def validate_build_time(value: str) -> datetime:
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        raise ValueError("build time must be canonical UTC seconds") from None
+    return parsed
+
+
+def build_portable(
+    project_root: Path,
+    output_root: Path,
+    *,
+    source_commit: str,
+    built_at: str,
+    artifact_status: str = "unsigned_development_only",
+    release_profile: str = _PRIVATE_BETA_PROFILE,
+) -> Path:
+    if sys.platform != "win32" or sys.version_info[:2] != (3, 12):
+        raise RuntimeError("portable builds require Windows Python 3.12")
+    if artifact_status != "unsigned_development_only":
+        raise ValueError("artifact status is invalid")
+    if release_profile not in _RELEASE_PROFILES:
+        raise ValueError("release profile is invalid")
+    profile_filename, product_version = _RELEASE_PROFILES[release_profile]
+    project_root = project_root.resolve()
+    output_root = output_root.resolve()
+    head = _git(project_root, "rev-parse", "HEAD")
+    status = _git(project_root, "status", "--porcelain=v1", "--untracked-files=all")
+    validate_git_build_context(head, status, source_commit)
+    profile_path = project_root / "release_profiles" / profile_filename
+    profile_snapshot = load_profile_snapshot(project_root, profile_path)
+    verify_profile(project_root, profile_snapshot)
+    build_time = validate_build_time(built_at)
+    build_dependencies = validate_build_dependency_snapshot()
+    if output_root.exists():
+        raise ValueError("output root already exists")
+    output_root.mkdir(parents=True)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PYTHONHASHSEED": "0",
+            "PYINSTALLER_CONFIG_DIR": str(output_root / "pyinstaller-cache"),
+            "SOURCE_DATE_EPOCH": str(int(build_time.timestamp())),
+        }
+    )
+    subprocess.run(
+        build_pyinstaller_command(project_root, output_root),
+        cwd=project_root,
+        env=environment,
+        check=True,
+    )
+    bundle_root = output_root / "dist" / "AgentGuardian"
+    validate_frozen_layout(bundle_root, project_root)
+    verify_payload(bundle_root, profile_snapshot)
+    internal = bundle_root / "_internal"
+    python_version, openssl_version = runtime_library_versions()
+    components = portable_component_specs(
+        python_version=python_version,
+        openssl_version=openssl_version,
+        vc_runtime_version=_pe_version(internal / "VCRUNTIME140.dll"),
+        ucrt_version=_pe_version(internal / "ucrtbase.dll"),
+        product_version=product_version,
+    )
+    final_head = _git(project_root, "rev-parse", "HEAD")
+    final_status = _git(
+        project_root,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+    )
+    validate_git_build_context(final_head, final_status, source_commit)
+    require_profile_snapshot_unchanged(project_root, profile_path, profile_snapshot)
+    _write_personal_profile_evidence(bundle_root, profile_snapshot)
+    write_portable_evidence(
+        bundle_root,
+        project_root=project_root,
+        component_specs=components,
+        source_commit=source_commit,
+        built_at=built_at,
+        build_dependencies=build_dependencies,
+        forbidden_texts=(str(project_root), str(output_root)),
+        artifact_status=artifact_status,
+    )
+    deterministic_zip(
+        bundle_root,
+        output_root
+        / f"AgentGuardian-{product_version}-windows-x64-{source_commit[:12]}.zip",
+    )
+    return bundle_root
+
+
+def _write_personal_profile_evidence(
+    bundle_root: Path, profile_snapshot: ProfileSnapshot
+) -> None:
+    evidence = {
+        "profile": profile_snapshot.profile["name"],
+        "profile_sha256": profile_snapshot.sha256,
+        "schema": profile_snapshot.profile["schema"],
+        "status": "pass",
+    }
+    (bundle_root / "PERSONAL-RELEASE-PROFILE.json").write_bytes(
+        canonical_json_bytes(evidence)
+    )
+
+
+def _git(project_root: Path, *arguments: str) -> str:
+    return subprocess.run(
+        ("git", *arguments),
+        cwd=project_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def runtime_library_versions() -> tuple[str, str]:
+    openssl_version = ssl.OPENSSL_VERSION.split()[1]
+    return platform.python_version(), openssl_version
+
+
+def _pe_version(path: Path) -> str:
+    import pefile
+
+    pe = pefile.PE(str(path), fast_load=False)
+    fixed = pe.VS_FIXEDFILEINFO[0]
+    return ".".join(
+        str(value)
+        for value in (
+            fixed.FileVersionMS >> 16,
+            fixed.FileVersionMS & 0xFFFF,
+            fixed.FileVersionLS >> 16,
+            fixed.FileVersionLS & 0xFFFF,
+        )
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Build an AgentGuardian Windows portable artifact."
+    )
+    parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--built-at", required=True)
+    parser.add_argument(
+        "--artifact-status",
+        choices=(
+            "unsigned_development_only",
+        ),
+        default="unsigned_development_only",
+    )
+    parser.add_argument(
+        "--release-profile",
+        choices=tuple(sorted(_RELEASE_PROFILES)),
+        default=_PRIVATE_BETA_PROFILE,
+    )
+    arguments = parser.parse_args()
+    build_portable(
+        Path(__file__).parents[1],
+        arguments.output_root,
+        source_commit=arguments.source_commit,
+        built_at=arguments.built_at,
+        artifact_status=arguments.artifact_status,
+        release_profile=arguments.release_profile,
+    )
+    return 0
+
+
+def _component(
+    name: str,
+    version: str,
+    license_expression: str,
+    role: str,
+    component_type: str = "library",
+) -> dict[str, str]:
+    return {
+        "name": name,
+        "version": version,
+        "license": license_expression,
+        "role": role,
+        "type": component_type,
+    }
+
+
+def _reference_name(name: str) -> str:
+    return "-".join(name.casefold().replace("+", "plus").replace("_", "-").split())
+
+
+def _locked_versions(lock_path: Path) -> dict[str, str]:
+    versions: dict[str, str] = {}
+    for line in lock_path.read_text(encoding="utf-8").splitlines():
+        requirement, separator, _ = line.partition(" --hash=sha256:")
+        name, pinned, version = requirement.partition("==")
+        if not separator or pinned != "==" or not name or not version:
+            raise ValueError("invalid build lock")
+        versions[name] = version
+    return versions
+
+
+def validate_build_dependency_snapshot(
+    lock_path: Path | None = None,
+) -> dict[str, object]:
+    resolved_lock = lock_path or Path(__file__).parents[1] / "requirements-build.lock"
+    lock_bytes = resolved_lock.read_bytes()
+    locked = _locked_versions(resolved_lock)
+    installed: dict[str, str] = {}
+    for name in sorted(locked):
+        try:
+            installed[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            raise ValueError(f"build dependency is not installed: {name}") from None
+    if installed != locked:
+        mismatches = [
+            name
+            for name in sorted(locked)
+            if installed.get(name) != locked[name]
+        ]
+        raise ValueError(f"build dependency version drift: {mismatches[0]}")
+    return {
+        "lock_sha256": hashlib.sha256(lock_bytes).hexdigest(),
+        "versions": installed,
+    }
+
+
+def canonical_json_bytes(value: object) -> bytes:
+    return (
+        json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("ascii")
+
+
+def validate_relative_paths(paths: tuple[str, ...]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    for value in paths:
+        path = PurePosixPath(value)
+        unsafe = (
+            not value
+            or "\\" in value
+            or path.is_absolute()
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or ":" in path.parts[0]
+        )
+        if unsafe:
+            raise ValueError(f"unsafe artifact path: {value}")
+        folded = value.casefold()
+        if folded in seen:
+            raise ValueError(f"duplicate artifact path: {value}")
+        seen.add(folded)
+    return paths
+
+
+def artifact_manifest(
+    bundle_root: Path,
+    *,
+    forbidden_texts: tuple[str, ...] = (),
+) -> dict[str, object]:
+    files = _bundle_files(bundle_root)
+    relative_paths = tuple(path.relative_to(bundle_root).as_posix() for path in files)
+    validate_relative_paths(relative_paths)
+    forbidden_bytes = tuple(
+        variant.encode("utf-8")
+        for value in forbidden_texts
+        if value
+        for variant in {
+            value,
+            value.replace("\\", "\\\\"),
+            value.replace("\\", "/"),
+            json.dumps(value, ensure_ascii=True)[1:-1],
+            json.dumps(value.replace("\\", "/"), ensure_ascii=True)[1:-1],
+        }
+    )
+    entries = []
+    for path, relative in zip(files, relative_paths, strict=True):
+        content = path.read_bytes()
+        if any(value in content for value in forbidden_bytes):
+            raise ValueError(f"forbidden build path in artifact: {relative}")
+        entries.append(
+            {
+                "path": relative,
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "size": len(content),
+            }
+        )
+    return {"schema": 1, "algorithm": "sha256", "files": entries}
+
+
+def deterministic_zip(bundle_root: Path, destination: Path) -> Path:
+    files = _bundle_files(bundle_root)
+    relative_paths = tuple(path.relative_to(bundle_root).as_posix() for path in files)
+    validate_relative_paths(relative_paths)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(
+        destination,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+        compresslevel=9,
+    ) as archive:
+        for path, relative in zip(files, relative_paths, strict=True):
+            info = zipfile.ZipInfo(relative, date_time=_ZIP_TIMESTAMP)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3
+            info.external_attr = (stat.S_IFREG | 0o644) << 16
+            archive.writestr(info, path.read_bytes(), compresslevel=9)
+    return destination
+
+
+def _bundle_files(bundle_root: Path) -> tuple[Path, ...]:
+    if not bundle_root.is_dir() or _is_reparse_point(bundle_root):
+        raise ValueError("bundle root is missing or a reparse point")
+    paths = sorted(bundle_root.rglob("*"), key=lambda path: path.relative_to(bundle_root).as_posix())
+    for path in paths:
+        if _is_reparse_point(path):
+            raise ValueError(f"artifact contains reparse point: {path.name}")
+    return tuple(path for path in paths if path.is_file())
+
+
+def _is_reparse_point(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    try:
+        attributes = getattr(path.stat(follow_symlinks=False), "st_file_attributes", 0)
+    except OSError:
+        raise ValueError(f"unable to inspect artifact path: {path.name}") from None
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

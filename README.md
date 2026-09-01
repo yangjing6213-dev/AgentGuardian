@@ -1,34 +1,78 @@
-# AgentGuardian
+![AgentGuardian](assets/brand/agentguardian-cover.svg)
 
-## AI Agent 守护者
+# AgentGuardian Personal v1
 
-AgentGuardian（AG）是一个本地优先的 AI Agent 数据安全审计工具，帮助个人和小团队发现 AI 客户端、浏览器扩展、CLI、MCP 服务、技能、配置、日志、导出文件和分享资产中的数据安全风险。
+AgentGuardian Personal v1 is a local-first static security auditor for Windows 11 x64. Its supported use boundary is **personal non-regulated configuration**. The only active delivery and governance route is the unsigned `personal_exe_private_beta` track for known testers. Frozen candidate `8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6` has current local-gate, GitHub CI, native unsigned-installer lifecycle, and independent-review evidence. Version `0.2.0-beta.1` remains `PRIVATE-BETA-NOT-READY` because external license and Qt approval, two-machine acceptance, and the operations/security gate are pending; formal public release remains `NO-GO`.
 
-产品承诺是：**让 AI Agent 的数据边界可见、可控、可验证。**
+## Current implementation
 
-当前版本目标：`0.1.0 Founder Alpha`（Windows，本地运行，范围受限，不代表生产安全等级）。
+- Static audit of directories explicitly selected by the user, with bounded read-only discovery.
+- Redacted JSON and HTML reports with explainable scoring, findings, and disposition guidance.
+- Read-only browser SQLite metadata audit through a temporary local copy that is cleaned up after use.
+- One-time, explicitly triggered clipboard inspection in memory; clipboard source text is not retained.
+- Explicit public URL share-reachability checks. AgentGuardian does not upload audit data through this action.
+- One fixed, allowlisted `OPENAI_BASE_URL_OVERRIDE` replacement with preview, confirmation, target recheck, backup, and same-session rollback.
+- Local state protected for the current Windows user with DPAPI.
+- Static MCP configuration detection for dangerous capability combinations.
+- OpenAI Provider local adaptation, detection, and manual guidance only. The runtime must not call OpenAI or another provider API by default.
 
-## 核心原则
+`Personal v1 不支持高敏感现实数据`。`联网分享验证仅在用户显式输入公开 URL 后执行`。
 
-- 原始聊天、完整密钥和完整分享链接默认不离开本机。
-- 扫描、评分和修复内核开放透明，外发通道独立授权。
-- 修复动作必须预览、确认、限权执行、可回滚并复审。
-- AI 只负责解释和总结，不能临时生成并执行高权限命令。
-- 安全分数必须与审计覆盖率、证据置信度和限制项一起阅读。
+## Permanently excluded
 
-## 文档
+Personal v1 permanently excludes MCP runtime integration. Enterprise features, a high-sensitivity mode, and dynamic MCP execution are not product roadmap promises. The runtime has no telemetry, cloud console, automatic arbitrary remediation, or plugin execution.
 
-- [正式设计规范](docs/superpowers/specs/2026-08-01-agentguardian-design.md)
-- [系统架构与数据流](docs/architecture.md)
+The static MCP detector does not download, load, launch, broker, sandbox, package, or execute MCP software. Provider findings are local configuration observations and manual guidance, not endpoint classification or API verification.
 
-## 开发状态
+## Unsupported real data
 
-当前仓库处于设计基线阶段。Founder Alpha 的一周开发窗口为 2026-08-03 至 2026-08-09；实现开始前，设计规范需要完成用户审阅。
+Do not use Personal v1 with medical, financial, identity or biometric, legally privileged, customer data, state-secret, other regulated, or other high-sensitivity real data. This boundary is a use restriction, not a guarantee that AgentGuardian can classify content correctly.
 
-## 隐私边界
+## Not yet passed
 
-视频、转写文本、截图、浏览器历史和本机审计证据属于本地工作材料，不进入公开仓库。公开仓库只保存源代码、合成测试数据、规则说明、架构文档和不含敏感信息的报告样例。
+The intended delivery route is a traditional unsigned offline EXE installer sent directly to known private testers. No installer candidate has passed the required gates. Because it is unsigned, Windows may show Unknown Publisher or SmartScreen warnings; testers must verify the supplied SHA-256 before running it.
 
-## 许可证
+An artifact uploaded by this public repository's GitHub Actions workflow is not an access-controlled private distribution channel. `Private beta` is a maturity label for the known-tester scope, not a claim that an artifact is confidential or access-restricted.
 
-本项目采用 [Apache License 2.0](LICENSE)。
+The local gate, pinned installer tool, exact installer build, native lifecycle, and independent review now have evidence for the frozen candidate. External license and Qt review, two independent clean-machine checks, and the operations/security gate remain pending. GitHub Issues is live for ordinary support. GitHub Private Vulnerability Reporting is disabled, so no current private vulnerability intake is claimed. These limits prohibit production-safety, license, or clean-machine claims.
+
+The canonical partial status ledger is [personal-exe-private-beta-status.json](docs/security/personal-exe-private-beta-status.json). Private beta remains `PRIVATE-BETA-NOT-READY` and formal release remains `NO-GO`; exact-SHA evidence must be generated outside the candidate commit.
+
+## Try from source
+
+Use Windows 11 x64 and Python 3.12 or later. Run with ordinary user privileges and only synthetic or supported personal non-regulated configuration data.
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python -m pip install -e .
+.\.venv\Scripts\python -m agentguardian
+```
+
+Developer verification:
+
+```powershell
+.\.venv\Scripts\python -m pip install -r requirements-dev.lock --require-hashes
+.\.venv\Scripts\python -m pytest -q -p no:cacheprovider
+```
+
+The self-audit reports the Python 版本 but does not expose the interpreter path.
+
+## Active product documents
+
+- [Architecture](docs/architecture.md)
+- [Threat model](docs/security/personal-v1-threat-model.md)
+- [Privacy](docs/security/personal-v1-privacy.md)
+- [Support and vulnerability handling](docs/security/personal-v1-support.md)
+- [Release gate runbook](docs/security/personal-v1-release-runbook.md)
+- [Independent-machine acceptance](docs/security/personal-v1-independent-machine-acceptance.md)
+
+## Development governance
+
+- [Approved Personal v1 specification](docs/superpowers/specs/2026-08-16-agentguardian-personal-v1-design.md)
+- [Active Personal EXE private-beta implementation plan](docs/superpowers/plans/2026-08-21-agentguardian-personal-exe-private-beta.md)
+
+The approved specification and active implementation plan govern development; they are not product capability claims or release evidence. The Store/MSIX/WACK/Partner Center route and its artifacts are historical and non-governing. Retiring or deleting that route does not pass any private-beta gate. Other documents under `docs/superpowers` are historical planning snapshots; older Windows MVP reports are historical planning or evidence snapshots. `docs/security/windows-mvp-threat-model.md` and `docs/security/windows-release-evidence.md` are also historical snapshots. They are not active Personal v1 product promises or current release evidence.
+
+## License
+
+Source code is licensed under [Apache License 2.0](LICENSE). That repository license does not replace the pending external review of the exact candidate SBOM, Qt, and redistribution obligations.

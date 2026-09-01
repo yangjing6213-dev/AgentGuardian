@@ -1,0 +1,4 @@
+release_profiles/personal_exe_private_beta.json text eol=lf
+docs/security/personal-exe-private-beta-status.json text eol=lf
+docs/security/evidence/*.json text eol=lf
+docs/security/evidence/*.toml text eol=lf
