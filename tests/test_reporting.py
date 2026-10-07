@@ -1427,6 +1427,22 @@ def test_render_html_contains_requested_score_and_finding_fields() -> None:
     assert "Disposition reason:" not in rendered
 
 
+def test_render_html_supports_english_for_the_runtime_report_view() -> None:
+    rendered = render_html(
+        _findings_score(),
+        _findings(),
+        rule_version="rules-1",
+        evaluated_at=EVALUATED_AT,
+        language="en",
+    )
+
+    assert '<html lang="en">' in rendered
+    assert "<h2>Technical score</h2>" in rendered
+    assert "<h2>Findings</h2>" in rendered
+    assert "Limited coverage" in rendered
+    assert "File scan was limited" in rendered
+
+
 @pytest.mark.parametrize(
     ("score", "state", "state_label", "reason_label", "incomplete"),
     (
@@ -1832,6 +1848,7 @@ def test_scoring_and_reporting_use_only_approved_imports_and_calls() -> None:
             "disposition_index",
             "escape",
             "evaluate_disposition",
+            "label",
             "len",
             "sorted",
             "str",

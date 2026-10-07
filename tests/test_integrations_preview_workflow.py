@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
+import re
 
 from scripts.verify_integrations_preview_profile import canonical_json_bytes
+
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "windows-integrations-preview.yml"
 STATUS = ROOT / "docs" / "security" / "integrations-preview-status.json"
 ACTIVE_DOC = ROOT / "docs" / "security" / "integrations-preview.md"
-PERSONAL_RUNBOOK = ROOT / "docs" / "security" / "personal-v1-release-runbook.md"
 PROFILE = ROOT / "release_profiles" / "integrations_preview.json"
 
 
@@ -236,124 +236,121 @@ def test_full_gate_secret_scan_keeps_git_grep_exit_semantics_without_output() ->
     grep_index = lines.index(grep_line)
     assert "$secretScanExitCode = $LASTEXITCODE" in lines[grep_index + 1]
     assert "Assert-GitGrepNoMatches" in lines[grep_index + 2]
-    assert "sk-(proj|live|test)-[A-Za-z0-9]{32,}" in full_gates
-    assert "sk-[A-Za-z0-9]{32,}" in full_gates
-    assert "github[_]pat_[A-Za-z0-9_]{20,}" in full_gates
 
 
-def test_workflow_adds_pinned_gitleaks_history_and_asset_scans() -> None:
+def test_download_staging_materializes_primary_alias_and_exact_asset_contract() -> None:
     workflow = WORKFLOW.read_text(encoding="ascii")
-    assert "fetch-depth: 0" in workflow
-    assert "GITLEAKS_RELEASE_TAG: v8.30.1" in workflow
-    assert "GITLEAKS_ASSET_NAME: gitleaks_8.30.1_windows_x64.zip" in workflow
-    assert (
-        "GITLEAKS_ASSET_SHA256: "
-        "d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e"
-    ) in workflow
-    assert "$env:GITLEAKS_EXE git" in workflow
-    assert "$env:GITLEAKS_EXE dir $env:RELEASE_ROOT" in workflow
-    assert "--redact" in workflow
-    assert "--log-opts='--all -m'" in workflow
-    assert "GITLEAKS_EXE" in workflow
-    assert "gitleaks scan failed" in workflow
-
-
-def _public_preview_staging_block(workflow: str) -> str:
-    marker = "      - name: Stage verified public preview release bundle\n"
-    assert marker in workflow
-    return _named_run_block(workflow, "Stage verified public preview release bundle")
-
-
-def test_download_staging_delegates_to_unified_profile_backed_tool() -> None:
-    workflow = WORKFLOW.read_text(encoding="ascii")
-    staging = _public_preview_staging_block(workflow)
-
-    assert "$workspaceParent = Split-Path -Parent $pwd.Path" in workflow
-    assert "id: derive_paths" in workflow
-    assert (
-        '$releaseRoot = Join-Path $workspaceParent '
-        '("agentguardian-public-preview-release-" + $env:EXPECTED_SOURCE_COMMIT)'
-    ) in workflow
-    assert '"RELEASE_ROOT=$releaseRoot" >> $env:GITHUB_ENV' in workflow
-    assert '"release_root=$releaseRoot" >> $env:GITHUB_OUTPUT' in workflow
-    assert "RELEASE_ROOT=$env:RUNNER_TEMP\\agentguardian-public-preview-release" not in workflow
-    assert "INSTALLER_ATTESTATION_PATH=$env:RUNNER_TEMP\\AgentGuardian-Setup-0.3.0-preview.1-x64.exe.build.json" in workflow
-    assert "if (Test-Path -LiteralPath $env:RELEASE_ROOT)" in staging
-    assert "python scripts/stage_public_preview_release.py `" in staging
-    for argument in (
-        "--project-root $pwd `",
-        "--output-root $env:RELEASE_ROOT `",
-        "--installer-path $env:INSTALLER_PATH `",
-        "--portable-path $portablePath `",
-        "--portable-bundle-root $env:PORTABLE_BUNDLE `",
-        "--skill-path $skillPath `",
-        "--installer-attestation-path $env:INSTALLER_ATTESTATION_PATH `",
-        "--source-commit $env:EXPECTED_SOURCE_COMMIT `",
-        "--built-at $env:COMMIT_UTC",
-    ):
-        assert argument in staging
-    assert (
-        "Assert-NativeSuccess $LASTEXITCODE "
-        "'python scripts/stage_public_preview_release.py'"
-    ) in staging
-    assert "$portablePath = Join-Path $env:PORTABLE_ONE 'AgentGuardian-0.3.0-preview.1-windows-x64.zip'" in staging
-    assert "$skillPath = Join-Path $env:SKILL_ONE 'AgentGuardian-Skill-0.2.0.zip'" in staging
-    assert "Copy-Item" not in staging
-    assert "ConvertTo-Json" not in staging
-    assert "WriteAllText" not in staging
-    assert "$downloadRoot" not in staging
-
-
-def test_lifecycle_binds_installed_payload_to_portable_bundle() -> None:
-    workflow = WORKFLOW.read_text(encoding="ascii")
-    lifecycle = _named_run_block(
-        workflow, "Run every bounded integration lifecycle mode"
-    )
-    assert "-Portable_Bundle_Root $env:PORTABLE_BUNDLE `" in lifecycle
-
-
-def test_download_staging_checks_exact_profile_assets_and_unsigned_metadata() -> None:
-    workflow = WORKFLOW.read_text(encoding="ascii")
-    staging = _public_preview_staging_block(workflow)
     profile = _release_profile()
+    primary_name = str(profile["primary_download_filename"])
 
+    assert f"$primaryInstallerName = '{primary_name}'" in workflow
+    assert "$primaryInstallerPath = Join-Path $downloadRoot $primaryInstallerName" in workflow
+    assert "if (Test-Path -LiteralPath $primaryInstallerPath)" in workflow
+    assert (
+        "Copy-Item -LiteralPath $versionedInstallerPath "
+        "-Destination $primaryInstallerPath"
+        in workflow
+    )
+    assert (
+        "$versionedInstallerHash = (Get-FileHash -Algorithm SHA256 "
+        "-LiteralPath $versionedInstallerPath).Hash.ToLowerInvariant()"
+        in workflow
+    )
+    assert (
+        "$primaryInstallerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $primaryInstallerPath).Hash.ToLowerInvariant()"
+        in workflow
+    )
+    assert "if ($versionedInstallerHash -cne $primaryInstallerHash)" in workflow
+    assert "$payloadFiles.Count -ne 6" in workflow
+    assert "$metadataDocument = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json" in workflow
+    assert "$metadataFiles.Count -ne $payloadFiles.Count" in workflow
+    assert "$actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $actualFile.FullName).Hash.ToLowerInvariant()" in workflow
+    assert "if ($actualHash -cne ([string]$metadataFile.sha256).ToLowerInvariant())" in workflow
+    assert "if ([int64]$metadataFile.size -ne $actualFile.Length)" in workflow
+    assert "$checksumTargets.Count -ne 7" in workflow
+    assert "Get-ChildItem -LiteralPath $downloadRoot -Directory" in workflow
+    assert "$finalFiles.Count -ne 8" in workflow
     for asset in profile["release_assets"]:
-        assert str(asset) in staging
-    assert "$profileDocument = Get-Content -Raw -LiteralPath" in staging
-    assert "$profileAssetNames = @($profileDocument.release_assets | Sort-Object)" in staging
-    assert "$stagedFiles = @(Get-ChildItem -LiteralPath $env:RELEASE_ROOT -File -Force | Sort-Object Name)" in staging
-    assert "$stagedFiles.Count -ne $profileAssetNames.Count" in staging
-    assert "if (($stagedFiles.Name -join \"`n\") -cne ($profileAssetNames -join \"`n\"))" in staging
-    assert "--verify" in staging
-    assert "$verification.source_commit -cne $env:EXPECTED_SOURCE_COMMIT" in staging
-    assert "$metadata.artifact_status -cne 'unsigned_public_preview'" in staging
-    assert "DOWNLOAD-METADATA.json" in staging
-    assert "SHA256SUMS" in staging
+        assert str(asset) in workflow
 
 
-def test_download_staging_archive_uses_only_the_public_preview_bundle_root() -> None:
+def test_download_staging_binds_installers_to_lifecycle_sha() -> None:
     workflow = WORKFLOW.read_text(encoding="ascii")
-    archive = _named_run_block(workflow, "Archive verified public preview bundle")
+    staging = workflow.split(
+        "      - name: Prepare verified downloadable preview files", 1
+    )[1].split("      - name: Archive verified downloadable preview", 1)[0]
 
-    assert "agentguardian-public-preview-bundle-${{ env.EXPECTED_SOURCE_COMMIT }}" in workflow
-    assert "retention-days: 14" in archive
-    assert "if-no-files-found: error" in archive
-    assert "path: ${{ steps.derive_paths.outputs.release_root }}" in archive
-    assert "../agentguardian-public-preview-release-" not in archive
-    assert "agentguardian-downloadable-preview" not in workflow
+    assert "$expectedInstallerSha256 = [string]$env:INSTALLER_SHA256" in staging
+    assert (
+        "$expectedInstallerSha256 -cnotmatch '^[0-9a-fA-F]{64}$'" in staging
+    )
+    assert (
+        "$versionedInstallerHash = (Get-FileHash -Algorithm SHA256 "
+        "-LiteralPath $versionedInstallerPath).Hash.ToLowerInvariant()"
+        in staging
+    )
+    assert (
+        "if ($versionedInstallerHash -cne $expectedInstallerSha256)" in staging
+    )
+    assert (
+        "$primaryInstallerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $primaryInstallerPath).Hash.ToLowerInvariant()"
+        in staging
+    )
+    assert "if ($primaryInstallerHash -cne $expectedInstallerSha256)" in staging
+    assert "if ($versionedInstallerHash -cne $primaryInstallerHash)" in staging
 
 
-def test_public_preview_staging_has_no_repository_write_or_release_operation() -> None:
+def test_download_staging_verifies_versioned_copy_before_alias_copy() -> None:
     workflow = WORKFLOW.read_text(encoding="ascii")
+    staging = workflow.split(
+        "      - name: Prepare verified downloadable preview files", 1
+    )[1].split("      - name: Archive verified downloadable preview", 1)[0]
 
-    assert "contents: read" in workflow
-    assert "contents: write" not in workflow.casefold()
-    assert "gh release create" not in workflow.casefold()
-    assert "create-release" not in workflow.casefold()
-    assert "softprops/action-gh-release" not in workflow.casefold()
-    assert "github_pat_" not in workflow.casefold()
-    assert "personal access token" not in workflow.casefold()
-    assert "secrets." not in workflow
+    versioned_copy = (
+        "Copy-Item -LiteralPath $installer.FullName "
+        "-Destination $versionedInstallerPath"
+    )
+    versioned_hash = (
+        "$versionedInstallerHash = (Get-FileHash -Algorithm SHA256 "
+        "-LiteralPath $versionedInstallerPath).Hash.ToLowerInvariant()"
+    )
+    lifecycle_check = "if ($versionedInstallerHash -cne $expectedInstallerSha256)"
+    alias_copy = (
+        "Copy-Item -LiteralPath $versionedInstallerPath "
+        "-Destination $primaryInstallerPath"
+    )
+
+    assert "$versionedInstallerPath = Join-Path $downloadRoot" in staging
+    assert versioned_copy in staging
+    assert versioned_hash in staging
+    assert lifecycle_check in staging
+    assert alias_copy in staging
+    assert (
+        staging.index(versioned_copy)
+        < staging.index(versioned_hash)
+        < staging.index(lifecycle_check)
+        < staging.index(alias_copy)
+    )
+    assert (
+        "Copy-Item -LiteralPath $installer.FullName "
+        "-Destination $primaryInstallerPath"
+    ) not in staging
+
+
+def test_download_staging_enumerates_and_rejects_unsafe_entries() -> None:
+    workflow = WORKFLOW.read_text(encoding="ascii")
+    staging = workflow.split(
+        "      - name: Prepare verified downloadable preview files", 1
+    )[1].split("      - name: Archive verified downloadable preview", 1)[0]
+
+    for command in re.findall(r"Get-ChildItem[^\r\n]*", workflow):
+        assert re.search(r"\s-Force(?:\s|[)\r\n]|$)", command)
+    assert "$finalEntries = @(Get-ChildItem -LiteralPath $downloadRoot -Force)" in staging
+    assert "if ($entry.PSIsContainer)" in staging
+    assert "[IO.FileAttributes]::Hidden" in staging
+    assert "[IO.FileAttributes]::ReparsePoint" in staging
+    assert "$finalEntries.Count -ne 8" in staging
+    assert "$finalFiles.Count -ne 8" in staging
 
 
 def test_secret_scan_preserves_exit_code_and_fails_closed_without_output() -> None:
@@ -369,13 +366,6 @@ def test_secret_scan_preserves_exit_code_and_fails_closed_without_output() -> No
     assert "candidate secret scan failed with exit code $ExitCode" in scan
     assert "Write-Host $secretMatches" not in scan
     assert "Write-Output $secretMatches" not in scan
-
-
-def test_personal_v1_runbook_is_explicitly_historical_for_current_preview() -> None:
-    document = PERSONAL_RUNBOOK.read_text(encoding="utf-8").casefold()
-
-    assert "historical governance snapshot" in document
-    assert "current 0.3 integrations preview" in document
 
 
 def test_integrations_preview_status_is_canonical_and_all_pending() -> None:

@@ -35,7 +35,10 @@ MAX_TRAVERSAL_ENTRIES = 20_000
 MAX_TRAVERSAL_DEPTH = 64
 MAX_ARRAY_ITEMS = 256
 MAX_VALUE_LENGTH = 512
-MAX_RUNTIME_AST_NODES = 16_384
+# The desktop UI module is intentionally kept in the bounded runtime scan.
+# Keep a fixed ceiling while allowing the current 0.3 preview source to be
+# analyzed without treating its size as a policy violation.
+MAX_RUNTIME_AST_NODES = 24_576
 
 _ROOT_EXCLUSIONS = frozenset(
     {

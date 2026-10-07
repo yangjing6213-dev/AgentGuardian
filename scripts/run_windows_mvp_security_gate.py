@@ -20,7 +20,7 @@ SECURITY_CASES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "AG-T01",
         (
             "tests/test_app_smoke.py::test_start_scan_rejects_missing_stale_or_forged_consent_before_side_effects",
-            "tests/test_app_smoke.py::test_start_scan_consumes_valid_consent_before_worker_construction",
+            "tests/test_app_smoke.py::test_start_scan_keeps_valid_consent_before_worker_construction",
         ),
     ),
     (

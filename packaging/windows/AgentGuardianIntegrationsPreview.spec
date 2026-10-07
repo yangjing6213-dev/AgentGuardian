@@ -1,16 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+import sys
 
 
 # PyInstaller executes spec files without defining __file__.
 project_root = Path(SPECPATH).resolve().parents[1]
+sys.path.insert(0, str(project_root))
+from scripts.build_windows_portable import filter_qt_gui_binaries
+
 source_root = project_root / "src"
 package_root = source_root / "agentguardian"
 datas = [
     *[(str(path), "agentguardian") for path in sorted(package_root.glob("*.py"))],
     (str(package_root / "source_policy.json"), "agentguardian"),
     (str(project_root / "rules" / "default.json"), "agentguardian/rules"),
+    *[(str(path), "agentguardian/assets") for path in sorted((package_root / "assets").glob("*"))],
 ]
 
 a = Analysis(
@@ -25,13 +30,14 @@ a = Analysis(
     excludes=["PySide6.QtNetwork"],
     noarchive=False,
 )
+binaries = list(filter_qt_gui_binaries(a.binaries))
 
 pyz = PYZ(a.pure)
 
 gui = EXE(
     pyz,
     a.scripts,
-    a.binaries,
+    binaries,
     a.datas,
     [],
     name='AgentGuardian',
@@ -43,12 +49,13 @@ gui = EXE(
     disable_windowed_traceback=False,
     argv_emulation=False,
     exclude_binaries=True,
+    icon=str(package_root / "assets" / "agentguardian.ico"),
 )
 
 mcp = EXE(
     pyz,
     a.scripts,
-    a.binaries,
+    binaries,
     a.datas,
     [],
     name='AgentGuardianMcp',
@@ -65,7 +72,7 @@ mcp = EXE(
 COLLECT(
     gui,
     mcp,
-    a.binaries,
+    binaries,
     a.datas,
     a.zipfiles,
     strip=False,

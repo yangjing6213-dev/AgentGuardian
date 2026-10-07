@@ -622,6 +622,7 @@ def test_source_policy_manifest_is_configured_as_package_data() -> None:
     assert project["tool"]["setuptools"]["package-data"]["agentguardian"] == [
         "rules/*.json",
         "source_policy.json",
+        "assets/*",
     ]
 
 

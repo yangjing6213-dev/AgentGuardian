@@ -189,6 +189,12 @@ def filter_qt_gui_binaries(
         binary
         for binary in binaries
         if Path(binary[0]).name.casefold() not in _UNUSED_QT_GUI_PLUGINS
+        and (
+            Path(binary[0]).name.casefold() != "icuuc.dll"
+            or any(
+                part.casefold() == "pyside6" for part in Path(binary[1]).parts
+            )
+        )
     )
 
 

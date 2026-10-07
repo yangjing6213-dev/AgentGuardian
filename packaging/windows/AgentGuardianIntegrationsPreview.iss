@@ -40,6 +40,7 @@ Uninstallable=yes
 CreateUninstallRegKey=yes
 UninstallDisplayName=AgentGuardian
 UninstallDisplayIcon={app}\AgentGuardian.exe
+SetupIconFile={#BundleRoot}\_internal\agentguardian\assets\agentguardian.ico
 OutputDir={#OutputRoot}
 OutputBaseFilename=AgentGuardian-Setup-{#DisplayVersion}-x64
 Compression=lzma2
@@ -49,11 +50,54 @@ ChangesAssociations=no
 ChangesEnvironment=no
 CloseApplications=no
 RestartApplications=no
+ShowLanguageDialog=yes
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+
+[CustomMessages]
+english.PreviewNotice=AgentGuardian %1 Integrations Preview (unsigned).%nUse only personal non-regulated configuration data.%nWindows may show Unknown Publisher or SmartScreen warnings.%nReports and redacted results may be visible to the configured host.%n%nSelected categories:
+chinesesimplified.PreviewNotice=AgentGuardian %1 集成预览版（未签名）。%n仅用于个人非受监管配置数据。%nWindows 可能显示“未知发布者”或 SmartScreen 警告。%n报告和脱敏结果可能会被已配置的主机看到。%n%n所选项目：
+english.CodexSkill=Install AgentGuardian Codex Skill
+chinesesimplified.CodexSkill=安装 AgentGuardian Codex 技能
+english.LocalMcp=Enable AgentGuardian local MCP
+chinesesimplified.LocalMcp=启用 AgentGuardian 本地 MCP
+english.DesktopShortcut=Create a desktop shortcut
+chinesesimplified.DesktopShortcut=创建桌面快捷方式
+english.CodexSkillItem=- Codex Skill
+chinesesimplified.CodexSkillItem=- Codex 技能
+english.LocalMcpItem=- local MCP
+chinesesimplified.LocalMcpItem=- 本地 MCP
+english.DesktopShortcutItem=- desktop shortcut
+chinesesimplified.DesktopShortcutItem=- 桌面快捷方式
+english.ProgramOnlyItem=- program only
+chinesesimplified.ProgramOnlyItem=- 仅安装程序
+english.Targets=Targets:
+chinesesimplified.Targets=安装位置：
+english.InvalidTestRoot=AgentGuardian test installation root is invalid.
+chinesesimplified.InvalidTestRoot=AgentGuardian 测试安装目录无效。
+english.InvalidInstallRoot=AgentGuardian must be installed in the current-user preview directory.
+chinesesimplified.InvalidInstallRoot=AgentGuardian 必须安装到当前用户的预览版目录。
+english.UnknownExistingVersion=An existing preview installation has an unknown version.
+chinesesimplified.UnknownExistingVersion=现有预览版的版本信息无法识别。
+english.NewerPreviewPresent=A newer preview installation is already present.
+chinesesimplified.NewerPreviewPresent=当前已安装更新版本的预览版。
+english.IntegrationSetupFailed=AgentGuardian integration setup failed; no client was started.
+chinesesimplified.IntegrationSetupFailed=AgentGuardian 集成设置失败；未启动任何客户端。
+english.VersionRecordFailed=AgentGuardian installer version could not be recorded.
+chinesesimplified.VersionRecordFailed=无法记录 AgentGuardian 安装版本。
+english.PurgeStatePrompt=Delete AgentGuardian protected state?
+chinesesimplified.PurgeStatePrompt=是否删除 AgentGuardian 受保护状态？
+english.RemoveIntegrationFailed=AgentGuardian integration could not be removed. Uninstall was stopped.
+chinesesimplified.RemoveIntegrationFailed=无法移除 AgentGuardian 集成，已停止卸载。
+english.PurgeStateFailed=AgentGuardian protected state could not be removed. Uninstall was stopped.
+chinesesimplified.PurgeStateFailed=无法删除 AgentGuardian 受保护状态，已停止卸载。
 
 [Tasks]
-Name: "codexskill"; Description: "Install AgentGuardian Codex Skill"; Flags: unchecked
-Name: "codexmcp"; Description: "Enable AgentGuardian local MCP"; Flags: unchecked
-Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
+Name: "codexskill"; Description: "{cm:CodexSkill}"; Flags: unchecked
+Name: "codexmcp"; Description: "{cm:LocalMcp}"; Flags: unchecked
+Name: "desktopicon"; Description: "{cm:DesktopShortcut}"; Flags: unchecked
 
 [Files]
 Source: "{#BundleRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -105,22 +149,18 @@ end;
 
 function SelectedTargets(): String;
 begin
-  Result := 'AgentGuardian 0.3.0 Public Preview (unsigned).' + #13#10 +
-    'Use only personal non-regulated configuration data.' + #13#10 +
-    'Windows may show Unknown Publisher or SmartScreen warnings.' + #13#10 +
-    'Reports and redacted results may be visible to the configured host.' + #13#10;
-  Result := Result + #13#10 + 'Selected categories:' + #13#10;
+  Result := FmtMessage(CustomMessage('PreviewNotice'), ['{#DisplayVersion}']) + #13#10;
   if WizardIsTaskSelected('codexskill') then
-    Result := Result + '- Codex Skill' + #13#10;
+    Result := Result + CustomMessage('CodexSkillItem') + #13#10;
   if WizardIsTaskSelected('codexmcp') then
-    Result := Result + '- local MCP' + #13#10;
+    Result := Result + CustomMessage('LocalMcpItem') + #13#10;
   if WizardIsTaskSelected('desktopicon') then
-    Result := Result + '- desktop shortcut' + #13#10;
+    Result := Result + CustomMessage('DesktopShortcutItem') + #13#10;
   if (not WizardIsTaskSelected('codexskill')) and
      (not WizardIsTaskSelected('codexmcp')) and
      (not WizardIsTaskSelected('desktopicon')) then
-    Result := Result + '- program only' + #13#10;
-  Result := Result + #13#10 + 'Targets:' + #13#10 +
+    Result := Result + CustomMessage('ProgramOnlyItem') + #13#10;
+  Result := Result + #13#10 + CustomMessage('Targets') + #13#10 +
     '{userprofile}\.agents\skills\agentguardian' + #13#10 +
     '{userprofile}\.codex\config.toml' + #13#10 +
     '{localappdata}\AgentGuardian';
@@ -147,11 +187,11 @@ begin
   NeedsRestart := False;
   if IsLifecycleTestMode() then begin
     if not TestInstallRootMatches() then begin
-      Result := 'AgentGuardian test installation root is invalid.';
+      Result := CustomMessage('InvalidTestRoot');
       exit;
     end;
   end else if WizardDirValue <> ExpandConstant('{localappdata}\Programs\AgentGuardian Integrations Preview') then begin
-    Result := 'AgentGuardian must be installed in the current-user preview directory.';
+    Result := CustomMessage('InvalidInstallRoot');
     exit;
   end;
   SuppressibleMsgBox(SelectedTargets(), mbInformation, MB_OK, IDOK);
@@ -160,11 +200,11 @@ begin
   if (not ReadInstalledFileVersion(InstalledVersion)) or
      (not StrToVersion(InstalledVersion, InstalledPackedVersion)) or
      (not StrToVersion('{#FileVersion}', CandidatePackedVersion)) then begin
-    Result := 'An existing preview installation has an unknown version.';
+    Result := CustomMessage('UnknownExistingVersion');
     exit;
   end;
   if ComparePackedVersion(CandidatePackedVersion, InstalledPackedVersion) < 0 then
-    Result := 'A newer preview installation is already present.';
+    Result := CustomMessage('NewerPreviewPresent');
 end;
 
 procedure RunIntegrationHelperOrAbort();
@@ -177,14 +217,14 @@ begin
     exit;
   if (not Exec(ExpandConstant('{app}\AgentGuardian.exe'), HelperArgument, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or
      (ResultCode <> 0) then
-    RaiseException('AgentGuardian integration setup failed; no client was started.');
+    RaiseException(CustomMessage('IntegrationSetupFailed'));
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then begin
     if not RegWriteStringValue(HKCU, UninstallKey, FileVersionValue, '{#FileVersion}') then
-      RaiseException('AgentGuardian installer version could not be recorded.');
+      RaiseException(CustomMessage('VersionRecordFailed'));
     RunIntegrationHelperOrAbort();
   end;
 end;
@@ -207,7 +247,7 @@ begin
     Result := HasPurgeStateParameter();
     exit;
   end;
-  Result := MsgBox('Delete AgentGuardian protected state?', mbConfirmation, MB_YESNO) = IDYES;
+    Result := MsgBox(CustomMessage('PurgeStatePrompt'), mbConfirmation, MB_YESNO) = IDYES;
 end;
 
 procedure RemoveIntegrationOrAbort();
@@ -218,7 +258,7 @@ begin
     exit;
   if (not Exec(ExpandConstant('{app}\AgentGuardian.exe'), '--remove-codex-integration', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or
      (ResultCode <> 0) then begin
-    SuppressibleMsgBox('AgentGuardian integration could not be removed. Uninstall was stopped.', mbError, MB_OK, IDOK);
+    SuppressibleMsgBox(CustomMessage('RemoveIntegrationFailed'), mbError, MB_OK, IDOK);
     Abort;
   end;
 end;
@@ -229,7 +269,7 @@ var
 begin
   if Exec(ExpandConstant('{app}\AgentGuardian.exe'), '--purge-protected-state', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) then
     exit;
-  SuppressibleMsgBox('AgentGuardian protected state could not be removed. Uninstall was stopped.', mbError, MB_OK, IDOK);
+  SuppressibleMsgBox(CustomMessage('PurgeStateFailed'), mbError, MB_OK, IDOK);
   Abort;
 end;
 

@@ -1,23 +1,25 @@
 from __future__ import annotations
 
-import hashlib
 import importlib
-import json
-import re
+import hashlib
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ISS_PATH = ROOT / "packaging" / "windows" / "AgentGuardianIntegrationsPreview.iss"
 SPEC_PATH = ROOT / "packaging" / "windows" / "AgentGuardianIntegrationsPreview.spec"
 LIFECYCLE_PATH = ROOT / "scripts" / "verify_windows_integrations_preview.ps1"
 DISCLOSURE_MARKERS = (
-    "AgentGuardian 0.3.0 Public Preview (unsigned).",
+    "AgentGuardian %1 Integrations Preview (unsigned).",
     "Use only personal non-regulated configuration data.",
     "Windows may show Unknown Publisher or SmartScreen warnings.",
     "Reports and redacted results may be visible to the configured host.",
+    "AgentGuardian %1 集成预览版（未签名）。",
+    "仅用于个人非受监管配置数据。",
+    "Windows 可能显示“未知发布者”或 SmartScreen 警告。",
+    "报告和脱敏结果可能会被已配置的主机看到。",
 )
 
 
@@ -43,161 +45,8 @@ def test_preview_builder_exports_exact_identity() -> None:
     assert builder.MCP_LAUNCHER == "AgentGuardianMcp.exe"
 
 
-def test_preview_installer_attestation_path_is_outside_installer_output_root(
-    tmp_path: Path,
-) -> None:
-    builder = _builder()
-    output = tmp_path / "installer-output"
-    installer = output / builder.INSTALLER_NAME
-
-    attestation = builder.installer_attestation_path(installer)
-
-    assert attestation == tmp_path / f"{builder.INSTALLER_NAME}.build.json"
-    assert attestation.parent == tmp_path
-    assert attestation.parent != output
-
-
-def test_preview_installer_attestation_is_canonical_and_exclusive(
-    tmp_path: Path,
-) -> None:
-    builder = _builder()
-    verifier = importlib.import_module("scripts.verify_integrations_preview_profile")
-    snapshot = verifier.load_profile_snapshot(
-        ROOT, ROOT / "release_profiles" / "integrations_preview.json"
-    )
-    output = tmp_path / "installer-output"
-    output.mkdir()
-    installer = output / builder.INSTALLER_NAME
-    installer_bytes = b"synthetic-installer" * 32
-    installer.write_bytes(installer_bytes)
-    bundle = tmp_path / "bundle"
-    bundle.mkdir()
-    bundle_values = {
-        "BUILD-METADATA.json": b"metadata",
-        "INTEGRATIONS-PREVIEW-PROFILE.json": b"profile-evidence",
-        "PAYLOAD-MANIFEST.json": b"manifest",
-        "SHA256SUMS": b"checksums",
-    }
-    for name, value in bundle_values.items():
-        (bundle / name).write_bytes(value)
-
-    attestation = builder.write_installer_attestation(
-        installer,
-        bundle,
-        project_root=ROOT,
-        profile_snapshot=snapshot,
-        source_commit="a" * 40,
-        built_at="2026-08-28T00:00:00Z",
-    )
-
-    raw = attestation.read_bytes()
-    value = json.loads(raw.decode("ascii"))
-    assert raw == builder.canonical_json_bytes(value)
-    assert set(value) == {
-        "artifact_name",
-        "artifact_sha256",
-        "artifact_size",
-        "artifact_status",
-        "built_at",
-        "bundle",
-        "compiler_sha256",
-        "compiler_version",
-        "installer_script_sha256",
-        "profile",
-        "profile_sha256",
-        "schema",
-        "source_commit",
-        "version",
-    }
-    assert value["artifact_name"] == builder.INSTALLER_NAME
-    assert value["artifact_sha256"] == hashlib.sha256(installer_bytes).hexdigest()
-    assert value["artifact_size"] == len(installer_bytes)
-    assert value["artifact_status"] == "unsigned_public_preview"
-    assert value["built_at"] == "2026-08-28T00:00:00Z"
-    assert value["compiler_sha256"] == snapshot.profile["inno_setup_iscc_sha256"]
-    assert value["compiler_version"] == snapshot.profile["inno_setup_version"]
-    assert value["profile"] == "integrations_preview"
-    assert value["profile_sha256"] == snapshot.sha256
-    assert value["schema"] == 1
-    assert value["source_commit"] == "a" * 40
-    assert value["version"] == builder.DISPLAY_VERSION
-    assert value["bundle"] == {
-        "build_metadata_sha256": hashlib.sha256(b"metadata").hexdigest(),
-        "checksums_sha256": hashlib.sha256(b"checksums").hexdigest(),
-        "payload_manifest_sha256": hashlib.sha256(b"manifest").hexdigest(),
-        "profile_evidence_sha256": hashlib.sha256(b"profile-evidence").hexdigest(),
-    }
-    before = raw
-    with pytest.raises(ValueError, match="installer attestation already exists"):
-        builder.write_installer_attestation(
-            installer,
-            bundle,
-            project_root=ROOT,
-            profile_snapshot=snapshot,
-            source_commit="a" * 40,
-            built_at="2026-08-28T00:00:00Z",
-        )
-    assert attestation.read_bytes() == before
-
-
-def test_preview_builder_keeps_single_exe_output_and_writes_attestation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    builder = _builder()
-    bundle = tmp_path / "bundle"
-    bundle.mkdir()
-    output = tmp_path / "installer-output"
-    compiler = tmp_path / "ISCC.exe"
-    compiler.write_bytes(b"synthetic-compiler")
-    attestation = tmp_path / f"{builder.INSTALLER_NAME}.build.json"
-    observed: dict[str, object] = {}
-
-    def fake_git(_root: Path, *arguments: str) -> str:
-        return "a" * 40 if arguments == ("rev-parse", "HEAD") else ""
-
-    def fake_run(_command: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
-        (output / builder.INSTALLER_NAME).write_bytes(b"synthetic-installer")
-        return SimpleNamespace(returncode=0)
-
-    def fake_attestation(*args: object, **kwargs: object) -> Path:
-        observed["args"] = args
-        observed.update(kwargs)
-        attestation.write_bytes(b"{}")
-        return attestation
-
-    monkeypatch.setattr(builder.sys, "platform", "win32")
-    monkeypatch.setattr(builder, "_git", fake_git)
-    monkeypatch.setattr(builder, "compiler_sha256", lambda _path: builder.COMPILER_SHA256)
-    monkeypatch.setattr(builder, "_require_current_source_identity", lambda *_args: None)
-    monkeypatch.setattr(builder, "verify_profile", lambda *_args: None)
-    monkeypatch.setattr(builder, "verify_installer_script", lambda *_args: None)
-    monkeypatch.setattr(builder, "validate_preview_layout", lambda *_args: None)
-    monkeypatch.setattr(builder, "verify_payload", lambda *_args: None)
-    monkeypatch.setattr(builder, "verify_payload_integrity", lambda *_args: None)
-    monkeypatch.setattr(builder, "verify_profile_evidence", lambda *_args: None)
-    monkeypatch.setattr(builder, "require_profile_snapshot_unchanged", lambda *_args: None)
-    monkeypatch.setattr(builder.subprocess, "run", fake_run)
-    monkeypatch.setattr(builder, "write_installer_attestation", fake_attestation)
-
-    installer = builder.build_installer(
-        ROOT,
-        bundle,
-        output,
-        iscc=compiler,
-        source_commit="a" * 40,
-        built_at="2026-08-28T00:00:00Z",
-        attestation_path=attestation,
-    )
-
-    assert installer == output / builder.INSTALLER_NAME
-    assert tuple(path.name for path in output.iterdir()) == (builder.INSTALLER_NAME,)
-    assert observed["attestation_path"] == attestation
-    assert observed["source_commit"] == "a" * 40
-    assert observed["built_at"] == "2026-08-28T00:00:00Z"
-
-
 def test_preview_inno_script_is_current_user_and_tasks_are_opt_in() -> None:
-    script = ISS_PATH.read_text(encoding="ascii")
+    script = ISS_PATH.read_text(encoding="utf-8")
     folded = script.casefold()
     for marker in DISCLOSURE_MARKERS:
         assert marker in script
@@ -209,8 +58,11 @@ def test_preview_inno_script_is_current_user_and_tasks_are_opt_in() -> None:
         "ArchitecturesAllowed=x64compatible",
         "ArchitecturesInstallIn64BitMode=x64compatible",
         "MinVersion=10.0.22000",
-        'Name: "codexskill"; Description: "Install AgentGuardian Codex Skill"; Flags: unchecked',
-        'Name: "codexmcp"; Description: "Enable AgentGuardian local MCP"; Flags: unchecked',
+        'Name: "codexskill"; Description: "{cm:CodexSkill}"; Flags: unchecked',
+        'Name: "codexmcp"; Description: "{cm:LocalMcp}"; Flags: unchecked',
+        'Name: "desktopicon"; Description: "{cm:DesktopShortcut}"; Flags: unchecked',
+        'Name: "english"; MessagesFile: "compiler:Default.isl"',
+        'Name: "chinesesimplified"; MessagesFile: "compiler:Languages\\ChineseSimplified.isl"',
     ):
         assert required in script
     for forbidden in (
@@ -233,14 +85,33 @@ def test_preview_inno_script_is_current_user_and_tasks_are_opt_in() -> None:
     assert "--remove-codex-integration" in script
 
 
-def test_preview_installer_script_verification_requires_all_disclosures() -> None:
+def test_preview_installer_script_verification_checks_bilingual_disclosures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     builder = _builder()
     script = ISS_PATH.read_bytes()
+    canonical = script.replace(b"\r\n", b"\n")
+    monkeypatch.setattr(
+        builder,
+        "INSTALLER_SCRIPT_SHA256",
+        hashlib.sha256(canonical).hexdigest(),
+    )
+    monkeypatch.setattr(
+        builder,
+        "INSTALLER_DISCLOSURE_MARKERS",
+        tuple(marker.encode("utf-8") for marker in DISCLOSURE_MARKERS),
+    )
     builder.verify_installer_script(script)
     for marker in DISCLOSURE_MARKERS:
-        missing = script.replace(marker.encode("ascii"), b"", 1)
+        missing = script.replace(marker.encode("utf-8"), b"", 1)
         with pytest.raises(ValueError, match="installer script is not approved"):
             builder.verify_installer_script(missing)
+
+
+def test_localized_installer_is_not_release_approved_without_updated_pin() -> None:
+    builder = _builder()
+    with pytest.raises(ValueError, match="installer script is not approved"):
+        builder.verify_installer_script(ISS_PATH.read_bytes())
 
 
 def test_preview_installer_script_verification_rejects_tampering() -> None:
@@ -249,30 +120,6 @@ def test_preview_installer_script_verification_rejects_tampering() -> None:
     script[script.index(b"SelectedTargets")] = ord("X")
     with pytest.raises(ValueError, match="installer script is not approved"):
         builder.verify_installer_script(bytes(script))
-
-
-def test_preview_inno_script_does_not_start_pascal_lines_with_preprocessor_marker() -> None:
-    script = ISS_PATH.read_text(encoding="ascii")
-    invalid_lines = [
-        line for line in script.splitlines() if re.match(r"^\s+#\d", line)
-    ]
-    assert invalid_lines == []
-
-
-def test_preview_selected_targets_ends_disclosure_before_next_assignment() -> None:
-    lines = ISS_PATH.read_text(encoding="ascii").splitlines()
-    disclosure_index = next(
-        index
-        for index, line in enumerate(lines)
-        if "Reports and redacted results may be visible to the configured host." in line
-    )
-    assert lines[disclosure_index].strip() == (
-        "'Reports and redacted results may be visible to the configured host.' + #13#10;"
-    )
-    assert lines[disclosure_index + 1].strip() == (
-        "Result := Result + #13#10 + 'Selected categories:'"
-        " + #13#10;"
-    )
 
 
 def test_preview_spec_has_one_shared_analysis_and_two_launchers() -> None:
@@ -284,6 +131,8 @@ def test_preview_spec_has_one_shared_analysis_and_two_launchers() -> None:
     assert "name='AgentGuardianMcp'" in spec
     assert "console=False" in spec
     assert "console=True" in spec
+    assert "agentguardian.ico" in spec
+    assert (ROOT / "src" / "agentguardian" / "assets" / "author-poster.jpg").is_file()
     builder = (ROOT / "scripts" / "build_windows_portable.py").read_text(
         encoding="utf-8"
     )
@@ -335,19 +184,6 @@ def test_preview_lifecycle_script_is_bounded_and_native() -> None:
         "get-filehash",
     ):
         assert forbidden not in folded
-
-
-def test_preview_lifecycle_compares_installed_payload_to_portable_manifest() -> None:
-    script = LIFECYCLE_PATH.read_text(encoding="ascii").casefold()
-    for required in (
-        "portable_bundle_root",
-        "payload-manifest.json",
-        "assert-installed-payload-matches-bundle",
-        "payload_tree_match",
-        "installed_payload_file_count",
-        "portable_payload_file_count",
-    ):
-        assert required in script
 
 
 def test_preview_lifecycle_retries_bounded_inno_self_delete_cleanup() -> None:

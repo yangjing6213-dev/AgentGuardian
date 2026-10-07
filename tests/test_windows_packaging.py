@@ -534,6 +534,7 @@ def test_integrations_preview_command_uses_one_reviewed_spec_and_two_launchers(
     assert "Path(SPECPATH)" in spec
     assert "Path(__file__)" not in spec
     assert '"agentguardian_skill"' not in spec
+    assert "filter_qt_gui_binaries(a.binaries)" in spec
 
 
 def test_integrations_preview_skill_is_materialized_from_fixed_allowlist(
@@ -559,7 +560,7 @@ def test_integrations_preview_skill_is_materialized_from_fixed_allowlist(
     assert (skill / "SKILL.md").read_text(encoding="ascii") == "SKILL.md"
 
 
-def test_qt_gui_hook_filters_only_unused_network_dependency_chain() -> None:
+def test_qt_gui_hook_filters_unused_network_plugins() -> None:
     binaries = [
         ("C:/Qt/plugins/platforms/qwindows.dll", "PySide6/plugins/platforms"),
         ("C:/Qt/plugins/imageformats/qjpeg.dll", "PySide6/plugins/imageformats"),

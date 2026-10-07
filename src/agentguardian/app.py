@@ -1,4 +1,6 @@
+import json
 import os
+import re
 import stat
 import sys
 from collections.abc import Iterable
@@ -11,6 +13,7 @@ from pathlib import Path
 from PySide6.QtCore import (
     QDateTime,
     QObject,
+    QSettings,
     Qt,
     QThread,
     QTimer,
@@ -18,36 +21,39 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QColor, QResizeEvent
+from PySide6.QtGui import QColor, QIcon, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
-    QComboBox,
+    QCheckBox as _QCheckBox,
+    QComboBox as _QComboBox,
     QDateTimeEdit,
-    QDialog,
+    QDialog as _QDialog,
     QDialogButtonBox,
-    QFileDialog,
+    QFileDialog as _QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
     QHeaderView,
-    QInputDialog,
-    QLabel,
+    QInputDialog as _QInputDialog,
+    QLabel as _QLabel,
     QLineEdit,
-    QMainWindow,
-    QMessageBox,
-    QPushButton,
+    QMainWindow as _QMainWindow,
+    QMessageBox as _QMessageBox,
+    QPushButton as _QPushButton,
+    QScrollArea,
     QStackedWidget,
     QStyle,
-    QTableWidget,
-    QTableWidgetItem,
-    QTextBrowser,
+    QTableWidget as _QTableWidget,
+    QTableWidgetItem as _QTableWidgetItem,
+    QTextBrowser as _QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
 
+
 from .audit_service import (
     AuditOutcome,
+    FindingSourceContext,
     _DispositionContext,
     _generate_key,
     _is_unc_path,
@@ -126,15 +132,485 @@ from .workflow import (
     scope_consent_matches,
 )
 
+
+_TRANSLATION_DATA = json.loads(
+    (Path(__file__).resolve().parent / "assets" / "translations.json").read_text(
+        encoding="utf-8"
+    )
+)
+_ENGLISH = _TRANSLATION_DATA["en"]
+_CHINESE = _TRANSLATION_DATA["zh"]
+
+_DYNAMIC = (
+    (
+        re.compile(r"^所属应用：(.+)$"),
+        lambda match: f"Application: {_translate_display_parts(match.group(1))}",
+    ),
+    (
+        re.compile(r"^程序识别：(.+)$"),
+        lambda match: f"Program identification: {translate(match.group(1), 'en')}",
+    ),
+    (
+        re.compile(r"^来源文件：(.+)$"),
+        lambda match: f"Source file: {match.group(1)}",
+    ),
+    (
+        re.compile(r"^所在审计范围：(.+)$"),
+        lambda match: f"Audit scope: {match.group(1)}",
+    ),
+    (
+        re.compile(r"^风险域：(.+)$"),
+        lambda match: f"Risk area: {translate(match.group(1), 'en')}",
+    ),
+    (
+        re.compile(r"^规则：(.+)$"),
+        lambda match: f"Rule: {match.group(1)}",
+    ),
+    (
+        re.compile(r"^严重性：(.+)$"),
+        lambda match: f"Severity: {translate(match.group(1), 'en')}",
+    ),
+    (
+        re.compile(r"^已掩码证据：(.+)$"),
+        lambda match: f"Masked evidence: {match.group(1)}",
+    ),
+    (
+        re.compile(r"^处理位置：在 (.+)中核对 (.+)；处理后请回到原应用重新审计。$"),
+        lambda match: (
+            f"Where to handle: Review {match.group(2)} in "
+            f"{_translate_display_parts(match.group(1))}; "
+            "return to the original application and audit again after remediation."
+        ),
+    ),
+    (
+        re.compile(r"^(\d+) 个本地根目录$"),
+        lambda match: f"{match.group(1)} local root folders",
+    ),
+    (
+        re.compile(r"^范围：(\d+) 个根目录（(.*)）$"),
+        lambda match: f"Scope: {match.group(1)} root folder(s) ({match.group(2)})",
+    ),
+    (
+        re.compile(r"^显示 (\d+) / 共 (\d+) 项发现$"),
+        lambda match: f"Showing {match.group(1)} of {match.group(2)} findings",
+    ),
+    (
+        re.compile(r"^发现 (\d+) 项风险$"),
+        lambda match: f"Found {match.group(1)} finding(s)",
+    ),
+    (
+        re.compile(r"^审计完成：发现 (\d+) 项风险。$"),
+        lambda match: f"Audit complete: {match.group(1)} finding(s) found.",
+    ),
+    (
+        re.compile(r"^审计未完整：(.+)，覆盖率 (\d+%)；不能判定为安全。$"),
+        lambda match: f"Audit incomplete: {translate(match.group(1), 'en')}, {match.group(2)} coverage; this does not establish safety.",
+    ),
+    (
+        re.compile(r"^审计完成：未发现风险。$"),
+        lambda _match: "Audit complete: no findings.",
+    ),
+    (
+        re.compile(r"^支持后缀：(.+)；支持精确文件名：(.+)$"),
+        lambda match: f"Supported extensions: {match.group(1)}; exact file names: {match.group(2)}",
+    ),
+    (
+        re.compile(r"^上限：文件 ([0-9,]+)；目录条目 ([0-9,]+)；读取 ([0-9,]+) 字节；风险发现 ([0-9,]+)；证据 ([0-9,]+)$"),
+        lambda match: f"Limits: {match.group(1)} files; {match.group(2)} directory entries; {match.group(3)} bytes read; {match.group(4)} findings; {match.group(5)} evidence items",
+    ),
+    (
+        re.compile(r"^规则版本：(.+)$"),
+        lambda match: f"Rule version: {match.group(1)}",
+    ),
+    (
+        re.compile(r"^已添加 (\d+) 个已知本地 AI 配置目录；请核对范围并明确同意后开始审计。$"),
+        lambda match: f"Added {match.group(1)} known local AI configuration folder(s); review the scope and give explicit consent before auditing.",
+    ),
+    (
+        re.compile(r"^浏览器元数据审计完成：历史 (\d+)，访问记录 (\d+)。$"),
+        lambda match: f"Browser metadata audit complete: {match.group(1)} history entries, {match.group(2)} visit records.",
+    ),
+    (
+        re.compile(r"^剪贴板一次性审计完成：发现 (\d+) 项。$"),
+        lambda match: f"One-time clipboard audit complete: {match.group(1)} finding(s).",
+    ),
+    (
+        re.compile(r"^联网分享验证完成：(.+)，HTTP (\d+)，读取 ([0-9,]+) 字节。$"),
+        lambda match: f"Public-link check complete: {match.group(1)}, HTTP {match.group(2)}, {match.group(3)} bytes read.",
+    ),
+    (
+        re.compile(r"^覆盖状态：(已完成|覆盖受限|无支持文件)；覆盖率 (\d+%)(?:；原因：(.+?))?；(.+)$"),
+        lambda match: _coverage_status(match),
+    ),
+    (
+        re.compile(r"^固定修复已应用：(.*)；请重新审计。$"),
+        lambda match: f"Fixed repair was applied: {match.group(1)}; run the audit again.",
+    ),
+    (
+        re.compile(r"^基线：(.*)$"),
+        lambda match: f"Baseline: {match.group(1)}",
+    ),
+    (
+        re.compile(r"^固定修复未执行：(.+)。$"),
+        lambda match: f"Fixed repair was not applied: {match.group(1)}.",
+    ),
+    (
+        re.compile(r"^固定修复已回滚：(.*)。$"),
+        lambda match: f"Fixed repair was undone: {match.group(1)}.",
+    ),
+    (
+        re.compile(r"^固定修复未回滚：(.*)。$"),
+        lambda match: f"Fixed repair was not undone: {match.group(1)}.",
+    ),
+    (
+        re.compile(r"^固定修复已应用：(.*)$"),
+        lambda match: f"Fixed repair was applied: {match.group(1)}",
+    ),
+    (
+        re.compile(r"^固定修复已回滚：(.*)$"),
+        lambda match: f"Fixed repair was undone: {match.group(1)}",
+    ),
+    (
+        re.compile(r"^固定修复未回滚：(.*)$"),
+        lambda match: f"Fixed repair was not undone: {match.group(1)}",
+    ),
+    (
+        re.compile(r"^(技术分|审阅分)：基线 (\d+) \| 当前 (\d+) \| 差值 ([+-]\d+)$"),
+        lambda match: f"{translate(match.group(1), 'en')}: baseline {match.group(2)} | current {match.group(3)} | delta {match.group(4)}",
+    ),
+    (
+        re.compile(r"^覆盖率：基线 ([0-9.]+%) \| 当前 ([0-9.]+%) \| 差值 ([+-][0-9.]+%)$"),
+        lambda match: f"Coverage: baseline {match.group(1)} | current {match.group(2)} | delta {match.group(3)}",
+    ),
+    (
+        re.compile(r"^覆盖状态：基线 (.+) \| 当前 (.+)$"),
+        lambda match: f"Coverage: baseline {translate(match.group(1), 'en')} | current {translate(match.group(2), 'en')}",
+    ),
+    (
+        re.compile(r"^发现数：基线 (\d+) \| 当前 (\d+) \| 差值 ([+-]\d+)$"),
+        lambda match: f"Finding count: baseline {match.group(1)} | current {match.group(2)} | delta {match.group(3)}",
+    ),
+    (
+        re.compile(r"^(.+): 基线 (\d+) \| 当前 (\d+) \| 差值 ([+-]\d+)$"),
+        lambda match: f"{translate(match.group(1), 'en')}: baseline {match.group(2)} | current {match.group(3)} | delta {match.group(4)}",
+    ),
+    (
+        re.compile(r"^新增限制：(.*)$"),
+        lambda match: "New limits: " + ", ".join(
+            translate(limit, "en") for limit in match.group(1).split("、")
+        ),
+    ),
+    (
+        re.compile(r"^已解除限制：(.*)$"),
+        lambda match: "Resolved limits: " + ", ".join(
+            translate(limit, "en") for limit in match.group(1).split("、")
+        ),
+    ),
+)
+
+
+def _coverage_status(match: re.Match[str]) -> str:
+    state = translate(match.group(1), "en")
+    reasons = match.group(3)
+    reason_text = "" if reasons is None else "; reasons: " + ", ".join(
+        translate(reason, "en") for reason in reasons.split("、")
+    )
+    ending = translate(match.group(4), "en")
+    return f"Coverage: {state}; {match.group(2)}{reason_text}; {ending}"
+
+
+def _translate_display_parts(value: str) -> str:
+    return " / ".join(translate(part.strip(), "en") for part in value.split("、"))
+
+
+def _translate_english_line(text: str) -> str:
+    translated = _ENGLISH.get(text)
+    if translated is not None:
+        return translated
+    for pattern, render in _DYNAMIC:
+        match = pattern.fullmatch(text)
+        if match is not None:
+            return render(match)
+    return text
+
+
+def translate(text: str, language: str = "zh") -> str:
+    if not isinstance(text, str):
+        return text
+    if language != "en":
+        if language != "zh":
+            return text
+        if text in _CHINESE:
+            return _CHINESE[text]
+        lines = text.splitlines()
+        if len(lines) > 1 or any(line in _CHINESE for line in lines):
+            translated_lines = []
+            for line in lines:
+                if not line:
+                    translated_lines.append("")
+                    continue
+                numbered = re.fullmatch(r"(\d+\. )(.*)", line)
+                if numbered is None:
+                    translated_lines.append(_CHINESE.get(line, line))
+                else:
+                    translated_lines.append(
+                        numbered.group(1)
+                        + _CHINESE.get(numbered.group(2), numbered.group(2))
+                    )
+            return "\n".join(translated_lines)
+        return text
+    translated = _ENGLISH.get(text)
+    if translated is not None:
+        return translated
+    lines = text.splitlines()
+    if len(lines) > 1 or any(pattern.fullmatch(text) for pattern, _ in _DYNAMIC):
+        translated_lines = []
+        for line in lines:
+            if not line:
+                translated_lines.append("")
+                continue
+            numbered = re.fullmatch(r"(\d+\. )(.*)", line)
+            if numbered is None:
+                translated_lines.append(_translate_english_line(line))
+            else:
+                translated_lines.append(
+                    numbered.group(1) + _translate_english_line(numbered.group(2))
+                )
+        return "\n".join(translated_lines)
+    return _translate_english_line(text)
+
+
+_translate = translate
+
+_CURRENT_LANGUAGE = "zh"
+
+
+class _LocalizedTextMixin:
+    def __init__(self, *args, **kwargs):
+        source_text = args[0] if args and isinstance(args[0], str) else None
+        if source_text is None and isinstance(kwargs.get("text"), str):
+            source_text = kwargs["text"]
+            kwargs["text"] = _translate(source_text, _CURRENT_LANGUAGE)
+        elif source_text is not None:
+            args = (_translate(source_text, _CURRENT_LANGUAGE), *args[1:])
+        super().__init__(*args, **kwargs)
+        self._localized_source_text = source_text
+        self._localized_source_tooltip = None
+        self._localized_source_accessible_description = None
+
+    def setText(self, text):
+        self._localized_source_text = text if isinstance(text, str) else None
+        super().setText(
+            _translate(text, _CURRENT_LANGUAGE)
+            if self._localized_source_text is not None
+            else text
+        )
+
+    def setToolTip(self, text):
+        self._localized_source_tooltip = text if isinstance(text, str) else None
+        super().setToolTip(
+            _translate(text, _CURRENT_LANGUAGE)
+            if self._localized_source_tooltip is not None
+            else text
+        )
+
+    def setAccessibleDescription(self, text):
+        self._localized_source_accessible_description = (
+            text if isinstance(text, str) else None
+        )
+        super().setAccessibleDescription(
+            _translate(text, _CURRENT_LANGUAGE)
+            if self._localized_source_accessible_description is not None
+            else text
+        )
+
+    def retranslate(self):
+        if self._localized_source_text is not None:
+            self.setText(self._localized_source_text)
+        if self._localized_source_tooltip is not None:
+            self.setToolTip(self._localized_source_tooltip)
+        if self._localized_source_accessible_description is not None:
+            self.setAccessibleDescription(
+                self._localized_source_accessible_description
+            )
+
+    def setUntranslatedText(self, text: str) -> None:
+        self._localized_source_text = None
+        super().setText(text)
+
+
+class QLabel(_LocalizedTextMixin, _QLabel):
+    pass
+
+
+class QPushButton(_LocalizedTextMixin, _QPushButton):
+    pass
+
+
+class QCheckBox(_LocalizedTextMixin, _QCheckBox):
+    pass
+
+
+class QDialog(_LocalizedTextMixin, _QDialog):
+    def setWindowTitle(self, title):
+        self._localized_source_title = title
+        super().setWindowTitle(_translate(title, _CURRENT_LANGUAGE))
+
+    def retranslate(self):
+        super().retranslate()
+        title = getattr(self, "_localized_source_title", None)
+        if title is not None:
+            self.setWindowTitle(title)
+
+
+class QComboBox(_QComboBox):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._localized_items: list[str | None] = []
+
+    def addItem(self, *args, **kwargs):
+        if args and isinstance(args[0], str):
+            source = args[0]
+            super().addItem(_translate(source, _CURRENT_LANGUAGE), *args[1:], **kwargs)
+            self._localized_items.append(source)
+            return
+        super().addItem(*args, **kwargs)
+        self._localized_items.append(None)
+
+    def addItems(self, texts):
+        for text in texts:
+            self.addItem(text)
+
+    def insertItem(self, index, *args, **kwargs):
+        if args and isinstance(args[0], str):
+            source = args[0]
+            super().insertItem(
+                index, _translate(source, _CURRENT_LANGUAGE), *args[1:], **kwargs
+            )
+            self._localized_items.insert(index, source)
+            return
+        super().insertItem(index, *args, **kwargs)
+        self._localized_items.insert(index, None)
+
+    def setItemText(self, index, text):
+        super().setItemText(index, _translate(text, _CURRENT_LANGUAGE))
+        if 0 <= index < len(self._localized_items):
+            self._localized_items[index] = text
+
+    def clear(self):
+        super().clear()
+        self._localized_items.clear()
+
+    def retranslate(self):
+        for index, source in enumerate(self._localized_items):
+            if source is not None and index < self.count():
+                _QComboBox.setItemText(
+                    self, index, _translate(source, _CURRENT_LANGUAGE)
+                )
+
+
+class QTableWidget(_QTableWidget):
+    def setHorizontalHeaderLabels(self, labels):
+        self._localized_header_labels = tuple(labels)
+        super().setHorizontalHeaderLabels(
+            [_translate(label, _CURRENT_LANGUAGE) for label in labels]
+        )
+
+    def retranslate(self):
+        labels = getattr(self, "_localized_header_labels", None)
+        if labels is not None:
+            self.setHorizontalHeaderLabels(labels)
+
+
+QTableWidgetItem = _QTableWidgetItem
+
+
+class QTextBrowser(_LocalizedTextMixin, _QTextBrowser):
+    def setPlainText(self, text):
+        self._localized_source_plain_text = text
+        super().setPlainText(_translate(text, _CURRENT_LANGUAGE))
+
+    def setHtml(self, text):
+        self._localized_source_html = text
+        super().setHtml(_translate(text, _CURRENT_LANGUAGE))
+
+    def retranslate(self):
+        super().retranslate()
+        if hasattr(self, "_localized_source_plain_text"):
+            self.setPlainText(self._localized_source_plain_text)
+        if hasattr(self, "_localized_source_html"):
+            self.setHtml(self._localized_source_html)
+
+
+class QFileDialog(_QFileDialog):
+    @staticmethod
+    def _call(name, *args, **kwargs):
+        localized_args = list(args)
+        if len(localized_args) > 1 and isinstance(localized_args[1], str):
+            localized_args[1] = _translate(localized_args[1], _CURRENT_LANGUAGE)
+        return getattr(_QFileDialog, name)(*localized_args, **kwargs)
+
+    getExistingDirectory = staticmethod(
+        lambda *args, **kwargs: QFileDialog._call(
+            "getExistingDirectory", *args, **kwargs
+        )
+    )
+    getOpenFileName = staticmethod(
+        lambda *args, **kwargs: QFileDialog._call(
+            "getOpenFileName", *args, **kwargs
+        )
+    )
+    getSaveFileName = staticmethod(
+        lambda *args, **kwargs: QFileDialog._call(
+            "getSaveFileName", *args, **kwargs
+        )
+    )
+
+
+class QMessageBox(_QMessageBox):
+    @staticmethod
+    def _call(name, *args, **kwargs):
+        localized_args = list(args)
+        for index in (1, 2):
+            if len(localized_args) > index and isinstance(localized_args[index], str):
+                localized_args[index] = _translate(
+                    localized_args[index], _CURRENT_LANGUAGE
+                )
+        return getattr(_QMessageBox, name)(*localized_args, **kwargs)
+
+    information = staticmethod(
+        lambda *args, **kwargs: QMessageBox._call(
+            "information", *args, **kwargs
+        )
+    )
+    question = staticmethod(
+        lambda *args, **kwargs: QMessageBox._call("question", *args, **kwargs)
+    )
+    warning = staticmethod(
+        lambda *args, **kwargs: QMessageBox._call("warning", *args, **kwargs)
+    )
+
+
+class QInputDialog(_QInputDialog):
+    @staticmethod
+    def getText(*args, **kwargs):
+        localized_args = list(args)
+        for index in (1, 2):
+            if len(localized_args) > index and isinstance(localized_args[index], str):
+                localized_args[index] = _translate(
+                    localized_args[index], _CURRENT_LANGUAGE
+                )
+        return _QInputDialog.getText(*localized_args, **kwargs)
+
 COLOR_TOKENS = {
-    "obsidian": "#0F1215",
-    "surface": "#171C20",
-    "border": "#394149",
-    "cloud": "#F4F6F7",
-    "trust": "#21C786",
-    "muted": "#AAB4BB",
-    "warning": "#F0BD5C",
-    "critical": "#EF7167",
+    "obsidian": "#0B1220",
+    "surface": "#121D2E",
+    "border": "#2B3B52",
+    "cloud": "#F3F6FB",
+    "trust": "#29C994",
+    "muted": "#A7B4C6",
+    "warning": "#F3BE59",
+    "critical": "#F17373",
 }
 SUPPORTED_SUFFIXES = (
     ".env",
@@ -162,6 +638,31 @@ _STATUS_REFRESH_FALLBACK = "状态待刷新"
 _REPORT_REFRESH_FALLBACK = "报告已更新，界面暂时无法刷新。"
 _SAVED_REFRESH_FAILURE = "处置已保存，界面刷新受限。"
 _TIMER_REFRESH_FAILURE = "处置状态刷新受限，请复核当前界面状态。"
+
+
+def _language_preferences_path() -> Path:
+    root = os.environ.get("LOCALAPPDATA")
+    if root:
+        return Path(root) / "AgentGuardian" / "ui-preferences.ini"
+    return Path.home() / ".config" / "AgentGuardian" / "ui-preferences.ini"
+
+
+def _load_language_preference() -> str:
+    settings = QSettings(str(_language_preferences_path()), QSettings.Format.IniFormat)
+    settings.setFallbacksEnabled(False)
+    value = settings.value("interface/language", "zh")
+    return value if value in {"zh", "en"} else "zh"
+
+
+def _save_language_preference(language: str) -> None:
+    path = _language_preferences_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    settings = QSettings(str(path), QSettings.Format.IniFormat)
+    settings.setFallbacksEnabled(False)
+    settings.setValue("interface/language", language)
+    settings.sync()
+
+
 _STATUS_LABELS = {
     "open": "待处理",
     "false_positive": "误报",
@@ -181,6 +682,15 @@ _DOMAIN_FILTER_LABELS = {
     RiskDomain.PERMISSIONS: "权限",
     RiskDomain.RETENTION: "保留",
     RiskDomain.SUPPLY_CHAIN: "供应链",
+}
+_SOURCE_APPLICATION_LABELS = {
+    "codex": "Codex 配置",
+    "claude": "Claude 配置",
+    "cursor": "Cursor 配置",
+    "windsurf": "Windsurf 配置",
+    "openai": "OpenAI 配置",
+    "custom": "自选目录（无法确认具体应用）",
+    "clipboard": "一次性剪贴板输入",
 }
 _FILTER_EMPTY_MESSAGE = "当前筛选条件下无匹配风险发现。"
 _FILTER_ERROR_MESSAGE = "无法筛选风险发现，请重试。"
@@ -259,7 +769,7 @@ def _coverage_status_text(audit_score: Score) -> str:
     return "；".join(parts)
 
 
-def _comparison_text(comparison: ReportComparison) -> str:
+def _comparison_text(comparison: ReportComparison, language: str = "zh") -> str:
     def category_lines(
         title: str,
         baseline_values: tuple[tuple[str, int], ...],
@@ -344,7 +854,7 @@ def _comparison_text(comparison: ReportComparison) -> str:
     ]
     if not comparison.baseline.supported_use_boundary_verified:
         lines.insert(1, "历史基线未声明 Personal 边界；仅比较聚合数据。")
-    return "\n".join(lines)
+    return "\n".join(_translate(line, language) for line in lines)
 
 
 class _DispositionDialog(QDialog):
@@ -400,8 +910,12 @@ class _DispositionDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
         )
-        self.button_box.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        self.button_box.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        self.button_box.button(QDialogButtonBox.StandardButton.Ok).setText(
+            _translate("确定", _CURRENT_LANGUAGE)
+        )
+        self.button_box.button(QDialogButtonBox.StandardButton.Cancel).setText(
+            _translate("取消", _CURRENT_LANGUAGE)
+        )
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
         layout.addRow(self.button_box)
@@ -622,11 +1136,17 @@ class AuditWorker(QObject):
             self.failed.emit("scan_failed")
 
 
-class AgentGuardianWindow(QMainWindow):
+class AgentGuardianWindow(_QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        global _CURRENT_LANGUAGE
+        self._language = _load_language_preference()
+        _CURRENT_LANGUAGE = self._language
         disposition_context = _load_disposition_context()
-        self.setWindowTitle("AgentGuardian")
+        self.setWindowTitle(_translate("AgentGuardian", self._language))
+        icon_path = Path(__file__).parent / "assets" / "agentguardian.ico"
+        if icon_path.is_file():
+            self.setWindowIcon(QIcon(str(icon_path)))
         self.setMinimumSize(960, 640)
         self._roots: tuple[Path, ...] = ()
         self._report_roots: tuple[Path, ...] = ()
@@ -651,6 +1171,46 @@ class AgentGuardianWindow(QMainWindow):
         self._build_ui()
         self.setStyleSheet(_stylesheet())
 
+    def _language_changed(self, index: int) -> None:
+        language = self.language_combo.itemData(index)
+        if language not in {"zh", "en"} or language == self._language:
+            return
+        global _CURRENT_LANGUAGE
+        self._language = language
+        _CURRENT_LANGUAGE = language
+        _save_language_preference(language)
+        self.setWindowTitle(_translate("AgentGuardian", language))
+        for widget in self.findChildren(QWidget):
+            retranslate = getattr(widget, "retranslate", None)
+            if callable(retranslate):
+                retranslate()
+        if self._audit_outcome is not None:
+            selected = self._current_row_finding()
+            try:
+                self._refresh_finding_view(
+                    self._audit_outcome.evaluated_at,
+                    selected_finding=selected,
+                )
+            except Exception:
+                self._show_filter_failure()
+        if self._audit_outcome is not None:
+            self.report_html = self._localized_report_html(self._audit_outcome)
+        if self._comparison_state is not None:
+            self._render_baseline_name(self._comparison_state.baseline_name)
+            self._render_comparison(self._comparison_state)
+        self._refresh_report()
+
+    def _localized_report_html(self, outcome: AuditOutcome) -> str:
+        return render_html(
+            outcome.score,
+            outcome.findings,
+            rule_version=outcome.rule_version,
+            reviewed_score=outcome.reviewed_score,
+            dispositions=self._dispositions,
+            evaluated_at=outcome.evaluated_at,
+            language=self._language,
+        )
+
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         if self._comparison_state is not None and hasattr(
@@ -663,6 +1223,7 @@ class AgentGuardianWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         central = QWidget()
+        central.setObjectName("mainContent")
         shell = QHBoxLayout(central)
         shell.setContentsMargins(0, 0, 0, 0)
         shell.setSpacing(0)
@@ -679,7 +1240,9 @@ class AgentGuardianWindow(QMainWindow):
         sidebar_layout.addWidget(brand)
 
         self.navigation_buttons: list[QPushButton] = []
-        for index, text in enumerate(("审计范围", "风险发现", "审计报告")):
+        for index, text in enumerate(
+            ("审计范围", "风险发现", "审计报告", "解决方案", "关于作者")
+        ):
             button = QPushButton(text)
             button.setObjectName("navigation")
             button.setCheckable(True)
@@ -690,6 +1253,18 @@ class AgentGuardianWindow(QMainWindow):
             sidebar_layout.addWidget(button)
             self.navigation_buttons.append(button)
         sidebar_layout.addStretch()
+        self.language_label = QLabel("界面语言")
+        self.language_label.setObjectName("languageLabel")
+        sidebar_layout.addWidget(self.language_label)
+        self.language_combo = QComboBox()
+        self.language_combo.setObjectName("languageSelector")
+        self.language_combo.addItem("简体中文", "zh")
+        self.language_combo.addItem("English", "en")
+        self.language_combo.setCurrentIndex(
+            max(0, self.language_combo.findData(self._language))
+        )
+        self.language_combo.currentIndexChanged.connect(self._language_changed)
+        sidebar_layout.addWidget(self.language_combo)
         shell.addWidget(self.sidebar)
 
         self.content_panel = QFrame()
@@ -727,6 +1302,8 @@ class AgentGuardianWindow(QMainWindow):
         self.stack.addWidget(self._scope_page())
         self.stack.addWidget(self._findings_page())
         self.stack.addWidget(self._report_page())
+        self.stack.addWidget(self._solution_page())
+        self.stack.addWidget(self._about_page())
         content_layout.addWidget(self.stack, 1)
         self._switch_view(0)
 
@@ -743,6 +1320,7 @@ class AgentGuardianWindow(QMainWindow):
         layout.addWidget(self.root_display_label)
 
         self.scope_roots_label = QLabel("范围：尚未选择")
+        self.scope_roots_label.setWordWrap(True)
         self.scope_selectors_label = QLabel(
             "支持后缀：.env, .json, .log, .md, .toml, .txt, .yaml, .yml；"
             "支持精确文件名：.env"
@@ -1017,10 +1595,10 @@ class AgentGuardianWindow(QMainWindow):
         remediation_actions.addWidget(self.rollback_button)
         remediation_actions.addStretch()
         layout.addLayout(remediation_actions)
-        layout.addWidget(QLabel("人工修复步骤"))
+        layout.addWidget(QLabel("风险详情与人工处理步骤"))
         self.guidance_browser = QTextBrowser()
-        self.guidance_browser.setMinimumHeight(120)
-        self.guidance_browser.setMaximumHeight(170)
+        self.guidance_browser.setMinimumHeight(150)
+        self.guidance_browser.setMaximumHeight(230)
         self.guidance_browser.setPlainText(_FINDING_SELECTION_MESSAGE)
         layout.addWidget(self.guidance_browser)
         return page
@@ -1094,6 +1672,210 @@ class AgentGuardianWindow(QMainWindow):
         self.comparison_browser.setMaximumHeight(170)
         self.comparison_browser.setPlainText(_COMPARISON_EMPTY_MESSAGE)
         layout.addWidget(self.comparison_browser)
+        return page
+
+    def _solution_page(self) -> QWidget:
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(24, 22, 24, 22)
+        page_layout.setSpacing(12)
+        page_layout.addWidget(_heading("风险处理方案"))
+
+        intro = QFrame()
+        intro.setObjectName("solutionIntro")
+        intro_layout = QVBoxLayout(intro)
+        intro_layout.setContentsMargins(18, 14, 18, 14)
+        intro_layout.setSpacing(5)
+        intro_title = QLabel("先确认事实，再处理风险")
+        intro_title.setObjectName("solutionIntroTitle")
+        intro_layout.addWidget(intro_title)
+        intro_text = QLabel(
+            "逐条核实发现，再按风险类型处理。规则匹配是核查线索，不代表数据已经泄露。"
+        )
+        intro_text.setWordWrap(True)
+        intro_text.setObjectName("solutionIntroText")
+        intro_layout.addWidget(intro_text)
+        page_layout.addWidget(intro)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("solutionScrollArea")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        content = QWidget()
+        content.setObjectName("solutionContent")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 4, 0)
+        content_layout.setSpacing(9)
+
+        steps = (
+            (
+                "复核并确定优先级",
+                "先查看严重和高风险项目。打开单条发现，核对规则、来源和已掩码证据；不要复制完整密钥、邮箱或手机号到报告、聊天或工单。",
+            ),
+            (
+                "凭据与 API Key",
+                "确认是有效凭据后，先到对应服务撤销或停用旧密钥，再生成新密钥并更新获准的应用配置。随后检查使用记录；若密钥曾公开，先撤销轮换，再清理可访问的副本。",
+            ),
+            (
+                "邮箱、手机号等个人信息",
+                "确认数据是否仍有保留必要。不需要时，在原应用或配置中删除或遮盖；确需保留时，按组织规则记录原因、责任人和复核期限。",
+            ),
+            (
+                "端点、MCP 与权限设置",
+                "核实端点和服务由谁运营、是否获准。对不确定的 MCP 服务，先暂停使用，再按实际需要收紧命令、文件写入和网络权限；在原应用或配置中修改后重新审计。",
+            ),
+            (
+                "使用处置按钮",
+                "标记误报：仅在确认规则不适用时使用，并说明原因。接受风险：仅用于真实但获准暂时保留的风险，需记录理由、复核人和到期时间；这不会消除风险或改写原文件。撤销处置会让该项重新进入待处理。",
+            ),
+            (
+                "固定修复与回滚",
+                "固定修复目前仅支持获准的 OpenAI API 地址配置；先检查预览，再决定是否继续。执行前会创建同目录备份。回滚仅适用于本次会话已应用且之后未被改动的文件。其他风险请按人工修复步骤处理。",
+            ),
+            (
+                "复审并留存",
+                "完成处理后，对相同范围重新执行只读审计，查看剩余发现和覆盖状态。确认风险已消除或处置记录仍有效，再保存新报告并由负责人复核。",
+            ),
+        )
+        for index, (title_text, body_text) in enumerate(steps, start=1):
+            card = QFrame()
+            card.setObjectName("solutionCard")
+            card_layout = QHBoxLayout(card)
+            card_layout.setContentsMargins(14, 12, 16, 12)
+            card_layout.setSpacing(14)
+
+            number = QLabel(f"{index:02d}")
+            number.setObjectName("solutionStepNumber")
+            number.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            number.setFixedSize(38, 38)
+            card_layout.addWidget(number, 0, Qt.AlignmentFlag.AlignTop)
+
+            detail_layout = QVBoxLayout()
+            detail_layout.setContentsMargins(0, 0, 0, 0)
+            detail_layout.setSpacing(5)
+            title = QLabel(title_text)
+            title.setObjectName("solutionStepTitle")
+            detail_layout.addWidget(title)
+            body = QLabel(body_text)
+            body.setObjectName("solutionStepBody")
+            body.setWordWrap(True)
+            detail_layout.addWidget(body)
+            card_layout.addLayout(detail_layout, 1)
+            content_layout.addWidget(card)
+        content_layout.addStretch()
+        scroll.setWidget(content)
+        page_layout.addWidget(scroll, 1)
+        return page
+
+    def _about_page(self) -> QWidget:
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(24, 22, 24, 22)
+        page_layout.setSpacing(12)
+        page_layout.addWidget(_heading("关于作者"))
+
+        scroll = QScrollArea()
+        scroll.setObjectName("aboutScrollArea")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        content = QWidget()
+        content.setObjectName("aboutContent")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 4, 0)
+        content_layout.setSpacing(14)
+
+        hero = QFrame()
+        hero.setObjectName("aboutHero")
+        hero_layout = QHBoxLayout(hero)
+        hero_layout.setContentsMargins(20, 20, 22, 20)
+        hero_layout.setSpacing(22)
+        poster = QLabel()
+        poster.setObjectName("aboutPoster")
+        poster.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        poster.setAccessibleDescription(
+            _translate("ENHE 作者介绍海报", self._language)
+        )
+        poster.setFixedSize(360, 240)
+        poster_path = Path(__file__).parent / "assets" / "author-poster.jpg"
+        if poster_path.is_file():
+            pixmap = QPixmap(str(poster_path))
+            if not pixmap.isNull():
+                poster.setPixmap(
+                    pixmap.scaled(
+                        poster.size(),
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+        hero_layout.addWidget(poster)
+
+        identity = QVBoxLayout()
+        identity.setSpacing(10)
+        eyebrow = QLabel("创作者档案")
+        eyebrow.setObjectName("authorEyebrow")
+        identity.addWidget(eyebrow)
+        name = QLabel("Enhe (恩禾)")
+        name.setObjectName("authorName")
+        identity.addWidget(name)
+        subtitle = QLabel("产品设计师 · 一人公司实践者 · AI Builder")
+        subtitle.setObjectName("authorSubtitle")
+        subtitle.setWordWrap(True)
+        identity.addWidget(subtitle)
+        tagline = QLabel("用 AI 打造一个人公司")
+        tagline.setObjectName("authorTagline")
+        tagline.setWordWrap(True)
+        identity.addWidget(tagline)
+        identity.addWidget(QLabel("创作者与实践者"))
+        identity.addStretch()
+        hero_layout.addLayout(identity, 1)
+        content_layout.addWidget(hero)
+
+        contact_card = QFrame()
+        contact_card.setObjectName("aboutCard")
+        contact_layout = QVBoxLayout(contact_card)
+        contact_layout.setContentsMargins(20, 16, 20, 16)
+        contact_layout.setSpacing(8)
+        contact_heading = QLabel("联系方式")
+        contact_heading.setObjectName("contactCardTitle")
+        contact_layout.addWidget(contact_heading)
+        contacts = (
+            ("GitHub", "yangjing6213-dev", "https://github.com/yangjing6213-dev"),
+            ("X / Twitter", "Amenenhe_ai", "https://x.com/Amenenhe_ai"),
+            ("网站", "www.enhe-tech.com.cn", "https://www.enhe-tech.com.cn/"),
+            ("微信", "ENHE-AI", None),
+            ("邮箱", "amen.enhe@gmail.com", "mailto:amen.enhe@gmail.com"),
+        )
+        for label_text, value, href in contacts:
+            row_layout = QHBoxLayout()
+            row_layout.setSpacing(18)
+            label = QLabel(label_text)
+            label.setObjectName("contactLabel")
+            label.setFixedWidth(104)
+            value_label = QLabel(
+                value
+                if href is None
+                else (
+                    f'<a href="{href}" style="color:#79C8FF; text-decoration:none;">'
+                    f"{value}</a>"
+                )
+            )
+            value_label.setObjectName("contactValue")
+            value_label.setTextFormat(Qt.TextFormat.RichText)
+            value_label.setOpenExternalLinks(href is not None)
+            value_label.setWordWrap(True)
+            value_label.setMinimumWidth(0)
+            row_layout.addWidget(label)
+            row_layout.addWidget(value_label, 1)
+            contact_layout.addLayout(row_layout)
+        content_layout.addWidget(contact_card)
+        content_layout.addStretch()
+        scroll.setWidget(content)
+        page_layout.addWidget(scroll, 1)
         return page
 
     def _switch_view(self, index: int) -> None:
@@ -1302,11 +2084,10 @@ class AgentGuardianWindow(QMainWindow):
         self._revoke_confirmations()
         self._roots = normalized_roots
         self._scope_preview = preview
-        self.root_display_label.setText(
-            preview.root_names[0]
-            if preview.root_count == 1
-            else f"{preview.root_count} 个本地根目录"
-        )
+        if preview.root_count == 1:
+            self.root_display_label.setUntranslatedText(preview.root_names[0])
+        else:
+            self.root_display_label.setText(f"{preview.root_count} 个本地根目录")
         self._render_scope_preview(preview)
         self.scope_consent_checkbox.setEnabled(True)
         self._update_scan_enabled()
@@ -1454,7 +2235,7 @@ class AgentGuardianWindow(QMainWindow):
             pass
 
     def _render_comparison(self, state: _ComparisonState) -> None:
-        text = _comparison_text(state.comparison)
+        text = _comparison_text(state.comparison, self._language)
         self._comparison_state = state
         self._render_baseline_name(state.baseline_name)
         self.comparison_browser.setPlainText(text)
@@ -1531,12 +2312,11 @@ class AgentGuardianWindow(QMainWindow):
             return
 
         self._scope_preview = expected_preview
-        self._revoke_confirmations()
         self._clear_comparison_if_present()
         self.is_scanning = True
         self._update_optional_audit_enabled()
+        self._set_scope_controls_enabled(False)
         self.scan_button.setEnabled(False)
-        self.folder_button.setEnabled(False)
         self.scan_button.setText("审计中...")
         self.status_label.setText("正在执行只读本地审计。")
         try:
@@ -1565,8 +2345,9 @@ class AgentGuardianWindow(QMainWindow):
             self.is_scanning = False
             self._thread = None
             self._worker = None
-            self.folder_button.setEnabled(True)
+            self._set_scope_controls_enabled(True)
             self.scan_button.setText("开始审计")
+            self._update_optional_audit_enabled()
             self._update_scan_enabled()
             self._invalidate_report()
             self.status_label.setText("审计失败。")
@@ -1581,7 +2362,7 @@ class AgentGuardianWindow(QMainWindow):
             return
         self._audit_outcome = outcome
         self.report_json = outcome.report_json
-        self.report_html = outcome.report_html
+        self.report_html = self._localized_report_html(outcome)
         self._report_roots = outcome.scanned_roots
         try:
             self._refresh_finding_view(outcome.evaluated_at)
@@ -1624,12 +2405,20 @@ class AgentGuardianWindow(QMainWindow):
     def _thread_finished(self) -> None:
         self.is_scanning = False
         self.scan_button.setText("开始审计")
-        self.folder_button.setEnabled(True)
+        self._set_scope_controls_enabled(True)
         self._thread = None
         self._worker = None
         self._update_optional_audit_enabled()
         self._update_scan_enabled()
         self._sync_comparison_commands()
+
+    def _set_scope_controls_enabled(self, enabled: bool) -> None:
+        self.folder_button.setEnabled(enabled)
+        self.known_config_button.setEnabled(enabled)
+        self.supported_data_checkbox.setEnabled(enabled)
+        self.scope_consent_checkbox.setEnabled(
+            enabled and self._scope_preview is not None
+        )
 
     def _populate_findings(
         self,
@@ -1646,7 +2435,9 @@ class AgentGuardianWindow(QMainWindow):
         for finding in findings:
             for evidence in finding.evidence:
                 values = (
-                    finding.severity.value,
+                    _translate(
+                        _SEVERITY_FILTER_LABELS[finding.severity], self._language
+                    ),
                     finding.rule_id,
                     evidence.source,
                     evidence.masked,
@@ -1912,8 +2703,78 @@ class AgentGuardianWindow(QMainWindow):
             if item is None:
                 item = QTableWidgetItem()
                 self.findings_table.setItem(row, 4, item)
-            item.setText(_STATUS_LABELS[state])
+            item.setText(_translate(_STATUS_LABELS[state], self._language))
         self._update_disposition_commands()
+
+    def _finding_source_contexts(self) -> dict[tuple[str, str], FindingSourceContext]:
+        outcome = self._audit_outcome
+        if outcome is None:
+            return {}
+        return {
+            (context.root_fingerprint, context.evidence_fingerprint): context
+            for context in outcome.source_contexts
+        }
+
+    def _finding_detail_lines(self, finding: Finding) -> list[str]:
+        context_index = self._finding_source_contexts()
+        applications: list[str] = []
+        roots: list[str] = []
+        source_files: list[str] = []
+        masked_evidence: list[str] = []
+        identification = "无法仅凭所选目录确认具体应用；请根据来源文件在原应用中核对。"
+        for evidence in finding.evidence:
+            masked_evidence.append(evidence.masked)
+            context = context_index.get(
+                (finding.root_fingerprint, evidence.fingerprint)
+            )
+            if context is None:
+                applications.append(_SOURCE_APPLICATION_LABELS["custom"])
+                roots.append("未提供")
+                source_files.append(evidence.source)
+                continue
+            applications.append(
+                _SOURCE_APPLICATION_LABELS.get(
+                    context.application_key,
+                    _SOURCE_APPLICATION_LABELS["custom"],
+                )
+            )
+            roots.append(context.root_name)
+            source_files.append(context.source_file)
+            if context.application_key not in {"custom", "clipboard"}:
+                identification = "根据审计根目录识别；仍需在原应用中确认。"
+            elif context.application_key == "clipboard":
+                identification = "一次性剪贴板输入，不对应本地应用配置。"
+
+        def unique(values: Iterable[str]) -> tuple[str, ...]:
+            return tuple(dict.fromkeys(values))
+
+        applications_unique = unique(applications) or (
+            _SOURCE_APPLICATION_LABELS["custom"],
+        )
+        roots_unique = unique(roots) or ("未提供",)
+        files_unique = unique(source_files) or tuple(
+            evidence.source for evidence in finding.evidence
+        )
+        evidence_unique = unique(masked_evidence)
+        application_text = "、".join(applications_unique)
+        source_text = "、".join(files_unique)
+        evidence_text = "、".join(evidence_unique)
+        primary_application = applications_unique[0]
+        primary_source = files_unique[0] if files_unique else "未知文件"
+        return [
+            "风险详情",
+            f"所属应用：{application_text}",
+            f"程序识别：{identification}",
+            f"来源文件：{source_text}",
+            f"所在审计范围：{'、'.join(roots_unique)}",
+            f"规则：{finding.rule_id}",
+            f"风险域：{_DOMAIN_FILTER_LABELS[finding.domain]}",
+            f"严重性：{_SEVERITY_FILTER_LABELS[finding.severity]}",
+            f"已掩码证据：{evidence_text}",
+            f"处理位置：在 {primary_application}中核对 {primary_source}；处理后请回到原应用重新审计。",
+            "出于隐私保护，界面不显示完整本地路径。",
+            "",
+        ]
 
     def _show_guidance(self) -> None:
         row = self.findings_table.currentRow()
@@ -1942,6 +2803,9 @@ class AgentGuardianWindow(QMainWindow):
             self.guidance_browser.setPlainText("无法生成修复步骤。")
             return
         lines = [
+            *self._finding_detail_lines(finding),
+            "人工修复步骤",
+            "",
             *(f"{index}. {step}" for index, step in enumerate(plan.steps, 1)),
             "",
             "验证：",
@@ -2123,6 +2987,7 @@ class AgentGuardianWindow(QMainWindow):
             reviewed_score=reviewed_score,
             dispositions=records,
             evaluated_at=evaluation_time,
+            language=self._language,
         )
         return AuditOutcome(
             findings=outcome.findings,
@@ -2133,6 +2998,7 @@ class AgentGuardianWindow(QMainWindow):
             report_json=report_json,
             report_html=report_html,
             scanned_roots=outcome.scanned_roots,
+            source_contexts=outcome.source_contexts,
         )
 
     def _refresh_reviewed_ui_no_throw(
@@ -2273,7 +3139,7 @@ class AgentGuardianWindow(QMainWindow):
             return
         self._audit_outcome = outcome
         self.report_json = outcome.report_json
-        self.report_html = outcome.report_html
+        self.report_html = self._localized_report_html(outcome)
         try:
             self._refresh_reviewed_ui_no_throw(
                 outcome.evaluated_at,
@@ -2347,84 +3213,120 @@ def _heading(text: str) -> QLabel:
 
 def _stylesheet() -> str:
     return f"""
-        QMainWindow, QWidget {{
+        QMainWindow {{
             background: {COLOR_TOKENS["obsidian"]};
             color: {COLOR_TOKENS["cloud"]};
-            font-family: "Segoe UI", "Noto Sans SC";
-            font-size: 13px;
+            font-family: "Microsoft YaHei";
+            font-size: 12px;
             letter-spacing: 0px;
         }}
+        QWidget {{
+            color: {COLOR_TOKENS["cloud"]};
+            font-family: "Microsoft YaHei";
+            font-size: 12px;
+            letter-spacing: 0px;
+        }}
+        QWidget#mainContent {{ background: {COLOR_TOKENS["obsidian"]}; }}
         QFrame#sidebar {{
-            background: {COLOR_TOKENS["surface"]};
+            background: #101827;
             border-right: 1px solid {COLOR_TOKENS["border"]};
         }}
         QLabel#brand {{
             color: {COLOR_TOKENS["cloud"]};
-            font-size: 15px;
-            font-weight: 600;
-            padding: 5px 4px 12px 4px;
+            font-size: 14px;
+            font-weight: 700;
+            padding: 8px 6px 16px 6px;
         }}
         QPushButton {{
-            background: {COLOR_TOKENS["surface"]};
+            background: #172235;
             border: 1px solid {COLOR_TOKENS["border"]};
-            border-radius: 4px;
+            border-radius: 7px;
             color: {COLOR_TOKENS["cloud"]};
-            min-height: 30px;
-            padding: 3px 10px;
+            min-height: 34px;
+            padding: 4px 12px;
         }}
-        QPushButton:hover {{ border-color: {COLOR_TOKENS["muted"]}; }}
+        QPushButton:hover {{ background: #1B2A40; border-color: #55708D; }}
         QPushButton:disabled {{ color: {COLOR_TOKENS["muted"]}; }}
         QPushButton#navigation {{
             border: 0;
-            border-radius: 4px;
+            border-radius: 7px;
             text-align: left;
-            padding-left: 10px;
+            padding-left: 12px;
+            min-height: 40px;
         }}
         QPushButton#navigation:checked {{
-            background: {COLOR_TOKENS["border"]};
+            background: #20344D;
             color: {COLOR_TOKENS["cloud"]};
+            border-left: 3px solid #57B9FF;
         }}
         QPushButton#primaryAction {{
             background: {COLOR_TOKENS["trust"]};
             border-color: {COLOR_TOKENS["trust"]};
-            color: {COLOR_TOKENS["obsidian"]};
+            color: #071B17;
             font-weight: 600;
         }}
         QFrame#trustStrip {{
-            background: {COLOR_TOKENS["surface"]};
+            background: #101827;
             border-bottom: 1px solid {COLOR_TOKENS["border"]};
         }}
-        QFrame#trustStrip QLabel {{ color: {COLOR_TOKENS["muted"]}; }}
+        QFrame#trustStrip QLabel {{ color: {COLOR_TOKENS["muted"]}; font-size: 11px; }}
         QLabel#localMode {{ color: {COLOR_TOKENS["trust"]}; font-weight: 600; }}
-        QLabel#heading {{ font-size: 20px; font-weight: 600; }}
+        QLabel#heading {{ font-size: 22px; font-weight: 700; padding-bottom: 3px; }}
         QLabel#rootDisplay, QLabel#status {{
             background: {COLOR_TOKENS["surface"]};
             border: 1px solid {COLOR_TOKENS["border"]};
-            border-radius: 6px;
-            color: {COLOR_TOKENS["muted"]};
-            padding: 8px 10px;
+            border-radius: 8px;
+            color: {COLOR_TOKENS["cloud"]};
+            padding: 9px 12px;
         }}
         QTableWidget, QTextBrowser, QComboBox, QLineEdit, QDateTimeEdit {{
             background: {COLOR_TOKENS["surface"]};
             border: 1px solid {COLOR_TOKENS["border"]};
-            border-radius: 4px;
+            border-radius: 7px;
             color: {COLOR_TOKENS["cloud"]};
             selection-background-color: {COLOR_TOKENS["border"]};
         }}
-        QTableWidget::item {{ padding: 5px; }}
+        QTableWidget::item {{ padding: 7px; }}
         QHeaderView::section {{
-            background: {COLOR_TOKENS["surface"]};
+            background: #18253A;
             border: 0;
             border-bottom: 1px solid {COLOR_TOKENS["border"]};
             color: {COLOR_TOKENS["muted"]};
-            padding: 6px;
+            padding: 8px;
         }}
-        QComboBox {{ min-width: 92px; padding: 4px 8px; }}
+        QComboBox {{ min-width: 92px; min-height: 28px; padding: 4px 9px; }}
         QComboBox QAbstractItemView {{
             background: {COLOR_TOKENS["surface"]};
             color: {COLOR_TOKENS["cloud"]};
             selection-background-color: {COLOR_TOKENS["border"]};
         }}
+        QCheckBox {{ spacing: 9px; }}
+        QCheckBox::indicator {{ width: 17px; height: 17px; }}
+        QCheckBox::indicator:checked {{ background: #258DCA; border: 1px solid #64C5FF; border-radius: 4px; }}
+        QScrollArea {{ border: 0; background: {COLOR_TOKENS["obsidian"]}; }}
+        QWidget#aboutContent {{ background: {COLOR_TOKENS["obsidian"]}; }}
+        QWidget#solutionContent {{ background: {COLOR_TOKENS["obsidian"]}; }}
+        QFrame#solutionIntro {{ background: #14243A; border: 1px solid #315273; border-radius: 12px; }}
+        QFrame#solutionCard {{ background: {COLOR_TOKENS["surface"]}; border: 1px solid {COLOR_TOKENS["border"]}; border-radius: 10px; }}
+        QLabel#solutionStepNumber {{ background: #173C5B; border: 1px solid #3A78A5; border-radius: 19px; color: #8BD5FF; font-weight: 700; }}
+        QLabel#solutionStepTitle {{ color: {COLOR_TOKENS["cloud"]}; font-size: 14px; font-weight: 700; }}
+        QLabel#solutionStepBody, QLabel#solutionIntroText {{ color: #B8C7D9; }}
+        QLabel#solutionIntroTitle {{ color: {COLOR_TOKENS["cloud"]}; font-size: 15px; font-weight: 700; }}
+        QScrollArea#solutionScrollArea QScrollBar:vertical {{ background: #101827; width: 8px; margin: 2px; }}
+        QScrollArea#solutionScrollArea QScrollBar::handle:vertical {{ background: #405875; border-radius: 4px; min-height: 30px; }}
+        QScrollArea#solutionScrollArea QScrollBar::add-line:vertical, QScrollArea#solutionScrollArea QScrollBar::sub-line:vertical {{ height: 0; }}
+        QFrame#aboutHero {{ background: #14243A; border: 1px solid #29425F; border-radius: 14px; }}
+        QFrame#aboutCard {{ background: {COLOR_TOKENS["surface"]}; border: 1px solid {COLOR_TOKENS["border"]}; border-radius: 12px; }}
+        QLabel#aboutPoster {{ background: #0D1421; border: 1px solid {COLOR_TOKENS["border"]}; border-radius: 8px; }}
+        QLabel#authorEyebrow {{ color: #6FC5FF; font-size: 11px; font-weight: 700; }}
+        QLabel#authorName {{ font-size: 30px; font-weight: 700; color: {COLOR_TOKENS["cloud"]}; }}
+        QLabel#authorSubtitle {{ color: #B3C3D6; font-size: 14px; }}
+        QLabel#authorTagline {{ font-size: 19px; font-weight: 700; color: #73CAFF; padding-top: 5px; }}
+        QLabel#contactCardTitle {{ color: {COLOR_TOKENS["cloud"]}; font-size: 14px; font-weight: 700; padding-bottom: 3px; }}
+        QLabel#contactLabel, QLabel#languageLabel {{ color: {COLOR_TOKENS["muted"]}; font-weight: 600; }}
+        QLabel#contactValue {{ color: #E6EDF7; font-size: 14px; }}
+        QLabel#contactValue a {{ color: #79C8FF; text-decoration: none; }}
+        QComboBox#languageSelector {{ min-width: 132px; }}
     """
 
 

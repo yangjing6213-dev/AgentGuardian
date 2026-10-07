@@ -1,254 +1,275 @@
-![智能体守护宣传图](assets/brand/agentguardian-readme-zh.png)
+![AgentGuardian](assets/brand/agentguardian-cover.svg)
 
-[English version](README.en.md)
+# AgentGuardian
 
-# AgentGuardian｜智能体守护
+AgentGuardian 是一款面向 Windows 的本地 AI 配置安全审计工具，帮助 AI 用户和 AI 创作者在使用 Codex、MCP 及其他本地 AI 工具前，先检查配置中可能暴露的凭据、个人信息、危险权限和公开分享风险。
 
-面向 AI 智能体工作流的本地优先数据安全审计工具。AgentGuardian 在数据交给智能体处理之前，帮助你先看清本地配置、浏览器数据、剪贴板内容和公开分享入口可能暴露的风险。
+很多风险并不是出现在“某个系统被攻破”之后，而是藏在一个配置文件、一段 MCP 设置或一次公开分享里。AgentGuardian 会在你明确选择的范围内进行本地、只读检查，给出脱敏后的证据和人工处理建议；真正的删除、撤销、轮换和权限调整仍由你在原应用中确认。
 
-> 当前下载渠道：Windows 11 x64 · 0.3.0 Public Preview · 未签名
+## 目录
 
-## 一、这个仓库是什么？
+- [一、这个项目是什么？](#一这个项目是什么)
+- [二、先看效果](#二先看效果)
+- [三、适合谁用？](#三适合谁用)
+- [四、你会得到什么？](#四你会得到什么)
+- [五、它能帮你解决什么问题？](#五它能帮你解决什么问题)
+- [六、安装与快速开始](#六安装与快速开始)
+- [七、如何使用？](#七如何使用)
+- [八、项目工作流程](#八项目工作流程)
+- [九、项目目录结构](#九项目目录结构)
+- [十、注意事项与常见问题](#十注意事项与常见问题)
+- [十一、版本说明](#十一版本说明)
+- [十二、相关项目](#十二相关项目)
+- [十三、关于作者](#十三关于作者)
+- [十四、继续探索](#十四继续探索)
 
-这是 AgentGuardian 的公开源码仓库，也是 Windows Public Preview 的下载与说明入口。
+## 一、这个项目是什么？
 
-项目采用一个本地审计核心和三个使用入口：
+它是一款可以直接打开的 Windows 桌面应用，也可以配合独立的 Codex Skill 和本地 MCP 使用。
 
-- 桌面 GUI：适合直接在 Windows 上选择范围、查看授权摘要和阅读报告。
-- Codex Skill：独立分发的智能体 Skill，负责检查本地 MCP 能力、收集用户确认并调用已配置的本地工具。
-- STDIO MCP 本地代理：让 Codex 或其他支持 MCP 的宿主在本机调用 AgentGuardian 扫描工具。
+- **桌面应用**：选择本地文件夹，查看风险发现、处理步骤和 HTML/JSON 报告。
+- **Codex Skill**：一套让 AI 按照固定安全流程完成审计的操作指南，需要配合支持本地 MCP 的主机使用。
+- **本地 MCP**：运行在自己电脑上的接口，让 Codex 或其他支持 MCP 的工具调用同一个本地审计核心。
 
-三个入口共享相同的数据访问边界。当前审计范围是用户明确选择的本地配置数据，运行过程以只读检查为主，并在实际读取或验证前要求人工确认。
+项目会读取你明确选择的本地范围，按固定上限进行检查，并在读取或验证数据前要求人工确认。默认不调用 OpenAI 或其他服务商 API，也不会把审计文件自动上传到云端。
 
-## 二、适合谁用？
+当前版本只支持个人、非受监管的配置数据。它不是企业安全平台，也不能证明某个账号、MCP 服务、浏览器或系统“绝对安全”。
 
-### 1、特别适合
+## 二、先看效果
 
-- 在 Windows 11 x64 上使用 Codex 或其他智能体，并希望在智能体接触本地数据前做一次检查的个人用户。
-- 使用个人、非监管的 AI 配置、工作流文件、浏览器元数据或临时剪贴板内容的创作者、开发者和 AI Builder。
-- 希望通过 GUI、独立 Skill 或本地 STDIO MCP 选择适合自己宿主环境的使用方式的人。
-- 需要可读、可留存、经过脱敏处理的审计报告作为人工判断辅助的人。
+![AgentGuardian synthetic demo](assets/brand/agentguardian-cover.svg)
 
-### 2、不适合
+上图是仓库中的合成演示封面，用来说明项目的视觉方向，不是某位用户的真实审计结果。
 
-- 医疗、金融、身份、生物识别、法律特权、客户数据、国家秘密、受监管数据或其他高敏感真实数据。
-- 需要企业控制台、集中策略、动态 MCP 沙箱、自动修复、遥测或后台服务的组织。
-- 需要已签名安装程序、正式代码签名、合规认证或生产安全承诺的场景。
-- 把扫描结果当作“系统、账号、智能体或数据绝对安全”证明的场景。
+一次典型使用是：
 
-## 三、它会产出什么？
+1. 你选择一个本地 AI 配置目录，例如 `.codex`。
+2. 你确认数据属于个人、非受监管范围，并同意当前显示的审计范围。
+3. AgentGuardian 检查支持的配置文件，显示规则、风险域、严重性和已掩码证据。
+4. 你点击某一条风险后，可以看到所属应用、来源文件、短范围名称和处理位置。
+5. 你回到原应用处理后，重新审计同一个范围，再保存新报告。
 
-- 按当前规则生成的脱敏 JSON 和 HTML 审计报告。
-- 按范围整理的发现项、严重程度、可解释评分和人工处置指引。
-- 在执行前展示的授权摘要，以及用于核对本次范围的摘要信息。
-- 对文件、浏览器、剪贴板或公开 URL 的有限检查结果，并标明未覆盖、截断或需要人工复核的部分。
+## 三、适合谁用？
 
-报告是决策辅助材料，不是安全认证、法律意见或合规证明。
+### 特别适合
 
-## 四、具有什么价值？
+- 经常使用 Codex、MCP 或其他本地 AI 工具的个人创作者。
+- 想在分享配置、安装插件或启用本地工具前，先做一次快速自查的人。
+- 需要把风险线索、脱敏证据和人工处理步骤整理成报告的人。
+- 希望在同一台 Windows 电脑上检查多个本地 AI 配置目录的人。
 
-- 在智能体读取数据之前增加一个清晰的本地检查和人工确认环节。
-- 让 GUI、Codex Skill 和 STDIO MCP 使用同一套审计边界，减少不同入口之间的行为差异。
-- 将复杂的本地发现整理成更容易阅读和复核的报告。
-- 对 OpenAI Provider 配置提供本地适配、检测和人工指引，帮助用户识别风险配置；默认不调用 Provider API。
-- 让用户知道一次检查看到了什么、没有看到什么，以及下一步应由谁做决定。
+### 不适合
 
-## 五、使用效果
+- 需要审计医疗、金融、身份、生物识别、法律特权、客户数据、国家秘密或其他高敏感真实数据的场景。
+- 需要云端集中管理、持续监控、自动封禁或企业合规认证的场景。
+- 希望工具自动删除文件、自动撤销所有密钥或自动判断某个服务是否可信的场景。
+- 没有 Windows 11 x64，且不愿使用 Python 3.12 以上版本进行源码运行的场景。
 
+## 四、你会得到什么？
 
-## 六、安装方法
+完成一次审计后，你可以得到：
 
-[下载 Windows x64 单文件安装程序](https://github.com/yangjing6213-dev/AgentGuardian/releases/latest/download/AgentGuardian-Setup-Windows-x64.exe)
+- 桌面界面中的风险列表和覆盖状态。
+- 每条风险的规则、风险域、严重性、已掩码证据、所属应用线索、来源文件和处理位置。
+- 可在界面中查看的风险处理方案，包括凭据、个人信息、端点、MCP、权限和复审步骤。
+- 可保存到本地的 HTML 或 JSON 审计报告。
+- 可选的风险处置记录，例如误报、接受风险、撤销处置，以及有限的固定修复和回滚记录。
 
-这是 AgentGuardian 0.3.0 Public Preview 的未签名安装程序。它面向 Windows 11 x64 的个人、非监管配置数据，可能显示 Unknown Publisher 或 SmartScreen 警告。
+报告和界面会尽量隐藏完整路径和原始敏感匹配内容。对于自选目录，工具可能无法仅凭目录名称确认具体应用，此时会明确提示你回到来源文件所属的原应用中核对。
 
-安装前请先下载并核对 [SHA256SUMS](https://github.com/yangjing6213-dev/AgentGuardian/releases/latest/download/SHA256SUMS) 中对应的哈希值：
+## 五、它能帮你解决什么问题？
 
-1. 下载上面的单文件 EXE。
-2. 使用 Windows 的文件哈希工具计算 SHA-256，并与 SHA256SUMS 对照。
-3. 确认文件来源和哈希后再运行；Windows 的发布者警告不会因为本项目开源而自动消失。
-4. 按安装向导选择需要的组件。安装程序提供桌面 GUI，并可选择安装独立 Codex Skill、启用本地 MCP 以及创建桌面快捷方式。
-5. 安装完成后，在目标宿主中确认本地 MCP 工具已经出现，再开始审计。
+以前你可能需要手动翻找多个配置文件，猜测某个邮箱、手机号、密钥或 MCP 权限到底来自哪个程序。AgentGuardian 会把检查范围、来源文件和脱敏证据集中展示，并把“应该在哪里处理”写在每条风险下面。
 
-其他下载入口：
+它可以减少重复查找和复制敏感内容的需要，但不会替你决定风险是否可以接受。你仍然需要确认：这段数据是否真的存在、哪个应用在使用它、是否有业务保留必要，以及处理后是否已经重新审计。
 
-- [查看 0.3.0 Public Preview](https://github.com/yangjing6213-dev/AgentGuardian/releases/tag/v0.3.0-preview.1)
-- [Windows x64 便携 ZIP](https://github.com/yangjing6213-dev/AgentGuardian/releases/latest/download/AgentGuardian-0.3.0-preview.1-windows-x64.zip)
-- [版本化 Windows x64 安装程序](https://github.com/yangjing6213-dev/AgentGuardian/releases/latest/download/AgentGuardian-Setup-0.3.0-preview.1-x64.exe)
-- [独立 AgentGuardian Skill ZIP](https://github.com/yangjing6213-dev/AgentGuardian/releases/latest/download/AgentGuardian-Skill-0.2.0.zip)
-- [下载清单与元数据](https://github.com/yangjing6213-dev/AgentGuardian/releases/latest/download/DOWNLOAD-METADATA.json)
-- [第三方通知](https://github.com/yangjing6213-dev/AgentGuardian/releases/latest/download/THIRD_PARTY_NOTICES.md)
+## 六、安装与快速开始
 
-安装程序采用当前用户目录安装，不要求管理员权限。宿主的 Skill 或 MCP 配置仍可能需要用户按宿主规则明确确认；AgentGuardian 不会静默下载 Provider、MCP 适配器或其他远程组件。
+### 推荐方式：Windows 安装包
 
-## 七、如何使用
+1. 打开仓库的 [Releases 页面](https://github.com/yangjing6213-dev/AgentGuardian/releases)。
+2. 下载与 SHA-256 校验值同时提供的 Windows x64 安装包。
+3. Windows 可能显示“未知发布者”或 SmartScreen 提示，因为当前预览安装包未签名。只有在确认来源和校验值后再运行。
+4. 安装时按需选择桌面应用、Codex Skill、本地 MCP 和桌面快捷方式。
+5. 安装完成后打开 AgentGuardian，看到“审计范围”页面即可开始。
 
-### 桌面 GUI
+如果 Releases 页面没有可用的安装包，说明运行时尚未作为正式发行包提供，请使用下面的源码方式，或等待经过授权的预览包。
 
-1. 启动 AgentGuardian。
-2. 选择一个明确的审计操作和最小范围：files、browser、clipboard 或 public_share。
-3. 查看授权摘要，确认数据分类为 personal_non_regulated。
-4. 在人工确认后运行检查。
-5. 查看脱敏报告，并对发现项采取人工决定的后续行动。
+### 源码方式：Windows PowerShell
 
-### Codex Skill
+需要 Windows 11 x64、Python 3.12 或更高版本。建议在项目文件夹中执行：
 
-1. 从 Release 下载独立 Skill ZIP，或使用安装程序中的 Skill 选项。
-2. 将 Skill 安装到当前宿主约定的位置，例如 %USERPROFILE%\.agents\skills\agentguardian。
-3. 让宿主检查是否同时提供 prepare_audit 和 run_prepared_audit 两个本地 MCP 工具。
-4. 按 Skill 的提示选择一个操作、确认数据范围，并在宿主的批准提示中决定是否继续。
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python -m pip install -e .
+.\.venv\Scripts\python -m agentguardian
+```
 
-Skill 本身不会替代本地运行时，不会自行修改宿主配置，也不会用 Shell、浏览器或网络工具绕过 MCP 能力检查。
+看到 AgentGuardian 桌面窗口，说明启动成功。开发者还可以按 [CONTRIBUTING.md](CONTRIBUTING.md) 执行测试和安全检查。
 
-### STDIO MCP 本地代理
+### 第一次使用示例
 
-在支持本地 STDIO MCP 的宿主中，将本地控制台程序配置为：
+你可以先创建一个只含合成数据的测试目录，不要直接拿真实密钥或客户资料试用：
 
-~~~text
-AgentGuardianMcp.exe --stdio-mcp
-~~~
+```powershell
+New-Item -ItemType Directory .\agentguardian-demo -Force | Out-Null
+@'
+{"contact":"demo@example.com"}
+'@ | Set-Content .\agentguardian-demo\demo.json -Encoding UTF8
+```
 
-配置完成后，宿主应能看到：
+打开应用后：
 
-- prepare_audit
-- run_prepared_audit
+1. 在“审计范围”中点击“选择文件夹”，选择 `agentguardian-demo`。
+2. 勾选个人、非受监管数据确认，以及当前显示范围确认。
+3. 点击“开始审计”。
+4. 在“风险发现”中选择一条结果，查看下方的“风险详情与人工处理步骤”。
+5. 处理完成后重新审计，并在“审计报告”中保存 HTML 或 JSON 报告。
 
-先调用 prepare_audit 查看范围和授权摘要，再由用户明确确认，最后调用 run_prepared_audit。不要把窗口 GUI 程序当作 STDIO 命令，也不要把本地代理改成远程 URL。
+下载文件不等于完成安装；安装完成也不等于 Codex 已经启用 MCP。Skill 只有在当前主机能看到 `prepare_audit` 和 `run_prepared_audit` 两个本地工具时，才会继续审计流程。
 
-三个入口的访问能力相同，但每次审计仍以用户选择的范围和人工确认结果为准。
+## 七、如何使用？
+
+### 日常审计
+
+1. **选择范围**：只选择你确实需要检查的文件夹或文件。
+2. **确认边界**：确认数据属于个人、非受监管配置，并核对界面显示的范围。
+3. **开始审计**：审计过程只读取选定范围，按照固定文件数量、大小和发现数量上限运行。
+4. **查看风险**：在“风险发现”中按严重性、风险域或处置状态筛选，然后点击某一条风险。
+5. **定位处理**：详情会说明可能对应的应用、来源文件、短范围和处理位置；完整本地路径不会直接显示。
+6. **选择处置**：确认误报时标记误报；确认风险但暂时允许保留时记录接受风险。处置记录不会改写原始文件。
+7. **重新审计**：任何人工修改完成后，对相同范围重新执行审计，再保存新的报告。
+
+### 其他页面
+
+- **审计报告**：查看 HTML 或 JSON 报告，选择基线报告进行结果比较，并保存当前报告。
+- **解决方案**：按“复核事实 → 处理凭据或个人信息 → 核对端点和权限 → 复审”的顺序查看建议。
+- **关于作者**：查看作者介绍、联系方式和项目背景。
+- **界面语言**：在左侧切换简体中文和 English；选择会保存在本机。
+
+### 与 Codex Skill / MCP 配合
+
+Skill 和 Windows 运行时是两层独立内容。Skill 负责检查工具、收集同意和调用已配置的本地 MCP；`AgentGuardianMcp.exe --stdio-mcp` 才是本地 MCP 入口，窗口程序 `AgentGuardian.exe` 不能替代它。缺少本地工具时，Skill 会停止并提示配置问题，不会用其他方式绕过 MCP。
 
 ## 八、项目工作流程
 
-1. 选择一个操作和最小审计范围，并确认数据属于个人、非监管配置数据。
-2. 执行前置检查，校验路径、操作类型和当前宿主能力。
-3. 展示授权摘要、可能进入宿主模型上下文的脱敏参数与结果说明。
-4. 用户明确选择继续后，执行本地只读审计或公开 URL 可达性检查。
-5. 生成脱敏 JSON/HTML 报告，记录发现项、覆盖边界和截断情况。
-6. 用户或其他人工负责人复核报告，再决定是否手动调整配置。
+```text
+选择范围
+  → 查看数据边界和范围
+  → 明确同意
+  → 本地只读审计
+  → 查看风险与脱敏证据
+  → 回到原应用人工处理
+  → 对相同范围重新审计
+  → 保存报告并复核
+```
 
-浏览器检查使用临时本地副本；剪贴板检查只在用户明确请求时读取当前值；public_share 只检查用户明确输入的公开 URL，不通过该操作上传审计数据。项目不执行自动修复，不在后台持续监听，也不动态加载或执行任意 MCP 插件。
+项目负责发现线索、限制读取范围、遮盖证据并生成报告；用户负责判断风险是否真实、是否需要保留、在哪里修改，以及处理后是否达到预期。
 
 ## 九、项目目录结构
 
-~~~text
-src/agentguardian/       本地审计核心、报告、Provider 指引和 MCP 服务
-skills/agentguardian/    独立 Codex Skill
-packaging/windows/       Windows 便携版、PyInstaller 和 Inno Setup 配置
-release_profiles/        Public Preview 发布配置与边界
-scripts/                 构建、校验、打包和证据脚本
-tests/                   单元、集成和 Windows 打包相关测试
-docs/                    架构、安全边界、发布和开发记录
-assets/brand/            README、品牌和作者展示素材
-.github/workflows/       GitHub CI 与 Windows 工作流
-~~~
+```text
+README.md                         面向使用者的中文说明
+src/agentguardian/                桌面应用、审计核心和本地 MCP 实现
+src/agentguardian/assets/         图标、翻译文件和作者海报
+rules/                            默认审计规则
+skills/agentguardian/             可独立安装的 Codex Skill
+assets/brand/                     项目标志、封面和品牌说明
+packaging/windows/                Windows PyInstaller 与 Inno Setup 配置
+scripts/                          构建、验证和安全检查脚本
+tests/                            自动化测试
+docs/                             架构、安全边界和开发记录
+dist/                             本地构建后生成的安装包目录，不是源码入口
+```
 
-## 十、注意事项
+普通用户通常只需要使用安装包、桌面界面和“审计报告”页面，不需要修改 `src/`、`rules/` 或 `packaging/` 中的文件。
 
-- 当前版本是未签名的 Windows 11 x64 Public Preview，不是生产安全版本。
-- 仅限个人、非监管配置数据；禁止使用高敏感真实数据。这个限制不是 AgentGuardian 能正确分类所有内容的保证。
-- 不要把报告当作安全、合规、隐私或企业控制能力的证明。当前不提供企业控制台、动态 MCP 沙箱、自动修复、遥测、后台服务或通用安全保证。
-- OpenAI Provider 只执行本地适配、检测和人工指引，默认不调用 OpenAI 或其他 Provider API。
-- Skill 传递给宿主的脱敏参数和结果可能进入宿主模型上下文；覆盖不完整、权限不足或结果截断时，不能据此判断安全。
-- 静态 MCP 检测器只分析配置风险，不下载、启动、代理或执行 MCP 软件。
-- 运行安装程序前核对 SHA-256；无法核对哈希时不要运行文件。
-- 源码采用 Apache License 2.0；第三方组件与再分发说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。未签名状态和当前预览边界仍以对应 Release 说明为准。
+## 十、注意事项与常见问题
 
-### 预览状态与发布校验标识
+### Windows 显示未知发布者
 
-以下状态标识与仓库发布配置保持一致。它们描述预览成熟度和门禁状态，不改变公开下载链接：
+**现象**：运行安装包时出现 Unknown Publisher 或 SmartScreen 提示。
 
-- 0.3 Integrations Preview is the active development track；当前成熟度标识为 INTEGRATIONS-PREVIEW-NOT-READY。
-- NO-GO 表示尚未宣称生产安全或正式安全交付，不表示 Release 页面不可访问。
-- This is an unsigned Public Preview.
-- 支持边界是 personal non-regulated configuration；high-sensitivity real data is unsupported。
-- production-safety：not claimed；enterprise control-plane：unsupported。
-- The runtime must not call OpenAI or another Provider API by default.
-- AgentGuardian does not silently download or enable a Provider API.
-- 主安装文件是 AgentGuardian-Setup-Windows-x64.exe；本地代理是 AgentGuardianMcp.exe；安装包包含独立 Skill payload。
-- 0.2.0-beta.1 的 frozen exact SHA 记录只作历史证据，不作为当前版本证明。
-- Personal v1 不支持高敏感现实数据。
-- 联网分享验证仅在用户显式输入公开 URL 后执行。
+**原因**：当前预览安装包未使用代码签名证书。
 
-<details>
-<summary>开发治理与历史证据</summary>
+**处理**：核对下载来源和 SHA-256；如果无法确认来源，不要运行安装包。
 
-本仓库的治理文件用于 govern development；它们是 not product capability claims or release evidence：
+### 审计后没有结果
 
-- [approved active product specification](docs/superpowers/specs/2026-08-16-agentguardian-personal-v1-design.md)
-- [active implementation plan](docs/superpowers/plans/2026-08-21-agentguardian-personal-exe-private-beta.md)
-- canonical partial status ledger：[personal-exe-private-beta-status.json](docs/security/personal-exe-private-beta-status.json)
-- Frozen private-beta candidate 8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6 remains PRIVATE-BETA-NOT-READY；formal public release remains `NO-GO` because external license and Qt approval, two-machine acceptance, and operations/security gates are pending.
+**现象**：扫描完成但没有风险，或报告显示覆盖不完整。
+
+**可能原因**：选择的目录没有支持的文件后缀、文件超过读取上限、目录被排除，或扫描范围本身没有匹配规则。
+
+**处理**：查看“覆盖状态”，确认范围和文件类型，再用合成测试目录复现。没有发现不等于系统绝对安全。
+
+### 某条风险来自哪个程序？
+
+已知的 `.codex`、Claude、Cursor、Windsurf 和 OpenAI 配置目录会显示对应应用线索，并列出来源文件和短范围。自选目录无法可靠映射到具体应用时，界面会明确说明这一点；请按显示的来源文件回到原应用核对。
+
+### 可以直接点击“修复”吗？
+
+固定修复目前只覆盖允许的 OpenAI 地址配置，并会先预览、确认和备份。凭据、个人信息、MCP 权限等其他风险需要回到原应用人工处理。回滚也只适用于本次会话中仍未被改动的固定替换。
+
+### 数据会上传吗？
+
+文件和剪贴板审计默认在本地完成；剪贴板只在用户点击时读取一次，原文不写入报告。联网分享验证只在用户明确输入公开 URL 后执行。脱敏参数和结果可能进入已配置主机的 AI 上下文，因此仍要按数据边界使用。
+
+### 是否可以用于商业或高敏感数据？
+
+当前项目说明只覆盖个人、非受监管配置数据。不要用它处理医疗、金融、身份、生物识别、法律特权、客户数据、国家秘密或同等高敏感真实数据。源代码使用 Apache License 2.0，但依赖和 Windows 运行时的再分发义务仍需单独核对。
+
+## 十一、版本说明
+
+- **源码版本**：`0.3.0a1`，见 [pyproject.toml](pyproject.toml)。
+- **当前通道**：Windows 11 x64 的 Integrations Preview，安装包版本为 `0.3.0-preview.1`。
+- **已完成**：桌面 GUI、中文/英文切换、风险详情、解决方案页、HTML/JSON 报告、独立 Skill、本地 STDIO MCP 和本地安装验证。
+- **尚未宣称**：生产安全、企业合规认证、干净电脑的全面安装保证、完整许可证审查或已签名发行版。
+- **更新记录**：见 [CHANGELOG.md](CHANGELOG.md)。
+
+### 公开预览的版本边界
+
+为了让普通用户和协作者看到同一份事实，仓库保留以下英文状态标识：
+
+- `0.3 Integrations Preview is the active development track`；`0.2.0-beta.1` 是冻结的历史版本，构建时使用 **frozen exact SHA** 进行边界校验。
+- 当前下载渠道是 **unsigned Public Preview**，只面向 Windows 11 x64 的个人、非受监管配置数据（personal non-regulated configuration data）；high-sensitivity real data is out of scope。
+- 预览状态仍记录为 `INTEGRATIONS-PREVIEW-NOT-READY` 和 `NO-GO`，这表示它不应被当作 production-safety 承诺，也不是 enterprise control-plane。
+- 固定下载入口：[Windows x64 安装包](https://github.com/yangjing6213-dev/AgentGuardian/releases/latest/download/AgentGuardian-Setup-Windows-x64.exe)。安装包未签名，运行前请核对 [SHA256SUMS](https://github.com/yangjing6213-dev/AgentGuardian/releases/latest/download/SHA256SUMS)。
+- 发布清单包含 `AgentGuardian-0.3.0-preview.1-windows-x64.zip`、`AgentGuardian-Setup-0.3.0-preview.1-x64.exe`、`AgentGuardian-Setup-Windows-x64.exe`、`AgentGuardian-Skill-0.2.0.zip`、`DOWNLOAD-METADATA.json`、`LICENSE`、`SHA256SUMS` 和 `THIRD_PARTY_NOTICES.md`。其中 Skill payload 与桌面程序分开管理。
+- `AgentGuardianMcp.exe` 只提供本地 STDIO MCP 入口；安装程序不会静默下载或启用 Provider API（does not silently download or enable a Provider API）。
 - OpenAI Provider local adaptation, detection, and manual guidance only. The runtime must not call OpenAI or another provider API by default.
-- 源码运行信息中的 Python 版本可以显示，但不会暴露 interpreter path。
-- 旧记录中的 traditional unsigned offline EXE installer 路线是历史门禁语境；No installer candidate has passed the required gates 只描述该历史记录，不表示当前 Release 下载链接不可用。
-- older Windows MVP reports are historical planning or evidence snapshots。
+- 源码运行需要 Python 版本 3.12 或更高；历史 Windows MVP 文档属于 older Windows MVP reports are historical planning or evidence snapshots。
+- 当前下载形态是 traditional unsigned offline EXE installer；在公开发行门禁完成前，No installer candidate has passed the required gates。
 
-</details>
+## 十二、相关项目
 
-当前 Release 的八个公开资产名称为：
+无。当前仓库已经包含桌面应用、Skill、本地 MCP、规则和验证脚本；使用前先理解本项目自身的数据边界更重要。
 
-~~~text
-AgentGuardian-0.3.0-preview.1-windows-x64.zip
-AgentGuardian-Setup-0.3.0-preview.1-x64.exe
-AgentGuardian-Setup-Windows-x64.exe
-AgentGuardian-Skill-0.2.0.zip
-DOWNLOAD-METADATA.json
-LICENSE
-SHA256SUMS
-THIRD_PARTY_NOTICES.md
-~~~
+## 十三、关于作者
 
-### 预览状态与发布校验标识
+![Enhe 作者介绍海报](src/agentguardian/assets/author-poster.jpg)
 
-以下状态标识与仓库发布配置保持一致。它们描述预览成熟度和门禁状态，不改变公开下载链接：
+**Enhe（恩禾）｜产品设计师 · 一人公司实践者 · AI Builder**
 
-- 0.3 Integrations Preview is the active development track；当前成熟度标识为 INTEGRATIONS-PREVIEW-NOT-READY。
-- NO-GO 表示尚未宣称生产安全或正式安全交付，不表示 Release 页面不可访问。
-- This is an unsigned Public Preview.
-- 支持边界是 personal non-regulated configuration；high-sensitivity real data is unsupported。
-- production-safety：not claimed；enterprise control-plane：unsupported。
-- The runtime must not call OpenAI or another Provider API by default.
-- AgentGuardian does not silently download or enable a Provider API.
-- 主安装文件是 AgentGuardian-Setup-Windows-x64.exe；本地代理是 AgentGuardianMcp.exe；安装包包含独立 Skill payload。
-- 0.2.0-beta.1 的 frozen exact SHA 记录只作历史证据，不作为当前版本证明。
-- Personal v1 不支持高敏感现实数据。
-- 联网分享验证仅在用户显式输入公开 URL 后执行。
+用 AI 打造一人公司。
 
-当前 Release 的八个公开资产名称为：
+- GitHub：[yangjing6213-dev](https://github.com/yangjing6213-dev)
+- X / Twitter：[Amenenhe_ai](https://x.com/Amenenhe_ai)
+- 网站：[恩禾 ENHE AI](https://www.enhe-tech.com.cn/)
+- 微信：Hu-Amen
+- 邮箱：[amen.enhe@gmail.com](mailto:amen.enhe@gmail.com)
 
-~~~text
-AgentGuardian-0.3.0-preview.1-windows-x64.zip
-AgentGuardian-Setup-0.3.0-preview.1-x64.exe
-AgentGuardian-Setup-Windows-x64.exe
-AgentGuardian-Skill-0.2.0.zip
-DOWNLOAD-METADATA.json
-LICENSE
-SHA256SUMS
-THIRD_PARTY_NOTICES.md
-~~~
+## 十四、继续探索
 
-## 十一、相关项目
+这个项目是我用 AI 搭建个人创作与工作系统时整理出的一个工具。我希望它不只是留在自己的电脑里，也能帮你解决类似的配置检查问题。
 
-无
+如果你也在用 AI 做内容、整理知识库、搭建工作流，或者把想法做成产品，欢迎到我的网站继续看看：
 
-## 十二、关于作者
+[访问恩禾 ENHE AI](https://www.enhe-tech.com.cn/)
 
-<img src="assets/brand/author-avatar.png" alt="Enhe（恩禾）作者信息" width="720">
+## 许可
 
-**Enhe（恩禾） - 产品设计师 - 一人公司实践者 - AI Builder**
+源代码采用 [Apache License 2.0](LICENSE)。第三方依赖、Qt 和 Windows 运行时的许可证与再分发要求，请同时阅读 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-用AI打造一个人公司。
+## English
 
-- GitHub: [yangjing6213-dev](https://github.com/yangjing6213-dev)
-- X/Twitter: [Amenenhe_ai](https://x.com/Amenenhe_ai)
-- 网站: [www.enhe-tech.com.cn](https://www.enhe-tech.com.cn/)
-- 微信: Hu-Amen
-- 邮箱: [amen.enhe@gmail.com](mailto:amen.enhe@gmail.com)
-
-## 十三、继续探索
-
-这个项目是我用 AI 搭建的个人生成系统里的一个工具。如果你也在用 AI 做内容、知识库、工作流或产品化，可以登录我的网站 [www.enhe-tech.com.cn](https://www.enhe-tech.com.cn/) 查看更多资料。
-
----
-
-源码许可证：[Apache License 2.0](LICENSE)。
+English overview: [README.en.md](README.en.md)

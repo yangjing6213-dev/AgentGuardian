@@ -43,6 +43,30 @@ _CanonicalFinding = tuple[
 ]
 _PreparedFinding = tuple[_CanonicalFinding, dict[str, str]]
 
+_REPORT_ENGLISH_COVERAGE_STATES = {
+    CoverageState.COMPLETE: "Complete",
+    CoverageState.LIMITED: "Limited coverage",
+    CoverageState.NO_SUPPORTED_FILES: "No supported files",
+}
+_REPORT_ENGLISH_LIMITS = {
+    "byte_limit_reached": "Scan byte limit reached",
+    "directory_excluded": "Directory excluded",
+    "directory_read_limited": "Directory read was limited",
+    "entry_limit_reached": "Directory entry limit reached",
+    "entry_read_limited": "Directory entry read was limited",
+    "file_limit_reached": "File count limit reached",
+    "file_read_error": "File read failed",
+    "file_scan_limited": "File scan was limited",
+    "file_too_large": "A file exceeded the size limit",
+    "finding_limit_reached": "Finding count limit reached",
+    "mcp_config_scan_limited": "MCP configuration scan was limited",
+    "no_supported_files": "No supported files found",
+    "reparse_changed": "A reparse path changed during the scan",
+    "reparse_excluded": "Reparse path excluded",
+    "root_reparse_excluded": "Reparse root excluded",
+    "unsupported_text_encoding": "Text encoding is not supported",
+}
+
 
 def render_json(
     score: Score,
@@ -93,6 +117,7 @@ def render_html(
     reviewed_score: Score | None = None,
     dispositions: Iterable[DispositionRecord] = (),
     evaluated_at: datetime,
+    language: str | None = None,
 ) -> str:
     try:
         rule_version, evaluated_timestamp, technical, reviewed, prepared = _prepare_report(
@@ -103,25 +128,30 @@ def render_html(
             dispositions=dispositions,
             evaluated_at=evaluated_at,
         )
+        english = language == "en"
+        localized = language in {"en", "zh"}
+        label = lambda english_text, chinese_text: (
+            english_text if english or not localized else chinese_text
+        )
         parts = [
             "<!doctype html>",
-            '<html lang="en">',
+            f'<html lang="{"en" if english or not localized else "zh-CN"}">',
             "<head>",
             '<meta charset="utf-8">',
             f"<title>{_text(_PRODUCT)} {_text(__version__)}</title>",
             "</head>",
             "<body>",
             f"<h1>{_text(_PRODUCT)}</h1>",
-            f"<p>Version: {_text(__version__)}</p>",
-            "<p>Supported use boundary: "
+            f"<p>{label('Version', '版本')}: {_text(__version__)}</p>",
+            f"<p>{label('Supported use boundary', '支持使用边界')}: "
             f"{_text(SUPPORTED_USE_BOUNDARY)} "
-            "(personal non-regulated configuration only).</p>",
-            f"<p>Rule version: {_text(rule_version)}</p>",
-            f"<p>Evaluated at: {_text(evaluated_timestamp)}</p>",
+            f"{label('(personal non-regulated configuration only)', '（仅限个人非受监管配置）')}.</p>",
+            f"<p>{label('Rule version', '规则版本')}: {_text(rule_version)}</p>",
+            f"<p>{label('Evaluated at', '评估时间')}: {_text(evaluated_timestamp)}</p>",
         ]
         for label, current_score in (
-            ("Technical", technical),
-            ("Reviewed", reviewed),
+            ("Technical" if english or not localized else "技术", technical),
+            ("Reviewed" if english or not localized else "审阅", reviewed),
         ):
             cap_reason = current_score["cap_reason"]
             if cap_reason is None:
@@ -129,9 +159,9 @@ def render_html(
             coverage_state = CoverageState(current_score["coverage_state"])
             parts.extend(
                 (
-                    f"<h2>{label} score</h2>",
-                    f"<p>Total: {_text(current_score['total'])}</p>",
-                    "<h3>Domain deductions</h3>",
+                    f"<h2>{label} {('score' if english or not localized else '评分')}</h2>",
+                    f"<p>{'Total' if english or not localized else '总分'}: {_text(current_score['total'])}</p>",
+                    f"<h3>{'Domain deductions' if english or not localized else '风险域扣分'}</h3>",
                     "<ul>",
                 )
             )
@@ -143,54 +173,61 @@ def render_html(
             parts.extend(
                 (
                     "</ul>",
-                    f"<p>Cap reason: {_text(cap_reason)}</p>",
-                    f"<p>Coverage: {_text(current_score['coverage'])}</p>",
-                    f"<p>Confidence: {_text(current_score['confidence'])}</p>",
-                    "<p>Incomplete: "
+                    f"<p>{'Cap reason' if english or not localized else '评分上限原因'}: {_text(cap_reason)}</p>",
+                    f"<p>{'Coverage' if english or not localized else '覆盖率'}: {_text(current_score['coverage'])}</p>",
+                    f"<p>{'Confidence' if english or not localized else '置信度'}: {_text(current_score['confidence'])}</p>",
+                    f"<p>{'Incomplete' if english or not localized else '覆盖不完整'}: "
                     f"{_text(str(current_score['incomplete']).lower())}</p>",
-                    f"<p>Coverage state: {_text(coverage_state.value)}</p>",
-                    "<p>Coverage state label: "
-                    f"{_text(COVERAGE_STATE_LABELS[coverage_state])}</p>",
-                    "<h3>Limits</h3>",
+                    f"<p>{'Coverage state' if english or not localized else '覆盖状态'}: {_text(coverage_state.value)}</p>",
+                    f"<p>{'Coverage state label' if english or not localized else '覆盖状态说明'}: "
+                    f"{_text(_REPORT_ENGLISH_COVERAGE_STATES[coverage_state] if english else COVERAGE_STATE_LABELS[coverage_state])}</p>",
+                    f"<h3>{'Limits' if english or not localized else '限制项'}</h3>",
                     "<ul>",
                 )
             )
             for limit in current_score["limits"]:
-                parts.append(f"<li>{_text(COVERAGE_LIMIT_LABELS[limit])}</li>")
+                limit_label = (
+                    _REPORT_ENGLISH_LIMITS[limit]
+                    if english
+                    else COVERAGE_LIMIT_LABELS[limit]
+                )
+                parts.append(f"<li>{_text(limit_label)}</li>")
             parts.append("</ul>")
             if coverage_state is CoverageState.COMPLETE:
-                parts.append("<p>已完成配置范围扫描。</p>")
+                parts.append(
+                    f"<p>{'The selected configuration scope was scanned.' if english else '已完成配置范围扫描。'}</p>"
+                )
             else:
                 parts.append(
-                    "<p>本次结果不能证明系统、账户、提供商或端点安全。</p>"
+                    f"<p>{'These results do not prove that the system, account, provider, or endpoint is secure.' if english else '本次结果不能证明系统、账户、提供商或端点安全。'}</p>"
                 )
-        parts.append("<h2>Findings</h2>")
+        parts.append(f"<h2>{'Findings' if english or not localized else '风险发现'}</h2>")
 
         for finding, disposition in prepared:
             parts.extend(
                 (
                     "<section>",
                     f"<h3>{_text(finding[0])}</h3>",
-                    f"<p>Domain: {_text(finding[1])}</p>",
-                    f"<p>Severity: {_text(finding[2])}</p>",
-                    f"<p>Root HMAC fingerprint: {_text(finding[3])}</p>",
-                    f"<p>Disposition status: {_text(disposition['status'])}</p>",
+                    f"<p>{'Domain' if english or not localized else '风险域'}: {_text(finding[1])}</p>",
+                    f"<p>{'Severity' if english or not localized else '严重性'}: {_text(finding[2])}</p>",
+                    f"<p>{'Root HMAC fingerprint' if english or not localized else '根路径 HMAC 指纹'}: {_text(finding[3])}</p>",
+                    f"<p>{'Disposition status' if english or not localized else '处置状态'}: {_text(disposition['status'])}</p>",
                 )
             )
             if disposition["status"] == "expired":
                 parts.append(
-                    "<p>Last disposition status: "
+                    f"<p>{'Last disposition status' if english or not localized else '上次处置状态'}: "
                     f"{_text(disposition['last_status'])}</p>"
                 )
             if disposition["status"] != "open":
                 parts.extend(
                     (
-                        f"<p>Disposition reason: {_text(disposition['reason'])}</p>",
-                        "<p>Disposition reviewer: "
+                        f"<p>{'Disposition reason' if english or not localized else '处置原因'}: {_text(disposition['reason'])}</p>",
+                        f"<p>{'Disposition reviewer' if english or not localized else '处置复核人'}: "
                         f"{_text(disposition['reviewer'])}</p>",
-                        "<p>Disposition created at: "
+                        f"<p>{'Disposition created at' if english or not localized else '处置创建时间'}: "
                         f"{_text(disposition['created_at'])}</p>",
-                        "<p>Disposition expires at: "
+                        f"<p>{'Disposition expires at' if english or not localized else '处置到期时间'}: "
                         f"{_text(disposition['expires_at'])}</p>",
                     )
                 )
@@ -198,9 +235,9 @@ def render_html(
             for source, fingerprint, masked in finding[4]:
                 parts.append(
                     "<li>"
-                    f"Source: {_text(source)}; "
-                    f"HMAC fingerprint: {_text(fingerprint)}; "
-                    f"Masked evidence: {_text(masked)}"
+                    f"{'Source' if english or not localized else '来源'}: {_text(source)}; "
+                    f"{'HMAC fingerprint' if english or not localized else 'HMAC 指纹'}: {_text(fingerprint)}; "
+                    f"{'Masked evidence' if english or not localized else '已掩码证据'}: {_text(masked)}"
                     "</li>"
                 )
             parts.extend(("</ul>", "</section>"))

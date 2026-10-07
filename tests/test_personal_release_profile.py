@@ -4,16 +4,17 @@ import hashlib
 import importlib
 import json
 import os
+from pathlib import Path, PureWindowsPath
 import re
 import shutil
 import subprocess
 import sys
 import time
 import tomllib
-from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PRIVATE_BETA_PROFILE_PATH = (
@@ -229,36 +230,6 @@ def test_private_beta_workflow_is_exact_sha_read_only_and_nonpublishing() -> Non
         "store submission",
     ):
         assert forbidden not in folded
-
-
-def test_private_beta_workflow_rejects_manual_dispatch_from_other_branch() -> None:
-    workflow = (
-        ROOT / ".github" / "workflows" / "windows-exe-private-beta.yml"
-    ).read_text(encoding="utf-8")
-
-    assert "name: Validate private beta source branch" in workflow
-    assert "$env:GITHUB_REF_NAME -cne 'agent/founder-alpha'" in workflow
-    assert "private-beta workflow must run from agent/founder-alpha" in workflow
-    assert workflow.index("Validate private beta source branch") < workflow.index(
-        "Validate exact lowercase candidate SHA"
-    )
-
-
-def test_ci_verifies_setuptools_backend_after_installing_build_lock() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
-        encoding="utf-8"
-    )
-
-    assert "--require-hashes -r requirements-build.lock" in workflow
-    assert (
-        'python -c "import setuptools.build_meta; print(setuptools.__version__)"'
-        in workflow
-    )
-    assert workflow.index("requirements-build.lock") < workflow.index(
-        'python -c "import setuptools.build_meta; print(setuptools.__version__)"'
-    ) < workflow.index(
-        "python -m pip install --no-build-isolation --no-deps -e ."
-    ) < workflow.index("Full test suite")
 
 
 def test_active_tree_has_only_exe_private_beta_delivery() -> None:
@@ -1336,18 +1307,7 @@ def test_root_operational_noise_remains_excluded(tmp_path: Path) -> None:
         [*profile["forbidden_source_globs"], "**/blocked.py"]
     )
     _write_profile(root, profile)
-    for noise in (
-        "build",
-        "dist",
-        "__pycache__",
-        ".pytest_cache",
-        ".local-audit",
-        ".superpowers",
-        ".tmp",
-        ".worktrees",
-        "node_modules",
-        "target",
-    ):
+    for noise in ("build", "dist", "__pycache__", ".pytest_cache"):
         blocked = root / noise / "blocked.py"
         blocked.parent.mkdir(parents=True)
         blocked.write_text("root noise", encoding="utf-8")

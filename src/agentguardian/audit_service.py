@@ -32,6 +32,48 @@ class _DispositionContext:
     invalid_state: bool
 
 
+_SOURCE_APPLICATION_KEYS = frozenset(
+    {"codex", "claude", "cursor", "windsurf", "openai", "custom", "clipboard"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class FindingSourceContext:
+    """Safe, UI-only context for locating a finding without exposing full paths."""
+
+    root_fingerprint: str
+    evidence_fingerprint: str
+    application_key: str
+    root_name: str
+    source_file: str
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("root_fingerprint", self.root_fingerprint),
+            ("evidence_fingerprint", self.evidence_fingerprint),
+        ):
+            if (
+                type(value) is not str
+                or len(value) != 64
+                or any(character not in "0123456789abcdef" for character in value)
+            ):
+                raise ValueError(f"{name} must be a lowercase HMAC fingerprint")
+        if self.application_key not in _SOURCE_APPLICATION_KEYS:
+            raise ValueError("application_key is not recognized")
+        for name, value in (("root_name", self.root_name), ("source_file", self.source_file)):
+            if (
+                type(value) is not str
+                or not value
+                or len(value) > 120
+                or any(
+                    character in "\\/\x00"
+                    or not character.isprintable()
+                    for character in value
+                )
+            ):
+                raise ValueError(f"{name} contains unsafe display text")
+
+
 @dataclass(frozen=True, slots=True)
 class AuditOutcome:
     findings: tuple[Finding, ...]
@@ -42,6 +84,7 @@ class AuditOutcome:
     report_json: str
     report_html: str
     scanned_roots: tuple[Path, ...] = field(repr=False)
+    source_contexts: tuple[FindingSourceContext, ...] = ()
 
 
 def _utc_now() -> datetime:
@@ -173,6 +216,77 @@ def _append_finding_batch(
     return evidence_count, True
 
 
+def _application_key_for_root(root: Path) -> str:
+    components = {part.casefold() for part in root.parts}
+    if ".codex" in components or root.name.casefold() == "codex":
+        return "codex"
+    for key in ("claude", "cursor", "windsurf", "openai"):
+        if key in components:
+            return key
+    return "custom"
+
+
+def _safe_root_name(root: Path) -> str:
+    name = root.name or root.drive or "current scope"
+    return name[:120]
+
+
+def _root_for_path(path: Path, roots: tuple[Path, ...]) -> Path | None:
+    candidates: list[Path] = []
+    for root in roots:
+        try:
+            path.relative_to(root)
+        except ValueError:
+            continue
+        candidates.append(root)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda candidate: len(candidate.parts))
+
+
+def _record_source_contexts(
+    target: dict[tuple[str, str], FindingSourceContext],
+    findings: Iterable[Finding],
+    path: Path,
+    roots: tuple[Path, ...],
+) -> None:
+    root = _root_for_path(path, roots)
+    application_key = _application_key_for_root(root) if root is not None else "custom"
+    root_name = _safe_root_name(root) if root is not None else "current scope"
+    source_file = path.name[:120] or "unknown"
+    for finding in findings:
+        for evidence in finding.evidence:
+            key = (finding.root_fingerprint, evidence.fingerprint)
+            target.setdefault(
+                key,
+                FindingSourceContext(
+                    root_fingerprint=finding.root_fingerprint,
+                    evidence_fingerprint=evidence.fingerprint,
+                    application_key=application_key,
+                    root_name=root_name,
+                    source_file=source_file,
+                ),
+            )
+
+
+def _clipboard_source_contexts(
+    findings: Iterable[Finding],
+) -> tuple[FindingSourceContext, ...]:
+    contexts: list[FindingSourceContext] = []
+    for finding in findings:
+        for evidence in finding.evidence:
+            contexts.append(
+                FindingSourceContext(
+                    root_fingerprint=finding.root_fingerprint,
+                    evidence_fingerprint=evidence.fingerprint,
+                    application_key="clipboard",
+                    root_name="clipboard",
+                    source_file=evidence.source,
+                )
+            )
+    return tuple(contexts)
+
+
 def run_file_audit(
     roots: tuple[Path, ...],
     *,
@@ -214,6 +328,7 @@ def run_file_audit(
     scanned = 0
     scanned_bytes = 0
     evidence_count = 0
+    source_contexts: dict[tuple[str, str], FindingSourceContext] = {}
 
     for candidate in files:
         path = Path(os.path.abspath(candidate))
@@ -235,6 +350,7 @@ def run_file_audit(
         except Exception:  # noqa: BLE001 - never expose scan exception text
             limits.append("file_scan_limited")
             continue
+        finding_start = len(findings)
         evidence_count, batch_complete = _append_finding_batch(
             findings,
             seen_findings,
@@ -242,6 +358,12 @@ def run_file_audit(
             evidence_count,
             max_findings=accepted_preview.max_findings,
             max_evidence=accepted_preview.max_evidence,
+        )
+        _record_source_contexts(
+            source_contexts,
+            findings[finding_start:],
+            path,
+            frozen_roots,
         )
         if not batch_complete:
             limits.append("finding_limit_reached")
@@ -263,6 +385,7 @@ def run_file_audit(
             except Exception:  # noqa: BLE001 - never expose parser exception text
                 limits.append("mcp_config_scan_limited")
                 continue
+            finding_start = len(findings)
             evidence_count, batch_complete = _append_finding_batch(
                 findings,
                 seen_findings,
@@ -270,6 +393,12 @@ def run_file_audit(
                 evidence_count,
                 max_findings=accepted_preview.max_findings,
                 max_evidence=accepted_preview.max_evidence,
+            )
+            _record_source_contexts(
+                source_contexts,
+                findings[finding_start:],
+                path,
+                frozen_roots,
             )
             if not batch_complete:
                 limits.append("finding_limit_reached")
@@ -328,6 +457,15 @@ def run_file_audit(
             evaluated_at=evaluation_time,
         ),
         scanned_roots=frozen_roots,
+        source_contexts=tuple(
+            sorted(
+                source_contexts.values(),
+                key=lambda context: (
+                    context.root_fingerprint,
+                    context.evidence_fingerprint,
+                ),
+            )
+        ),
     )
 
 
@@ -394,5 +532,6 @@ def run_clipboard_audit(
             evaluated_at=evaluation_time,
         ),
         scanned_roots=(),
+        source_contexts=_clipboard_source_contexts(result.findings),
     )
     return result, outcome

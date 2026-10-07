@@ -36,4 +36,4 @@ markers = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-agentguardian = ["rules/*.json", "source_policy.json"]
+agentguardian = ["rules/*.json", "source_policy.json", "assets/*"]

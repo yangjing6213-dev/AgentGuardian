@@ -594,18 +594,31 @@ def test_coverage_labels_are_fixed_chinese_text() -> None:
         "entry_limit_reached": "达到目录条目上限",
         "entry_read_limited": "目录条目读取受限",
         "file_limit_reached": "达到文件数量上限",
+        "file_read_error": "文件读取失败",
         "file_scan_limited": "文件扫描受限",
+        "file_too_large": "单个文件超过大小上限",
         "finding_limit_reached": "达到发现数量上限",
         "mcp_config_scan_limited": "MCP 配置扫描受限",
         "no_supported_files": "未发现支持的文件",
         "reparse_changed": "重解析路径在扫描期间发生变化",
         "reparse_excluded": "已排除重解析路径",
         "root_reparse_excluded": "已排除重解析根路径",
+        "unsupported_text_encoding": "文件编码不受支持",
     }
     with pytest.raises(TypeError):
         COVERAGE_STATE_LABELS[CoverageState.COMPLETE] = "changed"  # type: ignore[index]
     with pytest.raises(TypeError):
         COVERAGE_LIMIT_LABELS["file_limit_reached"] = "changed"  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    "limit",
+    ("file_read_error", "file_too_large", "unsupported_text_encoding"),
+)
+def test_coverage_classifier_accepts_detector_file_limits(limit: str) -> None:
+    assert classify_coverage(
+        _score(coverage=0.5, limits=(limit,), incomplete=True)
+    ) is CoverageState.LIMITED
 
 
 def test_coverage_classifier_rejects_non_score_and_subclass() -> None:

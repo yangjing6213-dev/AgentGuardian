@@ -3,8 +3,8 @@
   "modules": {
     "__init__.py": "cb8e3d332cbf0f982638e6453c90ca275eb187a1adf2f8b2073883e0de1afe85",
     "__main__.py": "e3fd42840f0c2398b28c676d00023d926151cc512ad61e998421719afb3b89e5",
-    "app.py": "58a52c0361099d4a5dc8fee22bc2a63c68def7fb7bd852055561583cddf90fe1",
-    "audit_service.py": "2f567fd32b8e5be85cbb0662f7ec242f4732758666fd64412591d062b91d85e3",
+    "app.py": "ee09b24812c4ab4d63d21257a63e944a6bc0773c9ecb448ae47e39284a6124b3",
+    "audit_service.py": "63a0396e9d67da935b0f757263bce874c2a20b64d58c22131fc641b15f23c4f9",
     "browser_audit.py": "1e2631fcf355667f7a630d9dd74aef9d6dee98207d2afd6aad57b90a704d7017",
     "clipboard_audit.py": "152fa64217ba1a3146846b24a6e031a8b037a1e04ef96bc5bbfca4c30b681f86",
     "codex_integration.py": "54a6f6a2b92bcb749c32086f3d791e40f8cb82d635de5f9aa3ddfbfe09045855",
@@ -18,12 +18,12 @@
     "mcp_service.py": "570d522797e05d0520296e75cea01fb49ac51a2aaca8feecc2db7e6249c916db",
     "remediation.py": "7a5e25ea455625255c38e1b46f921574ba258698d1ef640b997bb2fe0f3ee2fd",
     "report_comparison.py": "09bc861bc0aa0464f371047aadd3637dbf7eb357e5db30dfd6eff418045ac5a0",
-    "reporting.py": "f5be8090f1175ae09050635432ebf30e82c759bffb439721ea8819251791c6e6",
+    "reporting.py": "7daa86a5201ddb51facd7a2156cf5fdfaa258618bbef59433cbf0c10b6f72896",
     "scoring.py": "ed04a103981b08e4fd55cb15e36a32487ee76db85c5d494fe4918f3b1092dd7d",
     "self_audit.py": "a08d8f256042a3dc65c79b8fb6aef217d520c8329ee1bac3857125cc68375a8a",
     "share_verification.py": "c3777d900218b39b0155a37132a706169b3650d887b802392580fa10ae9668da",
     "state_store.py": "4a171c02c00e78b68dd7402ddf45cae61f3ec488f9c6d6f06439f1e9df137a00",
     "windows_dpapi.py": "e66caabc5ba7d5c1c4d19180d805e945c8c07cbe5116b5539a7bbcf2ba01f8fd",
-    "workflow.py": "e6fa9320247da0388358999a6d1d4aca03478c2b1e4b42b2ffbcbc175b10b780"
+    "workflow.py": "505df8146c1d9a3df7d0ccf380722553686213c4f3987fa96cfc268a7d5cf76f"
   }
 }

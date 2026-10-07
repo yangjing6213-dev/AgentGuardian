@@ -124,7 +124,7 @@ def test_clipboard_audit_cancel_does_not_read_clipboard(qapp, monkeypatch, tmp_p
     _approve_personal_scope(window, tmp_path / "ordinary-project")
     window.clipboard_button.click()
 
-    assert "Clipboard audit cancelled" in window.status_label.text()
+    assert "剪贴板审计已取消" in window.status_label.text()
     window.close()
 
 

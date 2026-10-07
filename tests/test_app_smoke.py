@@ -3,7 +3,7 @@ import inspect
 import json
 import os
 import time
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
 import agentguardian.app as app_module
 import agentguardian.audit_service as audit_service_module
 from agentguardian.app import COLOR_TOKENS, create_window, export_new_report
-from agentguardian.detectors import FileDetectionResult
+from agentguardian.detectors import MAX_FILE_BYTES, FileDetectionResult
 from agentguardian.discovery import DiscoveryResult
 from agentguardian.dispositions import (
     DispositionRecord,
@@ -255,6 +255,7 @@ def _audit_outcome(
             reviewed_score=reviewed,
             dispositions=records,
             evaluated_at=evaluated_at,
+            language="zh",
         ),
         scanned_roots=(Path(r"C:\private\audit-root"),),
     )
@@ -688,7 +689,7 @@ def test_personal_navigation_trust_strip_and_approved_theme(qapp):
     window.show()
     qapp.processEvents()
 
-    assert window.stack.count() == 3
+    assert window.stack.count() == 5
     assert window.local_mode_label.text() == "本地路径模式"
     assert window.scan_button.text() == "开始审计"
     assert not window.scan_button.icon().isNull()
@@ -697,8 +698,10 @@ def test_personal_navigation_trust_strip_and_approved_theme(qapp):
         "审计范围",
         "风险发现",
         "审计报告",
+        "解决方案",
+        "关于作者",
     ]
-    assert len(window.navigation_buttons) == 3
+    assert len(window.navigation_buttons) == 5
     assert [label.text() for label in window.trust_labels] == [
         "本地路径模式",
         "包源码网络能力：未发现",
@@ -724,19 +727,20 @@ def test_personal_navigation_trust_strip_and_approved_theme(qapp):
         assert not _global_rect(left).intersects(_global_rect(right))
 
     assert COLOR_TOKENS == {
-        "obsidian": "#0F1215",
-        "surface": "#171C20",
-        "border": "#394149",
-        "cloud": "#F4F6F7",
-        "trust": "#21C786",
-        "muted": "#AAB4BB",
-        "warning": "#F0BD5C",
-        "critical": "#EF7167",
+        "obsidian": "#0B1220",
+        "surface": "#121D2E",
+        "border": "#2B3B52",
+        "cloud": "#F3F6FB",
+        "trust": "#29C994",
+        "muted": "#A7B4C6",
+        "warning": "#F3BE59",
+        "critical": "#F17373",
     }
     stylesheet = window.styleSheet()
     assert "letter-spacing: 0px" in stylesheet
     assert "gradient" not in stylesheet.lower()
-    assert "border-radius: 6px" in stylesheet
+    assert 'font-family: "Microsoft YaHei"' in stylesheet
+    assert "border-radius: 8px" in stylesheet
     assert window.minimumWidth() >= 960
     assert window.minimumHeight() >= 640
     assert not _global_rect(window.sidebar).intersects(
@@ -1544,6 +1548,65 @@ def test_finding_disposition_controls_are_stable_private_and_selection_driven(qa
     assert not window.accepted_risk_button.isEnabled()
     assert not window.withdraw_button.isEnabled()
     window.close()
+
+
+def test_selected_finding_shows_safe_application_and_source_context(qapp) -> None:
+    finding = _disposition_finding()
+    context = app_module.FindingSourceContext(
+        root_fingerprint=finding.root_fingerprint,
+        evidence_fingerprint=finding.evidence[0].fingerprint,
+        application_key="codex",
+        root_name=".codex",
+        source_file="plugin.json",
+    )
+    outcome = replace(
+        _audit_outcome((finding,)),
+        source_contexts=(context,),
+    )
+    window = create_window()
+    window._scan_completed(outcome)
+    window._switch_view(1)
+    window.findings_table.selectRow(0)
+    qapp.processEvents()
+
+    details = window.guidance_browser.toPlainText()
+    assert "所属应用：Codex 配置" in details
+    assert "来源文件：plugin.json" in details
+    assert "所在审计范围：.codex" in details
+    assert "处理位置：在 Codex 配置中核对 plugin.json" in details
+    assert r"C:\private\audit-root" not in details
+    assert finding.root_fingerprint not in details
+
+    window.language_combo.setCurrentIndex(window.language_combo.findData("en"))
+    qapp.processEvents()
+    details = window.guidance_browser.toPlainText()
+    assert "Application: Codex configuration" in details
+    assert "Source file: plugin.json" in details
+    assert "Audit scope: .codex" in details
+    window.close()
+
+
+def test_file_audit_attaches_application_context_without_full_paths(tmp_path) -> None:
+    root = tmp_path / ".codex"
+    root.mkdir()
+    source = root / "plugin.json"
+    source.write_text('{"owner": "author@example.com"}', encoding="utf-8")
+
+    outcome = _run_audit((root,), disposition_key=DISPOSITION_KEY)
+
+    assert outcome.findings
+    assert len(outcome.source_contexts) == len(
+        {
+            (finding.root_fingerprint, evidence.fingerprint)
+            for finding in outcome.findings
+            for evidence in finding.evidence
+        }
+    )
+    context = outcome.source_contexts[0]
+    assert context.application_key == "codex"
+    assert context.root_name == ".codex"
+    assert context.source_file == "plugin.json"
+    assert str(tmp_path) not in repr(context)
 
 
 def test_filter_controls_use_canonical_data_count_findings_and_fit(qapp) -> None:
@@ -2908,6 +2971,7 @@ def test_disposition_transaction_builds_reports_and_snapshot_before_save(
     )
     window = create_window()
     window._scan_completed(_audit_outcome((finding,)))
+    events.clear()
     window.findings_table.selectRow(0)
 
     window.false_positive_button.click()
@@ -4450,7 +4514,7 @@ def test_openai_finding_uses_openai_manual_guidance(qapp) -> None:
 
     guidance = window.guidance_browser.toPlainText().lower()
     assert "openai" in guidance
-    assert "revoke" in guidance
+    assert "撤销" in guidance
     window.close()
 
 
@@ -5349,7 +5413,7 @@ def test_start_scan_rejects_missing_stale_or_forged_consent_before_side_effects(
     window.close()
 
 
-def test_start_scan_consumes_valid_consent_before_worker_construction(
+def test_start_scan_keeps_valid_consent_before_worker_construction(
     qapp, monkeypatch, tmp_path
 ):
     marker = "synthetic-private-worker-marker"
@@ -5364,6 +5428,7 @@ def test_start_scan_consumes_valid_consent_before_worker_construction(
     window = create_window()
     window.folder_button.click()
     _approve_current_scope(window)
+    original_consent = window._scope_consent
     window._comparison_state = object()
 
     def exploding_worker(*args, **kwargs):
@@ -5372,6 +5437,8 @@ def test_start_scan_consumes_valid_consent_before_worker_construction(
                 window._scope_consent,
                 window.scope_consent_checkbox.isChecked(),
                 window.scan_button.isEnabled(),
+                window.supported_data_checkbox.isEnabled(),
+                window.scope_consent_checkbox.isEnabled(),
                 window._comparison_state,
             )
         )
@@ -5381,11 +5448,15 @@ def test_start_scan_consumes_valid_consent_before_worker_construction(
 
     window._start_scan()
 
-    assert observed == [(None, False, False, None)]
+    assert observed == [(original_consent, True, False, False, False, None)]
     assert not window.is_scanning
     assert window._thread is None
     assert window._worker is None
-    assert not window.scan_button.isEnabled()
+    assert window.scope_consent_checkbox.isChecked()
+    assert window._scope_consent is not None
+    assert window.supported_data_checkbox.isEnabled()
+    assert window.scope_consent_checkbox.isEnabled()
+    assert window.scan_button.isEnabled()
     assert marker not in window.status_label.text()
     assert window.status_label.text() == "审计失败。"
     window.close()
@@ -5606,9 +5677,9 @@ def test_threaded_worker_scans_synthetic_root_without_leaking_raw_data(
         assert raw_secret not in " ".join(cells)
         assert str(root) not in " ".join(cells)
 
-    assert not window.scope_consent_checkbox.isChecked()
-    assert window._scope_consent is None
-    assert not window.scan_button.isEnabled()
+    assert window.scope_consent_checkbox.isChecked()
+    assert window._scope_consent is not None
+    assert window.scan_button.isEnabled()
     assert window.scan_button.text() == "开始审计"
     assert "完成" in window.status_label.text()
     assert window.findings_table.rowCount() >= 2
@@ -5625,6 +5696,92 @@ def test_threaded_worker_scans_synthetic_root_without_leaking_raw_data(
     assert not window.save_button.icon().isNull()
     _approve_current_scope(window)
     assert window.scan_button.isEnabled()
+    window.close()
+
+
+def test_oversized_supported_file_produces_incomplete_report(
+    qapp, monkeypatch, tmp_path
+):
+    root = tmp_path / "oversized-config"
+    root.mkdir()
+    oversized = root / "large.json"
+    with oversized.open("wb") as stream:
+        stream.truncate(MAX_FILE_BYTES + 1)
+    window = create_window()
+    monkeypatch.setattr(
+        QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: str(root),
+    )
+
+    window.folder_button.click()
+    _approve_current_scope(window)
+    window.scan_button.click()
+    _wait_for_scan(window, qapp)
+
+    payload = json.loads(window.report_json)
+    assert payload["score"]["incomplete"] is True
+    assert payload["score"]["limits"] == ["file_too_large"]
+    assert "单个文件超过大小上限" in window.report_html
+    assert "审计未完整" in window.status_label.text()
+    assert "单个文件超过大小上限" in window.coverage_status_label.text()
+    assert window.scope_consent_checkbox.isChecked()
+
+
+def test_runtime_language_switches_persists_and_localizes_about_page(qapp) -> None:
+    window = create_window()
+    assert window.navigation_buttons[0].text() == "审计范围"
+    assert window.scope_consent_checkbox.text() == "我已核对并同意仅扫描当前显示范围"
+
+    window.language_combo.setCurrentIndex(window.language_combo.findData("en"))
+
+    assert window.navigation_buttons[0].text() == "Audit Scope"
+    assert window.navigation_buttons[-1].text() == "About the Author"
+    assert window.folder_button.text() == "Choose Folder"
+    assert window.scope_consent_checkbox.text() == (
+        "I reviewed and consent to scanning only the scope shown"
+    )
+    assert window.findings_table.horizontalHeaderItem(0).text() == "Severity"
+    window.stack.setCurrentIndex(4)
+    about_labels = [label.text() for label in window.stack.widget(4).findChildren(QLabel)]
+    assert "Enhe (恩禾)" in about_labels
+    assert "Product Designer · One-person Company Practitioner · AI Builder" in about_labels
+    assert "ENHE-AI" in about_labels
+    poster = window.stack.widget(4).findChild(QLabel, "aboutPoster")
+    assert poster is not None and not poster.pixmap().isNull()
+
+    window.close()
+    reopened = create_window()
+    assert reopened.language_combo.currentData() == "en"
+    assert reopened.navigation_buttons[0].text() == "Audit Scope"
+    reopened.close()
+    window.close()
+
+
+def test_solution_guide_is_available_and_localized(qapp) -> None:
+    window = create_window()
+
+    assert window.stack.count() == 5
+    solution_button = next(
+        button for button in window.navigation_buttons
+        if button.text() == "解决方案"
+    )
+    solution_button.click()
+    page = window.stack.currentWidget()
+    labels = [label.text() for label in page.findChildren(QLabel)]
+    assert "风险处理方案" in labels
+    assert "先确认事实，再处理风险" in labels
+    assert any("规则匹配是核查线索" in value for value in labels)
+    assert any("先到对应服务撤销或停用" in value for value in labels)
+    assert any("接受风险" in value and "不会消除风险" in value for value in labels)
+    assert any("回滚仅适用于本次会话" in value for value in labels)
+
+    window.language_combo.setCurrentIndex(window.language_combo.findData("en"))
+    english_labels = [label.text() for label in page.findChildren(QLabel)]
+    assert "Resolution Guide" in english_labels
+    assert any("Pattern matches are leads" in value for value in english_labels)
+    assert any("revoke or disable the old key" in value for value in english_labels)
+
     window.close()
 
 
