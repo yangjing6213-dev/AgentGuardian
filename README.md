@@ -2,6 +2,12 @@
 
 # AgentGuardian
 
+[![Source code license: Apache-2.0](https://img.shields.io/badge/Source%20code-Apache--2.0-3DA639.svg?style=for-the-badge&logo=apache&logoColor=white)](https://github.com/yangjing6213-dev/AgentGuardian/blob/main/LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3670A0.svg?style=for-the-badge&logo=python&logoColor=ffdd54)](https://www.python.org/)
+[![PySide6](https://img.shields.io/badge/PySide6-Qt%206-41CD52.svg?style=for-the-badge&logo=Qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
+[![MCP SDK 2.0.0](https://img.shields.io/badge/MCP%20SDK-2.0.0-7358F6.svg?style=for-the-badge)](https://github.com/yangjing6213-dev/AgentGuardian/blob/main/pyproject.toml)
+[![Windows 11 x64](https://img.shields.io/badge/Platform-Windows%2011%20x64-0078D6.svg?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/yangjing6213-dev/AgentGuardian)
+
 AgentGuardian 是一款面向 Windows 的本地 AI 配置安全审计工具，帮助 AI 用户和 AI 创作者在使用 Codex、MCP 及其他本地 AI 工具前，先检查配置中可能暴露的凭据、个人信息、危险权限和公开分享风险。
 
 很多风险并不是出现在“某个系统被攻破”之后，而是藏在一个配置文件、一段 MCP 设置或一次公开分享里。AgentGuardian 会在你明确选择的范围内进行本地、只读检查，给出脱敏后的证据和人工处理建议；真正的删除、撤销、轮换和权限调整仍由你在原应用中确认。
@@ -82,6 +88,22 @@ AgentGuardian 是一款面向 Windows 的本地 AI 配置安全审计工具，�
 以前你可能需要手动翻找多个配置文件，猜测某个邮箱、手机号、密钥或 MCP 权限到底来自哪个程序。AgentGuardian 会把检查范围、来源文件和脱敏证据集中展示，并把“应该在哪里处理”写在每条风险下面。
 
 它可以减少重复查找和复制敏感内容的需要，但不会替你决定风险是否可以接受。你仍然需要确认：这段数据是否真的存在、哪个应用在使用它、是否有业务保留必要，以及处理后是否已经重新审计。
+
+下面的插图展示从检查准备到复核的典型流程。它们是功能示意图，不是实际界面截图，也不代表某次真实审计结果。
+
+<table>
+  <tr>
+    <td align="center" width="50%"><img src="assets/illustrations/agentguardian-01-v3-16x9.png" alt="检查应用配置中隐藏的风险线索" width="100%"><br><sub>01 · 定位配置里的风险线索</sub></td>
+    <td align="center" width="50%"><img src="assets/illustrations/agentguardian-02-v3-16x9.png" alt="用户选择审计范围并确认后开始检查" width="100%"><br><sub>02 · 选定范围后开始检查</sub></td>
+  </tr>
+  <tr>
+    <td align="center" width="50%"><img src="assets/illustrations/agentguardian-03-v3-16x9.png" alt="查看风险来源线索并遮盖敏感内容" width="100%"><br><sub>03 · 查看来源与脱敏证据</sub></td>
+    <td align="center" width="50%"><img src="assets/illustrations/agentguardian-04-v3-16x9.png" alt="定位风险来源后由用户返回原应用人工处理" width="100%"><br><sub>04 · 回到来源应用人工处理</sub></td>
+  </tr>
+  <tr>
+    <td align="center" colspan="2"><img src="assets/illustrations/agentguardian-05-v3-16x9.png" alt="在同一范围复查并记录变化" width="100%"><br><sub>05 · 同范围复查并记录变化</sub></td>
+  </tr>
+</table>
 
 ## 六、安装与快速开始
 

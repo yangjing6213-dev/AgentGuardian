@@ -4,6 +4,12 @@
 
 # AgentGuardian
 
+[![Source code license: Apache-2.0](https://img.shields.io/badge/Source%20code-Apache--2.0-3DA639.svg?style=for-the-badge&logo=apache&logoColor=white)](https://github.com/yangjing6213-dev/AgentGuardian/blob/main/LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3670A0.svg?style=for-the-badge&logo=python&logoColor=ffdd54)](https://www.python.org/)
+[![PySide6](https://img.shields.io/badge/PySide6-Qt%206-41CD52.svg?style=for-the-badge&logo=Qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
+[![MCP SDK 2.0.0](https://img.shields.io/badge/MCP%20SDK-2.0.0-7358F6.svg?style=for-the-badge)](https://github.com/yangjing6213-dev/AgentGuardian/blob/main/pyproject.toml)
+[![Windows 11 x64](https://img.shields.io/badge/Platform-Windows%2011%20x64-0078D6.svg?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/yangjing6213-dev/AgentGuardian)
+
 Local-first data security auditing for AI agent workflows. AgentGuardian helps users inspect local configuration, browser data, clipboard content, and public-share exposure before an AI agent handles that data.
 
 > Current channel: Windows 11 x64 · 0.3.0 Public Preview · unsigned
