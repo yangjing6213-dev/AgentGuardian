@@ -295,3 +295,18 @@ dist/                             本地构建后生成的安装包目录，不�
 ## English
 
 English overview: [README.en.md](README.en.md)
+
+# 👋 你好，我是 yangjing6213-dev
+
+欢迎来到我的 GitHub 主页！这里展示我的 GitHub 统计数据和常用编程语言。
+
+## 📊 GitHub 数据
+
+<p align="center">
+  <a href="https://github.com/yangjing6213-dev">
+    <img height="180" src="https://github-stats-extended.vercel.app/api?username=yangjing6213-dev&amp;show_icons=true&amp;include_all_commits=true&amp;theme=tokyonight&amp;locale=cn" alt="GitHub 统计卡片" />
+  </a>
+  <a href="https://github.com/yangjing6213-dev">
+    <img height="180" src="https://github-stats-extended.vercel.app/api/top-langs/?username=yangjing6213-dev&amp;layout=compact&amp;langs_count=8&amp;theme=tokyonight&amp;locale=cn" alt="常用编程语言卡片" />
+  </a>
+</p>
