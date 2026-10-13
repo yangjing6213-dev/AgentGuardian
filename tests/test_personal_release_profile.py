@@ -1712,7 +1712,7 @@ def test_runtime_ast_node_limit_fails_closed_quickly_with_fixed_code(
 ) -> None:
     verifier = _verifier()
     root = _copy_fixture(tmp_path)
-    source = statement * 20_000
+    source = statement * 21_000
     (root / "src/agentguardian/hostile.py").write_text(source, encoding="utf-8")
 
     started = time.monotonic()

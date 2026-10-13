@@ -740,16 +740,23 @@ def _inside(path: Path, parent: Path) -> bool:
     return True
 
 
-def _snapshot_file(path: Path, *, max_bytes: int, code: str) -> _FileSnapshot:
+def _snapshot_file(
+    path: Path,
+    *,
+    max_bytes: int,
+    code: str,
+    invalid_path_code: str | None = None,
+) -> _FileSnapshot:
+    path_code = invalid_path_code or code
     try:
         if _has_reparse_component(path) or _is_reparse_point(path):
-            _fail(code)
+            _fail(path_code)
         resolved = path.resolve(strict=True)
         info = resolved.stat()
     except (FileNotFoundError, OSError, ProfileViolation):
-        _fail(code)
+        _fail(path_code)
     if not stat.S_ISREG(info.st_mode) or not resolved.is_file():
-        _fail(code)
+        _fail(path_code)
     if info.st_size > max_bytes:
         _fail(code)
     return _FileSnapshot(resolved, _file_identity(info), info.st_size)
@@ -1981,7 +1988,12 @@ def _validate_staging_contents(
                     resource_type=child_resource_type,
                 )
             limit, code = _staging_file_limit(child.name)
-            snapshot = _snapshot_file(path / child.name, max_bytes=limit, code=code)
+            snapshot = _snapshot_file(
+                path / child.name,
+                max_bytes=limit,
+                code=code,
+                invalid_path_code="RELEASE_OUTPUT_PATH_INVALID",
+            )
             if snapshot.identity != child.snapshot.identity or snapshot.size != child.snapshot.size:
                 _fail("RELEASE_ASSET_DIGEST_MISMATCH")
             digest, _ = _digest_file(snapshot, max_bytes=limit, code=code)

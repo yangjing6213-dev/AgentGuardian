@@ -234,11 +234,11 @@ dist/                             本地构建后生成的安装包目录，不�
 
 ### 数据会上传吗？
 
-文件和剪贴板审计默认在本地完成；剪贴板只在用户点击时读取一次，原文不写入报告。联网分享验证只在用户明确输入公开 URL 后执行。脱敏参数和结果可能进入已配置主机的 AI 上下文，因此仍要按数据边界使用。
+文件和剪贴板审计默认在本地完成；剪贴板只在用户点击时读取一次，原文不写入报告。联网分享验证仅在用户显式输入公开 URL 后执行。脱敏参数和结果可能进入已配置主机的 AI 上下文，因此仍要按数据边界使用。
 
 ### 是否可以用于商业或高敏感数据？
 
-当前项目说明只覆盖个人、非受监管配置数据。不要用它处理医疗、金融、身份、生物识别、法律特权、客户数据、国家秘密或同等高敏感真实数据。源代码使用 Apache License 2.0，但依赖和 Windows 运行时的再分发义务仍需单独核对。
+当前项目说明只覆盖个人、非受监管配置数据。Personal v1 不支持高敏感真实数据；不要用它处理医疗、金融、身份、生物识别、法律特权、客户数据、国家秘密或同等高敏感数据。源代码使用 Apache License 2.0，但依赖和 Windows 运行时的再分发义务仍需单独核对。
 
 ## 十一、版本说明
 
@@ -261,6 +261,12 @@ dist/                             本地构建后生成的安装包目录，不�
 - OpenAI Provider local adaptation, detection, and manual guidance only. The runtime must not call OpenAI or another provider API by default.
 - 源码运行需要 Python 版本 3.12 或更高；历史 Windows MVP 文档属于 older Windows MVP reports are historical planning or evidence snapshots。
 - 当前下载形态是 traditional unsigned offline EXE installer；在公开发行门禁完成前，No installer candidate has passed the required gates。
+
+### Personal v1 历史候选状态
+
+冻结的 `0.2.0-beta.1` 候选对应 commit `8ad46e31486d05a2b4572ef8bd7442eb22a7b5b6`，状态仍是 `PRIVATE-BETA-NOT-READY`；formal public release remains `NO-GO`。待完成事项包括 external license and Qt approval、two-machine 验收和 operations/security 准备。当前记录见 [Personal v1 发布说明](docs/security/personal-v1-release-runbook.md) 和 [canonical partial status ledger](docs/security/personal-exe-private-beta-status.json)。
+
+[Personal v1 设计说明](docs/superpowers/specs/2026-08-16-agentguardian-personal-v1-design.md) 与 [历史安装计划](docs/superpowers/plans/2026-08-21-agentguardian-personal-exe-private-beta.md) 用于约束开发（govern development），不是产品功能承诺或发行依据（not product capability claims or release evidence）。这些文件记录的是旧候选的开发与审核过程，不代表当前 0.3 预览版已经满足其发行条件。
 
 ## 十二、相关项目
 
