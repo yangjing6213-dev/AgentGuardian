@@ -457,5 +457,5 @@ def test_readme_describes_current_personal_privacy_invariants() -> None:
 
     assert retired_mode not in readme
     assert retired_evidence_term not in readme.casefold()
-    assert "Personal v1 不支持高敏感现实数据" in readme
+    assert "Personal v1 不支持高敏感真实数据" in readme
     assert "联网分享验证仅在用户显式输入公开 URL 后执行" in readme

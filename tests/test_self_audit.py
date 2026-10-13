@@ -427,13 +427,17 @@ print(json.dumps({
     manifests: list[dict[str, str]] = []
     unavailable: list[str] = []
     for version in ("3.12", "3.14"):
-        probe = subprocess.run(
-            ["py", f"-{version}", "-c", "pass"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            probe = subprocess.run(
+                ["py", f"-{version}", "-c", "pass"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            unavailable.append(version)
+            continue
         if probe.returncode:
             unavailable.append(version)
             continue

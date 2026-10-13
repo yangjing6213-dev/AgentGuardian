@@ -28,7 +28,9 @@ _MAX_TRAVERSAL_ENTRIES = 20_000
 _MAX_TRAVERSAL_DEPTH = 64
 _MAX_ARRAY_ITEMS = 128
 _MAX_VALUE_LENGTH = 256
-_MAX_RUNTIME_AST_NODES = 16_384
+# The current desktop module is about 18.8k AST nodes; retain a fixed ceiling
+# with room for that module while keeping analysis bounded per source file.
+_MAX_RUNTIME_AST_NODES = 20_480
 _ROOT_PROJECT_EXCLUSIONS = frozenset(
     {
         ".analysis",
