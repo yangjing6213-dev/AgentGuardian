@@ -4,15 +4,25 @@
 
 # AgentGuardian
 
-[![Source code license: Apache-2.0](https://img.shields.io/badge/Source%20code-Apache--2.0-3DA639.svg?style=for-the-badge&logo=apache&logoColor=white)](https://github.com/yangjing6213-dev/AgentGuardian/blob/main/LICENSE)
-[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3670A0.svg?style=for-the-badge&logo=python&logoColor=ffdd54)](https://www.python.org/)
-[![PySide6](https://img.shields.io/badge/PySide6-Qt%206-41CD52.svg?style=for-the-badge&logo=Qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
-[![MCP SDK 2.0.0](https://img.shields.io/badge/MCP%20SDK-2.0.0-7358F6.svg?style=for-the-badge)](https://github.com/yangjing6213-dev/AgentGuardian/blob/main/pyproject.toml)
-[![Windows 11 x64](https://img.shields.io/badge/Platform-Windows%2011%20x64-0078D6.svg?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/yangjing6213-dev/AgentGuardian)
+> Inspect only the local AI configuration scope you select, with redacted evidence and human follow-up steps.
+
+![Python](https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white) ![Windows](https://img.shields.io/badge/Windows-0078D6?style=flat-square&logo=windows&logoColor=white) [![Apache-2.0](https://img.shields.io/badge/Apache--2.0-D22128?style=flat-square)](LICENSE)
+
+
+![Project cover](assets/portfolio-promo-2026-11-02/cover-en.jpg)
+
+中文封面与配图：[封面](assets/portfolio-promo-2026-11-02/cover-zh.jpg) · [配图](assets/portfolio-promo-2026-11-02/overview-zh.jpg)
 
 Local-first data security auditing for AI agent workflows. AgentGuardian helps users inspect local configuration, browser data, clipboard content, and public-share exposure before an AI agent handles that data.
 
 > Current channel: Windows 11 x64 · 0.3.0 Public Preview · unsigned
+
+## Workflow diagram (AI concept illustration)
+### Workflow illustration (concept only)
+
+![Project workflow concept illustration](assets/portfolio-promo-2026-11-02/overview-en.jpg)
+
+> AI-generated concept illustration: workflow only, not a real interface, runtime data, or result.
 
 ## 1. What is this repository?
 
@@ -60,7 +70,6 @@ Reports are decision-support material, not a security certification, legal opini
 - Shows what the audit covered, what it did not cover, and where a human must decide.
 
 ## 5. Usage Results
-
 
 ## 6. Installation
 
