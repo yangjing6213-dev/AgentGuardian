@@ -1,12 +1,14 @@
-![AgentGuardian](assets/brand/agentguardian-cover.svg)
 
 # AgentGuardian
 
-[![Source code license: Apache-2.0](https://img.shields.io/badge/Source%20code-Apache--2.0-3DA639.svg?style=for-the-badge&logo=apache&logoColor=white)](https://github.com/yangjing6213-dev/AgentGuardian/blob/main/LICENSE)
-[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3670A0.svg?style=for-the-badge&logo=python&logoColor=ffdd54)](https://www.python.org/)
-[![PySide6](https://img.shields.io/badge/PySide6-Qt%206-41CD52.svg?style=for-the-badge&logo=Qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
-[![MCP SDK 2.0.0](https://img.shields.io/badge/MCP%20SDK-2.0.0-7358F6.svg?style=for-the-badge)](https://github.com/yangjing6213-dev/AgentGuardian/blob/main/pyproject.toml)
-[![Windows 11 x64](https://img.shields.io/badge/Platform-Windows%2011%20x64-0078D6.svg?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/yangjing6213-dev/AgentGuardian)
+> 只检查你明确选择的本机 AI 配置范围，展示脱敏线索与人工处理建议。
+
+![Python](https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white) ![Windows](https://img.shields.io/badge/Windows-0078D6?style=flat-square&logo=windows&logoColor=white) [![Apache-2.0](https://img.shields.io/badge/Apache--2.0-D22128?style=flat-square)](LICENSE)
+
+
+![项目封面](assets/portfolio-promo-2026-11-02/cover-zh.jpg)
+
+英文封面与配图：[English cover](assets/portfolio-promo-2026-11-02/cover-en.jpg) · [English overview](assets/portfolio-promo-2026-11-02/overview-en.jpg)
 
 AgentGuardian 是一款面向 Windows 的本地 AI 配置安全审计工具，帮助 AI 用户和 AI 创作者在使用 Codex、MCP 及其他本地 AI 工具前，先检查配置中可能暴露的凭据、个人信息、危险权限和公开分享风险。
 
@@ -42,6 +44,11 @@ AgentGuardian 是一款面向 Windows 的本地 AI 配置安全审计工具，�
 当前版本只支持个人、非受监管的配置数据。它不是企业安全平台，也不能证明某个账号、MCP 服务、浏览器或系统“绝对安全”。
 
 ## 二、先看效果
+### 项目流程图（概念示意）
+
+![项目流程概念示意](assets/portfolio-promo-2026-11-02/overview-zh.jpg)
+
+> AI 概念插画：展示项目思路，不代表真实软件界面、运行数据或实际结果。
 
 ![AgentGuardian synthetic demo](assets/brand/agentguardian-cover.svg)
 
@@ -240,6 +247,8 @@ dist/                             本地构建后生成的安装包目录，不�
 
 当前项目说明只覆盖个人、非受监管配置数据。Personal v1 不支持高敏感真实数据；不要用它处理医疗、金融、身份、生物识别、法律特权、客户数据、国家秘密或同等高敏感数据。源代码使用 Apache License 2.0，但依赖和 Windows 运行时的再分发义务仍需单独核对。
 
+源代码采用 [Apache License 2.0](LICENSE)；Qt、Windows 运行时和其他第三方组件的再分发要求见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 ## 十一、版本说明
 
 - **源码版本**：`0.3.0a1`，见 [pyproject.toml](pyproject.toml)。
@@ -294,25 +303,3 @@ dist/                             本地构建后生成的安装包目录，不�
 
 [访问恩禾 ENHE AI](https://www.enhe-tech.com.cn/)
 
-## 许可
-
-源代码采用 [Apache License 2.0](LICENSE)。第三方依赖、Qt 和 Windows 运行时的许可证与再分发要求，请同时阅读 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-## English
-
-English overview: [README.en.md](README.en.md)
-
-# 👋 你好，我是 yangjing6213-dev
-
-欢迎来到我的 GitHub 主页！这里展示我的 GitHub 统计数据和常用编程语言。
-
-## 📊 GitHub 数据
-
-<p align="center">
-  <a href="https://github.com/yangjing6213-dev">
-    <img height="180" src="https://github-stats-extended.vercel.app/api?username=yangjing6213-dev&amp;show_icons=true&amp;include_all_commits=true&amp;theme=tokyonight&amp;locale=cn" alt="GitHub 统计卡片" />
-  </a>
-  <a href="https://github.com/yangjing6213-dev">
-    <img height="180" src="https://github-stats-extended.vercel.app/api/top-langs/?username=yangjing6213-dev&amp;layout=compact&amp;langs_count=8&amp;theme=tokyonight&amp;locale=cn" alt="常用编程语言卡片" />
-  </a>
-</p>
